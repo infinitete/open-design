@@ -57,9 +57,9 @@ Target mapping in `tools/pack/src/linux.ts`:
 
 The default `--to` remains `all`, so the default build now also emits a deb.
 This is intentional: the spec wants deb compression bounded for build time
-(top-level `compression: "maximum"` would otherwise add minutes for marginal
-size), pinning the `deb.compression` candidate `gz`; see Build Pipeline for
-the enum details.
+(deb's own default `xz` is single-threaded and would otherwise add minutes
+for marginal size), pinning the `deb.compression` candidate `gz`; see Build
+Pipeline for the enum details.
 
 `tools/pack/src/index.ts`:
 
@@ -76,7 +76,13 @@ the enum details.
   `cleanup` — `cac` parses the flag for those commands too, so it must
   hard-error rather than silently fall through to the AppImage branch). The
   function already receives the action parameter and both options, making it
-  the natural enforcement point.
+  the natural enforcement point. Call coverage today is partial:
+  `resolveLinuxLifecycleMode` is invoked only for `install`/`start`/`stop`/
+  `uninstall` in the `src/index.ts` dispatch and inside
+  `cleanupPackedLinuxNamespace`, so the `logs` and `inspect` dispatch
+  branches gain the check (or an inline `--deb` guard) for this feature;
+  `LinuxLifecycleAction` widens to include `logs` and `inspect`, and the CLI
+  options type gains `deb?: boolean`.
 - Dispatch chain: `src/index.ts` resolves the lifecycle mode via
   `resolveLinuxLifecycleMode` and calls the deb module's install/uninstall
   orchestrators (`installPackedLinuxDeb`/`uninstallPackedLinuxDeb`) directly.
@@ -96,15 +102,17 @@ Changes concentrate in `writeLinuxBuilderConfig` in
 - `linux.packageName: "open-design"` (fixed dpkg package name; lowercase
   letters and hyphen, Debian policy conformant). `productName`,
   `executableName`, and `artifactName` stay as-is.
-- Deb compression bounded for build time: the deb target's single-threaded
-  compression is the slow step, and top-level `compression: "maximum"` would
-  otherwise add minutes for marginal size. The `deb.compression` enum at
-  electron-builder 26.8.1 is `gz | bzip2 | xz | lzo` (default `xz`); `gzip`
-  is invalid and hard-fails schema validation, and there is no preset or
-  level surface — fpm receives a bare `--deb-compression <value>` — so the
-  only build-time lever is choosing `gz` or `bzip2` over the `xz` default.
-  The bounded-build-time candidate is `gz`; the exact option and value are
-  verified against electron-builder 26.8.1 at implementation time.
+- Deb compression bounded for build time: the slow path is deb's own default
+  `xz` compression (single-threaded), which can otherwise add minutes for
+  marginal size. At electron-builder 26.8.1 FpmTarget reads compression only
+  from the linux/deb sections — the top-level `compression: "maximum"`
+  setting never reaches the deb target. The `deb.compression` enum is
+  `gz | bzip2 | xz | lzo`; `gzip` is invalid and hard-fails schema
+  validation, and there is no preset or level surface — fpm receives a bare
+  `--deb-compression <value>` — so the only build-time lever is choosing
+  `gz` or `bzip2` over the `xz` default. The bounded-build-time candidate
+  is `deb.compression: "gz"`; the exact option and value are verified
+  against electron-builder 26.8.1 at implementation time.
 - `maintainer`, `category`, and `synopsis` already exist in the linux config
   and satisfy deb's required `maintainer` field.
 - Version: `electronBuilderVersionForAppVersion` output passes through
@@ -152,31 +160,44 @@ get. Adding the directory to `scopes.json` requires the
   root or configure NOPASSWD sudo for the current user.
 - Else: hard error ("deb install smoke requires root or NOPASSWD sudo").
 
+The prefix applies only to mutating commands (`apt-get install`/`remove`,
+`dpkg -i`/`-r`); verification reads (`dpkg-query`, `dpkg-deb -f`) run
+unprefixed. Environment variables ride through `env` after the prefix — the
+composed install form is `sudo -n env DEBIAN_FRONTEND=noninteractive
+apt-get install -y <path>` — because default sudoers `env_reset` strips
+`DEBIAN_FRONTEND` and the `sudo VAR=val cmd` form requires SETENV
+privileges in sudoers.
+
 ### Install flow (`linux install --deb`)
 
 1. Locate the built artifact via `findBuiltDeb()`; if missing, error with
    "run `tools-pack linux build --to deb` first".
-2. Pick the package manager: `apt-get` if present, else `dpkg`.
-   - Preferred: `DEBIAN_FRONTEND=noninteractive apt-get install -y <absolute .deb path>` — resolves declared dependencies (`libgtk-3-0`, `libnss3`, `libxtst6`, `xdg-utils`, …) from configured repositories.
+2. Pick the package manager: `apt-get` if present, else `dpkg`. Both are
+   mutating commands, so each runs under the privilege prefix with
+   `DEBIAN_FRONTEND=noninteractive` passed through `env` (see Privilege
+   resolution for the composed form and rationale).
+   - Preferred: `env DEBIAN_FRONTEND=noninteractive apt-get install -y <absolute .deb path>` — resolves declared dependencies (`libgtk-3-0`, `libnss3`, `libxtst6`, `xdg-utils`, …) from configured repositories.
    - Fallback: `dpkg -i <path>` — offline-capable; dependency failures
      surface dpkg's own error output.
 3. Verify with `dpkg-query -W -f='${Status}|${Version}' open-design`;
    expected status `install ok installed` and a version matching the built
-   package. The expected version is read from the built artifact via
-   `dpkg-deb -f <path> Version` (equivalently, electron-builder's `-`→`~`
-   sanitization is applied to the app version before comparing). A mismatch
-   is a failed smoke with both values reported.
+   package. The expected version comes solely from the built artifact via
+   `dpkg-deb -f <path> Version`; a mismatch is a failed smoke with both
+   values reported.
 4. JSON result: package name, `version` (the sanitized dpkg Version, e.g.
    `0.10.0~beta.1` — not the raw app version), resolved `packageManager`,
    artifact path, and the installed-file list from
    `dpkg-query -L open-design` (key paths reported from the dpkg database;
-   no hardcoded `/opt/...` guesses).
+   no hardcoded `/opt/...` guesses). The version-sanitize helper serves
+   this JSON result reporting only; verification never applies it (step 3
+   compares against the version read straight from the artifact).
 
 ### Uninstall flow (`linux uninstall --deb`)
 
 1. Pick the package manager once by presence, mirroring install: `apt-get`
-   (`DEBIAN_FRONTEND=noninteractive apt-get remove -y open-design`) if
-   present, else `dpkg -r open-design`. There is no failure-based retry with
+   (`env DEBIAN_FRONTEND=noninteractive apt-get remove -y open-design`,
+   composed with the privilege prefix as in install) if present, else
+   `dpkg -r open-design`. There is no failure-based retry with
    the other tool. No purge: user-data cleanup is not in
    scope, and dpkg `config-files` residue (`deinstall ok config-files`) is
    reported as-is rather than treated as failure.
@@ -202,15 +223,25 @@ lane.
   - Pure, unit-testable helpers: privilege-prefix resolution, install/
     uninstall command composition (argv arrays — `execFile` semantics, so
     paths containing spaces such as `Open Design-<ns>.deb` need no shell
-    quoting), dpkg-query status parsing, version sanitization (`-` → `~`,
-    mirroring electron-builder's `getSanitizedVersion()`), and the fixed
-    package-name constant.
+    quoting), dpkg-query status parsing, and version sanitization (`-` →
+    `~`, mirroring electron-builder's `getSanitizedVersion()`; used for
+    JSON result reporting only).
   - IO orchestrators: `installPackedLinuxDeb(config)` and
     `uninstallPackedLinuxDeb(config)`.
-- `tools/pack/src/linux.ts` owns the builder-config/target changes and
-  exports the helpers the deb module consumes (`resolveLinuxLifecycleMode`,
-  the `--to` target mapping, `findBuiltDeb`); the install/uninstall dispatch
-  chain lives in `src/index.ts` (see CLI Surface).
+- `tools/pack/src/linux.ts` owns the builder-config/target changes, defines
+  the fixed dpkg package-name constant next to `PRODUCT_NAME`, and exports
+  the primitives the deb module consumes (the package-name constant,
+  `resolveLinuxLifecycleMode`, the `--to` target mapping, `findBuiltDeb`);
+  the install/uninstall dispatch chain lives in `src/index.ts` (see CLI
+  Surface).
+- Import direction between the two modules is one-way to prevent a
+  `linux.ts` ↔ `linux/deb.ts` cycle: `deb.ts` depends on `linux.ts`
+  primitives (including the package-name constant above), while the
+  consumers of `deb.ts`'s orchestrators — the `src/index.ts` install/
+  uninstall dispatch, the layer that already consumes `linux.ts`'s
+  lifecycle orchestrators — sit above it. `linux.ts` must not import from
+  `deb.ts`, and `deb.ts` must not import anything from `linux.ts` that
+  would create a cycle.
 - The `--to` → electron-builder targets mapping currently lives inside the
   unexported `writeLinuxBuilderConfig`; extract it into a small pure mapping
   helper (e.g. `linuxBuilderTargetsFor(to)`) exported from `linux.ts` so
