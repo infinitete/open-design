@@ -45,7 +45,6 @@ Three decisions were confirmed with the maintainer during brainstorming:
 
 - Add `"deb"` to the `ToolPackBuildOutput` union.
 - Linux validation accepts `all | appimage | deb | dir`.
-- Help text: `linux: "build target: all|appimage|deb|dir (default: all)"`.
 
 Target mapping in `tools/pack/src/linux.ts`:
 
@@ -57,15 +56,23 @@ Target mapping in `tools/pack/src/linux.ts`:
 | `all` | `["AppImage", "deb"]` | **changed**: previously `all` was equivalent to `appimage`; it now produces both artifacts in one electron-builder run |
 
 The default `--to` remains `all`, so the default build now also emits a deb.
-This is intentional; `deb.compression` is set to `"normal"` to keep the
-single-threaded xz compression bounded (top-level `compression: "maximum"`
-would otherwise add minutes for marginal size).
+This is intentional: the spec wants deb compression bounded for build time
+(top-level `compression: "maximum"` would otherwise add minutes for marginal
+size); see Build Pipeline for the exact-option caveat.
 
 `tools/pack/src/index.ts`:
 
+- Help text: `TO_HELP_BY_PLATFORM.linux` gains `deb|`, becoming
+  `linux: "build target: all|appimage|deb|dir (default: all)"` (kept in sync
+  with the config resolver, which throws on unlisted values).
 - `linux install` and `linux uninstall` gain a `--deb` flag selecting the deb
   smoke form. `--deb` and `--headless` are mutually exclusive; passing both is
   a config error.
+- Lifecycle-mode plumbing: `LinuxLifecycleMode`/`resolveLinuxLifecycleMode`
+  in `tools/pack/src/linux.ts` gains a `"deb"` mode and is the enforcement
+  point for the `--deb`+`--headless` mutual-exclusion config error (it
+  already receives both options; dispatch for install/uninstall lives in
+  `src/index.ts`).
 
 ## Build Pipeline
 
@@ -75,10 +82,22 @@ Changes concentrate in `writeLinuxBuilderConfig` in
 - Target array mapped from `--to` as above; `all` builds both targets in one
   electron-builder invocation, sharing the workspace build, tarballs,
   assembled app, and resources — nothing is built twice.
+- Deb-only builds skip AppImage-specific staging: the AppRun staging gate
+  (currently `config.to !== "dir"`) and the builder-config `extraFiles`
+  AppRun entry plus `appImage.executableArgs` apply only when the AppImage
+  target is present (`appimage` or `all`), not for `deb` or `dir`.
 - `linux.packageName: "open-design"` (fixed dpkg package name; lowercase
   letters and hyphen, Debian policy conformant). `productName`,
   `executableName`, and `artifactName` stay as-is.
-- `deb: { compression: "normal" }`.
+- Deb compression bounded for build time: the deb target's single-threaded
+  compression is the slow step, and top-level `compression: "maximum"` would
+  otherwise add minutes for marginal size. The exact option and value must be
+  verified against electron-builder 26.8.1 at implementation time —
+  historically the `deb.compression` enum is `gzip|bzip2|xz|lzma` (default
+  `xz`), so the candidate is a valid deb enum (e.g. `xz` with a reduced
+  preset, or `gzip`); `"normal"` belongs to the top-level compression
+  vocabulary, not the deb enum. An invalid enum hard-fails schema validation
+  and the build.
 - `maintainer`, `category`, and `synopsis` already exist in the linux config
   and satisfy deb's required `maintainer` field.
 - Version: unchanged `electronBuilderVersionForAppVersion` output; semver
@@ -97,7 +116,9 @@ verbatim, and the mounted `/home/builder/.cache/electron-builder` cache volume
 is where electron-builder downloads the fpm bundle, so
 `--containerized --to deb` works without docker-arg changes. First deb build
 requires network access to fetch the fpm bundle (same model as the existing
-electron download).
+electron download). The containerized branch of `packLinux` returns `debPath`
+with the same discovery symmetry as the native branch (both resolve the
+artifact through `findBuiltDeb()` after the builder run).
 
 ## Install/Uninstall Smoke
 
@@ -131,8 +152,10 @@ root-level `src/*.ts` files are treated as unclassified by CI; the legacy
 
 ### Uninstall flow (`linux uninstall --deb`)
 
-1. `DEBIAN_FRONTEND=noninteractive apt-get remove -y open-design`, falling
-   back to `dpkg -r open-design`. No purge: user-data cleanup is not in
+1. Pick the package manager once by presence, mirroring install: `apt-get`
+   (`DEBIAN_FRONTEND=noninteractive apt-get remove -y open-design`) if
+   present, else `dpkg -r open-design`. There is no failure-based retry with
+   the other tool. No purge: user-data cleanup is not in
    scope, and dpkg `config-files` residue (`deinstall ok config-files`) is
    reported as-is rather than treated as failure.
 2. Verify the package no longer reports `install ok installed`.
@@ -162,12 +185,18 @@ lane.
     `uninstallPackedLinuxDeb(config)`.
 - `tools/pack/src/linux.ts` dispatches `--deb` install/uninstall to the new
   module and owns the builder-config/target changes.
+- The `--to` → electron-builder targets mapping currently lives inside the
+  unexported `writeLinuxBuilderConfig`; extract it into a small pure mapping
+  helper (e.g. `linuxBuilderTargetsFor(to)`) exported from `linux.ts` so
+  `tests/linux-deb.test.ts` can assert the mapping table directly. The
+  existing `tests/config/config.test.ts` only covers validation
+  (accepted/rejected values), not the mapping.
 - `tools/pack/src/config/index.ts` extends the output-type validation.
 - Tests: new `tools/pack/tests/linux-deb.test.ts` covering the privilege
   matrix (root / sudo / neither), command composition, dpkg status parsing,
-  the fixed package-name constant, `--deb`+`--headless` mutual exclusion, and
-  `findBuiltDeb` selection. `--to` mapping assertions extend the existing
-  config tests under `tools/pack/tests/config/`.
+  the fixed package-name constant, `--deb`+`--headless` mutual exclusion,
+  `findBuiltDeb` selection, and `--to` mapping assertions against the
+  exported mapping helper described above.
 - Tests import source through the test-only `@/*` alias per
   `tools/pack/AGENTS.md`.
 
