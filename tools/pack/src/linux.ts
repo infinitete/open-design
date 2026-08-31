@@ -755,7 +755,7 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
     const paths = resolveLinuxPaths(config);
     const targets = linuxBuilderTargetsFor(config.to);
     const appImagePath = targets.includes("AppImage") ? await findBuiltAppImage(paths) : null;
-    const debPath = await findBuiltDeb(paths);
+    const debPath = targets.includes("deb") ? await findBuiltDeb(paths) : null;
     return {
       appImagePath,
       debPath,
@@ -781,7 +781,7 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await runElectronBuilderLinux(config, paths);
 
   const appImagePath = targets.includes("AppImage") ? await findBuiltAppImage(paths) : null;
-  const debPath = await findBuiltDeb(paths);
+  const debPath = targets.includes("deb") ? await findBuiltDeb(paths) : null;
   return {
     appImagePath,
     debPath,
