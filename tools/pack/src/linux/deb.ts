@@ -10,7 +10,7 @@ export type DebPackageManager = "apt-get" | "dpkg";
 export function resolveDebPrivilege(input: { isRoot: boolean; hasSudo: boolean }): DebPrivilege {
   if (input.isRoot) return "direct";
   if (input.hasSudo) return "sudo";
-  throw new Error("deb install smoke requires root or NOPASSWD sudo");
+  throw new Error("deb smoke requires root or NOPASSWD sudo");
 }
 
 // Presence-based, picked once per flow: apt-get resolves dependencies for
@@ -199,7 +199,10 @@ export async function uninstallPackedLinuxDeb(options: DebOrchestratorOptions = 
       (await run("dpkg-query", ["-W", "-f=${Status}|${Version}", DEB_PACKAGE_NAME])).stdout,
     );
     if (query != null) status = query.status;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error && /no packages found matching/i.test(error.message))) {
+      throw error;
+    }
     status = "not-installed";
   }
   if (status === "install ok installed") {

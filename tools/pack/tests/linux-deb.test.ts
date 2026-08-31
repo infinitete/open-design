@@ -106,7 +106,7 @@ describe("resolveDebPrivilege", () => {
 
   it("hard-fails without root or sudo", () => {
     expect(() => resolveDebPrivilege({ isRoot: false, hasSudo: false })).toThrow(
-      /deb install smoke requires root or NOPASSWD sudo/,
+      /deb smoke requires root or NOPASSWD sudo/,
     );
   });
 });
