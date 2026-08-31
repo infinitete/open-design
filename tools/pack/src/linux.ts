@@ -391,7 +391,7 @@ function iconFileName(namespace: string): string {
   return `open-design-${sanitizeNamespace(namespace)}.png`;
 }
 
-function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
+export function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
   const namespaceRoot = config.roots.output.namespaceRoot;
   const appBuilderOutputRoot = config.roots.output.appBuilderRoot;
   const home = homedir();
@@ -730,10 +730,18 @@ async function findBuiltAppImage(paths: LinuxPaths): Promise<string | null> {
   return appImage ? join(paths.appBuilderOutputRoot, appImage) : null;
 }
 
+export async function findBuiltDeb(paths: LinuxPaths): Promise<string | null> {
+  if (!(await pathExists(paths.appBuilderOutputRoot))) return null;
+  const entries = await readdir(paths.appBuilderOutputRoot);
+  const deb = entries.find((entry) => entry.endsWith(".deb"));
+  return deb ? join(paths.appBuilderOutputRoot, deb) : null;
+}
+
 // --- Step 7: packLinux orchestrator + result type + stub for runBuildInContainer ---
 
 export type LinuxPackResult = {
   appImagePath: string | null;
+  debPath: string | null;
   outputRoot: string;
   resourceRoot: string;
   runtimeNamespaceRoot: string;
@@ -745,9 +753,12 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   if (config.containerized) {
     await runBuildInContainer(config);
     const paths = resolveLinuxPaths(config);
-    const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
+    const targets = linuxBuilderTargetsFor(config.to);
+    const appImagePath = targets.includes("AppImage") ? await findBuiltAppImage(paths) : null;
+    const debPath = await findBuiltDeb(paths);
     return {
       appImagePath,
+      debPath,
       outputRoot: paths.appBuilderOutputRoot,
       resourceRoot: paths.resourceRoot,
       runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
@@ -769,9 +780,11 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await writeLinuxBuilderConfig(config, paths);
   await runElectronBuilderLinux(config, paths);
 
-  const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
+  const appImagePath = targets.includes("AppImage") ? await findBuiltAppImage(paths) : null;
+  const debPath = await findBuiltDeb(paths);
   return {
     appImagePath,
+    debPath,
     outputRoot: paths.appBuilderOutputRoot,
     resourceRoot: paths.resourceRoot,
     runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
