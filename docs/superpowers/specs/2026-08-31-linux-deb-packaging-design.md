@@ -58,7 +58,8 @@ Target mapping in `tools/pack/src/linux.ts`:
 The default `--to` remains `all`, so the default build now also emits a deb.
 This is intentional: the spec wants deb compression bounded for build time
 (top-level `compression: "maximum"` would otherwise add minutes for marginal
-size); see Build Pipeline for the exact-option caveat.
+size), pinning the `deb.compression` candidate `gz`; see Build Pipeline for
+the enum details.
 
 `tools/pack/src/index.ts`:
 
@@ -70,9 +71,15 @@ size); see Build Pipeline for the exact-option caveat.
   a config error.
 - Lifecycle-mode plumbing: `LinuxLifecycleMode`/`resolveLinuxLifecycleMode`
   in `tools/pack/src/linux.ts` gains a `"deb"` mode and is the enforcement
-  point for the `--deb`+`--headless` mutual-exclusion config error (it
-  already receives both options; dispatch for install/uninstall lives in
-  `src/index.ts`).
+  point for two config errors: the `--deb`+`--headless` mutual exclusion, and
+  `--deb` passed with non-smoke actions (`start`/`stop`/`logs`/`inspect`/
+  `cleanup` — `cac` parses the flag for those commands too, so it must
+  hard-error rather than silently fall through to the AppImage branch). The
+  function already receives the action parameter and both options, making it
+  the natural enforcement point.
+- Dispatch chain: `src/index.ts` resolves the lifecycle mode via
+  `resolveLinuxLifecycleMode` and calls the deb module's install/uninstall
+  orchestrators (`installPackedLinuxDeb`/`uninstallPackedLinuxDeb`) directly.
 
 ## Build Pipeline
 
@@ -91,24 +98,29 @@ Changes concentrate in `writeLinuxBuilderConfig` in
   `executableName`, and `artifactName` stay as-is.
 - Deb compression bounded for build time: the deb target's single-threaded
   compression is the slow step, and top-level `compression: "maximum"` would
-  otherwise add minutes for marginal size. The exact option and value must be
-  verified against electron-builder 26.8.1 at implementation time —
-  historically the `deb.compression` enum is `gzip|bzip2|xz|lzma` (default
-  `xz`), so the candidate is a valid deb enum (e.g. `xz` with a reduced
-  preset, or `gzip`); `"normal"` belongs to the top-level compression
-  vocabulary, not the deb enum. An invalid enum hard-fails schema validation
-  and the build.
+  otherwise add minutes for marginal size. The `deb.compression` enum at
+  electron-builder 26.8.1 is `gz | bzip2 | xz | lzo` (default `xz`); `gzip`
+  is invalid and hard-fails schema validation, and there is no preset or
+  level surface — fpm receives a bare `--deb-compression <value>` — so the
+  only build-time lever is choosing `gz` or `bzip2` over the `xz` default.
+  The bounded-build-time candidate is `gz`; the exact option and value are
+  verified against electron-builder 26.8.1 at implementation time.
 - `maintainer`, `category`, and `synopsis` already exist in the linux config
   and satisfy deb's required `maintainer` field.
-- Version: unchanged `electronBuilderVersionForAppVersion` output; semver
-  prerelease segments (e.g. `0.10.0-beta.1`) are valid Debian version
-  characters.
+- Version: `electronBuilderVersionForAppVersion` output passes through
+  unchanged, but electron-builder's deb target sanitizes it for dpkg —
+  `getSanitizedVersion()` replaces `-` with `~` — so
+  `--app-version 0.10.0-beta.1` produces deb Version `0.10.0~beta.1`. `~` is
+  the Debian-correct prerelease ordering: it sorts before the base release
+  (`0.10.0~beta.1 < 0.10.0`), so dpkg upgrade logic treats the prerelease as
+  earlier than the eventual stable release.
 - Architecture: host arch only, matching AppImage behavior.
 
 Artifact discovery and result:
 
 - `findBuiltDeb()` scans the builder output root for a `.deb` file, mirroring
-  `findBuiltAppImage()`.
+  `findBuiltAppImage()`; unlike its module-private model, it is exported
+  (like the target-mapping helper) so tests can reach it via the `@/*` alias.
 - `LinuxPackResult` gains `debPath: string | null`.
 
 Containerized builds: the inner docker command already forwards `--to`
@@ -125,6 +137,12 @@ artifact through `findBuiltDeb()` after the builder run).
 New module `tools/pack/src/linux/deb.ts` (new `linux/` owned directory —
 root-level `src/*.ts` files are treated as unclassified by CI; the legacy
 `linux.ts` stays where it is, all new code lives under `src/linux/`).
+CI scope note, accepted as-is: `tools/pack/src/linux/` is not in the
+`packaged-leaf` source unit in `.github/config/scopes.json` (unlike its
+`mac/` and `win/` siblings), so `deb.ts` lands in the medium-confidence
+`tools-pack-sources` unit instead of the certain tier its mac/win siblings
+get. Adding the directory to `scopes.json` requires the
+`specs/current/ci.md` methodology and is out of scope here.
 
 ### Privilege resolution
 
@@ -144,11 +162,15 @@ root-level `src/*.ts` files are treated as unclassified by CI; the legacy
      surface dpkg's own error output.
 3. Verify with `dpkg-query -W -f='${Status}|${Version}' open-design`;
    expected status `install ok installed` and a version matching the built
-   package. A mismatch is a failed smoke with both values reported.
-4. JSON result: package name, version, resolved `packageManager`, artifact
-   path, and the installed-file list from `dpkg-query -L open-design`
-   (key paths reported from the dpkg database; no hardcoded `/opt/...`
-   guesses).
+   package. The expected version is read from the built artifact via
+   `dpkg-deb -f <path> Version` (equivalently, electron-builder's `-`→`~`
+   sanitization is applied to the app version before comparing). A mismatch
+   is a failed smoke with both values reported.
+4. JSON result: package name, `version` (the sanitized dpkg Version, e.g.
+   `0.10.0~beta.1` — not the raw app version), resolved `packageManager`,
+   artifact path, and the installed-file list from
+   `dpkg-query -L open-design` (key paths reported from the dpkg database;
+   no hardcoded `/opt/...` guesses).
 
 ### Uninstall flow (`linux uninstall --deb`)
 
@@ -180,22 +202,30 @@ lane.
   - Pure, unit-testable helpers: privilege-prefix resolution, install/
     uninstall command composition (argv arrays — `execFile` semantics, so
     paths containing spaces such as `Open Design-<ns>.deb` need no shell
-    quoting), dpkg-query status parsing, and the fixed package-name constant.
+    quoting), dpkg-query status parsing, version sanitization (`-` → `~`,
+    mirroring electron-builder's `getSanitizedVersion()`), and the fixed
+    package-name constant.
   - IO orchestrators: `installPackedLinuxDeb(config)` and
     `uninstallPackedLinuxDeb(config)`.
-- `tools/pack/src/linux.ts` dispatches `--deb` install/uninstall to the new
-  module and owns the builder-config/target changes.
+- `tools/pack/src/linux.ts` owns the builder-config/target changes and
+  exports the helpers the deb module consumes (`resolveLinuxLifecycleMode`,
+  the `--to` target mapping, `findBuiltDeb`); the install/uninstall dispatch
+  chain lives in `src/index.ts` (see CLI Surface).
 - The `--to` → electron-builder targets mapping currently lives inside the
   unexported `writeLinuxBuilderConfig`; extract it into a small pure mapping
   helper (e.g. `linuxBuilderTargetsFor(to)`) exported from `linux.ts` so
   `tests/linux-deb.test.ts` can assert the mapping table directly. The
   existing `tests/config/config.test.ts` only covers validation
   (accepted/rejected values), not the mapping.
-- `tools/pack/src/config/index.ts` extends the output-type validation.
+- `tools/pack/src/config/index.ts` extends the output-type validation;
+  accepted/rejected `--to deb` validation tests belong in the existing
+  `tests/config/config.test.ts` (the repo convention for
+  `resolveToolPackConfig` target validation).
 - Tests: new `tools/pack/tests/linux-deb.test.ts` covering the privilege
   matrix (root / sudo / neither), command composition, dpkg status parsing,
   the fixed package-name constant, `--deb`+`--headless` mutual exclusion,
-  `findBuiltDeb` selection, and `--to` mapping assertions against the
+  `findBuiltDeb` selection, version sanitization (`0.10.0-beta.1` →
+  `0.10.0~beta.1`), and `--to` mapping assertions against the
   exported mapping helper described above.
 - Tests import source through the test-only `@/*` alias per
   `tools/pack/AGENTS.md`.
