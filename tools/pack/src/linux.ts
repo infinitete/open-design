@@ -99,7 +99,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function commandExists(bin: string): Promise<boolean> {
+export async function commandExists(bin: string): Promise<boolean> {
   try {
     await execFileAsync(bin, ["--version"]);
     return true;
