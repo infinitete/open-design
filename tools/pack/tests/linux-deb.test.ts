@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ToolPackConfig } from "@/config/index.js";
-import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, resolveLinuxPaths } from "@/linux.js";
+import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, resolveLinuxLifecycleMode, resolveLinuxPaths } from "@/linux.js";
 import {
   composeDebInstallCommand,
   composeDebUninstallCommand,
@@ -320,5 +320,29 @@ describe("uninstallPackedLinuxDeb", () => {
     });
     const result = await uninstallPackedLinuxDeb({ environment: DEB_ENV, run });
     expect(result.status).toBe("not-installed");
+  });
+});
+
+describe("resolveLinuxLifecycleMode deb plumbing", () => {
+  it("selects the deb mode for install/uninstall", () => {
+    expect(resolveLinuxLifecycleMode({ deb: true }, "install")).toBe("deb");
+    expect(resolveLinuxLifecycleMode({ deb: true }, "uninstall")).toBe("deb");
+  });
+
+  it("rejects --deb combined with --headless", () => {
+    expect(() => resolveLinuxLifecycleMode({ deb: true, headless: true }, "install")).toThrow(/mutually exclusive/);
+  });
+
+  it("rejects --deb on non-smoke actions", () => {
+    expect(() => resolveLinuxLifecycleMode({ deb: true }, "start")).toThrow(/does not support --deb/);
+    expect(() => resolveLinuxLifecycleMode({ deb: true }, "stop")).toThrow(/does not support --deb/);
+    expect(() => resolveLinuxLifecycleMode({ deb: true }, "logs")).toThrow(/does not support --deb/);
+    expect(() => resolveLinuxLifecycleMode({ deb: true }, "inspect")).toThrow(/does not support --deb/);
+    expect(() => resolveLinuxLifecycleMode({ deb: true }, "cleanup")).toThrow(/does not support --deb/);
+  });
+
+  it("preserves appimage/headless selection without --deb", () => {
+    expect(resolveLinuxLifecycleMode({}, "install")).toBe("appimage");
+    expect(resolveLinuxLifecycleMode({ headless: true }, "start")).toBe("headless");
   });
 });

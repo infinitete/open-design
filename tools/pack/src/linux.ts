@@ -80,13 +80,22 @@ export function linuxBuilderTargetsFor(to: ToolPackBuildOutput): string[] {
   throw new Error(`unsupported linux --to target: ${to}`);
 }
 
-export type LinuxLifecycleAction = "cleanup" | "install" | "start" | "stop" | "uninstall";
-export type LinuxLifecycleMode = "appimage" | "headless";
+export type LinuxLifecycleAction = "cleanup" | "install" | "logs" | "inspect" | "start" | "stop" | "uninstall";
+export type LinuxLifecycleMode = "appimage" | "deb" | "headless";
 
 export function resolveLinuxLifecycleMode(
-  options: { headless?: boolean },
-  _action: LinuxLifecycleAction,
+  options: { deb?: boolean; headless?: boolean },
+  action: LinuxLifecycleAction,
 ): LinuxLifecycleMode {
+  if (options.deb === true) {
+    if (options.headless === true) {
+      throw new Error("--deb and --headless are mutually exclusive");
+    }
+    if (action !== "install" && action !== "uninstall") {
+      throw new Error(`linux ${action} does not support --deb; deb smoke supports install/uninstall only`);
+    }
+    return "deb";
+  }
   return options.headless === true ? "headless" : "appimage";
 }
 

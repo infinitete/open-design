@@ -41,6 +41,7 @@ import {
   uninstallPackedLinuxApp,
   uninstallPackedLinuxHeadless,
 } from "./linux.js";
+import { installPackedLinuxDeb, uninstallPackedLinuxDeb } from "./linux/deb.js";
 
 type CliOptions = ToolPackCliOptions;
 
@@ -217,6 +218,7 @@ addWinLifecycleOptions(
 addBuildOptions(addSharedOptions(cli.command("linux <action>", "Linux packaging commands: build|install|start|stop|logs|uninstall|cleanup|inspect")), "linux")
   .option("--containerized", "build inside electronuserland/builder Docker for wider glibc compatibility")
   .option("--headless", "install/start/stop/uninstall/cleanup the headless entry; inspect returns status only")
+  .option("--deb", "install/uninstall the built .deb artifact (install/uninstall only)")
   .action(async (action: string, options: CliOptions) => {
     const config = resolveToolPackConfig("linux", options);
     switch (action) {
@@ -225,7 +227,13 @@ addBuildOptions(addSharedOptions(cli.command("linux <action>", "Linux packaging 
         return;
       case "install": {
         const mode = resolveLinuxLifecycleMode(options, "install");
-        printJson(await (mode === "headless" ? installPackedLinuxHeadless(config) : installPackedLinuxApp(config)));
+        printJson(
+          await (mode === "deb"
+            ? installPackedLinuxDeb(config)
+            : mode === "headless"
+              ? installPackedLinuxHeadless(config)
+              : installPackedLinuxApp(config)),
+        );
         return;
       }
       case "start": {
@@ -239,9 +247,11 @@ addBuildOptions(addSharedOptions(cli.command("linux <action>", "Linux packaging 
         return;
       }
       case "logs":
+        resolveLinuxLifecycleMode(options, "logs");
         printLogs(await readPackedLinuxLogs(config), options);
         return;
       case "inspect":
+        resolveLinuxLifecycleMode(options, "inspect");
         printJson(await inspectPackedLinuxApp(config, {
           expr: options.expr,
           headless: options.headless === true,
@@ -250,7 +260,13 @@ addBuildOptions(addSharedOptions(cli.command("linux <action>", "Linux packaging 
         return;
       case "uninstall": {
         const mode = resolveLinuxLifecycleMode(options, "uninstall");
-        printJson(await (mode === "headless" ? uninstallPackedLinuxHeadless(config) : uninstallPackedLinuxApp(config)));
+        printJson(
+          await (mode === "deb"
+            ? uninstallPackedLinuxDeb()
+            : mode === "headless"
+              ? uninstallPackedLinuxHeadless(config)
+              : uninstallPackedLinuxApp(config)),
+        );
         return;
       }
       case "cleanup":
