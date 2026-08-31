@@ -85,6 +85,16 @@ describe("resolveToolPackConfig win build target", () => {
   });
 });
 
+describe("resolveToolPackConfig linux build target", () => {
+  it("accepts the deb target alongside appimage/dir/all and rejects unsupported values", () => {
+    expect(resolveToolPackConfig("linux", { to: "deb" }).to).toBe("deb");
+    expect(resolveToolPackConfig("linux", { to: "appimage" }).to).toBe("appimage");
+    expect(resolveToolPackConfig("linux", { to: "dir" }).to).toBe("dir");
+    expect(resolveToolPackConfig("linux", { to: "all" }).to).toBe("all");
+    expect(() => resolveToolPackConfig("linux", { to: "nsis" })).toThrow(/unsupported linux --to target: nsis/);
+  });
+});
+
 describe("resolveToolPackConfig cache root", () => {
   it("keeps the default cache outside custom tools-pack roots", () => {
     const config = resolveToolPackConfig("win", {
