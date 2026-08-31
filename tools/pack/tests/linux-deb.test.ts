@@ -2,18 +2,20 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ToolPackConfig } from "@/config/index.js";
 import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, resolveLinuxPaths } from "@/linux.js";
 import {
   composeDebInstallCommand,
   composeDebUninstallCommand,
+  installPackedLinuxDeb,
   isDebInstalled,
   parseDpkgQueryStatus,
   pickDebPackageManager,
   resolveDebPrivilege,
   sanitizeDebVersion,
+  uninstallPackedLinuxDeb,
 } from "@/linux/deb.js";
 
 describe("linuxBuilderTargetsFor", () => {
@@ -214,5 +216,109 @@ describe("sanitizeDebVersion", () => {
   it("mirrors electron-builder's deb `-` to `~` mapping", () => {
     expect(sanitizeDebVersion("0.10.0-beta.1")).toBe("0.10.0~beta.1");
     expect(sanitizeDebVersion("0.10.0")).toBe("0.10.0");
+  });
+});
+
+const DEB_ENV = { isRoot: false, hasSudo: true, hasAptGet: true, hasDpkg: true };
+
+describe("installPackedLinuxDeb", () => {
+  it("fails fast when no .deb was built", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "odtp-deb-"));
+    await expect(installPackedLinuxDeb(makeDebTestConfig(outputRoot), { environment: DEB_ENV })).rejects.toThrow(
+      /no .deb found in builder output; run `tools-pack linux build --to deb` first/,
+    );
+  });
+
+  it("installs under the privilege prefix and verifies status and version straight from the artifact", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "odtp-deb-"));
+    const artifactPath = join(outputRoot, "Open Design-ns.deb");
+    await writeFile(artifactPath, "deb-bytes");
+    const config = makeDebTestConfig(outputRoot);
+
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "dpkg-deb") return { stdout: "0.10.0~beta.1\n" };
+      if (command === "dpkg-query" && args.includes("-f=${Status}|${Version}")) {
+        return { stdout: "install ok installed|0.10.0~beta.1\n" };
+      }
+      if (command === "dpkg-query" && args.includes("-L")) {
+        return { stdout: "/opt/OpenDesign\n/usr/bin/open-design\n" };
+      }
+      return { stdout: "" };
+    });
+
+    const result = await installPackedLinuxDeb(config, { environment: DEB_ENV, run });
+    expect(result).toEqual({
+      artifactPath,
+      packageManager: "apt-get",
+      package: "open-design",
+      version: "0.10.0~beta.1",
+      installedFiles: ["/opt/OpenDesign", "/usr/bin/open-design"],
+    });
+    expect(run).toHaveBeenCalledWith("sudo", [
+      "-n",
+      "env",
+      "DEBIAN_FRONTEND=noninteractive",
+      "apt-get",
+      "install",
+      "-y",
+      artifactPath,
+    ]);
+  });
+
+  it("fails the smoke when dpkg reports a different version than the artifact", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "odtp-deb-"));
+    const artifactPath = join(outputRoot, "Open Design-ns.deb");
+    await writeFile(artifactPath, "deb-bytes");
+    const config = makeDebTestConfig(outputRoot);
+
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "dpkg-deb") return { stdout: "0.10.0~beta.1\n" };
+      if (command === "dpkg-query" && args.includes("-f=${Status}|${Version}")) {
+        return { stdout: "install ok installed|0.9.0\n" };
+      }
+      return { stdout: "" };
+    });
+
+    await expect(installPackedLinuxDeb(config, { environment: DEB_ENV, run })).rejects.toThrow(
+      /deb install verification failed/,
+    );
+  });
+});
+
+describe("uninstallPackedLinuxDeb", () => {
+  it("reports config-files residue without failing", async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "dpkg-query" && args.includes("-f=${Status}|${Version}")) {
+        return { stdout: "deinstall ok config-files|0.10.0~beta.1\n" };
+      }
+      return { stdout: "" };
+    });
+    const result = await uninstallPackedLinuxDeb({ environment: DEB_ENV, run });
+    expect(result).toEqual({
+      package: "open-design",
+      packageManager: "apt-get",
+      status: "deinstall ok config-files",
+    });
+  });
+
+  it("fails when the package is still installed", async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "dpkg-query" && args.includes("-f=${Status}|${Version}")) {
+        return { stdout: "install ok installed|0.10.0~beta.1\n" };
+      }
+      return { stdout: "" };
+    });
+    await expect(uninstallPackedLinuxDeb({ environment: DEB_ENV, run })).rejects.toThrow(/still installed/);
+  });
+
+  it("reports not-installed when dpkg-query exits non-zero for an unknown package", async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "dpkg-query" && args.includes("-f=${Status}|${Version}")) {
+        throw new Error("dpkg-query: no packages found matching open-design");
+      }
+      return { stdout: "" };
+    });
+    const result = await uninstallPackedLinuxDeb({ environment: DEB_ENV, run });
+    expect(result.status).toBe("not-installed");
   });
 });
