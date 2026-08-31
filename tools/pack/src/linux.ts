@@ -26,7 +26,7 @@ import {
   stopProcesses,
 } from "@open-design/platform";
 
-import type { ToolPackConfig } from "./config/index.js";
+import type { ToolPackBuildOutput, ToolPackConfig } from "./config/index.js";
 import { domToPptxBundleResource } from "./dom-to-pptx-resource.js";
 import { copyBundledResourceTrees, linuxResources, packBundledDshRuntime } from "./resources/index.js";
 import { copyOptionalVelaCliBinary } from "./vela-cli.js";
@@ -37,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 const PRODUCT_NAME = "Open Design";
 const APP_IMAGE_PRODUCT_NAME = "Open-Design";
+export const DEB_PACKAGE_NAME = "open-design";
 const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
 // The containerized build sets this to the standalone pnpm binary fetched by
 // buildDockerArgs; runProductionInstall reads it to avoid invoking `npm` inside
@@ -69,6 +70,14 @@ export const INTERNAL_PACKAGES = [
 
 export function sanitizeNamespace(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+export function linuxBuilderTargetsFor(to: ToolPackBuildOutput): string[] {
+  if (to === "dir") return ["dir"];
+  if (to === "deb") return ["deb"];
+  if (to === "appimage") return ["AppImage"];
+  if (to === "all") return ["AppImage", "deb"];
+  throw new Error(`unsupported linux --to target: ${to}`);
 }
 
 export type LinuxLifecycleAction = "cleanup" | "install" | "start" | "stop" | "uninstall";
@@ -134,7 +143,7 @@ export function buildDockerArgs(
   //   - config.namespace is sanitized at config-time by resolveNamespace() in
   //     @open-design/sidecar-proto (restricted to namespace charset)
   //   - config.to is enum-validated by resolveToolPackBuildOutput() in config.ts
-  //     to one of "all" | "appimage" | "dir"
+  //     to one of "all" | "appimage" | "deb" | "dir"
   //   - config.portable is a boolean
   //   - config.appVersion is shell-quoted below because release versions can
   //     carry punctuation that is not part of the namespace / target enums.
@@ -619,7 +628,7 @@ async function writeLinuxAppImageAppRun(paths: LinuxPaths): Promise<void> {
 // --- Step 5: writeLinuxBuilderConfig helper ---
 
 async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
-  const target = config.to === "dir" ? ["dir"] : ["AppImage"];
+  const targets = linuxBuilderTargetsFor(config.to);
   const namespaceToken = sanitizeNamespace(config.namespace);
   const packagedVersion = await readPackagedVersion(config);
   const packageVersion = electronBuilderVersionForAppVersion(packagedVersion);
@@ -654,31 +663,37 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
       // process.resourcesPath by the desktop main at runtime).
       domToPptxBundleResource(config),
     ],
-    ...(config.to === "dir"
-      ? {}
-      : {
+    ...(targets.includes("AppImage")
+      ? {
           extraFiles: [
             {
               from: paths.appImageAppRunPath,
               to: "AppRun",
             },
           ],
-        }),
+        }
+      : {}),
     files: ["**/*", "!**/node_modules/.bin", "!**/node_modules/electron{,/**/*}"],
     icon: linuxResources.icon,
     linux: {
-      target,
+      target: targets,
       icon: linuxResources.icon,
       category: "Development",
       synopsis: "Open Design",
       maintainer: "Open Design Contributors",
+      packageName: DEB_PACKAGE_NAME,
     },
+    ...(targets.includes("deb") ? { deb: { compression: "gz" } } : {}),
     // Keep the AppImage launch fallback explicit. Our top-level AppRun wrapper
     // clears ELECTRON_RUN_AS_NODE before these Chromium flags reach Electron,
     // including for AppImageLauncher-generated desktop entries.
-    appImage: {
-      executableArgs: [...LINUX_APPIMAGE_EXECUTABLE_ARGS],
-    },
+    ...(targets.includes("AppImage")
+      ? {
+          appImage: {
+            executableArgs: [...LINUX_APPIMAGE_EXECUTABLE_ARGS],
+          },
+        }
+      : {}),
     nodeGypRebuild: false,
     npmRebuild: false,
     productName: PRODUCT_NAME,
@@ -747,7 +762,8 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await copyResourceTree(config, paths);
   const tarballs = await collectWorkspaceTarballs(config, paths);
   await writeAssembledApp(config, paths, tarballs);
-  if (config.to !== "dir") {
+  const targets = linuxBuilderTargetsFor(config.to);
+  if (targets.includes("AppImage")) {
     await writeLinuxAppImageAppRun(paths);
   }
   await writeLinuxBuilderConfig(config, paths);
