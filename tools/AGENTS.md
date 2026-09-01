@@ -58,5 +58,6 @@ pnpm tools-pack linux install --headless
 pnpm tools-pack linux start --headless
 pnpm tools-pack linux stop --headless
 pnpm tools-pack linux build --containerized
+pnpm tools-pack linux build --to deb
 pnpm tools-serve start updater
 ```
