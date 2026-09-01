@@ -269,7 +269,7 @@ export function attachPackagedDesktopProcessLogging(options: {
   // doesn't depend on. Without this filter the rejection bubbles to
   // Electron's default handler and surfaces as a native "JavaScript
   // error in main process" dialog the next time anything in the
-  // renderer does a fetch (e.g. opening Settings → Pets → Community).
+  // renderer does a fetch (e.g. opening Settings → Community).
   //
   // For non-harmless errors the handler restores Node's default
   // uncaughtException behaviour: it removes itself from the listener

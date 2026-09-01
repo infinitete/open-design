@@ -161,7 +161,6 @@ import {
   type UpdaterModel,
   type UpdaterRestartSafety,
 } from '../lib/updater';
-import { PetSettings } from './pet/PetSettings';
 import { McpClientSection } from './McpClientSection';
 import { DesignSystemsSection } from './DesignSystemsSection';
 import { PrivacySection } from './PrivacySection';
@@ -236,7 +235,6 @@ export type SettingsSection =
   | 'appearance'
   | 'critiqueTheater'
   | 'notifications'
-  | 'pet'
   | 'designSystems'
   | 'projectLocations'
   | 'memory'
@@ -251,12 +249,9 @@ export type SettingsSection =
 
 // Maps a requested section token onto the section that actually owns a nav
 // item. Only tokens whose content is *folded into* another section belong
-// here: language / appearance / notifications / pet / projectLocations /
+// here: language / appearance / notifications / projectLocations /
 // critiqueTheater all render inside General, so a deep link to any of them
-// must land on General and highlight the General nav item. `pet` joined that
-// list when #5517's General page absorbed the pet picker — the composer's
-// "pet settings" entry point (App.openPetSettings) has no other destination,
-// so leaving it unmapped would deep-link into a section that renders nothing.
+// must land on General and highlight the General nav item.
 //
 // Sections that keep their own render block but no longer have a nav item
 // (workspace, mcpClient, composio, designSystems) must NOT be listed: they
@@ -270,7 +265,6 @@ function normalizeSettingsSection(section: SettingsSection): SettingsSection {
     case 'language':
     case 'appearance':
     case 'notifications':
-    case 'pet':
     case 'projectLocations':
     case 'critiqueTheater':
       return 'general';
@@ -1403,7 +1397,7 @@ function codexPathRepairState(
  * Local CLI requires a selected available agent) is only meaningful on the
  * execution-mode section, where the user is actively editing those fields.
  * On every other sidebar section (language, appearance, composio, media,
- * integrations, notifications, pet, library, about), partial state from a
+ * integrations, notifications, library, about), partial state from a
  * draft mode toggle (e.g. user clicked BYOK on the execution section without
  * filling in fields, then navigated to language) must NOT block saving
  * changes the user is making in those unrelated sections. Issue #739.
@@ -3910,7 +3904,6 @@ export function SettingsDialog({
     },
     notifications: { title: t('settings.notifications'), subtitle: t('settings.notificationsHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
-    pet: { title: t('pet.title'), subtitle: t('pet.subtitle') },
     designSystems: {
       title: t('settings.designSystems'),
       subtitle: t('settings.designSystemsHint'),
@@ -5932,7 +5925,7 @@ export function SettingsDialog({
 
           {/* General is one scrollable page of `settings-general-block`
               sections, per #5517. Every token that used to address a piece of
-              it (language / appearance / notifications / pet /
+              it (language / appearance / notifications /
               projectLocations / critiqueTheater) is folded into 'general' by
               normalizeSettingsSection, so this single guard covers them all —
               there is no longer a standalone render block for any of them. */}
@@ -5975,13 +5968,6 @@ export function SettingsDialog({
                   <p className="hint">{t('settings.systemPrefsHint')}</p>
                 </div>
                 <NotificationsSection cfg={cfg} setCfg={setCfg} />
-              </div>
-
-              <div className="settings-general-block">
-                <div className="settings-general-block-head">
-                  <h3>{t('pet.navTitle')}</h3>
-                </div>
-                <PetSettings cfg={cfg} setCfg={setCfg} />
               </div>
 
               <div className="settings-general-block">

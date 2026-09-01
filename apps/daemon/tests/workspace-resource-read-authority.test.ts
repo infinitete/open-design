@@ -101,7 +101,6 @@ describe('Workspace resource read authority wiring', () => {
         SKILLS_DIR: '',
         USER_SKILLS_DIR: '',
         PROMPT_TEMPLATES_DIR: '',
-        BUNDLED_PETS_DIR: '',
       },
       verifyWorkspaceReadAuthority,
       verifyWorkspaceRequestAuthority,

@@ -505,12 +505,6 @@ export const HU_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Kézzel rajzolt Excalidraw diagramok generálása prompt alapján — animált SVG, tárolt szerkesztési hivatkozás és PNG-exportálás.',
   },
-  'hatch-pet': {
-    description:
-      'Codex-kompatibilis animált háziállat-spritesheetek létrehozása, javítása, validálása, előnézete és csomagolása karakterművészet, képernyőképek, generált képek vagy vizuális referenciák alapján. Akkor használd, amikor a felhasználó Codex-háziállatot szeretne kikelteni, egyedi animált háziállatot létrehozni, vagy beépített háziállat-elemet építeni 8x9-es atlasszal, átlátszó nem használt cellákkal, soronkénti animációs promptokkal, QA-kontaktlapokkal, előnézeti videókkal és pet.json-csomagolással. Ez a skill a telepített $imagegen rendszerskillt használja a vizuális generáláshoz, és mellékelt szkripteket alkalmaz a determinisztikus spritesheet-összeállításhoz.',
-    examplePrompt:
-      'Keltess ki nekem egy apró pixelart shiba háziállatot — barátságos, egyenesen ülő, egy kis gránátalma kellékkel. Használd a hatch-pet skillt elejétől a végéig.',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       'Retró negyedéves áttekintő prezentációsablon merész kék + narancssárga szerkesztőségi\nnyelvezetben. Akkor használd, amikor a felhasználók nagy hatású negyedéves áttekintő / útiterv\nbemutatót kérnek vastag, masszív címsorokkal, tiszta krémszínű papírszakaszokkal, strukturált rácsokkal\nés gyors, prémium mozgástempóval (3 dia, mindegyik 3 mp alatt videómódban).',

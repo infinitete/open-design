@@ -10,7 +10,7 @@
  * VPN configurations bubbled up to Electron's default uncaught
  * exception handler — surfacing as a native "JavaScript error in
  * main process" dialog the moment the user did anything that
- * triggered a fetch (e.g. Settings → Pets → Community).
+ * triggered a fetch (e.g. Settings → Community).
  *
  * @see https://github.com/nexu-io/open-design/issues/895
  */
@@ -51,12 +51,12 @@ describe('od:// protocol proxy', () => {
       return new Response('ok', { status: 200 });
     };
 
-    const request = new Request('od://app/api/codex-pets/sync', { method: 'POST' });
+    const request = new Request('od://app/api/projects', { method: 'POST' });
     const response = await handleOdRequest(request, 'http://127.0.0.1:17579/', fetchImpl);
 
     expect(response.status).toBe(200);
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.url).toBe('http://127.0.0.1:17579/api/codex-pets/sync');
+    expect(captured[0]!.url).toBe('http://127.0.0.1:17579/api/projects');
     expect(captured[0]!.method).toBe('POST');
   });
 
@@ -148,7 +148,7 @@ describe('od:// protocol proxy', () => {
       throw error;
     };
 
-    const request = new Request('od://app/api/codex-pets/sync', { method: 'POST' });
+    const request = new Request('od://app/api/projects', { method: 'POST' });
     const response = await handleOdRequest(request, 'http://127.0.0.1:17579/', fetchImpl);
 
     expect(response.status).toBe(502);
@@ -161,7 +161,7 @@ describe('od:// protocol proxy', () => {
     expect(body.error).toBe('OD_PROTOCOL_PROXY_FAILED');
     expect(body.message).toContain('setTypeOfService');
     expect(body.code).toBe('EINVAL');
-    expect(body.target).toBe('http://127.0.0.1:17579/api/codex-pets/sync');
+    expect(body.target).toBe('http://127.0.0.1:17579/api/projects');
   });
 
   it('does not throw when fetch rejects (the actual #895 root-cause guard)', async () => {
@@ -348,7 +348,7 @@ describe('od:// protocol transient retry', () => {
     };
 
     const response = await handleOdRequest(
-      new Request('od://app/api/codex-pets/sync', { method: 'POST' }),
+      new Request('od://app/api/projects', { method: 'POST' }),
       'http://127.0.0.1:17579/',
       fetchImpl,
       noDelay,

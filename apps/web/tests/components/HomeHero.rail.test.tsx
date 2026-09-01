@@ -393,23 +393,6 @@ describe('HomeHero intent rail', () => {
     );
   });
 
-  it('keeps Hatch Pet at the end of the image example presets', () => {
-    const hatchPet = makePlugin('example-hatch-pet', 'image', 'Hatch Pet');
-    const imagePoster = makePlugin('image-template-poster', 'image', 'Image Poster');
-    const stoneInfographic = makePlugin('image-template-stone', 'image', 'Stone Infographic');
-    renderHero({
-      activeChipId: 'image',
-      pluginOptions: [hatchPet, imagePoster, stoneInfographic],
-    });
-
-    const presets = screen.getAllByTestId('home-hero-plugin-preset');
-    expect(presets.map((preset) => preset.textContent)).toEqual([
-      expect.stringContaining('Image Poster'),
-      expect.stringContaining('Stone Infographic'),
-      expect.stringContaining('Hatch Pet'),
-    ]);
-  });
-
   it('moves live artifact presets out of Image and into Live artifact examples', () => {
     const imagePoster = makePlugin('image-template-poster', 'image', 'Image Poster');
     const liveDashboard = makePlugin(

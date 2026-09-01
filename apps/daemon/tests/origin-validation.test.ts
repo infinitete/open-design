@@ -53,7 +53,7 @@ function closeServer(server: http.Server): Promise<void> {
 
 function createOriginMiddleware(resolvedPort: number, host = '127.0.0.1') {
   const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/asset-cache$/;
   return (req: Request, res: Response, next: NextFunction) => {
     // Mirror the real /api middleware: the zero-config clipper bypass runs
     // first, using the same predicate server.ts uses. `req.path` is
@@ -108,13 +108,6 @@ function makeTestApp(port: number, host = '127.0.0.1') {
   app.get('/api/library/assets', (_req, res) => res.json({ assets: [] }));
   app.get('/api/library/assets/:id/raw', (req, res) => res.type('text/plain').send(req.params.id));
   app.delete('/api/projects/:id', (req, res) => res.json({ ok: true }));
-  app.get('/api/codex-pets/:id/spritesheet', (req, res) => {
-    // Mimics the real spritesheet route that sets CORS for Origin: null
-    if (req.headers.origin === 'null') {
-      res.header('Access-Control-Allow-Origin', 'null');
-    }
-    res.type('image/png').send(Buffer.from('fake-sprite'));
-  });
   app.get('/api/asset-cache', (_req, res) => {
     res.type('image/png').send(Buffer.from('fake-asset'));
   });
@@ -339,14 +332,6 @@ describe('daemon origin validation middleware', () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBe('*');
-  });
-
-  it('allows Origin: null for GET codex-pet spritesheet routes', async () => {
-    const res = await request(port, 'GET', '/api/codex-pets/my-pet/spritesheet', {
-      origin: 'null',
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers['access-control-allow-origin']).toBe('null');
   });
 
   it('allows Origin: null for GET asset-cache routes', async () => {

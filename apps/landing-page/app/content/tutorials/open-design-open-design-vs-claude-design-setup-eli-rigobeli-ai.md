@@ -29,7 +29,7 @@ corepack enable && pnpm install
 pnpm tools-dev run web
 ```
 
-Open the local URL it prints (a dynamic port — don't hardcode one). For a **free** setup, Eli connects **Codex** signed in with a free ChatGPT account (it grants weekly credits), so the whole session costs nothing. In settings you can also test the connection, add media providers (image/video/audio), switch language, and adopt a desktop pet.
+Open the local URL it prints (a dynamic port — don't hardcode one). For a **free** setup, Eli connects **Codex** signed in with a free ChatGPT account (it grants weekly credits), so the whole session costs nothing. In settings you can also test the connection, add media providers (image/video/audio), and switch language.
 
 ## Step 2 — Generate a slide deck from existing content
 

@@ -71,14 +71,6 @@ vi.mock('../../src/components/ProjectView', () => ({
   ProjectView: () => <div>Project view</div>,
 }));
 
-vi.mock('../../src/components/pet/PetOverlay', () => ({
-  PetOverlay: () => null,
-}));
-
-vi.mock('../../src/components/pet/pets', () => ({
-  migrateCustomPetAtlas: vi.fn().mockResolvedValue(null),
-}));
-
 vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: () => null,
 }));

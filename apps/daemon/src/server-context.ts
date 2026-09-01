@@ -23,7 +23,6 @@ export interface HttpDeps {
 export interface PathDeps {
   ARTIFACTS_DIR: string;
   BRANDS_DIR: string;
-  BUNDLED_PETS_DIR: string;
   CRAFT_DIR: string;
   DESIGN_SYSTEMS_DIR: string;
   // Bundled rendering catalogue (see specs/current/skills-and-design-templates.md).

@@ -123,7 +123,7 @@ The first time the workspace loads, OpenDesign scans your environment and shows 
 - **Pick a default agent and model.** Let the installed CLI drive generation, or point it at a specific provider and model. As the video stresses, a stronger model means noticeably better output, so reach for a capable one when the result matters.
 - **Add media providers (optional).** To generate images, video, or audio, paste your own API keys — bring-your-own-key, only for the providers you actually use.
 - **Connect MCP services (optional).** Wire in connectors if you want the agent to pull from other sources.
-- **Set preferences.** Language, appearance, notifications — even a desktop pet. You can change any of this later, so keep the first pass simple.
+- **Set preferences.** Language, appearance, notifications. You can change any of this later, so keep the first pass simple.
 
 ## Explore the workspace
 

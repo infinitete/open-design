@@ -561,14 +561,6 @@ vi.mock('../../src/components/WorkspaceTabsBar', () => ({
   },
 }));
 
-vi.mock('../../src/components/pet/PetOverlay', () => ({
-  PetOverlay: () => null,
-}));
-
-vi.mock('../../src/components/pet/pets', () => ({
-  migrateCustomPetAtlas: vi.fn().mockResolvedValue(null),
-}));
-
 vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: ({ onClose }: { onClose: () => void }) => (
     <div data-testid="settings-surface">

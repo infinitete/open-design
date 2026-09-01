@@ -74,7 +74,6 @@ async function stubPackagedDesktopWithReadyUpdate(page: Page) {
       browser: { clearData: async () => ({ ok: true }) },
       capture: { page: async () => ({ ok: false, reason: 'not mocked' }) },
       pdf: { print: async () => ({ ok: true }) },
-      pet: { setVisible: () => {} },
       project: {
         pickAndImport: async () => ({ ok: false, canceled: true }),
         pickAndReplaceWorkingDir: async () => ({ ok: false, canceled: true }),

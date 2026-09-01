@@ -4,7 +4,7 @@
  * ONE definition, shared by the daemon run classifier (which stamps
  * `endedWithUnfinishedWork` onto the run/message) and the web chat footer
  * (`unfinishedTodosFromEvents` in apps/web/src/runtime/todos.ts). If these two
- * drifted, the lower-left status surfaces (Pet task center, project pill) could
+ * drifted, the lower-left status surfaces (project pill) could
  * read "Completed" while the chat footer reads "Stopped with unfinished work" —
  * the exact bug (#1247 / #1060) this module exists to make unrepresentable.
  *
@@ -13,7 +13,7 @@
  * marked failed/canceled). This mirrors the web footer's `status !== 'completed'`
  * filter exactly. Do not narrow this to "pending or in_progress only": excluding
  * `stopped` would make a stopped-only run read "unfinished" in the footer but
- * "Completed" on the pill/Pet widget, reintroducing the divergence.
+ * "Completed" on the pill, reintroducing the divergence.
  */
 
 /** Turn-terminal stop reasons that mean the model was cut off mid-generation

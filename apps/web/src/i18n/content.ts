@@ -224,12 +224,6 @@ const DE_SKILL_COPY: Record<string, LocalizedSkillCopy> = {
     examplePrompt:
       'Erstellen Sie mir ein Magazin-PPT über ‚Ein-Personen-Unternehmen · von AI gefaltete Organisationen‘, 25-minütiger Vortrag, Zielgruppe Designer + Gründer. Empfehlen Sie zuerst eine Richtung (Monocle / WIRED / Kinfolk / Domus / Lab), damit ich wählen kann.',
   },
-  'hatch-pet': {
-    examplePrompt:
-      'Brüten Sie mir ein winziges Pixel-Pet aus — ein freundlicher Shiba in einem kuscheligen Pulli. Nutzen Sie die hatch-pet-Skill durchgehend.',
-    description:
-      'Erstellt, repariert, validiert und packt ein Codex-kompatibles animiertes Pet-Spritesheet (8x9 Atlas, 192x208 Zellen) inklusive QA-Kontaktbogen, Vorschauvideos und pet.json.',
-  },
   'hr-onboarding': {
     examplePrompt:
       'Erstellen Sie einen 30-Tage-Onboardingplan für einen neuen Product Designer in einem 40-Personen-Startup.',

@@ -6,9 +6,8 @@ import { focusDesktopForDeeplink } from "../../src/main/deeplink-focus.js";
 import { ensureWindowVisible } from "../../src/main/runtime.js";
 
 describe("focusDesktopForDeeplink", () => {
-  // The runtime creates the desktop-pet window (hidden, `focusable: false`)
-  // before the main window and packaged cold start puts the splash ahead of
-  // both, so any bring-to-front that selects a window itself lands on the wrong
+  // Packaged cold start puts the splash ahead of the main window, so any
+  // bring-to-front that selects a window itself lands on the wrong
   // one and silently does nothing. Routing through the runtime's `show()` is
   // what makes the `workspace/open` hand-off actually surface the app.
   it("brings the client to the front through the runtime's own show()", () => {

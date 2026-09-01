@@ -505,12 +505,6 @@ export const ZH_CN_SKILL_COPY: Record<string, { description?: string; examplePro
     examplePrompt:
       '根据提示词生成手绘风格的 Excalidraw 图表 — 包含动画 SVG、托管的编辑链接和 PNG 导出。',
   },
-  'hatch-pet': {
-    description:
-      '从角色美术、截图、生成图像或视觉参考创建、修复、校验、预览并打包兼容 Codex 的动画宠物精灵图。当用户想孵化一只 Codex 宠物、创建自定义动画宠物，或构建内置宠物资源时使用，包含 8x9 图集、透明的未使用单元格、逐行动画提示词、QA 对照表、预览视频以及 pet.json 打包。本技能调用已安装的 $imagegen 系统技能进行视觉生成，并使用捆绑脚本完成确定性的精灵图组装。',
-    examplePrompt:
-      '帮我孵化一只小巧的像素风柴犬宠物 — 友好、端坐挺立，带一个小石榴道具。请端到端地使用 hatch-pet 技能。',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       '复古风季度回顾演示模板，采用大胆的蓝色 + 橙色编辑设计语言。\n当用户需要一份高冲击力的季度回顾 / 路线图演示稿时使用，包含厚重的板状大标题、\n干净的米色纸张区块、结构化网格，以及快速的高级动效节奏\n（3 张幻灯片，视频模式下每张停留不超过 3 秒）。',

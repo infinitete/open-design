@@ -1237,15 +1237,6 @@ const FRAMES_DIR = resolveDaemonResourceDir(
   'frames',
   path.join(PROJECT_ROOT, 'assets', 'frames'),
 );
-// Curated pets baked into the repo via `scripts/bake-community-pets.ts`.
-// `listCodexPets` scans this in addition to `~/.codex/pets/` so the
-// "Recently hatched" grid is non-empty out-of-the-box and users do not
-// need to hit the "Download community pets" button to try a few pets.
-const BUNDLED_PETS_DIR = resolveDaemonResourceDir(
-  DAEMON_RESOURCE_ROOT,
-  'community-pets',
-  path.join(PROJECT_ROOT, 'assets', 'community-pets'),
-);
 const PROMPT_TEMPLATES_DIR = resolveDaemonResourceDir(
   DAEMON_RESOURCE_ROOT,
   'prompt-templates',
@@ -3088,7 +3079,7 @@ export async function startServer({
   // Routes that serve content to sandboxed iframes (Origin: null) for
   // read-only purposes.  All other /api routes reject Origin: null.
   const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/asset-cache$/;
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
 
   // Reject cross-origin requests to API endpoints.
@@ -7724,7 +7715,6 @@ export async function startServer({
     USER_SKILLS_DIR,
     SKILL_ROOTS,
     PROMPT_TEMPLATES_DIR,
-    BUNDLED_PETS_DIR,
     OD_BIN,
   };
 

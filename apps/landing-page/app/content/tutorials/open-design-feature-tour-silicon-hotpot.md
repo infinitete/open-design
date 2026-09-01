@@ -1,7 +1,7 @@
 ---
-title: 'OpenDesign Full Capability Tour — Slides, Prototypes, Images, Video, and a Desktop Pet'
+title: 'OpenDesign Full Capability Tour — Slides, Prototypes, Images, and Video'
 youtubeId: iFoPlwKTwrU
-summary: A breadth-first tour of everything OpenDesign can make beyond static design — PPT decks, posters, sketch-to-image, sketch-to-app-prototype, code-driven motion graphics, video via hyperframes, and a desktop pet — all driven by the agent you already use, with no API key exposure. Based on 硅基麻辣拌's walkthrough.
+summary: A breadth-first tour of everything OpenDesign can make beyond static design — PPT decks, posters, sketch-to-image, sketch-to-app-prototype, code-driven motion graphics, video via hyperframes — all driven by the agent you already use, with no API key exposure. Based on 硅基麻辣拌's walkthrough.
 date: 2026-05-03
 category: Demo
 durationSeconds: 783
@@ -9,7 +9,7 @@ author: 硅基麻辣拌
 official: false
 ---
 
-This guide is a breadth-first tour of OpenDesign: not a single deep build, but a sweep through everything the workspace can make — slide decks, posters, images from a sketch, app prototypes from a sketch, code-driven motion graphics, video, and even a desktop pet. It follows the capability tour **硅基麻辣拌** runs in [their walkthrough](https://www.youtube.com/watch?v=iFoPlwKTwrU), rewritten in English and brought up to date with the current release. Watch the video above for the live run, or read on for the written version.
+This guide is a breadth-first tour of OpenDesign: not a single deep build, but a sweep through everything the workspace can make — slide decks, posters, images from a sketch, app prototypes from a sketch, code-driven motion graphics, and video. It follows the capability tour **硅基麻辣拌** runs in [their walkthrough](https://www.youtube.com/watch?v=iFoPlwKTwrU), rewritten in English and brought up to date with the current release. Watch the video above for the live run, or read on for the written version.
 
 ![The OpenDesign workspace — what you land on after install.](/tutorials/open-design-feature-tour-silicon-hotpot/01-workspace.webp)
 *The OpenDesign workspace — prototypes, slide decks, images, and video in one calm, familiar canvas.*
@@ -64,10 +64,6 @@ Using the built-in motion skill, 硅基麻辣拌 generates an animation of two a
 ### Image and video generation
 
 The image library covers common cases like GPT Image, with the prompts pre-packaged — pick one and generate. Video is supported too, including model-generated clips and product/dynamic-deck effects. The motion-heavy video work is done in collaboration with the **hyperframes** project, which uses code to drive product prototypes and data-visualization animations.
-
-### A desktop pet
-
-The most charming feature: raise a pet. Pick one — community-contributed characters included — hit save, and it appears on your desktop to interact with. It's a small thing, but it signals a project that cares about the emotional texture of the tool, not just the output.
 
 ## The honest read
 

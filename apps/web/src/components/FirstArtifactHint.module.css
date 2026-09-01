@@ -1,8 +1,8 @@
 /* One-time first-artifact hint. Anchored directly UNDER the artifact
    toolbar (top-right: 分享 / 下载 / edit cluster) with an upward caret, so
    the copy "view, edit, and export from the preview" physically points at
-   the controls that do it — a corner toast had no directionality and sat on
-   top of the pet widget. Offsets track the stable chrome heights (tab strip
+   the controls that do it — a corner toast had no directionality. Offsets
+   track the stable chrome heights (tab strip
    + artifact header ≈ 70px), not the in-flight preview internals. */
 .root {
   position: fixed;

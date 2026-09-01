@@ -69,7 +69,6 @@ const BUNDLED_RESOURCE_TREES = [
   { from: join("plugins", "_official"), to: join("plugins", "_official") },
   { from: join("plugins", "registry"), to: join("plugins", "registry") },
   { from: join("assets", "frames"), to: "frames" },
-  { from: join("assets", "community-pets"), to: "community-pets" },
   { from: "prompt-templates", to: "prompt-templates" },
   // Baked plugin-preview manifest. The gallery's pre-rendered hover-pan clips
   // live on R2; the daemon needs this checked-in manifest to map each plugin to

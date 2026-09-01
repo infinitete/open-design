@@ -413,23 +413,6 @@ describe('ChatComposer context pickers', () => {
     expect(screen.queryByText('No results for “missing”.')).toBeNull();
   });
 
-  it('describes /mcp slash commands as MCP actions instead of pet actions', async () => {
-    renderComposer();
-    await flushMounts();
-
-    await typeAndSettle('/');
-
-    const popover = await screen.findByTestId('slash-popover');
-    const settingsRow = within(popover).getByText('/mcp').closest('button');
-    const mcpRow = within(popover).getByText('/mcp slack').closest('button');
-    expect(settingsRow).toBeTruthy();
-    expect(mcpRow).toBeTruthy();
-    expect(settingsRow?.textContent).toContain('Open MCP server settings or insert a server tool hint.');
-    expect(settingsRow?.textContent).not.toContain('Toggle, adopt, or jump to pet settings.');
-    expect(mcpRow?.textContent).toContain('Open MCP server settings or insert a server tool hint.');
-    expect(mcpRow?.textContent).not.toContain('Toggle, adopt, or jump to pet settings.');
-  });
-
   it('lists Design Files first in All and picks the first file with Enter', async () => {
     renderComposer({
       projectFiles: [
@@ -1470,30 +1453,4 @@ describe('ChatComposer context pickers', () => {
   // and the standalone "@" mention trigger button were removed from the
   // composer; plugins/skills/MCP are now reached via typed @-mentions and the
   // "+" menu, so their dedicated click-tracking coverage moved out with them.
-
-  // The inline pet popover (the "Pets — wake, tuck, or pick one" button and
-  // its `.composer-pet-menu` flyout) was removed from ChatComposer; only the
-  // pet props survive to drive `/pet` slash handling. Assert the entry stays
-  // gone even when every pet handler is wired.
-  it('does not render the pet composer entry when pet handlers are wired', () => {
-    renderComposer({
-      petConfig: {
-        adopted: false,
-        enabled: false,
-        petId: 'custom',
-        custom: {
-          name: 'Buddy',
-          glyph: '🐾',
-          accent: '#7c3aed',
-          greeting: 'hi',
-        },
-      },
-      onAdoptPet: vi.fn(),
-      onTogglePet: vi.fn(),
-      onOpenPetSettings: vi.fn(),
-    });
-
-    expect(screen.queryByRole('button', { name: 'Pets — wake, tuck, or pick one' })).toBeNull();
-    expect(screen.queryByText('Buddy')).toBeNull();
-  });
 });

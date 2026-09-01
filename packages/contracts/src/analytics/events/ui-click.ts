@@ -1511,7 +1511,6 @@ export type TrackingSettingsArea =
   | 'language'
   | 'appearance'
   | 'notifications'
-  | 'pets'
   | 'design_systems'
   | 'project_locations'
   | 'privacy'
@@ -1608,19 +1607,6 @@ export interface SettingsNotificationsClickProps {
   sound_id?: 'ding' | 'chime' | 'two_tone_up' | 'pluck' | 'buzz' | 'two_tone_down' | 'thud';
   completion_sound_status?: 'on' | 'off';
   desktop_notification_status?: 'on' | 'off';
-}
-
-export interface SettingsPetsClickProps {
-  page_name: TrackingSettingsPage;
-  area: 'pets';
-  element:
-    | 'tuck_away'
-    | 'built_in'
-    | 'custom'
-    | 'community'
-    | 'custom_card'
-    | 'adopt';
-  pet_id?: string;
 }
 
 export interface SettingsPrivacyClickProps {
@@ -1747,7 +1733,6 @@ export type UiClickProps =
   | SettingsConnectorsClickProps
   | SettingsLanguageClickProps
   | SettingsNotificationsClickProps
-  | SettingsPetsClickProps
   | SettingsPrivacyClickProps
   | SettingsDesignReviewClickProps
   | SettingsExternalMcpClickProps

@@ -505,12 +505,6 @@ export const IT_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Genera diagrammi Excalidraw disegnati a mano da un prompt — SVG animato, link di modifica ospitato ed esportazione PNG.',
   },
-  'hatch-pet': {
-    description:
-      'Crea, ripara, valida, visualizza in anteprima e impacchetta spritesheet animati di pet compatibili con Codex a partire da artwork di personaggi, screenshot, immagini generate o riferimenti visivi. Da usare quando un utente vuole far schiudere un pet Codex, creare un pet animato personalizzato o costruire un asset di pet integrato con un atlas 8x9, celle inutilizzate trasparenti, prompt di animazione riga per riga, contact sheet per il QA, video di anteprima e packaging pet.json. Questa skill compone la skill di sistema $imagegen installata per la generazione visiva e utilizza script integrati per l\'assemblaggio deterministico degli spritesheet.',
-    examplePrompt:
-      'Fai schiudere un piccolo pet shiba in pixel-art — amichevole, seduto dritto, con un piccolo accessorio a forma di melagrana. Usa la skill hatch-pet dall\'inizio alla fine.',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       'Template di presentazione Retro Quarterly Review in un linguaggio editoriale audace blu + arancione.\nDa usare quando gli utenti richiedono un deck di revisione trimestrale / roadmap ad alto impatto\ncon titoli slab pesanti, sezioni pulite su carta color crema, griglie strutturate\ne un ritmo di movimento premium e veloce (3 slide, ciascuna mantenuta sotto i 3s in modalità video).',

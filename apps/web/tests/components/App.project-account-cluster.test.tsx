@@ -83,14 +83,6 @@ vi.mock('../../src/components/ProjectView', () => ({
   },
 }));
 
-vi.mock('../../src/components/pet/PetOverlay', () => ({
-  PetOverlay: () => null,
-}));
-
-vi.mock('../../src/components/pet/pets', () => ({
-  migrateCustomPetAtlas: vi.fn().mockResolvedValue(null),
-}));
-
 vi.mock('../../src/components/WorkspaceTabsBar', () => ({
   openWorkspaceTab: vi.fn(),
   WorkspaceTabsBar: () => null,

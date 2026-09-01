@@ -51,7 +51,6 @@ export type EntrySettingsSection =
   // accepted so an old link does not become a type error at the call site.
   | 'appearance'
   | 'notifications'
-  | 'pet'
   | 'projectLocations'
   | 'library'
   | 'about'

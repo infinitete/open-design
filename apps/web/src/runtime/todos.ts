@@ -71,8 +71,8 @@ export function latestTodosFromEvents(events: AgentEvent[] | undefined): TodoIte
 
 export function unfinishedTodosFromEvents(events: AgentEvent[] | undefined): TodoItem[] {
   // Uses the SAME canonical predicate the daemon stamps `endedWithUnfinishedWork`
-  // with (todoStatusIsUnfinished), so this footer and the Pet task center / project
-  // pill can never disagree about whether a run's work is finished (#1247 / #1060).
+  // with (todoStatusIsUnfinished), so this footer and the project pill can
+  // never disagree about whether a run's work is finished (#1247 / #1060).
   return latestTodosFromEvents(events).filter((todo) => todoStatusIsUnfinished(todo.status));
 }
 

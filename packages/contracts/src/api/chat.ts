@@ -707,7 +707,7 @@ export interface ChatRunStatusResponse {
   /** True when a terminal `succeeded` run ended with its declared work
    *  unfinished — the agent left a TodoWrite task in a non-`completed` state
    *  (pending / in_progress / stopped) or the turn was truncated mid-generation
-   *  (max_tokens). Lets every status surface (Pet task center, project pill, CLI
+   *  (max_tokens). Lets every status surface (project pill, CLI
    *  --json) avoid reading an incomplete run as "Completed" (#1247 / #1060).
    *  Absent/false = finished, so older daemons stay "Completed" (backward-compat).
    *  Judged by the canonical `todoSnapshotHasUnfinishedWork` predicate so it can

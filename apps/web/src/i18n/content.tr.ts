@@ -505,12 +505,6 @@ export const TR_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Bir komuttan el çizimi Excalidraw diyagramları oluşturun — animasyonlu SVG, barındırılan düzenleme bağlantısı ve PNG dışa aktarımı.',
   },
-  'hatch-pet': {
-    description:
-      'Karakter çiziminden, ekran görüntülerinden, üretilen görsellerden veya görsel referanslardan Codex uyumlu animasyonlu evcil hayvan sprite sayfaları oluşturun, onarın, doğrulayın, önizleyin ve paketleyin. Kullanıcı bir Codex evcil hayvanı çıkarmak, özel bir animasyonlu evcil hayvan oluşturmak ya da 8x9 atlas, şeffaf kullanılmayan hücreler, satır satır animasyon komutları, QA iletişim sayfaları, önizleme videoları ve pet.json paketlemesiyle yerleşik bir evcil hayvan varlığı oluşturmak istediğinde kullanın. Bu beceri, görsel üretim için kurulu $imagegen sistem becerisini bir araya getirir ve belirleyici sprite sayfası birleştirme için paketlenmiş betikleri kullanır.',
-    examplePrompt:
-      'Bana minik bir piksel sanatı shiba evcil hayvanı çıkar — dostça, dik oturan, küçük bir nar aksesuarlı. hatch-pet becerisini baştan sona kullan.',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       'Cesur mavi + turuncu editoryal dilde Retro Çeyreklik Değerlendirme sunum şablonu. Kullanıcılar ağır slab başlıklar, temiz krem kağıt bölümler, yapılandırılmış ızgaralar ve hızlı premium hareket temposu (3 slayt, her biri video modunda 3 saniyenin altında tutulur) içeren yüksek etkili bir çeyreklik değerlendirme / yol haritası destesi istediğinde kullanın.',

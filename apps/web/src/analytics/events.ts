@@ -124,7 +124,6 @@ import type {
   SettingsConnectorsClickProps,
   SettingsLanguageClickProps,
   SettingsNotificationsClickProps,
-  SettingsPetsClickProps,
   SettingsPrivacyClickProps,
   SettingsDesignReviewClickProps,
   SettingsExternalMcpClickProps,
@@ -1099,13 +1098,6 @@ export function trackSettingsLanguageClick(
 export function trackSettingsNotificationsClick(
   track: Track,
   props: SettingsNotificationsClickProps,
-): void {
-  send(track, 'ui_click', props);
-}
-
-export function trackSettingsPetsClick(
-  track: Track,
-  props: SettingsPetsClickProps,
 ): void {
   send(track, 'ui_click', props);
 }

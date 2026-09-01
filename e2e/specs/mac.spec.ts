@@ -31,7 +31,7 @@ import {
 } from '@/vitest/packaged-update-scenario';
 import { resolvePackagedSmokeNamespace } from '@/vitest/suite';
 import { startToolsServeUpdaterFixture, type ToolsServeUpdaterFixture } from '@/vitest/tools-serve-updater-fixture';
-import { createDesktopHarness, STORAGE_KEY, waitFor } from '../lib/desktop/desktop-test-helpers.ts';
+import { createDesktopHarness, waitFor } from '../lib/desktop/desktop-test-helpers.ts';
 
 const execFileAsync = promisify(execFile);
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1310,57 +1310,6 @@ desktopMacDescribe('mac desktop settings smoke', () => {
     });
   }, 45_000);
 
-  // #5517 removed the theme segmented control from Settings, so the packaged
-  // "preview then save" appearance loop is now driven by the accent swatches —
-  // the only appearance control the section still owns. The invariants under
-  // test are the same ones the theme leg used to prove: the edit previews
-  // immediately on the live document, and it survives the dialog closing via
-  // Save. The seeded `theme` is a LEGACY dark value: the theme setting is gone
-  // and the app ships light-only, so the packaged runtime must coerce it to
-  // light on read rather than carry it into the document.
-  test('previews and saves the desktop appearance preference', async () => {
-    await seedDesktopConfig(desktop, {
-      mode: 'api',
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.anthropic.com',
-      model: 'claude-sonnet-4-5',
-      apiProtocol: 'anthropic',
-      apiProviderBaseUrl: 'https://api.anthropic.com',
-      agentId: null,
-      skillId: null,
-      designSystemId: null,
-      onboardingCompleted: true,
-      mediaProviders: {},
-      agentModels: {},
-      theme: 'dark',
-    }, 'theme');
-
-    await desktop.openSettings();
-    await openDesktopSettingsSection(desktop, 'Appearance');
-    await clickDesktopAccentSwatch(desktop, '#87ea5c');
-
-    await waitFor(async () => {
-      const snapshot = await readDesktopAppearanceSnapshot(desktop);
-      expect(snapshot.dialogOpen).toBe(true);
-      // Live preview lands on the document before anything is saved.
-      expect(snapshot.documentAccent).toBe('#87ea5c');
-      // The seeded legacy `dark` never reaches the document, and the coerced
-      // value is written back so the dark preference stops existing on disk.
-      expect(snapshot.documentTheme).toBe('light');
-      expect(snapshot.savedTheme).toBe('light');
-    });
-
-    await clickDesktopSettingsFooterButton(desktop, 'primary');
-
-    await waitFor(async () => {
-      const snapshot = await readDesktopAppearanceSnapshot(desktop);
-      expect(snapshot.dialogOpen).toBe(false);
-      expect(snapshot.documentAccent).toBe('#87ea5c');
-      expect(snapshot.savedAccent).toBe('#87ea5c');
-      expect(snapshot.savedTheme).toBe('light');
-    });
-  }, 45_000);
-
   test('opens Local CLI settings and exposes Codex path fields from the desktop shell', async () => {
     await seedDesktopConfig(desktop, {
       mode: 'daemon',
@@ -1680,43 +1629,6 @@ desktopMacDescribe('mac desktop settings smoke', () => {
       expect(snapshot.aboutListVisible || snapshot.versionUnavailableVisible).toBe(true);
     });
   }, 45_000);
-
-  // #5517 (product confirmed 2026-07-20) removed the 系统/浅色/深色 segmented
-  // control from Appearance; the theme now moves only through the account
-  // menu's 切换主题 row. The point of this test is unchanged — the packaged
-  // desktop shell can reach the Appearance section and render its controls —
-  // so it now asserts on the accent swatches, the section's surviving control,
-  // and guards that the theme segmented control has not come back.
-  test('opens the Appearance section from the desktop shell and shows the accent controls', async () => {
-    await seedDesktopConfig(desktop, {
-      mode: 'api',
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
-      apiProtocol: 'openai',
-      apiProviderBaseUrl: 'https://api.openai.com/v1',
-      agentId: null,
-      skillId: null,
-      designSystemId: null,
-      onboardingCompleted: true,
-      mediaProviders: {},
-      agentModels: {},
-      theme: 'system',
-    }, 'theme');
-
-    await desktop.openSettings();
-    await openDesktopSettingsSection(desktop, 'Appearance');
-
-    await waitFor(async () => {
-      const snapshot = await readDesktopAppearanceSectionSnapshot(desktop);
-      expect(snapshot.dialogOpen).toBe(true);
-      expect(snapshot.heading).toBe('Appearance');
-      expect(snapshot.sectionTitle).toBe('Appearance');
-      expect(snapshot.accentSwatchesVisible).toBe(true);
-      expect(snapshot.defaultAccentVisible).toBe(true);
-      expect(snapshot.themeSegControlVisible).toBe(false);
-    });
-  }, 45_000);
 });
 
 async function runToolsPackJson<T>(action: string, extraArgs: string[] = []): Promise<T> {
@@ -1858,14 +1770,6 @@ type DesktopLocalCliSnapshot = {
   selectedAgent: string | null;
 };
 
-type DesktopAppearanceSnapshot = {
-  dialogOpen: boolean;
-  documentAccent: string | null;
-  documentTheme: string | null;
-  savedAccent: string | null;
-  savedTheme: string | null;
-};
-
 type DesktopConnectorsSnapshot = {
   apiKeyLabelVisible: boolean;
   dialogOpen: boolean;
@@ -1891,16 +1795,6 @@ type DesktopAboutSnapshot = {
   heading: string | null;
   sectionTitle: string | null;
   versionUnavailableVisible: boolean;
-};
-
-type DesktopAppearanceSectionSnapshot = {
-  accentSwatchesVisible: boolean;
-  defaultAccentVisible: boolean;
-  dialogOpen: boolean;
-  heading: string | null;
-  sectionTitle: string | null;
-  /** #5517 removed it; kept as a negative assertion so it cannot creep back. */
-  themeSegControlVisible: boolean;
 };
 
 type DesktopArtifactPreviewSnapshot = {
@@ -1977,47 +1871,6 @@ async function clickDesktopExecutionModeTab(
   expect(clicked).toBe(true);
 }
 
-/**
- * Click an accent swatch in the Settings › Appearance section.
- *
- * Replaces the old `clickDesktopSegmentButton` theme helper: the
- * 系统/浅色/深色 segmented control is gone (#5517 hid it, and the theme setting
- * was removed outright because the app ships light-only), leaving the accent
- * swatches as the only appearance control Settings still owns. Swatches carry
- * the hex as their aria-label (the default swatch is "Default accent color").
- */
-async function clickDesktopAccentSwatch(
-  desktop: DesktopHarness,
-  label: string,
-): Promise<void> {
-  const clicked = await desktop.eval<boolean>(`
-    (() => {
-      const swatch = document.querySelector(
-        '[role="dialog"] .pet-swatches [role="radio"][aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']',
-      );
-      if (!(swatch instanceof HTMLElement)) return false;
-      swatch.click();
-      return true;
-    })()
-  `);
-  expect(clicked).toBe(true);
-}
-
-async function clickDesktopSettingsFooterButton(
-  desktop: DesktopHarness,
-  className: 'ghost' | 'primary',
-): Promise<void> {
-  const clicked = await desktop.eval<boolean>(`
-    (() => {
-      const footerButton = document.querySelector('.modal-foot button.${className}');
-      if (!(footerButton instanceof HTMLElement)) return false;
-      footerButton.click();
-      return true;
-    })()
-  `);
-  expect(clicked).toBe(true);
-}
-
 async function readDesktopSettingsSnapshot(
   desktop: DesktopHarness,
 ): Promise<DesktopSettingsSnapshot> {
@@ -2051,24 +1904,6 @@ async function readDesktopSettingsSnapshot(
         selectedProtocol: protocolText === 'OpenAI' || protocolText === 'Anthropic'
           ? protocolText + ' API'
           : protocolText,
-      };
-    })()
-  `);
-}
-
-async function readDesktopAppearanceSnapshot(
-  desktop: DesktopHarness,
-): Promise<DesktopAppearanceSnapshot> {
-  return await desktop.eval<DesktopAppearanceSnapshot>(`
-    (() => {
-      const raw = window.localStorage.getItem(${JSON.stringify(STORAGE_KEY)});
-      const config = raw ? JSON.parse(raw) : {};
-      return {
-        dialogOpen: Boolean(document.querySelector('[role="dialog"]')),
-        documentAccent: document.documentElement.style.getPropertyValue('--accent').trim() || null,
-        documentTheme: document.documentElement.getAttribute('data-theme'),
-        savedAccent: typeof config.accentColor === 'string' ? config.accentColor : null,
-        savedTheme: typeof config.theme === 'string' ? config.theme : null,
       };
     })()
   `);
@@ -2133,35 +1968,6 @@ async function readDesktopAboutSnapshot(
         heading: document.querySelector('[role="dialog"] h2')?.textContent?.trim() ?? null,
         sectionTitle,
         versionUnavailableVisible: emptyCards.includes('Version details are unavailable while the daemon is offline.'),
-      };
-    })()
-  `);
-}
-
-async function readDesktopAppearanceSectionSnapshot(
-  desktop: DesktopHarness,
-): Promise<DesktopAppearanceSectionSnapshot> {
-  return await desktop.eval<DesktopAppearanceSectionSnapshot>(`
-    (() => {
-      const sectionTitle = document.querySelector('.settings-section .section-head h3')
-        ?.textContent?.trim() ?? null;
-      const accentGroup = document.querySelector('.settings-section .pet-swatches[role="radiogroup"]');
-      const accentSwatches = accentGroup
-        ? Array.from(accentGroup.querySelectorAll('[role="radio"]'))
-        : [];
-      return {
-        accentSwatchesVisible: accentSwatches.length > 0,
-        defaultAccentVisible: accentSwatches.some(
-          (node) => node.getAttribute('aria-label') === 'Default accent color',
-        ),
-        dialogOpen: Boolean(document.querySelector('[role="dialog"]')),
-        heading: document.querySelector('[role="dialog"] h2')?.textContent?.trim() ?? null,
-        sectionTitle,
-        // Scoped by aria-label: the Notifications controls in the same dialog
-        // are seg-controls too, and they are not what #5517 removed.
-        themeSegControlVisible: Boolean(
-          document.querySelector('.seg-control[aria-label="Appearance"]'),
-        ),
       };
     })()
   `);

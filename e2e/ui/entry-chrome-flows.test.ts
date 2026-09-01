@@ -111,11 +111,6 @@ test('[P0] @critical entry chrome exposes the primary home creation surface and 
   await page.keyboard.press('Escape');
   await expect(templateMenu).toHaveCount(0);
 
-  // The pet picker rail was removed; pet adoption now lives in
-  // Settings → Pet exclusively. Make sure no rail leaks back into the
-  // entry layout.
-  await expect(page.locator('.pet-rail')).toHaveCount(0);
-
   await page.getByTestId('entry-settings-button').click();
   // From the entry, settings routes to a page surface rather than a modal.
   const settingsDialog = settingsSurface(page);
@@ -123,8 +118,6 @@ test('[P0] @critical entry chrome exposes the primary home creation surface and 
   // The surface's own <h2> is consumed as its accessible name (aria-labelledby),
   // so assert on the section nav instead.
   await expect(settingsDialog.getByTestId('settings-nav-execution')).toBeVisible();
-  await expect(settingsDialog.getByRole('button', { name: /hide pet picker/i })).toHaveCount(0);
-  await expect(settingsDialog.getByRole('button', { name: /show pet picker/i })).toHaveCount(0);
 });
 
 test('[P1] cold Home defers Automations reads until the route becomes active', async ({ page }) => {
@@ -771,7 +764,6 @@ test('[P1] Settings About reads desktop updater status and runs a manual update 
       browser: { clearData: async () => ({ ok: true }) },
       capture: { page: async () => ({ ok: false, reason: 'not mocked' }) },
       pdf: { print: async () => ({ ok: true }) },
-      pet: { setVisible: () => {} },
       project: {
         pickAndImport: async () => ({ ok: false, canceled: true }),
         pickAndReplaceWorkingDir: async () => ({ ok: false, canceled: true }),
@@ -864,7 +856,6 @@ test('[P1] Settings About surfaces prerelease updater check failures with retry 
       browser: { clearData: async () => ({ ok: true }) },
       capture: { page: async () => ({ ok: false, reason: 'not mocked' }) },
       pdf: { print: async () => ({ ok: true }) },
-      pet: { setVisible: () => {} },
       project: {
         pickAndImport: async () => ({ ok: false, canceled: true }),
         pickAndReplaceWorkingDir: async () => ({ ok: false, canceled: true }),

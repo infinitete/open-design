@@ -103,8 +103,8 @@ describe('ExamplesTab preview dispatch (#897)', () => {
     });
 
     const skill = makeSkill({
-      id: 'hatch-pet',
-      name: 'Hatch Pet',
+      id: 'pixel-scene',
+      name: 'Pixel Scene',
       previewType: 'image',
     });
     render(<ExamplesTab skills={[skill]} onUsePrompt={() => {}} />);
@@ -115,7 +115,7 @@ describe('ExamplesTab preview dispatch (#897)', () => {
     await flushPromises();
 
     expect(
-      screen.getByTestId('example-card-unavailable-hatch-pet'),
+      screen.getByTestId('example-card-unavailable-pixel-scene'),
     ).toBeTruthy();
     // The transient "Loading preview…" shimmer must NOT render for a
     // non-html skill — it would never resolve, since no HTML is ever

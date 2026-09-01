@@ -14,8 +14,8 @@ describe('summarizeProjectNameFromPrompt', () => {
 
   it('drops common English request prefixes', () => {
     expect(
-      summarizeProjectNameFromPrompt('Please build a settings page for managing desktop pets'),
-    ).toBe('Settings Page Managing Desktop Pets');
+      summarizeProjectNameFromPrompt('Please build a settings page for managing desktop widgets'),
+    ).toBe('Settings Page Managing Desktop Widgets');
   });
 
   it('summarizes turn-this-into prompts by the requested artifact', () => {

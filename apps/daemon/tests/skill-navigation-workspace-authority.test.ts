@@ -89,7 +89,6 @@ async function fixture() {
   const paths = {
     ARTIFACTS_DIR: path.join(root, 'artifacts'),
     BRANDS_DIR: path.join(root, 'brands'),
-    BUNDLED_PETS_DIR: path.join(root, 'pets'),
     CRAFT_DIR: path.join(root, 'craft'),
     DESIGN_SYSTEMS_DIR: path.join(root, 'design-systems'),
     DESIGN_TEMPLATES_DIR: path.join(root, 'design-templates'),

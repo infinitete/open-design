@@ -720,7 +720,7 @@ export const DEEPSEEK_SKILLS: readonly DeepseekSkill[] = [
     },
     license: { label: 'BSD-3-Clause', url: 'https://github.com/zhu1090093659/dsh-web-ui' },
     upstreamDescription:
-      'Plugin and skin collection for DeepSeek Harness (DSH) Web UI - task board, git graph, right-side panel, remote mobile UI, pet, live token stats, and skin center.',
+      'Plugin and skin collection for DeepSeek Harness (DSH) Web UI - task board, git graph, right-side panel, remote mobile UI, live token stats, and skin center.',
     source: { label: 'zhu1090093659/dsh-web-ui', url: 'https://github.com/zhu1090093659/dsh-web-ui' },
   },
   {

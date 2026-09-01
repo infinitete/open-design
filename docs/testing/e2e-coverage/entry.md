@@ -35,7 +35,6 @@
 | ENTRY-011 | 创建图片项目时，所选 `aspect` 与修剪后的 `style notes` 会正确写入创建 payload | `NewProjectPanel.test.tsx` |
 | ENTRY-012 | 创建视频项目时，所选 `aspect` 与 `duration` 会正确写入创建 payload | `NewProjectPanel.test.tsx` |
 | ENTRY-013 | 创建音频项目时，所选 `duration` 与修剪后的 `voice` 会正确写入创建 payload | `NewProjectPanel.test.tsx` |
-| ENTRY-014 | 入口页不再渲染旧 pet rail，Settings 也不再暴露 pet picker 的显示/隐藏开关 | `entry-chrome-flows.test.ts` |
 | ENTRY-015 | 紧凑桌面宽度下，入口页 header 与整页不会出现明显横向溢出 | `entry-chrome-flows.test.ts` |
 | ENTRY-016 | 展开的入口导航保持当前 `Home / Community / Design systems / Plugins / Settings` 结构，不再暴露已移除的 Projects / Automations / Integrations rail 入口 | `entry-chrome-flows.test.ts` |
 

@@ -1857,7 +1857,7 @@
   min-height: 58px;
   /* Flush horizontally so the row's content — path on the left, the
      "default location" pill on the right — lines up with the section edges
-     (and the flush pet grid / toggles above), instead of being inset by the
+     (and the flush grid / toggles above), instead of being inset by the
      old 10px card padding which pushed the pill in from the right edge. */
   padding: 8px 0;
   /* Surfaceless: no border or fill — the path text + action button sit

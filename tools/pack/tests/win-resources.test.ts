@@ -48,9 +48,6 @@ async function createWorkspaceFixture(workspaceRoot: string): Promise<void> {
     "utf8",
   );
   await mkdir(join(workspaceRoot, "assets", "frames"), { recursive: true });
-  await mkdir(join(workspaceRoot, "assets", "community-pets", "sample"), {
-    recursive: true,
-  });
   await mkdir(join(workspaceRoot, "prompt-templates", "image"), {
     recursive: true,
   });

@@ -94,7 +94,6 @@ export {
   pickAndReplaceHostProjectWorkingDir,
   pickHostWorkingDir,
   printHostPdf,
-  setHostPetVisible,
   getHostUpdaterStatus,
   checkHostUpdater,
   clearHostUpdaterCache,

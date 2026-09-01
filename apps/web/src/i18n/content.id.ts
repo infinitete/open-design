@@ -505,12 +505,6 @@ export const ID_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Hasilkan diagram Excalidraw bergaya gambar tangan dari sebuah prompt — SVG animasi, tautan edit yang di-hosting, dan ekspor PNG.',
   },
-  'hatch-pet': {
-    description:
-      'Buat, perbaiki, validasi, pratinjau, dan kemas spritesheet hewan peliharaan animasi yang kompatibel dengan Codex dari karya seni karakter, screenshot, gambar yang dihasilkan, atau referensi visual. Gunakan saat pengguna ingin menetaskan hewan peliharaan Codex, membuat hewan peliharaan animasi kustom, atau membangun aset hewan peliharaan bawaan dengan atlas 8x9, sel yang tidak terpakai dibuat transparan, prompt animasi baris demi baris, contact sheet QA, video pratinjau, dan pengemasan pet.json. Skill ini menyusun system skill $imagegen yang terpasang untuk generasi visual dan menggunakan skrip bawaan untuk perakitan spritesheet yang deterministik.',
-    examplePrompt:
-      'Tetaskan untukku hewan peliharaan shiba pixel-art mungil — ramah, duduk tegak, dengan properti delima kecil. Gunakan skill hatch-pet dari awal hingga akhir.',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       'Template presentasi Retro Quarterly Review dengan bahasa editorial biru + oranye yang berani.\nGunakan saat pengguna meminta deck quarterly review / roadmap berdampak tinggi\ndengan judul slab yang tebal, bagian kertas krem yang bersih, grid terstruktur,\ndan tempo gerak premium yang cepat (3 slide, masing-masing tahan di bawah 3 detik dalam mode video).',

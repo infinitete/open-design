@@ -387,8 +387,8 @@ function buildProxyErrorResponse(error: unknown, target: string): Response {
  * (issue #895). Without the catch, the rejection bubbles all the way
  * up to the Electron main process and surfaces as a native
  * "JavaScript error in main process" dialog the next time the user
- * does anything that triggers a renderer-to-sidecar fetch (e.g.
- * Settings → Pets → Community). Returning a 502 instead lets the
+  * does anything that triggers a renderer-to-sidecar fetch (e.g.
+  * opening Settings → Community). Returning a 502 instead lets the
  * renderer see a normal failure and keeps the process alive.
  *
  * Idempotent requests first pass through

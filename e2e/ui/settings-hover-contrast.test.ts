@@ -153,23 +153,6 @@ const THEMES: Theme[] = ['dark', 'light'];
 
 test.describe('Settings hover contrast (regression guard for #1795)', () => {
   for (const theme of THEMES) {
-    test(`[P2] Pets source tabs hover stays readable in ${theme} theme`, async ({ page }) => {
-      await openSettings(page, theme);
-      // #5517 folded Pets into General instead of keeping a standalone nav item.
-      await settingsNavItem(page, /^(General|通用)$/i).click();
-      // Pet tabs render once the section is mounted; no daemon round-trip is
-      // required for the tab pills themselves.
-      await page.waitForSelector('.pet-tabs .subtab-pill button');
-
-      const inactive = '.pet-tabs .subtab-pill button:not(.active)';
-      const measurement = await hoverAndMeasure(page, inactive);
-      expect(
-        measurement.ratio,
-        `Pets source tab hover contrast ${measurement.ratio} below WCAG AA (${WCAG_AA_NORMAL}) in ${theme}. ` +
-          `fg=rgb(${measurement.fg.join(',')}) bg=rgb(${measurement.bg.join(',')}) bgRaw=${measurement.bgRaw}`,
-      ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
-    });
-
     // Appearance dropped out of this list in #5517 (product confirmed
     // 2026-07-20): its 系统/浅色/深色 segmented control was removed, so the
     // section no longer renders a `.seg-btn` at all and cannot participate in

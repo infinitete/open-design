@@ -312,8 +312,6 @@ export function settingsSectionToTracking(
       return 'language';
     case 'appearance':
       return 'appearance';
-    case 'pet':
-      return 'pets';
     case 'about':
       return 'about';
     case 'composio':

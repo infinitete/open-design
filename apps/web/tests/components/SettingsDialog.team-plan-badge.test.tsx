@@ -30,8 +30,6 @@ vi.mock('../../src/providers/registry', async () => {
   );
   return {
     ...actual,
-    fetchCodexPets: vi.fn(async () => []),
-    syncCommunityPets: vi.fn(async () => []),
     fetchSkills: vi.fn(async () => []),
     fetchDesignSystems: vi.fn(async () => []),
     fetchDesignTemplates: vi.fn(async () => []),

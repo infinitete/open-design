@@ -175,7 +175,6 @@ export const PLUGIN_POPULARITY: Readonly<Record<string, number>> = {
 export const PLUGIN_NO_PREVIEW: readonly string[] = [
   'example-dcf-valuation',
   'example-design-brief',
-  'example-hatch-pet',
   'example-html-ppt',
   'example-hyperframes',
   'example-last30days',

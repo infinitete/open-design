@@ -33,7 +33,7 @@ You don't need to be comfortable with a terminal. The simplest route:
 
 The first time it opens, OpenDesign **automatically detects the supported AI tools already on your computer** — things like Claude Code, Codex, OpenCode, or Qwen — and lists them. Click one and hit **Get started**.
 
-No coding tools installed? No problem: choose **API provider** instead and paste a key from Anthropic, OpenAI, Azure, or Google Gemini. Either way, you're ready in seconds. You can switch the model later from the same button, and the settings also let you add media providers, change the **language**, pick light/dark mode, and even adopt a little desktop **pet** that hangs out in the corner.
+No coding tools installed? No problem: choose **API provider** instead and paste a key from Anthropic, OpenAI, Azure, or Google Gemini. Either way, you're ready in seconds. You can switch the model later from the same button, and the settings also let you add media providers, change the **language**, pick light/dark mode.
 
 ![The OpenDesign plugin library, with installable skills.](/tutorials/open-design-open-source-alternative-comparison-where-do-i-click/plugin-library.webp)
 *The plugin library: install skills straight from the registry — including anti-slop design skills.*

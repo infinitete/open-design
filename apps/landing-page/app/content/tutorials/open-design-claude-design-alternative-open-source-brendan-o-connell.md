@@ -35,7 +35,7 @@ corepack enable && pnpm install
 pnpm tools-dev run web
 ```
 
-Open the local URL it prints (a dynamic port — don't hardcode one). On the right you'll find settings: the detected agents, plus **media providers** (OpenAI for image, MiniMax for video, ElevenLabs for voice), connectors (Composio MCP), and even desktop pets. You can also bring your own key for any provider.
+Open the local URL it prints (a dynamic port — don't hardcode one). On the right you'll find settings: the detected agents, plus **media providers** (OpenAI for image, MiniMax for video, ElevenLabs for voice), connectors (Composio MCP). You can also bring your own key for any provider.
 
 ## Step 2 — Design from your existing brand
 

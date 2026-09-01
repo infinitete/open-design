@@ -9,7 +9,6 @@ import {
   AMR_PERSONAL_WORKSPACE_CONTEXT,
   AMR_PERSONAL_WORKSPACE_HEADERS,
   mockAmrPersonalWorkspace,
-  openSettingsDialog,
   settingsSurface,
 } from '../lib/playwright/amr.js';
 
@@ -3686,31 +3685,6 @@ test('[P1] projects page shows live artifact cards, supports search, and opens t
   await expect(page.getByTestId('project-title')).toContainText('Orbit Daily Digest');
 });
 
-test('[P2] General settings updates the custom companion draft', async ({ page }) => {
-  await seedAdoptedPet(page);
-  await page.route('**/api/codex-pets', async (route) => {
-    await route.fulfill({ json: { pets: [], rootDir: '' } });
-  });
-
-  await page.goto('/');
-  const dialog = await openSettingsDialog(page);
-  await dialog.getByRole('button', { name: /^General$/i }).click();
-  await expect(dialog.getByRole('heading', { level: 3, name: 'Pets' })).toBeVisible();
-
-  await dialog.getByRole('tab', { name: 'Custom' }).click();
-  const customPanel = dialog.locator('.pet-custom');
-  await expect(customPanel).toBeVisible();
-
-  await customPanel.getByLabel('Name').fill('QA Turtle');
-  await customPanel.getByLabel('Glyph').fill('🐢');
-  await customPanel.getByLabel('Greeting').fill('Shell yeah, tests are green.');
-  await expect(customPanel.getByText('QA Turtle')).toBeVisible();
-  await expect(customPanel.getByText('Shell yeah, tests are green.')).toBeVisible();
-
-  await dialog.getByRole('button', { name: 'Back to home', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-});
-
 async function createProject(
   page: Page,
   projectName: string,
@@ -4306,36 +4280,6 @@ function homeDesignCard(page: Page, name: string): Locator {
       hasText: new RegExp(`^${escapeRegExp(name)}$`),
     }),
   });
-}
-
-async function seedAdoptedPet(page: Page) {
-  await page.addInitScript((key) => {
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({
-        mode: 'daemon',
-        apiKey: '',
-        baseUrl: 'https://api.anthropic.com',
-        model: 'default',
-        agentId: 'codex',
-        skillId: null,
-        designSystemId: null,
-        onboardingCompleted: true,
-        agentModels: { codex: { model: 'default' } },
-        pet: {
-          adopted: true,
-          enabled: true,
-          petId: 'custom',
-          custom: {
-            name: 'Original Buddy',
-            glyph: '🦄',
-            accent: '#c96442',
-            greeting: 'Ready to pair.',
-          },
-        },
-      }),
-    );
-  }, STORAGE_KEY);
 }
 
 async function fetchCurrentProject(page: Page) {

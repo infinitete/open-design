@@ -388,9 +388,6 @@ export type OpenDesignHostBridge = {
   pdf: {
     print(html: string, nonce?: string, options?: OpenDesignHostPdfPrintOptions): Promise<OpenDesignHostActionResult>;
   };
-  pet: {
-    setVisible(visible: boolean): void;
-  };
   // Optional so web builds and older desktop hosts keep the same contract.
   // Electron is the only layer that can observe a compositor-affecting
   // subframe navigation failure after the iframe DOM remains healthy.

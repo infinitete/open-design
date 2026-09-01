@@ -1402,7 +1402,7 @@ describe('fetchSkillExample', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(fetchSkillExample('hatch-pet', 'image')).resolves.toEqual({
+    await expect(fetchSkillExample('pixel-scene', 'image')).resolves.toEqual({
       unavailable: true,
       kind: 'image',
     });

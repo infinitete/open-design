@@ -3039,6 +3039,12 @@ export interface Dict {
   'chat.modePicker.clear': string;
   'chat.modePicker.mode': string;
   'chat.composerHint': string;
+  // Slash-command palette chrome (`/` in the composer): header, hint and
+  // listbox aria copy. Formerly namespaced under `pet.*` when the palette
+  // shipped with the pet feature; now general composer surface.
+  'chat.slashPopoverTitle': string;
+  'chat.slashPopoverHint': string;
+  'chat.slashPopoverAria': string;
   'chat.cliSettingsTitle': string;
   'chat.cliSettingsAria': string;
   'chat.attachTitle': string;
@@ -4422,140 +4428,6 @@ export interface Dict {
   'artifact.odCardBrandAssistError': string;
   'artifact.odCardBrandAssistWorking': string;
   'artifact.odCardBrandAssistConfirm': string;
-
-  // Pet (Codex-style floating companion)
-  'pet.title': string;
-  'pet.subtitle': string;
-  'pet.navTitle': string;
-  'pet.navHint': string;
-  // Tabs in pet settings — split sources so the choice feels exclusive
-  'pet.tabBuiltIn': string;
-  'pet.tabBuiltInHint': string;
-  'pet.builtInEmpty': string;
-  'pet.tabCustom': string;
-  'pet.tabCustomHint': string;
-  'pet.tabCommunity': string;
-  'pet.tabCommunityHint': string;
-  'pet.tabsAria': string;
-  'pet.adopt': string;
-  'pet.adoptedBadge': string;
-  'pet.adoptCallout': string;
-  'pet.changePet': string;
-  'pet.wake': string;
-  'pet.tuck': string;
-  'pet.wakeTitle': string;
-  'pet.tuckTitle': string;
-  'pet.settingsTitle': string;
-  'pet.useCustom': string;
-  'pet.customTitle': string;
-  'pet.customHint': string;
-  'pet.customGreetingPlaceholder': string;
-  'pet.fieldName': string;
-  'pet.fieldGlyph': string;
-  'pet.fieldGlyphHint': string;
-  'pet.fieldGreeting': string;
-  'pet.fieldAccent': string;
-  'pet.fieldAccentCustom': string;
-  'pet.fieldAccentDefault': string;
-  'pet.overlayAria': string;
-  'pet.spriteAria': string;
-  'pet.spriteTitle': string;
-  'pet.taskSummarySingle': string;
-  'pet.taskSummaryMultiple': string;
-  'pet.taskSummaryRecentSingle': string;
-  'pet.taskSummaryRecentMultiple': string;
-  'pet.taskListAria': string;
-  'pet.taskOpenProject': string;
-  'pet.taskGroup.running': string;
-  'pet.taskGroup.queued': string;
-  'pet.taskGroup.recent': string;
-  'pet.idleQuote.leonardo.text': string;
-  'pet.idleQuote.leonardo.author': string;
-  'pet.idleQuote.michelangelo.text': string;
-  'pet.idleQuote.michelangelo.author': string;
-  'pet.idleQuote.bernini.text': string;
-  'pet.idleQuote.bernini.author': string;
-  'pet.idleQuote.raphael.text': string;
-  'pet.idleQuote.raphael.author': string;
-  'pet.idleQuote.caravaggio.text': string;
-  'pet.idleQuote.caravaggio.author': string;
-  'pet.idleQuote.rodin.text': string;
-  'pet.idleQuote.rodin.author': string;
-  // Composer pet menu
-  'pet.composerTitle': string;
-  'pet.composerMenuTitle': string;
-  'pet.composerMenuHint': string;
-  'pet.composerOpenSettings': string;
-  // Welcome modal teaser
-  'pet.welcomeTeaserTitle': string;
-  'pet.welcomeTeaserBody': string;
-  'pet.welcomeTeaserCta': string;
-  // Image upload + spritesheet controls
-  'pet.imageUpload': string;
-  'pet.imageReplace': string;
-  'pet.imageRemove': string;
-  'pet.imageHintIdle': string;
-  'pet.imageHintActive': string;
-  'pet.fieldFrames': string;
-  'pet.fieldFramesHint': string;
-  'pet.fieldFps': string;
-  'pet.fieldFpsHint': string;
-
-  // Codex hatch-pet skill — atlas import + AI generation
-  'pet.atlasImport': string;
-  'pet.atlasImportTitle': string;
-  'pet.atlasPickerTitle': string;
-  'pet.atlasPickerHint': string;
-  'pet.atlasCancel': string;
-  'pet.atlasAdopt': string;
-  'pet.atlasAdoptFull': string;
-  'pet.atlasAdoptFullTitle': string;
-  'pet.atlasAdoptRowTitle': string;
-  'pet.atlasActiveHint': string;
-  'pet.atlasRow.idle': string;
-  'pet.atlasRow.running-right': string;
-  'pet.atlasRow.running-left': string;
-  'pet.atlasRow.waving': string;
-  'pet.atlasRow.jumping': string;
-  'pet.atlasRow.failed': string;
-  'pet.atlasRow.waiting': string;
-  'pet.atlasRow.running': string;
-  'pet.atlasRow.review': string;
-  'pet.hatchTitle': string;
-  'pet.hatchHint': string;
-  'pet.hatchConcept': string;
-  'pet.hatchConceptPlaceholder': string;
-  'pet.hatchCopy': string;
-  'pet.hatchCopied': string;
-  'pet.hatchFoot': string;
-  // Slash-command popover in the chat composer
-  'pet.slashPopoverAria': string;
-  'pet.slashPopoverTitle': string;
-  'pet.slashPopoverHint': string;
-  'pet.slashPet': string;
-  'pet.slashMcp': string;
-  'pet.slashPetWake': string;
-  'pet.slashPetTuck': string;
-  'pet.slashHatch': string;
-  'pet.slashHatchArg': string;
-  'pet.slashSearch': string;
-  'pet.slashSearchArg': string;
-  // Recently-hatched section in pet settings
-  'pet.codexTitle': string;
-  'pet.codexSubtitle': string;
-  'pet.codexSubtitleWithDir': string;
-  'pet.codexEmpty': string;
-  'pet.codexLoading': string;
-  'pet.codexRefresh': string;
-  'pet.codexAdopt': string;
-  'pet.codexAdopting': string;
-  'pet.communitySync': string;
-  'pet.communitySyncing': string;
-  'pet.communitySyncTitle': string;
-  'pet.communitySyncDone': string;
-  'pet.communitySyncFailed': string;
-  'pet.codexBundled': string;
-  'pet.codexBundledTitle': string;
 
   // Sketch editor
   'sketch.toolSelect': string;

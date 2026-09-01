@@ -72,12 +72,6 @@ export const FR_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Créez-moi un PPT magazine sur “entreprises d’une personne · organisations pliées par l’IA”, talk de 25 minutes, audience designers + founders. Recommandez d’abord une direction (Monocle / WIRED / Kinfolk / Domus / Lab) pour que je choisisse.',
   },
-  'hatch-pet': {
-    examplePrompt:
-      'Faites éclore un petit pixel-pet — un Shiba amical dans un pull confortable. Utilisez le Skill hatch-pet de bout en bout.',
-    description:
-      'Crée, répare, valide et empaquette une spritesheet de pet animé compatible Codex (atlas 8x9, cellules 192x208), avec contact sheet QA, vidéos preview et pet.json.',
-  },
   'hr-onboarding': {
     examplePrompt:
       'Créez un plan d’onboarding 30 jours pour un nouveau Product Designer dans une startup de 40 personnes.',

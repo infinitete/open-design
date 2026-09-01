@@ -6,7 +6,6 @@
 - Memory 页面
 - Orbit 内部组件契约（当前无产品入口）
 - Language 页面
-- Pets 页面
 - Integrations 的 Skills 标签页
 - Design systems 内部组件契约（当前无 Settings 入口）
 - API protocol 迁移与切换回归
@@ -90,11 +89,6 @@
 | SET-055 | 在 Appearance 页面从 `Light/Dark` 切回 `System` 时，会移除显式 `html[data-theme]`，恢复系统跟随模式 | `SettingsDialog.execution.test.tsx` |
 | SET-056 | Appearance 的实时主题预览在立即关闭后，会回滚到已保存主题，避免未落盘预览泄漏 | `SettingsDialog.execution.test.tsx` |
 | SET-057 | 保存 `theme=system` 时，不会写死显式主题，同时会保留当前 accent color 配置 | `SettingsDialog.execution.test.tsx` |
-| SET-058 | Pets 页面默认展示 Built-in 标签页，并把 bundled pets 与 community pets 分开显示 | `SettingsDialog.execution.test.tsx` |
-| SET-059 | Pets 页面支持在 Custom 标签页编辑 `Name / Glyph / Greeting / Accent color`，实时更新预览并保存为当前自定义宠物 | `SettingsDialog.execution.test.tsx` |
-| SET-060 | 已领养宠物的 `Wake / Tuck away` 状态切换会即时更新页面，并在保存时正确落到 `pet.enabled` | `SettingsDialog.execution.test.tsx` |
-| SET-061 | Community 标签页支持 `Refresh` 和 `Download community pets`，并展示同步完成状态文案 | `SettingsDialog.execution.test.tsx` |
-| SET-062 | Community 标签页的 hatch prompt 会带上当前 concept，支持复制到剪贴板并展示 `Copied!` 反馈 | `SettingsDialog.execution.test.tsx` |
 | SET-063 | Integrations 的 Skills 标签页展示 functional skills，支持按 type/category 筛选并结合搜索缩小结果 | `SettingsDialog.execution.test.tsx`, `SkillsSection.test.tsx` |
 | SET-064 | Integrations 的 Skills 标签页支持展开详情，并可通过 toggle 把 skill 加入 `disabledSkills` 保存 | `SettingsDialog.execution.test.tsx`, `SkillsSection.test.tsx` |
 | SET-065 | 无 Settings 入口的 Design systems 内部组件支持按 category 筛选、展开详情，并保存 `disabledDesignSystems` | `SettingsDialog.execution.test.tsx`, `DesignSystemsSection.test.tsx` |
@@ -121,7 +115,6 @@
 | SET-088 | `Import from apps` 在 mixed connector state 下保持稳定：已连接、刚完成 OAuth、仍未连接的 app 会正确更新 `connected / selected` 计数，且扫描只提交已选中的 connected apps | `settings-memory-routines.test.ts` |
 | SET-089 | `Import from apps` 会在 connected app 断连/重连后自动收敛已选集合：失联 app 被移出 selected，恢复连接后不会误自动重新选中，扫描 payload 只包含当前仍选中的 connected apps | `settings-memory-routines.test.ts` |
 | SET-092 | `theme=system` 时不写入显式 `html[data-theme]`，并在浏览器 OS color scheme 从 light 切到 dark 后实时更新页面 `--bg` token，同时保留 `system` 配置 | `settings-hover-contrast.test.ts` |
-| SET-093 | Pets 自定义精灵上传后显示帧数/FPS 控件；移除精灵后恢复 emoji 模式并清除动画控件 | `settings-memory-routines.test.ts` |
 
 ## 自动化候选
 
@@ -129,8 +122,6 @@
 | --- | --- | --- |
 | SET-C05 | MCP server 的 Cursor deeplink / 多平台路径差异（macOS/Linux/Windows） | 适合自动化，但需要更细的环境 mock 或浏览器 scheme 行为校验，适合后续补 |
 | SET-C06 | Notifications 在 ProjectView 中收到真实任务完成事件后，是否按 success/failure 正确播放声音和发送桌面通知 | 适合自动化，但需要结合流式消息完成态和窗口焦点状态做更完整联动断言 |
-| SET-C08 | Pets 页面上传 sprite、导入 Codex atlas、裁剪单行或保留 full atlas 的文件处理链路 | 适合自动化，但依赖文件输入、图片读取、canvas 裁剪和 atlas 预处理，维护成本更高 |
-| SET-C09 | Built-in / Community 宠物的一键领养路径：下载 spritesheet、准备 atlas、写入 custom slot 并在 overlay 中真实生效 | 适合自动化，但需要补齐 fetch/blob/image 级 mock 或浏览器级联动验证 |
 | SET-C11 | Memory 的 `Import from apps` 真实多步授权回流：外部浏览器完成 OAuth 后通过宿主/弹窗回调返回，再次打开 Settings 时是否能正确恢复到最新 connected 状态 | 现在 E2E 已覆盖页面内 callback、mixed state、断连/重连收敛，但还没覆盖更接近真实宿主环境的跨窗口回流 |
 
 ## 手工保留

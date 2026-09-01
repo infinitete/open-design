@@ -24,8 +24,6 @@ const {
   requestNotificationPermissionMock,
   showCompletionNotificationMock,
   notificationPermissionMock,
-  fetchCodexPetsMock,
-  syncCommunityPetsMock,
   fetchSkillsMock,
   fetchDesignSystemsMock,
   fetchSkillMock,
@@ -41,8 +39,6 @@ const {
   requestNotificationPermissionMock: vi.fn(),
   showCompletionNotificationMock: vi.fn(),
   notificationPermissionMock: vi.fn(),
-  fetchCodexPetsMock: vi.fn(),
-  syncCommunityPetsMock: vi.fn(),
   fetchSkillsMock: vi.fn(),
   fetchDesignSystemsMock: vi.fn(),
   fetchSkillMock: vi.fn(),
@@ -74,8 +70,6 @@ vi.mock('../../src/providers/registry', async () => {
   );
   return {
     ...actual,
-    fetchCodexPets: fetchCodexPetsMock,
-    syncCommunityPets: syncCommunityPetsMock,
     fetchSkills: fetchSkillsMock,
     fetchDesignSystems: fetchDesignSystemsMock,
     fetchSkill: fetchSkillMock,
@@ -84,7 +78,6 @@ vi.mock('../../src/providers/registry', async () => {
     importGitHubDesignSystem: importGitHubDesignSystemMock,
     fetchLatestGithubReleaseInfo: fetchLatestGithubReleaseInfoMock,
     openExternalUrl: openExternalUrlMock,
-    codexPetSpritesheetUrl: (pet: { spritesheetUrl: string }) => pet.spritesheetUrl,
   };
 });
 
@@ -245,46 +238,6 @@ const inFlightAuthAttemptId = '936da01f-9abd-4d9d-80c7-02af85c822a8';
 type OnRefreshAgents = (
   options?: AgentRefreshOptions,
 ) => void | AgentInfo[] | Promise<void | AgentInfo[]>;
-
-const sampleBundledPets = [
-  {
-    id: 'dario',
-    displayName: 'Dario',
-    description: 'A tiny frustrated companion.',
-    spritesheetUrl: '/api/codex-pets/dario.webp',
-    spritesheetExt: 'webp',
-    hatchedAt: 1710000000000,
-    bundled: true,
-  },
-  {
-    id: 'nyako',
-    displayName: 'Nyako',
-    description: 'A warm companion.',
-    spritesheetUrl: '/api/codex-pets/nyako.webp',
-    spritesheetExt: 'webp',
-    hatchedAt: 1710000001000,
-    bundled: true,
-  },
-];
-
-const sampleCommunityPets = [
-  {
-    id: 'jade',
-    displayName: 'Jade',
-    description: 'A cheerful explorer.',
-    spritesheetUrl: '/api/codex-pets/jade.webp',
-    spritesheetExt: 'webp',
-    hatchedAt: 1710000010000,
-  },
-  {
-    id: 'voidling',
-    displayName: 'Voidling',
-    description: 'A tiny grim companion.',
-    spritesheetUrl: '/api/codex-pets/voidling.webp',
-    spritesheetExt: 'webp',
-    hatchedAt: 1710000020000,
-  },
-];
 
 const sampleSkills = [
   {
@@ -488,8 +441,6 @@ beforeEach(() => {
   requestNotificationPermissionMock.mockReset();
   showCompletionNotificationMock.mockReset();
   notificationPermissionMock.mockReset();
-  fetchCodexPetsMock.mockReset();
-  syncCommunityPetsMock.mockReset();
   fetchSkillsMock.mockReset();
   fetchDesignSystemsMock.mockReset();
   fetchSkillMock.mockReset();
@@ -502,18 +453,6 @@ beforeEach(() => {
   notificationPermissionMock.mockReturnValue('default');
   requestNotificationPermissionMock.mockResolvedValue('granted');
   showCompletionNotificationMock.mockResolvedValue('shown');
-  fetchCodexPetsMock.mockResolvedValue({
-    pets: [],
-    rootDir: '/Users/test/.codex/pets',
-  });
-  syncCommunityPetsMock.mockResolvedValue({
-    wrote: 0,
-    skipped: 0,
-    failed: 0,
-    total: 0,
-    rootDir: '/Users/test/.codex/pets',
-    errors: [],
-  });
   fetchSkillsMock.mockResolvedValue(sampleSkills);
   fetchDesignSystemsMock.mockResolvedValue(sampleDesignSystems);
   fetchSkillMock.mockImplementation(async (id: string) => ({
@@ -5254,211 +5193,6 @@ describe('SettingsDialog draft reconciliation', () => {
         OPEN_DESIGN_AMR_PROFILE: 'local',
         AMR_API_BASE_URL: 'https://draft.example.test',
       },
-    });
-  });
-});
-
-describe('SettingsDialog pets interactions', () => {
-  const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
-
-  afterEach(() => {
-    if (clipboardDescriptor) {
-      Object.defineProperty(window.navigator, 'clipboard', clipboardDescriptor);
-    } else {
-      Reflect.deleteProperty(window.navigator, 'clipboard');
-    }
-    cleanup();
-  });
-
-  // #5517 folded the pet picker into General and the nav rail dropped its
-  // standalone "Pets" item. The composer's pet-settings entry point still
-  // deep-links with `initialSection: 'pet'`, so that token must resolve to
-  // General — otherwise the entry point opens a section with no nav item and
-  // nothing rendered.
-  it('lands a pet deep link on the General section with the General nav item active', () => {
-    const { container } = renderSettingsDialog(
-      { mode: 'daemon', agentId: 'codex' },
-      { initialSection: 'pet' },
-    );
-
-    expect(container.querySelector('.settings-general-section')).toBeTruthy();
-    const active = container.querySelector('.settings-nav-item.active');
-    expect(active?.textContent).toContain('General');
-    // The pet block renders inside General, not as its own page.
-    expect(container.querySelector('.settings-general-section .pet-tabs, .settings-general-section [role="tab"]')).toBeTruthy();
-  });
-
-  it('renders bundled pets by default and exposes community pets in a separate tab', async () => {
-    fetchCodexPetsMock.mockResolvedValue({
-      pets: [...sampleBundledPets, ...sampleCommunityPets],
-      rootDir: '/Users/test/.codex/pets',
-    });
-
-    renderSettingsDialog(
-      { mode: 'daemon', agentId: 'codex' },
-      { initialSection: 'pet' },
-    );
-
-    expect((screen.getByRole('button', { name: 'Show pet' }) as HTMLButtonElement).disabled).toBe(false);
-
-    await waitFor(() => {
-      expect(screen.getByText('Dario')).toBeTruthy();
-      expect(screen.getByText('Nyako')).toBeTruthy();
-    });
-    expect(screen.queryByText('Jade')).toBeNull();
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Community' }));
-    expect(screen.getByText('Recently hatched')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Download community pets' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
-    expect(screen.getByText('Jade')).toBeTruthy();
-    expect(screen.getByText('Voidling')).toBeTruthy();
-  });
-
-  it('supports editing and persisting a custom pet', async () => {
-    const { onPersist } = renderSettingsDialog(
-      { mode: 'daemon', agentId: 'codex' },
-      { initialSection: 'pet' },
-    );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Custom' }));
-
-    fireEvent.change(screen.getByDisplayValue('Buddy'), {
-      target: { value: 'Scout' },
-    });
-    fireEvent.change(screen.getByDisplayValue('🦄'), {
-      target: { value: '🤖' },
-    });
-    fireEvent.change(screen.getByDisplayValue('Hi! I am here whenever you need me.'), {
-      target: { value: 'Hi there, builder.' },
-    });
-    fireEvent.click(document.querySelector('.pet-swatch[title="#2348b8"]') as HTMLElement);
-
-    expect(screen.getAllByText('Scout').length).toBeGreaterThan(0);
-    expect(screen.getByText('Hi there, builder.')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Use my pet' }));
-
-    await waitForPersist(
-      onPersist,
-      expect.objectContaining({
-        pet: expect.objectContaining({
-          adopted: true,
-          enabled: true,
-          petId: 'custom',
-          custom: expect.objectContaining({
-            name: 'Scout',
-            glyph: '🤖',
-            greeting: 'Hi there, builder.',
-            accent: '#2348b8',
-          }),
-        }),
-      }),
-      {},
-    );
-  });
-
-  it('toggles an adopted pet between tucked and awake states', async () => {
-    const { onPersist } = renderSettingsDialog(
-      {
-        mode: 'daemon',
-        agentId: 'codex',
-        pet: {
-          adopted: true,
-          enabled: true,
-          petId: 'custom',
-          custom: {
-            name: 'Buddy',
-            glyph: '🦄',
-            accent: '#c96442',
-            greeting: 'Hi! I am here whenever you need me.',
-          },
-        },
-      },
-      { initialSection: 'pet' },
-    );
-
-    const toggle = screen.getByRole('button', { name: 'Hide pet' });
-    fireEvent.click(toggle);
-    expect(screen.getByRole('button', { name: 'Show pet' })).toBeTruthy();
-    expect(screen.getByText('Hide pet')).toBeTruthy();
-
-    await waitForPersist(
-      onPersist,
-      expect.objectContaining({
-        pet: expect.objectContaining({
-          adopted: true,
-          enabled: false,
-        }),
-      }),
-      {},
-    );
-  });
-
-  it('refreshes and syncs community pets with inline status feedback', async () => {
-    fetchCodexPetsMock.mockResolvedValue({
-      pets: sampleCommunityPets,
-      rootDir: '/Users/test/.codex/pets',
-    });
-    syncCommunityPetsMock.mockResolvedValue({
-      wrote: 2,
-      skipped: 1,
-      failed: 0,
-      total: 5,
-      rootDir: '/Users/test/.codex/pets',
-      errors: [],
-    });
-
-    renderSettingsDialog(
-      { mode: 'daemon', agentId: 'codex' },
-      { initialSection: 'pet' },
-    );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Community' }));
-    await waitFor(() => {
-      expect(fetchCodexPetsMock).toHaveBeenCalledTimes(1);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => {
-      expect(fetchCodexPetsMock).toHaveBeenCalledTimes(2);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Download community pets' }));
-    await waitFor(() => {
-      expect(syncCommunityPetsMock).toHaveBeenCalledTimes(1);
-      expect(fetchCodexPetsMock).toHaveBeenCalledTimes(3);
-      expect(screen.getByText('Synced 2 new pets (5 total).')).toBeTruthy();
-    });
-  });
-
-  it('copies the hatch prompt with the current concept', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(window.navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
-    });
-
-    renderSettingsDialog(
-      { mode: 'daemon', agentId: 'codex' },
-      { initialSection: 'pet' },
-    );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Community' }));
-    fireEvent.change(screen.getByLabelText('Pet concept (optional)'), {
-      target: { value: 'a tiny pixel-art bee in a cozy sweater' },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy prompt' }));
-
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith(
-        expect.stringContaining('Concept: a tiny pixel-art bee in a cozy sweater.'),
-      );
-      expect(writeText).toHaveBeenCalledWith(
-        expect.stringContaining('Use the @hatch-pet skill end-to-end:'),
-      );
-      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
     });
   });
 });

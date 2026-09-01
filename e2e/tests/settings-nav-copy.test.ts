@@ -178,8 +178,6 @@ describe('destinations quoted to users', () => {
     'plugins/_official/scenarios/od-media-generation/SKILL.md',
     'apps/daemon/src/prompts/system.ts',
     'packages/contracts/src/prompts/system.ts',
-    'skills/hatch-pet/SKILL.md',
-    'plugins/_official/examples/hatch-pet/SKILL.md',
   ])('does not name a destination that does not exist: %s', (relative) => {
     // Markdown wraps mid-phrase, so compare against whitespace-normalized text
     // — otherwise "Settings → Media\n  providers" reads as a section named
@@ -188,8 +186,6 @@ describe('destinations quoted to users', () => {
     const known = [
       ...renderedSettingsNavLabels(),
       ...renderedIntegrationsTabLabels(),
-      // Sub-sections folded into General keep their own heading inside it.
-      'Pets',
     ];
     for (const match of text.matchAll(/(?:Settings|Integrations)\s*(?:→|->)\s*/g)) {
       const rest = text.slice(match.index! + match[0].length);

@@ -5,8 +5,8 @@ import { describe, expect, test } from "vitest";
 const runtimeSource = readFileSync(new URL("../../src/main/runtime.ts", import.meta.url), "utf8");
 
 /**
- * runtime.ts constructs three BrowserWindows — the brand splash
- * (`createSplashWindow`), the desktop pet, and the main app window — and the
+ * runtime.ts constructs two BrowserWindows — the brand splash
+ * (`createSplashWindow`) and the main app window — and the
  * splash, declared FIRST, shares the `title: "OpenDesign"` / `width: 1280`
  * markers with the main window while intentionally omitting
  * `backgroundThrottling: false`. A loose `new BrowserWindow({` anchor therefore

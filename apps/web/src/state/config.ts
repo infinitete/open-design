@@ -8,7 +8,6 @@ import type {
   MediaProviderCredentials,
   NotificationsConfig,
   OrbitConfig,
-  PetConfig,
 } from '../types';
 import { resolveFixedOriginBaseUrl } from './apiProtocols';
 import {
@@ -39,9 +38,6 @@ const RETIRED_SECURE_BYOK_KEYS = [
   'byokCredentialTail',
 ] as const;
 
-// Hatched out of the box, but tucked away — the user has to go through
-// either the entry-view "adopt a pet" callout or Settings → Pets to
-// summon them. Keeps the workspace quiet for first-run users.
 // Completion feedback is useful precisely when a task finishes out of focus,
 // so new installs opt in by default. Explicit saved opt-outs still win through
 // normalizeNotifications' field merge below.
@@ -50,18 +46,6 @@ export const DEFAULT_NOTIFICATIONS: NotificationsConfig = {
   successSoundId: DEFAULT_SUCCESS_SOUND_ID,
   failureSoundId: DEFAULT_FAILURE_SOUND_ID,
   desktopEnabled: true,
-};
-
-export const DEFAULT_PET: PetConfig = {
-  adopted: false,
-  enabled: false,
-  petId: 'mochi',
-  custom: {
-    name: 'Buddy',
-    glyph: '🦄',
-    accent: '#353535',
-    greeting: 'Hi! I am here whenever you need me.',
-  },
 };
 
 export const DEFAULT_ORBIT: OrbitConfig = {
@@ -98,7 +82,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   agentModels: {},
   agentCliEnv: {},
   agentCliEnvIntent: {},
-  pet: DEFAULT_PET,
   notifications: DEFAULT_NOTIFICATIONS,
   orbit: DEFAULT_ORBIT,
   projectLocations: [],
@@ -553,17 +536,6 @@ export const BYOK_PROVIDER_PRESETS: ReadonlyArray<ByokProviderPresetConfig> =
     };
   });
 
-function normalizePet(input: Partial<PetConfig> | undefined): PetConfig {
-  if (!input) return { ...DEFAULT_PET, custom: { ...DEFAULT_PET.custom } };
-  // Merge stored values onto defaults so newly-added fields land safely
-  // when an older config is rehydrated.
-  return {
-    ...DEFAULT_PET,
-    ...input,
-    custom: { ...DEFAULT_PET.custom, ...(input.custom ?? {}) },
-  };
-}
-
 function normalizeNotifications(
   input: Partial<NotificationsConfig> | undefined,
 ): NotificationsConfig {
@@ -666,7 +638,6 @@ export function loadConfig(): AppConfig {
     if (!raw) {
       return {
         ...DEFAULT_CONFIG,
-        pet: normalizePet(DEFAULT_PET),
         notifications: normalizeNotifications(DEFAULT_NOTIFICATIONS),
         orbit: normalizeOrbit(DEFAULT_ORBIT),
       };
@@ -699,7 +670,6 @@ export function loadConfig(): AppConfig {
       // Coerce on read, not just on default: the theme setting is gone, but
       // 'dark' / 'system' is still on disk in every install that ever used it.
       theme: resolveAppTheme(parsed.theme),
-      pet: normalizePet(parsed.pet),
       notifications: normalizeNotifications(parsed.notifications),
       orbit: normalizeOrbit(parsed.orbit),
     };
@@ -801,7 +771,6 @@ export function loadConfig(): AppConfig {
   } catch {
     return {
       ...DEFAULT_CONFIG,
-      pet: normalizePet(DEFAULT_PET),
       notifications: normalizeNotifications(DEFAULT_NOTIFICATIONS),
       orbit: normalizeOrbit(DEFAULT_ORBIT),
     };

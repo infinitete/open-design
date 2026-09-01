@@ -505,12 +505,6 @@ export const PL_SKILL_COPY: Record<string, { description?: string; examplePrompt
     examplePrompt:
       'Generuj odręcznie rysowane diagramy Excalidraw na podstawie promptu — animowany SVG, hostowany link do edycji i eksport PNG.',
   },
-  'hatch-pet': {
-    description:
-      'Twórz, naprawiaj, weryfikuj, podglądaj i pakuj kompatybilne z Codex animowane spritesheety zwierzaków na podstawie grafiki postaci, zrzutów ekranu, wygenerowanych obrazów lub odniesień wizualnych. Używaj, gdy użytkownik chce wykluć zwierzaka Codex, stworzyć niestandardowego animowanego zwierzaka lub zbudować wbudowany zasób zwierzaka z atlasem 8x9, przezroczystymi nieużywanymi komórkami, promptami animacji wiersz po wierszu, arkuszami kontaktowymi QA, filmami podglądowymi i pakowaniem pet.json. Ta umiejętność komponuje zainstalowaną systemową umiejętność $imagegen do generowania wizualnego i używa dołączonych skryptów do deterministycznego składania spritesheetów.',
-    examplePrompt:
-      'Wyklu mi maleńkiego pikselowego zwierzaka shiba — przyjaznego, siedzącego prosto, z małym rekwizytem w postaci granatu. Wykorzystaj umiejętność hatch-pet od początku do końca.',
-  },
   'html-ppt-retro-quarterly-review': {
     description:
       'Szablon prezentacji Retro Quarterly Review w odważnym niebiesko-pomarańczowym języku edytorskim.\nUżywaj, gdy użytkownicy proszą o efektowną prezentację przeglądu kwartalnego / roadmapy\nz masywnymi nagłówkami typu slab, czystymi kremowymi sekcjami papieru, ustrukturyzowanymi siatkami\noraz szybkim, premium tempem ruchu (3 slajdy, każdy zatrzymany poniżej 3 s w trybie wideo).',

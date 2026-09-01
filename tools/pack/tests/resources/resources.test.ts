@@ -186,13 +186,6 @@ describe("copyBundledResourceTrees", () => {
         "orbit-general",
         "SKILL.md",
       );
-      const communityPetPath = join(
-        workspaceRoot,
-        "assets",
-        "community-pets",
-        "sample",
-        "pet.json",
-      );
       const communityRegistryPath = join(
         workspaceRoot,
         "plugins",
@@ -239,9 +232,6 @@ describe("copyBundledResourceTrees", () => {
         recursive: true,
       });
       await mkdir(join(workspaceRoot, "assets", "frames"), { recursive: true });
-      await mkdir(join(workspaceRoot, "assets", "community-pets", "sample"), {
-        recursive: true,
-      });
       await mkdir(join(workspaceRoot, "prompt-templates", "image"), {
         recursive: true,
       });
@@ -261,7 +251,6 @@ describe("copyBundledResourceTrees", () => {
         "utf8",
       );
       await writeFile(designTemplatePath, "# Orbit General\n", "utf8");
-      await writeFile(communityPetPath, "{\"name\":\"sample\"}\n", "utf8");
       await writeFile(
         join(workspaceRoot, "plugins", "_official", "sample", "open-design.json"),
         "{\"id\":\"sample\"}\n",
@@ -309,12 +298,6 @@ describe("copyBundledResourceTrees", () => {
           "utf8",
         ),
       ).resolves.toBe("# Orbit General\n");
-      await expect(
-        readFile(
-          join(resourceRoot, "community-pets", "sample", "pet.json"),
-          "utf8",
-        ),
-      ).resolves.toBe("{\"name\":\"sample\"}\n");
       await expect(
         readFile(
           join(resourceRoot, "plugins", "_official", "sample", "open-design.json"),
