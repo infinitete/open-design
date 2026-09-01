@@ -125,6 +125,7 @@ Changes concentrate in `writeLinuxBuilderConfig` in
   (`0.10.0~beta.1 < 0.10.0`), so dpkg upgrade logic treats the prerelease as
   earlier than the eventual stable release.
 - Architecture: host arch only, matching AppImage behavior.
+- The deb lane ships its own space-safe after-install/after-remove scripts via `deb.afterInstall`/`deb.afterRemove`: electron-builder's default maintainer scripts register an update-alternatives name derived from the product name ("Open Design"), and Debian alternatives names must not contain "/" or spaces — the defaults error on install and fail removal. The lane scripts create a plain `/usr/bin/open-design` symlink (named after the dpkg package) and keep the default behaviors that matter: chrome-sandbox mode selection, mime and desktop database updates, and the AppArmor profile install.
 
 Artifact discovery and result:
 

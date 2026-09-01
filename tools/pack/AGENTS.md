@@ -37,6 +37,7 @@ Read `tools/pack/CACHE.md` before changing any build-cache node key, adding a ca
 - Pack resource files used by electron-builder belong under `tools/pack/resources/`; do not point pack logic at Downloads, web public assets, docs assets, or other app-owned resource paths.
 - For ordinary Windows NSIS smoke tests, use short namespaces such as `rg`, `smoke`, or `nsis-a`. NSIS extracts deeply nested Next.js standalone files under the namespace-scoped install directory; long namespaces can push installed paths past the traditional Windows 260-character limit even when builder `win-unpacked` output is correct. During merge regression, namespace `regression-merge-nsis` produced an installed path length of 264 characters and missed `next/dist/server/route-matcher-providers/helpers/cached-route-matcher-provider.js` in the installed directory, while the same NSIS smoke passed with namespace `rg`. Use long namespaces only when intentionally testing installer path-length behavior.
 - The deb lane uses the fixed dpkg package name `open-design` (artifact file names stay namespace-scoped) and owns no process lifecycle: start/stop/logs/inspect remain AppImage-only, and deb install/uninstall never stops running instances.
+- The deb lane ships its own space-safe after-install/after-remove scripts (rendered in `src/linux.ts`, wired via `deb.afterInstall`/`deb.afterRemove`): electron-builder's default templates register an update-alternatives name containing the product name's space, which Debian rejects.
 
 ## Packaged auto-update architecture and harness
 

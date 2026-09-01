@@ -380,6 +380,8 @@ type LinuxPaths = {
   assembledAppRoot: string;
   assembledMainEntryPath: string;
   assembledPackageJsonPath: string;
+  debAfterInstallPath: string;
+  debAfterRemovePath: string;
   installAppImagePath: string;
   installDesktopFilePath: string;
   installIconPath: string;
@@ -412,6 +414,8 @@ export function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
     assembledAppRoot: join(namespaceRoot, "assembled", "app"),
     assembledMainEntryPath: join(namespaceRoot, "assembled", "app", "main.cjs"),
     assembledPackageJsonPath: join(namespaceRoot, "assembled", "app", "package.json"),
+    debAfterInstallPath: join(namespaceRoot, "deb", "after-install.sh"),
+    debAfterRemovePath: join(namespaceRoot, "deb", "after-remove.sh"),
     installAppImagePath: join(home, ".local", "bin", appImageInstallName(config.namespace)),
     installDesktopFilePath: join(home, ".local", "share", "applications", desktopFileName(config.namespace)),
     installIconPath: join(
@@ -628,6 +632,87 @@ async function writeAssembledApp(
   await runProductionInstall(paths.assembledAppRoot);
 }
 
+async function writeLinuxDebScripts(paths: LinuxPaths): Promise<void> {
+  await mkdir(dirname(paths.debAfterInstallPath), { recursive: true });
+  await writeFile(paths.debAfterInstallPath, renderDebAfterInstallScript(), "utf8");
+  await chmod(paths.debAfterInstallPath, 0o755);
+  await writeFile(paths.debAfterRemovePath, renderDebAfterRemoveScript(), "utf8");
+  await chmod(paths.debAfterRemovePath, 0o755);
+}
+
+
+// electron-builder's default deb maintainer scripts register an
+// update-alternatives name derived from the product name ("Open Design").
+// Debian alternatives names must not contain "/" or spaces, so the default
+// scripts error on install and fail removal outright. The deb lane ships its
+// own space-safe scripts instead: a plain /usr/bin symlink named after the
+// dpkg package, plus the useful default behaviors (chrome-sandbox mode, mime
+// and desktop databases, AppArmor profile).
+
+export function renderDebAfterInstallScript(): string {
+  const optRoot = `/opt/${PRODUCT_NAME}`;
+  const executable = `${optRoot}/${PRODUCT_NAME}`;
+  const symlink = `/usr/bin/${DEB_PACKAGE_NAME}`;
+  return `#!/bin/bash
+
+# Space-safe after-install for the Open Design deb. Replaces the
+# electron-builder default: its update-alternatives name comes from the
+# product name and Debian alternatives names must not contain "/" or spaces,
+# so the default errors on install and removal. A plain symlink named after
+# the dpkg package provides the same CLI entry.
+
+ln -sf '${executable}' '${symlink}'
+
+# Use SUID chrome-sandbox only on systems without working user namespaces:
+if ! { [[ -L /proc/self/ns/user ]] && unshare --user true; }; then
+    chmod 4755 '${optRoot}/chrome-sandbox' || true
+else
+    chmod 0755 '${optRoot}/chrome-sandbox' || true
+fi
+
+if hash update-mime-database 2>/dev/null; then
+    update-mime-database /usr/share/mime || true
+fi
+
+if hash update-desktop-database 2>/dev/null; then
+    update-desktop-database /usr/share/applications || true
+fi
+
+# Install the AppArmor profile (Ubuntu 24+), mirroring the default template's
+# backwards-compatible dry-run gating.
+if apparmor_status --enabled > /dev/null 2>&1; then
+  APPARMOR_PROFILE_SOURCE='${optRoot}/resources/apparmor-profile'
+  APPARMOR_PROFILE_TARGET='/etc/apparmor.d/${PRODUCT_NAME}'
+  if apparmor_parser --skip-kernel-load --debug "$APPARMOR_PROFILE_SOURCE" > /dev/null 2>&1; then
+    cp -f "$APPARMOR_PROFILE_SOURCE" "$APPARMOR_PROFILE_TARGET"
+
+    # Updating the current AppArmor profile is not possible and probably not
+    # meaningful in a chroot'ed environment.
+    if ! { [ -x '/usr/bin/ischroot' ] && /usr/bin/ischroot; } && hash apparmor_parser 2>/dev/null; then
+      apparmor_parser --replace --write-cache --skip-read-cache "$APPARMOR_PROFILE_TARGET"
+    fi
+  else
+    echo "Skipping the installation of the AppArmor profile as this version of AppArmor does not seem to support the bundled profile"
+  fi
+fi
+`;
+}
+
+export function renderDebAfterRemoveScript(): string {
+  const symlink = `/usr/bin/${DEB_PACKAGE_NAME}`;
+  return `#!/bin/bash
+
+# Space-safe after-remove counterpart to the custom after-install script.
+rm -f '${symlink}'
+
+APPARMOR_PROFILE_DEST='/etc/apparmor.d/${PRODUCT_NAME}'
+
+if [ -f "$APPARMOR_PROFILE_DEST" ]; then
+  rm -f "$APPARMOR_PROFILE_DEST"
+fi
+`;
+}
+
 async function writeLinuxAppImageAppRun(paths: LinuxPaths): Promise<void> {
   await mkdir(dirname(paths.appImageAppRunPath), { recursive: true });
   await writeFile(paths.appImageAppRunPath, renderLinuxAppImageAppRun(), "utf8");
@@ -692,7 +777,7 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
       maintainer: "Open Design Contributors",
     },
     ...(targets.includes("deb")
-      ? { deb: { compression: "gz", packageName: DEB_PACKAGE_NAME } }
+      ? { deb: { compression: "gz", packageName: DEB_PACKAGE_NAME, afterInstall: paths.debAfterInstallPath, afterRemove: paths.debAfterRemovePath } }
       : {}),
     // Keep the AppImage launch fallback explicit. Our top-level AppRun wrapper
     // clears ELECTRON_RUN_AS_NODE before these Chromium flags reach Electron,
@@ -786,6 +871,9 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   const targets = linuxBuilderTargetsFor(config.to);
   if (targets.includes("AppImage")) {
     await writeLinuxAppImageAppRun(paths);
+  }
+  if (targets.includes("deb")) {
+    await writeLinuxDebScripts(paths);
   }
   await writeLinuxBuilderConfig(config, paths);
   await runElectronBuilderLinux(config, paths);

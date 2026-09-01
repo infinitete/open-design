@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ToolPackConfig } from "@/config/index.js";
-import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, resolveLinuxLifecycleMode, resolveLinuxPaths } from "@/linux.js";
+import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, renderDebAfterInstallScript, renderDebAfterRemoveScript, resolveLinuxLifecycleMode, resolveLinuxPaths } from "@/linux.js";
 import {
   composeDebInstallCommand,
   composeDebUninstallCommand,
@@ -380,5 +380,32 @@ describe("resolveLinuxLifecycleMode deb plumbing", () => {
   it("preserves appimage/headless selection without --deb", () => {
     expect(resolveLinuxLifecycleMode({}, "install")).toBe("appimage");
     expect(resolveLinuxLifecycleMode({ headless: true }, "start")).toBe("headless");
+  });
+});
+
+describe("renderDebAfterInstallScript", () => {
+  const script = renderDebAfterInstallScript();
+
+  it("never registers update-alternatives (the product name contains a space)", () => {
+    expect(script).not.toMatch(/^\s*update-alternatives\b/m);
+  });
+
+  it("links the space-free CLI name derived from the dpkg package", () => {
+    expect(script).toContain("ln -sf '/opt/Open Design/Open Design' '/usr/bin/open-design'");
+  });
+
+  it("keeps the default template's essential behaviors", () => {
+    expect(script).toContain("chmod 4755 '/opt/Open Design/chrome-sandbox'");
+    expect(script).toContain("update-mime-database /usr/share/mime");
+    expect(script).toContain("update-desktop-database /usr/share/applications");
+  });
+});
+
+describe("renderDebAfterRemoveScript", () => {
+  const script = renderDebAfterRemoveScript();
+
+  it("never invokes update-alternatives and removes the CLI symlink", () => {
+    expect(script).not.toMatch(/^\s*update-alternatives\b/m);
+    expect(script).toContain("rm -f '/usr/bin/open-design'");
   });
 });
