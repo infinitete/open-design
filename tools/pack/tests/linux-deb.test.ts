@@ -283,6 +283,32 @@ describe("installPackedLinuxDeb", () => {
       /deb install verification failed/,
     );
   });
+
+  it("guides operators when sudo would require a password for the mutating install command", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "odtp-deb-"));
+    await writeFile(join(outputRoot, "Open Design-ns.deb"), "deb-bytes");
+
+    const run = vi.fn(async () => {
+      throw new Error("sudo: a password is required");
+    });
+
+    await expect(
+      installPackedLinuxDeb(makeDebTestConfig(outputRoot), { environment: DEB_ENV, run }),
+    ).rejects.toThrow(/run as root or configure NOPASSWD sudo/);
+  });
+
+  it("rethrows unrelated mutating install failures untouched", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "odtp-deb-"));
+    await writeFile(join(outputRoot, "Open Design-ns.deb"), "deb-bytes");
+
+    const run = vi.fn(async () => {
+      throw new Error("apt-get: Unable to locate package");
+    });
+
+    await expect(
+      installPackedLinuxDeb(makeDebTestConfig(outputRoot), { environment: DEB_ENV, run }),
+    ).rejects.toThrow(/^apt-get: Unable to locate package$/);
+  });
 });
 
 describe("uninstallPackedLinuxDeb", () => {
@@ -320,6 +346,16 @@ describe("uninstallPackedLinuxDeb", () => {
     });
     const result = await uninstallPackedLinuxDeb({ environment: DEB_ENV, run });
     expect(result.status).toBe("not-installed");
+  });
+
+  it("guides operators when sudo would require a password for the mutating uninstall command", async () => {
+    const run = vi.fn(async () => {
+      throw new Error("sudo: a password is required");
+    });
+
+    await expect(uninstallPackedLinuxDeb({ environment: DEB_ENV, run })).rejects.toThrow(
+      /run as root or configure NOPASSWD sudo/,
+    );
   });
 });
 

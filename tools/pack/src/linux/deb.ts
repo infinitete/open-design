@@ -113,6 +113,20 @@ export type DebOrchestratorOptions = {
   run?: DebCommandRunner;
 };
 
+// The first mutating command is the one elevated via `sudo -n`; when sudo
+// exists but would prompt for a password it fails fast with a raw exec error,
+// so surface the operator guidance from the deb smoke spec instead.
+async function runMutatingDebCommand(run: DebCommandRunner, command: string, args: string[]): Promise<void> {
+  try {
+    await run(command, args);
+  } catch (error) {
+    if (error instanceof Error && /password is required|a terminal is required/i.test(error.message)) {
+      throw new Error(`${error.message} — run as root or configure NOPASSWD sudo for the current user`);
+    }
+    throw error;
+  }
+}
+
 async function detectDebEnvironment(): Promise<DebEnvironment> {
   return {
     isRoot: typeof process.getuid === "function" && process.getuid() === 0,
@@ -147,7 +161,7 @@ export async function installPackedLinuxDeb(
   }
 
   const { command, args } = composeDebInstallCommand({ packageManager, privilege, artifactPath });
-  await run(command, args);
+  await runMutatingDebCommand(run, command, args);
 
   const artifactVersion = (await run("dpkg-deb", ["-f", artifactPath, "Version"])).stdout.trim();
   const query = parseDpkgQueryStatus(
@@ -189,7 +203,7 @@ export async function uninstallPackedLinuxDeb(options: DebOrchestratorOptions = 
   });
 
   const { command, args } = composeDebUninstallCommand({ packageManager, privilege });
-  await run(command, args);
+  await runMutatingDebCommand(run, command, args);
 
   // dpkg-query exits non-zero once the package is fully unknown (purged);
   // `deinstall ok config-files` residue exits zero and is reported as-is.
