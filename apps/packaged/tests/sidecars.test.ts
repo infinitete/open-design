@@ -217,6 +217,30 @@ describe('packaged child Vite+ environment forwarding', () => {
     expect(env.RANDOM_INTERNAL_FLAG).toBeUndefined();
   });
 
+  it('forwards desktop session env so daemon-spawned native dialogs can open a display', () => {
+    const env = resolvePackagedChildBaseEnv({
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      DISPLAY: ':0',
+      RANDOM_INTERNAL_FLAG: 'drop-me',
+      WAYLAND_DISPLAY: 'wayland-0',
+      XAUTHORITY: '/run/user/1000/.mutter-Xwaylandauth.1234',
+      XDG_CURRENT_DESKTOP: 'GNOME',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      XDG_SESSION_TYPE: 'wayland',
+    });
+
+    expect(env).toMatchObject({
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      DISPLAY: ':0',
+      WAYLAND_DISPLAY: 'wayland-0',
+      XAUTHORITY: '/run/user/1000/.mutter-Xwaylandauth.1234',
+      XDG_CURRENT_DESKTOP: 'GNOME',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      XDG_SESSION_TYPE: 'wayland',
+    });
+    expect(env.RANDOM_INTERNAL_FLAG).toBeUndefined();
+  });
+
   it('keeps VP_HOME in the packaged child base env without forwarding unrelated variables', () => {
     const env = resolvePackagedChildBaseEnv({
       HOME: '/Users/tester',

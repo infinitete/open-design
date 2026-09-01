@@ -50,6 +50,11 @@ import { workspaceTeamTransportEnv } from "./workspace-team.js";
 const require = createRequire(import.meta.url);
 const PACKAGED_CHILD_ENV_ALLOWLIST = [
   "CODEX_HOME",
+  // Desktop session env: the daemon spawns native GUI helpers (zenity folder
+  // picker, xdg-open). Without these a Linux packaged daemon cannot open any
+  // display, and the folder dialog fails as if the user had cancelled.
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DISPLAY",
   "HOME",
   "HTTP_PROXY",
   "HTTPS_PROXY",
@@ -62,6 +67,11 @@ const PACKAGED_CHILD_ENV_ALLOWLIST = [
   "TMPDIR",
   "USER",
   "VP_HOME",
+  "WAYLAND_DISPLAY",
+  "XAUTHORITY",
+  "XDG_CURRENT_DESKTOP",
+  "XDG_RUNTIME_DIR",
+  "XDG_SESSION_TYPE",
   "all_proxy",
   "http_proxy",
   "https_proxy",
