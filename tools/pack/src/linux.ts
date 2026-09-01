@@ -690,9 +690,10 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
       category: "Development",
       synopsis: "Open Design",
       maintainer: "Open Design Contributors",
-      packageName: DEB_PACKAGE_NAME,
     },
-    ...(targets.includes("deb") ? { deb: { compression: "gz" } } : {}),
+    ...(targets.includes("deb")
+      ? { deb: { compression: "gz", packageName: DEB_PACKAGE_NAME } }
+      : {}),
     // Keep the AppImage launch fallback explicit. Our top-level AppRun wrapper
     // clears ELECTRON_RUN_AS_NODE before these Chromium flags reach Electron,
     // including for AppImageLauncher-generated desktop entries.

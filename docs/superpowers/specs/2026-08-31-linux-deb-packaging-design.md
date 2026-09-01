@@ -99,8 +99,10 @@ Changes concentrate in `writeLinuxBuilderConfig` in
   (currently `config.to !== "dir"`) and the builder-config `extraFiles`
   AppRun entry plus `appImage.executableArgs` apply only when the AppImage
   target is present (`appimage` or `all`), not for `deb` or `dir`.
-- `linux.packageName: "open-design"` (fixed dpkg package name; lowercase
-  letters and hyphen, Debian policy conformant). `productName`,
+- `deb.packageName: "open-design"` pins the fixed dpkg package name (lowercase
+  letters and hyphen, Debian policy conformant) via the conditional `deb`
+  builder block; electron-builder 26.8.1's `linux` block has no `packageName`
+  property (verified by a real build). `productName`,
   `executableName`, and `artifactName` stay as-is.
 - Deb compression bounded for build time: the slow path is deb's own default
   `xz` compression (single-threaded), which can otherwise add minutes for
