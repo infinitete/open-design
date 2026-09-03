@@ -60,9 +60,12 @@ fallback for artifact types and older builds that cannot apply a payload in plac
 Electron-builder resources live under `tools/pack/resources/mac/`. The current logo is staged there as the mac icon/DMG
 placeholder so future design-provided assets can replace the resource files without changing packaging code.
 
-Local developer artifacts bake the tools-pack namespace runtime root so `tools-pack mac start/stop/logs/cleanup` can manage
-them from the repo. Release artifacts use `--portable` so the installed app resolves namespace data/log/runtime/user-data
-from the user's Electron `userData` root instead of the build machine's `.tmp` path.
+The default macOS developer artifact is safe to install manually: its embedded config uses the stable product namespace
+and resolves data/log/runtime/user-data from Electron's user data root instead of the build machine's `.tmp` path.
+`tools-pack mac start` still injects a launch-only config that uses the tools-pack namespace runtime root, so
+`start/stop/logs/cleanup` remain isolated and manageable from the repo. An explicit `--namespace` keeps the local runtime
+root embedded for multi-instance testing. Release artifacts continue to use `--portable` so build-machine paths are never
+shipped.
 
 ### macOS compatibility notes
 
