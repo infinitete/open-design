@@ -27,11 +27,9 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 
 ## Boundary checklist
 
-- Package tests live in each package's `tests/` directory, sibling to `src/`; keep `src/` source-only and do not add new `*.test.ts` or `*.test.tsx` files under `src/`.
-- Keep cross-runtime DTO and plugin wire-shape validation schemas in `contracts` when callers need the same runtime parser, while keeping app-specific parsing, I/O, and enforcement in the owning app or package.
-- Do not let app packages depend directly on sidecar control-plane details.
-- Do not hard-code OpenDesign app/source/mode constants in `sidecar` or `platform`.
-- Keep stamp fields limited to five: `app`, `mode`, `namespace`, `ipc`, and `source`.
+- Package tests live in each package's `tests/` sibling to `src/`; keep `src/` source-only.
+- For new shared types, choose the boundary first: web/daemon app DTOs go in `contracts`; sidecar control-plane protocol goes in `sidecar-proto`; generic runtime code goes in `sidecar`; generic OS/process code goes in `platform`. Keep cross-runtime DTO/wire-shape validation schemas in `contracts`; app-specific parsing, I/O, and enforcement stay in the owning app or package.
+- Do not let app packages depend on sidecar control-plane details; do not hard-code app/source/mode constants or `--od-stamp-*` details in `sidecar`/`platform` (five stamp fields: `app`, `mode`, `namespace`, `ipc`, `source`).
 
 ## Common package commands
 

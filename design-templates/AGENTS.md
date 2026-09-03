@@ -26,12 +26,15 @@ full split.
 ## Adding a design template
 
 1. Create `design-templates/<my-template>/SKILL.md` with `name`,
-   `description`, `triggers`, and an explicit `od.mode` (one of
-   `prototype`, `deck`, `template`, `image`, `video`, `audio`).
+   `description`, `triggers`, and an explicit `od.mode` (one of the
+   seven protocol values in `docs/skills-protocol.md`, typically
+   `prototype`, `deck`, `template`, `image`, `video`, or `audio`).
 2. Ship a baked `example.html` (and any side files) so the shared example and
    asset routes have preview content to serve.
 3. Optionally drop additional baked samples under `examples/<key>.html`
    to surface them as derived `<parent>:<key>` cards.
+4. The daemon's lazy scanner picks the entry up on the next
+   `/api/design-templates` request — no rebuild required during local dev.
 
 ## Deck preview navigation contract
 

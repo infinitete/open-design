@@ -24,7 +24,9 @@ full split.
 ## Adding a skill
 
 1. Create `skills/<my-skill>/SKILL.md` with `name`, `description`,
-   `triggers`, and `od.mode: utility` (or `design-system`) frontmatter.
+   `triggers`, and `od.mode` frontmatter — one of the seven protocol
+   values (`prototype | deck | template | design-system | image | video | audio`,
+   see `docs/skills-protocol.md`; anything else gets normalized away).
 2. Drop any side files alongside; reference them from the body using
    the relative-from-skill-root paths the daemon advertises in the
    skill preamble.
