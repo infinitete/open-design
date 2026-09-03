@@ -1,7 +1,6 @@
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from "@open-design/components";
-import type { WorkspaceCollabContext } from "@open-design/contracts";
 import { projectKindFromMetadataToTracking } from "@open-design/contracts/analytics";
 import { useAnalytics } from "../analytics/provider";
 import {
@@ -11,8 +10,6 @@ import {
   trackProjectsMorePopoverClick,
 } from "../analytics/events";
 import { useT } from "../i18n";
-import { useWorkspaceContext } from "../collab/useWorkspaceContext";
-import { workspaceIdentityCacheKey } from "../collab/workspace-identity";
 import {
 	getProjectCoverSnapshot,
 	projectCoverSnapshotKey,
@@ -140,8 +137,7 @@ export function DesignsTab({
 	const confirmTitleId = useId();
 	const t = useT();
 	const analytics = useAnalytics();
-	const { context: workspaceContext, loading: workspaceContextLoading } = useWorkspaceContext();
-	// P0 page_view page_name=projects — fire once when the tab mounts so
+		// P0 page_view page_name=projects — fire once when the tab mounts so
 	// `/projects` landings register even before the user clicks anything.
 	// ref-keyed to survive re-renders that flip parent state without
 	// remounting DesignsTab, mirroring the pattern in HomeView.
@@ -172,8 +168,6 @@ export function DesignsTab({
 	const [projectsRefreshing, setProjectsRefreshing] = useState(false);
 	const menuContainerRef = useRef<HTMLDivElement | null>(null);
 	const projectsRefreshInFlightRef = useRef(false);
-	const liveWorkspaceIdentityRef = useRef<string | null>(null);
-	const coverWorkspaceIdentityRef = useRef<string | null>(null);
 	const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
 	const [renameInput, setRenameInput] = useState("");
 	const [confirmTarget, setConfirmTarget] = useState<{
@@ -197,13 +191,8 @@ export function DesignsTab({
 	});
 
 	useEffect(() => {
-		if (!isActive || workspaceContextLoading) return;
+		if (!isActive) return;
 		const controller = new AbortController();
-		const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
-		if (liveWorkspaceIdentityRef.current !== workspaceIdentity) {
-			liveWorkspaceIdentityRef.current = workspaceIdentity;
-			setLiveArtifactsByProject({});
-		}
 		const projectIds = projects.map((project) => project.id);
 		if (projectIds.length === 0) {
 			setLiveArtifactsByProject({});
@@ -218,7 +207,6 @@ export function DesignsTab({
 						projectId,
 						await fetchLiveArtifacts(projectId, {
 							signal: controller.signal,
-							workspaceContext,
 						}),
 					] as const,
 		).then((entries) => {
@@ -227,22 +215,19 @@ export function DesignsTab({
 		});
 
 		return () => controller.abort();
-	}, [isActive, projects, workspaceContext, workspaceContextLoading]);
+	}, [isActive, projects]);
 
 	useEffect(() => {
-		if (!isActive || workspaceContextLoading) return;
+		if (!isActive) return;
 		const controller = new AbortController();
 		if (projects.length === 0) {
 			setCoverByProject({});
 			return;
 		}
-		const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
-		const workspaceIdentityChanged = coverWorkspaceIdentityRef.current !== workspaceIdentity;
-		coverWorkspaceIdentityRef.current = workspaceIdentity;
 		const immediateEntries: Array<readonly [string, ProjectCoverOverride | null]> = [];
 		const unresolvedProjects = projects.filter((project) => {
 			const snapshot = getProjectCoverSnapshot(
-				projectCoverSnapshotKey(workspaceIdentity, project.id, project.updatedAt),
+				projectCoverSnapshotKey('local', project.id, project.updatedAt),
 			);
 			if (snapshot === undefined) return true;
 			immediateEntries.push([project.id, snapshot.cover] as const);
@@ -254,7 +239,7 @@ export function DesignsTab({
 		for (const project of projects) {
 			if (immediateByProject.has(project.id)) {
 				next[project.id] = immediateByProject.get(project.id)!;
-			} else if (!workspaceIdentityChanged && Object.hasOwn(current, project.id)) {
+			} else if (Object.hasOwn(current, project.id)) {
 				next[project.id] = current[project.id]!;
 			}
 		}
@@ -276,7 +261,6 @@ export function DesignsTab({
 					try {
 						files = await fetchProjectFiles(project.id, {
 							signal: controller.signal,
-							workspaceContext,
 						});
 					} catch {
 						return [project.id, undefined] as const;
@@ -290,7 +274,7 @@ export function DesignsTab({
 					}
 				}
 				setProjectCoverSnapshot(
-					projectCoverSnapshotKey(workspaceIdentity, project.id, project.updatedAt),
+					projectCoverSnapshotKey('local', project.id, project.updatedAt),
 					cover,
 				);
 				return [project.id, cover] as const;
@@ -306,7 +290,7 @@ export function DesignsTab({
 			}));
 		});
 		return () => controller.abort();
-	}, [isActive, projects, workspaceContext, workspaceContextLoading]);
+	}, [isActive, projects]);
 
 	useEffect(() => {
 		if (!menuOpenId) return;
@@ -559,7 +543,7 @@ export function DesignsTab({
 			message: `${t("common.delete")} "${artifact.title}"?`,
 			confirmLabel: t("designs.menuDelete"),
 			onConfirm: async () => {
-				const ok = await deleteLiveArtifact(projectId, artifact.id, workspaceContext);
+				const ok = await deleteLiveArtifact(projectId, artifact.id);
 				if (!ok) return false;
 				setLiveArtifactsByProject((current) => ({
 					...current,
@@ -855,7 +839,6 @@ export function DesignsTab({
 												p.id,
 												artifact.id,
 												"rendered",
-												workspaceContext,
 											)}
 											title=""
 											loading="lazy"
@@ -894,7 +877,6 @@ export function DesignsTab({
 						const cover = projectCover(
 							p,
 							coverByProject[p.id] ?? null,
-							workspaceContext,
 						);
 						const isSelected = selected.has(p.id);
 						const designSystemProject = isDesignSystemProject(p);
@@ -1351,7 +1333,6 @@ function isOrbitProject(project: Project): boolean {
 function projectCover(
 	project: Project,
 	override: ProjectCoverOverride | null,
-	workspaceContext?: WorkspaceCollabContext | null,
 ): {
 	kind: "image" | "video" | "html" | "logo" | "brand" | "fallback";
 	src?: string;
@@ -1393,7 +1374,6 @@ function projectCover(
 				project.id,
 				override.name,
 				override.mtime,
-				workspaceContext,
 			),
 			style,
 			initial,
@@ -1406,7 +1386,6 @@ function projectCover(
 			project.id,
 			entry,
 			project.updatedAt,
-			workspaceContext,
 		);
 		if (meta?.kind === "image") return { kind: "image", src, style, initial };
 		if (meta?.kind === "video") return { kind: "video", src, style, initial };

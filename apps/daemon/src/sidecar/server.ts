@@ -25,13 +25,12 @@ import {
 } from "@open-design/sidecar";
 
 import { startDaemonRuntime, type StartedDaemonRuntime } from "../daemon-startup.js";
-import {
-  getDesktopAuthSecret,
-  isDesktopAuthGateActive,
-  isDesktopAuthRegistered,
-  setDesktopAuthSecret,
-  signDesktopImportToken,
-} from "../desktop-auth.js";
+// Desktop auth removed - stub functions
+function isDesktopAuthGateActive(): boolean { return false; }
+function isDesktopAuthRegistered(): boolean { return false; }
+function getDesktopAuthSecret(): Buffer | null { return null; }
+function setDesktopAuthSecret(_secret: Buffer): void {}
+function signDesktopImportToken(_secret: Buffer, _baseDir: string, _opts: any): string { return ''; }
 import { attachParentMonitor, scheduleHeldDaemonExit } from "./parent-monitor-gate.js";
 
 /**

@@ -25,7 +25,9 @@ import type {
   OpenProjectInEditorResponse,
 } from '@open-design/contracts';
 import type { RouteDeps } from '../server-context.js';
-import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
+
+// Collab type removed - define locally
+type AuthorizeProjectRequest = any;
 
 export interface RegisterHostToolsRoutesDeps
   extends RouteDeps<'db' | 'http' | 'paths' | 'projectStore' | 'projectFiles'> {

@@ -16,14 +16,10 @@ import {
 import {
   buildSocialSharePayload,
   OPEN_DESIGN_GITHUB_REPO_URL,
-  workspaceContextHasTeamIdentity,
-  type CollabCloudMemberDirectoryEntry,
-  type CollabMemberRole,
   type AgentInfo,
   type ProjectFileVersion,
   type SocialShareRequest,
   type SocialShareResponse,
-  type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { PREVIEW_OBSERVABILITY_HOST_STATE_MESSAGE_TYPE } from '@open-design/contracts/runtime/preview-observability';
 import { PREVIEW_URL_GUARD_MAX_HTML_BYTES } from '@open-design/contracts/runtime/preview-guards';
@@ -31,11 +27,6 @@ import {
   isPreviewRuntimeState,
   type PreviewRuntimeState,
 } from '@open-design/contracts/runtime/preview-runtime-state';
-import {
-  appendResourceQuery,
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from '../collab/workspace-identity';
 import {
   anonymizeArtifactId,
   artifactKindToTracking,
@@ -50,7 +41,6 @@ import {
 import { useAnalytics } from '../analytics/provider';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
-import { publishErrorCode } from '../analytics/publish-error-code';
 import {
   reportPreviewIframeMessage,
   reportPreviewTransportRecovery,
@@ -95,17 +85,6 @@ import {
 } from './markdown-scroll-sync';
 import { useT, useI18n } from '../i18n';
 import { useDismissOnOutsideInteraction } from '../hooks/useDismissOnOutsideInteraction';
-import {
-  notifyTeamProjectsChanged,
-  TEAM_PROJECTS_CHANGED_EVENT,
-} from '../collab/useWorkspaceContext';
-import {
-  canPublishPublicFile,
-  publicFileManualRevokePublication,
-  publicFilePublishFailureKey,
-  type PublicFilePublishFailureKey,
-} from '../collab/public-file-publish';
-import { moveWorkspaceProject } from '../state/projects';
 import { MoveToTeamConfirmDialog, moveConfirmSkipped } from './MoveToTeamConfirmDialog';
 import type { Dict, Locale } from '../i18n/types';
 import {
@@ -125,7 +104,6 @@ import {
   fetchProjectFilePreview,
   fetchProjectPreviewBaseHref,
   fetchProjectFiles,
-  fetchProjectFilePublicPublication,
   fetchProjectFileText,
   fetchProjectFileTextPreview,
   uploadProjectFiles,
@@ -133,8 +111,6 @@ import {
   projectFileUrl,
   projectRawUrl,
   renewProjectPreviewBaseScope,
-  publishProjectFilePublic,
-  unpublishProjectFilePublic,
   LiveArtifactRefreshError,
   refreshLiveArtifact,
   restoreProjectFileVersion,
@@ -236,7 +212,6 @@ import type {
 } from '../types';
 import { Icon } from './Icon';
 import { RemixIcon } from './RemixIcon';
-import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
 import { HandoffButton } from './HandoffButton';
 import { SocialShareGrid } from './SocialShareGrid';
 import { Toast } from './Toast';
@@ -264,11 +239,6 @@ import {
   type AnchorWriteBack,
   type PreviewCommentSnapshot,
 } from '../comments';
-import {
-  useProjectCollabContext,
-  type ProjectResourceAuthority,
-} from '../collab/collab-context';
-import { currentUserDirectoryEntry, useTeamMembers } from '../collab/useTeamMembers';
 import { applyPodMemberRemoval } from '../lib/pod-members';
 import { AnnotationHoverPopover, BoardComposerPopover } from './BoardComposerPopover';
 import {
@@ -304,6 +274,43 @@ import {
   invalidateHtmlSourceSnapshotProject,
   setHtmlSourceSnapshot,
 } from './html-source-snapshot-cache';
+
+
+// ---- Single-machine build stubs -------------------------------------------
+// Workspace identity, team sharing and public-file publishing were removed
+// with the user system. These local no-op shims keep the file/JSX plumbing
+// intact; every path that used them is unreachable (`canPublishPublic` is
+// always false and share access is pinned to 'private').
+function appendResourceQuery(path: string, query: string): string {
+  if (!query) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${query.replace(/^[?&]+/, '')}`;
+}
+const canPublishPublicFile = (_ctx: unknown) => false;
+const publicFileManualRevokePublication = (_err: unknown) => undefined;
+const publicFilePublishFailureKey = (_err: unknown) => 'fileViewer.publishFileRequiresWorkspace' as const;
+const publishErrorCode = (_err: unknown) => 'publish_failed' as const;
+const publishProjectFilePublic = async (..._args: unknown[]): Promise<never> => {
+  throw new Error('Public file publishing is not available.');
+};
+const unpublishProjectFilePublic = async (..._args: unknown[]): Promise<never> => {
+  throw new Error('Public file publishing is not available.');
+};
+const fetchProjectFilePublicPublication = async (..._args: unknown[]): Promise<{ url: string; slug: string; projectId: string; fileName: string } | null> => null;
+const projectIsSharedWithWorkspace = async (_projectId: string): Promise<boolean> => false;
+const notifyTeamProjectsChanged = () => {};
+const TEAM_PROJECTS_CHANGED_EVENT = 'open-design:team-projects-changed';
+const workspaceIdentityCacheKey = (_ctx: unknown) => 'local';
+const workspaceProjectHeaders = (_ctx: unknown) => ({});
+const currentUserDirectoryEntry = (_ctx: unknown) => null;
+const collabMembersEqual = (_a: unknown, _b: unknown) => false;
+const moveWorkspaceProject = async (..._args: unknown[]): Promise<never> => {
+  throw new Error('Workspace project sharing is not available.');
+};
+const workspaceContextHasTeamIdentity = (_ctx: unknown) => false;
+type CollabMemberRole = string;
+type CollabCloudMemberDirectoryEntry = { memberId?: string; displayName?: string; role?: CollabMemberRole | string };
+type ProjectResourceAuthority = 'allowed' | 'denied' | 'pending';
+type WorkspaceCollabContext = null;
 
 function resolveChromeActionsHost(): HTMLElement | null {
   return document.querySelector<HTMLElement>(APP_CHROME_FILE_ACTIONS_SELECTOR)
@@ -896,7 +903,6 @@ function rewriteMarkdownImageSources(
       projectId,
       markdownPath,
       decodeHtmlAttribute(src),
-      workspaceContext,
     );
     if (!resolved) return match;
     const attrs = `${before}${after}`;
@@ -918,7 +924,7 @@ export function markdownImageSourceUrl(
     ? normalizeMarkdownProjectPath(trimmed.slice(1))
     : normalizeMarkdownProjectPath(`${markdownDirectory(markdownPath)}/${trimmed}`);
   return relativePath
-    ? projectFileUrl(projectId, relativePath, workspaceContext)
+    ? projectFileUrl(projectId, relativePath)
     : null;
 }
 
@@ -1836,18 +1842,9 @@ export const FileViewer = memo(function FileViewer({
   manualEditEntryAllowed = true,
 }: Props) {
   const t = useT();
-  const projectCollabContext = useProjectCollabContext();
-  const projectResourceAuthority = projectCollabContext.projectResourceAuthority
-    ?? (projectCollabContext.workspaceContextLoading
-      ? 'pending'
-      : projectCollabContext.workspaceContext
-        ? 'workspace'
-        : 'local');
-  const projectResourceReadAllowed = projectResourceAuthority === 'local'
-    || (
-      projectResourceAuthority === 'workspace'
-      && projectCollabContext.workspaceContext !== null
-    );
+  const projectCollabContext = { workspaceContext: null, workspaceContextLoading: false };
+  const projectResourceAuthority = 'allowed' as 'allowed' | 'denied' | 'pending';
+  const projectResourceReadAllowed = true;
   const rendererMatch = artifactRendererRegistry.resolve({
     file,
     isDeckHint: Boolean(isDeck),
@@ -1874,7 +1871,7 @@ export const FileViewer = memo(function FileViewer({
   }, [projectId, projectResourceReadAllowed]);
 
   if (!projectResourceReadAllowed) {
-    if (projectResourceAuthority === 'denied') {
+    if (false) {
       return (
         <div className="viewer">
           <div className="viewer-body">
@@ -1999,7 +1996,7 @@ export function LiveArtifactViewer({
   onRefreshArtifacts?: () => Promise<void> | void;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: unknown = null;
   const tabs = useMemo(() => liveArtifactViewerTabs(t), [t]);
   const [mode, setMode] = useState<LiveArtifactViewerTab>('preview');
   const [detail, setDetail] = useState<LiveArtifact | null>(null);
@@ -2093,13 +2090,12 @@ export function LiveArtifactViewer({
           ? `Live artifact created: ${liveArtifactEvent.title}`
           : `Live artifact updated: ${liveArtifactEvent.title}`,
       );
-      void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
+      void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
         if (next) setDetail(next);
       });
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
-        workspaceContext,
       ).then(setRefreshHistory);
       setReloadKey((n) => n + 1);
       continue;
@@ -2122,13 +2118,12 @@ export function LiveArtifactViewer({
           error: liveArtifactEvent.error ?? undefined,
         }),
       );
-      void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
+      void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
         if (next) setDetail(next);
       });
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
-        workspaceContext,
       ).then(setRefreshHistory);
       continue;
     }
@@ -2146,13 +2141,12 @@ export function LiveArtifactViewer({
     } else {
       setRefreshError(t('liveArtifact.refresh.noSourceTitle'));
     }
-    void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
+    void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
       if (next) setDetail(next);
     });
     void fetchLiveArtifactRefreshes(
       projectId,
       liveArtifact.artifactId,
-      workspaceContext,
     ).then(setRefreshHistory);
     setReloadKey((n) => n + 1);
     }
@@ -2162,7 +2156,7 @@ export function LiveArtifactViewer({
     let cancelled = false;
     setLoading(true);
     setDetail(null);
-    void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
+    void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
       if (cancelled) return;
       setDetail(next);
       setLoading(false);
@@ -2170,7 +2164,6 @@ export function LiveArtifactViewer({
     void fetchLiveArtifactRefreshes(
       projectId,
       liveArtifact.artifactId,
-      workspaceContext,
     ).then((next) => {
       if (!cancelled) setRefreshHistory(next);
     });
@@ -2181,7 +2174,7 @@ export function LiveArtifactViewer({
 
   const previewUrl = useMemo(
     () => appendResourceQuery(
-      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered', workspaceContext),
+      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered'),
       `v=${reloadKey}`,
     ),
     [projectId, liveArtifact.artifactId, reloadKey, workspaceContext],
@@ -2214,13 +2207,11 @@ export function LiveArtifactViewer({
       const result = await refreshLiveArtifact(
         projectId,
         liveArtifact.artifactId,
-        workspaceContext,
       );
       setDetail(result.artifact);
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
-        workspaceContext,
       ).then(setRefreshHistory);
       setReloadKey((n) => n + 1);
       setRefreshEvents((prev) =>
@@ -2265,7 +2256,7 @@ export function LiveArtifactViewer({
     setPresentMenuOpen(false);
     if (typeof window === 'undefined') return;
     window.open(
-      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered', workspaceContext),
+      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered'),
       '_blank',
       'noopener,noreferrer',
     );
@@ -2425,7 +2416,6 @@ export function LiveArtifactViewer({
                 projectId,
                 liveArtifact.artifactId,
                 'rendered',
-                workspaceContext,
               )}
               target="_blank"
               rel="noreferrer noopener"
@@ -2591,7 +2581,7 @@ function LiveArtifactCodePanel({
   reloadKey: number;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: unknown = null;
   const [variant, setVariant] = useState<LiveArtifactCodeVariant>('template');
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2602,7 +2592,7 @@ function LiveArtifactCodePanel({
     setLoading(true);
     setFailed(false);
     setCode(null);
-    void fetchLiveArtifactCode(projectId, artifactId, variant, workspaceContext).then((next) => {
+    void fetchLiveArtifactCode(projectId, artifactId, variant).then((next) => {
       if (cancelled) return;
       setCode(next);
       setFailed(next == null);
@@ -3207,19 +3197,19 @@ function FileActions({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: unknown = null;
   return (
     <div className="viewer-toolbar-actions">
       <a
         className="ghost-link"
-        href={projectFileUrl(projectId, file.name, workspaceContext)}
+        href={projectFileUrl(projectId, file.name)}
         download={file.name}
       >
         {t('fileViewer.download')}
       </a>
       <a
         className="ghost-link"
-        href={projectFileUrl(projectId, file.name, workspaceContext)}
+        href={projectFileUrl(projectId, file.name)}
         target="_blank"
         rel="noreferrer noopener"
       >
@@ -3297,7 +3287,7 @@ export function fileVersionPreviewOptions(
 ) {
   return {
     deck: sourceLooksLikeDeckPreview(source),
-    baseHref: projectRawUrl(projectId, baseDirFor(fileName), workspaceContext),
+    baseHref: projectRawUrl(projectId, baseDirFor(fileName)),
   };
 }
 
@@ -3308,7 +3298,7 @@ function fileVersionPreviewSrcDoc(
   workspaceContext?: WorkspaceCollabContext | null,
 ) {
   return buildSrcdoc(source, {
-    ...fileVersionPreviewOptions(projectId, fileName, source, workspaceContext),
+    ...fileVersionPreviewOptions(projectId, fileName, source),
     previewFocusGuard: true,
   });
 }
@@ -3393,7 +3383,7 @@ function FileVersionManagerModal({
 }) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: unknown = null;
   const tRef = useRef(t);
   const [versions, setVersions] = useState<ProjectFileVersion[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -3543,7 +3533,6 @@ function FileVersionManagerModal({
       projectId,
       file.name,
       versionId,
-      workspaceContext,
     )
       .then((result) => {
         if (result) contentCacheRef.current.set(versionId, result.content);
@@ -3559,7 +3548,7 @@ function FileVersionManagerModal({
   const loadVersions = useCallback(async (preferredId?: string | null) => {
     setLoading(true);
     setError(null);
-    const result = await fetchProjectFileVersions(projectId, file.name, workspaceContext);
+    const result = await fetchProjectFileVersions(projectId, file.name);
     if (!result) {
       setError(tRef.current('fileViewer.versions.loadFailed'));
       setLoading(false);
@@ -3924,7 +3913,6 @@ function FileVersionManagerModal({
         projectId,
         file.name,
         selectedVersion,
-        workspaceContext,
       );
       if (!result) {
         fireRestoreResult('failed', 'restore_request_failed');
@@ -4503,14 +4491,14 @@ export function CommentSidePanel({
   t: TranslateFn;
   composer?: ReactNode;
 }) {
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: unknown = null;
   const [newCommentDraft, setNewCommentDraft] = useState('');
   const [dragState, setDragState] = useState<CommentSideDragState | null>(null);
   // Collab-cloud member directory: turns a comment's authorMemberId into a
   // display name + role for the author line + avatar. The viewer's own identity
   // resolves through `currentUser` even when the directory is empty; an unknown
   // OTHER member still renders without an author line, exactly as before.
-  const { resolve: resolveCommentAuthor } = useTeamMembers(currentUser);
+  const resolveCommentAuthor = (_id?: string | null): CollabCloudMemberDirectoryEntry | null => null;
   const sorted = comments;
   // recvq5BVsolIxi: the inline "N." prefix must match the canvas pin number
   // (comment.pinSeq) so the two surfaces always agree, even when this panel
@@ -4707,7 +4695,7 @@ export function CommentSidePanel({
           const selected = visibleSelectedIds.has(comment.id);
           const active = comment.id === activeCommentId;
           const sendable = canSend(comment);
-          const author = resolveCommentAuthor(comment.authorMemberId);
+          const author: CollabCloudMemberDirectoryEntry | null = null;
           const isDragging = dragState?.draggingId === comment.id;
           const dropClass = dragState?.overId === comment.id &&
             dragState.draggingId !== comment.id &&
@@ -4747,24 +4735,8 @@ export function CommentSidePanel({
                   <Icon name="grip-vertical" size={13} />
                 </button>
                 <span className="comment-side-author">
-                  {author ? (
-                    <span
-                      className="comment-side-avatar"
-                      style={{ background: commentAuthorAvatarColor(comment.authorMemberId ?? author.memberId) }}
-                      aria-hidden="true"
-                    >
-                      {commentAuthorInitials(author.displayName)}
-                    </span>
-                  ) : null}
                   <span className="comment-side-author-copy">
                     <strong>{`${displayCommentNumber(comment, index)}. ${commentDisplayLabel(comment, t)}`}</strong>
-                    {author ? (
-                      <small>
-                        {author.displayName}
-                        {' · '}
-                        {commentAuthorRoleLabel(author.role)}
-                      </small>
-                    ) : null}
                   </span>
                 </span>
                 <span className="comment-side-time">{formatCommentTime(commentActivityAt(comment), t)}</span>
@@ -4790,7 +4762,6 @@ export function CommentSidePanel({
                     const url = projectRawUrl(
                       projectId,
                       attachment.path,
-                      workspaceContext,
                     );
                     return (
                       <a
@@ -6417,13 +6388,10 @@ function ReactComponentViewer({
   // render-time `true`.
   const workspaceActiveRef = useRef(workspaceActive);
   workspaceActiveRef.current = workspaceActive;
-  const { workspaceContext } = useProjectCollabContext();
-  const [mode, setMode] = useState<'preview' | 'source'>('preview');
-  const [source, setSource] = useState<string | null>(null);
-  const [srcDoc, setSrcDoc] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
-  const [shareMenuOpen, setShareMenuOpen] = useState(false);
-  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
+  const workspaceContext = null;
+  // Single-machine build: workspace sharing / public publishing removed.
+  // Keep the share-menu state shape so the JSX stays simple; everything is
+  // private and the publish affordance never activates.
   const [shareAccess, setShareAccess] = useState<'private' | 'workspace'>('private');
   const [shareAccessMenuOpen, setShareAccessMenuOpen] = useState(false);
   const [shareAccessConfirm, setShareAccessConfirm] = useState<'private' | 'workspace' | null>(null);
@@ -6432,15 +6400,17 @@ function ReactComponentViewer({
   const [publishedFileSlug, setPublishedFileSlug] = useState('');
   const [publishingPublicFile, setPublishingPublicFile] = useState(false);
   const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
-  // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
-  // only renders inside the already-published branch, so a failed FIRST publish
-  // used to leave no trace on screen at all — the button simply returned to idle.
-  const [publishFailureKey, setPublishFailureKey] = useState<PublicFilePublishFailureKey | null>(null);
+  const [publishFailureKey, setPublishFailureKey] = useState<string | null>(null);
   const filePublished = publishedFileUrl.length > 0;
-  // Public links need a signed-in workspace (any type); see canPublishPublicFile.
-  const canPublishPublic = canPublishPublicFile(workspaceContext);
+  const canPublishPublic = false;
   const publicFileRequestSeqRef = useRef(0);
   const publicFileIdentityRef = useRef({ projectId, fileName: file.name });
+  const [mode, setMode] = useState<'preview' | 'source'>('preview');
+  const [source, setSource] = useState<string | null>(null);
+  const [srcDoc, setSrcDoc] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
   const shareRef = useRef<HTMLDivElement | null>(null);
   // HTML entries that load this file as a Babel module. `null` = still
   // checking; `[]` = standalone artifact; non-empty = a module of a
@@ -6452,7 +6422,7 @@ function ReactComponentViewer({
   useEffect(() => {
     setSource(null);
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((text) => {
+    void fetchProjectFileText(projectId, file.name, {}).then((text) => {
       if (!cancelled) setSource(text ?? '');
     });
     return () => {
@@ -6468,7 +6438,7 @@ function ReactComponentViewer({
     let cancelled = false;
     void (async () => {
       try {
-        const files = await fetchProjectFiles(projectId, { workspaceContext });
+        const files = await fetchProjectFiles(projectId, {});
         const htmlNames = files
           .filter((entry) => /\.html?$/i.test(entry.name))
           .map((entry) => entry.name);
@@ -6476,7 +6446,6 @@ function ReactComponentViewer({
         await Promise.all(
           htmlNames.map(async (name) => {
             const text = await fetchProjectFileText(projectId, name, {
-              workspaceContext,
             }).catch(() => null);
             if (text != null) htmlSources.set(name, text);
           }),
@@ -6519,18 +6488,6 @@ function ReactComponentViewer({
     };
   }, [shareAccess]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
-      if (!cancelled) setShareAccess(shared ? 'workspace' : 'private');
-    });
-    refreshShareAccess();
-    window.addEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
-    };
-  }, [projectId, shareMenuOpen, workspaceContext]);
 
   // Collapse the nested workspace-access listbox whenever the share popover
   // itself closes, so it never re-opens mid-flight.
@@ -6553,7 +6510,6 @@ function ReactComponentViewer({
     setPublishingPublicFile(false);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
-    // Off-team the read can only 409; don't spend a request per file open on it.
     if (!canPublishPublic) return;
     // A readonly viewer's publish surface is disabled outright, and the daemon
     // answers its probe with a slow fixed 403 (2.1 s in the packaged trace) —
@@ -6561,21 +6517,6 @@ function ReactComponentViewer({
     // failing (Batch A §4.4). `viewerOnly` fails closed while ownership is
     // still unknown, and this effect re-runs when it flips writable.
     if (viewerOnly) return;
-    void fetchProjectFilePublicPublication(projectId, file.name, workspaceContext)
-      .then((publication) => {
-        const current = publicFileIdentityRef.current;
-        if (
-          cancelled ||
-          publicFileRequestSeqRef.current !== requestSeq ||
-          current.projectId !== projectId ||
-          current.fileName !== file.name
-        ) {
-          return;
-        }
-        setPublishedFileUrl(publication?.url ?? '');
-        setPublishedFileSlug(publication?.slug ?? '');
-      })
-      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -6643,7 +6584,7 @@ function ReactComponentViewer({
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
-      const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      const response = await publishProjectFilePublic(requestProjectId, requestFileName);
       firePublishResult({
         action: 'publish',
         result: 'success',
@@ -6657,8 +6598,8 @@ function ReactComponentViewer({
       ) {
         return;
       }
-      setPublishedFileUrl(response.url);
-      setPublishedFileSlug(response.slug);
+      setPublishedFileUrl((response as { url?: string })?.url ?? '');
+      setPublishedFileSlug((response as { slug?: string })?.slug ?? '');
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
       const recoveryPublication = publicFileManualRevokePublication(error);
@@ -6669,9 +6610,9 @@ function ReactComponentViewer({
         publish_duration_ms: Math.round(performance.now() - publishStarted),
       });
       if (publicFileRequestSeqRef.current === requestSeq) {
-        if (recoveryPublication) {
-          setPublishedFileUrl(recoveryPublication.url);
-          setPublishedFileSlug(recoveryPublication.slug);
+        if (false) {
+          setPublishedFileUrl('');
+          setPublishedFileSlug('');
           setPublishLinkFeedback(null);
           setPublishFailureKey(null);
         } else {
@@ -6695,7 +6636,7 @@ function ReactComponentViewer({
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
-      await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug);
       firePublishResult({
         action: 'unpublish',
         result: 'success',
@@ -6760,20 +6701,9 @@ function ReactComponentViewer({
   }
 
   async function commitWorkspaceShareAccess(nextAccess: 'private' | 'workspace') {
-    setShareAccessBusy(true);
-    try {
-      await moveWorkspaceProject({
-        projectId,
-        visibility: nextAccess === 'workspace' ? 'team' : 'personal',
-        workspaceContext,
-      });
-      setShareAccess(nextAccess);
-      notifyTeamProjectsChanged();
-    } catch (error) {
-      console.warn('[FileViewer] failed to update workspace project sharing', error);
-    } finally {
-      setShareAccessBusy(false);
-    }
+    // Workspace sharing is removed; the access level stays 'private'.
+    setShareAccessMenuOpen(false);
+    void nextAccess;
   }
 
   const exportTitle = file.name.replace(/\.(jsx|tsx)$/i, '') || file.name;
@@ -7072,7 +7002,7 @@ function ReactComponentViewer({
                         ) }
                         {publishFailureKey ? (
                           <p className="chrome-publish-error" role="status">
-                            {t(publishFailureKey)}
+                            {t(publishFailureKey as Parameters<typeof t>[0])}
                           </p>
                         ) : null}
                         </>
@@ -7213,7 +7143,7 @@ function DocumentPreviewViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const [preview, setPreview] = useState<ProjectFilePreview | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -7221,7 +7151,7 @@ function DocumentPreviewViewer({
     let cancelled = false;
     setLoading(true);
     setPreview(null);
-    void fetchProjectFilePreview(projectId, file.name, workspaceContext).then((next) => {
+    void fetchProjectFilePreview(projectId, file.name).then((next) => {
       if (!cancelled) {
         setPreview(next);
         setLoading(false);
@@ -7267,15 +7197,13 @@ function DocumentPreviewViewer({
 
 export function fileViewerSourceAuthorizationScopeKey(
   workspaceContextLoading: boolean,
-  workspaceContext: WorkspaceCollabContext | null,
-  projectResourceAuthority?: ProjectResourceAuthority,
+  _workspaceContext: null,
+  projectResourceAuthority?: 'allowed' | 'denied' | 'pending',
 ): string | null {
   const authority = projectResourceAuthority
-    ?? (workspaceContextLoading ? 'pending' : workspaceContext ? 'workspace' : 'local');
+    ?? (workspaceContextLoading ? 'pending' : 'local');
   if (authority === 'local') return 'local';
-  if (authority === 'workspace' && workspaceContext) {
-    return `workspace:${workspaceIdentityCacheKey(workspaceContext)}`;
-  }
+  if (authority === 'allowed') return 'local';
   return null;
 }
 
@@ -7383,12 +7311,10 @@ function HtmlViewer({
   const {
     workspaceContext: observedWorkspaceContext,
     workspaceContextLoading,
-    projectResourceAuthority,
-  } = useProjectCollabContext();
+  } = { workspaceContext: null, workspaceContextLoading: false };
   const observedSourceAuthorizationScopeKey = fileViewerSourceAuthorizationScopeKey(
     workspaceContextLoading,
     observedWorkspaceContext,
-    projectResourceAuthority,
   );
   // Project context providers may re-materialize an equivalent object while
   // ambient focus/presence settles. Requests are scoped by the fields encoded
@@ -7432,7 +7358,7 @@ function HtmlViewer({
   // the viewer is a team member of a shared project. Off (exact-match, single
   // user) otherwise. From the ProjectView-provided collab context — no props to
   // thread, no second collab client.
-  const collab = useProjectCollabContext();
+  const collab: { workspaceContext: null; workspaceContextLoading: boolean; member: null; present: unknown[]; enabled: boolean; ownerDisplayName?: string | null } | null = null;
   // Latest per-slide capture progress for the programmatic exporters, read by
   // the loading-toast ticker in fireShareExport to render elapsed time + ETA.
   const exportProgressRef = useRef<{ done: number; total: number } | null>(null);
@@ -7769,6 +7695,22 @@ function HtmlViewer({
       duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
     });
   };
+  // Single-machine build: workspace sharing / public publishing removed.
+  // Keep the share-menu state shape so the JSX stays simple; everything is
+  // private and the publish affordance never activates.
+  const [shareAccess, setShareAccess] = useState<'private' | 'workspace'>('private');
+  const [shareAccessMenuOpen, setShareAccessMenuOpen] = useState(false);
+  const [shareAccessConfirm, setShareAccessConfirm] = useState<'private' | 'workspace' | null>(null);
+  const [shareAccessBusy, setShareAccessBusy] = useState(false);
+  const [publishedFileUrl, setPublishedFileUrl] = useState('');
+  const [publishedFileSlug, setPublishedFileSlug] = useState('');
+  const [publishingPublicFile, setPublishingPublicFile] = useState(false);
+  const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
+  const [publishFailureKey, setPublishFailureKey] = useState<string | null>(null);
+  const filePublished = publishedFileUrl.length > 0;
+  const canPublishPublic = false;
+  const publicFileRequestSeqRef = useRef(0);
+  const publicFileIdentityRef = useRef({ projectId, fileName: file.name });
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const sourceSnapshotRefreshKey = htmlSourceSnapshotRefreshKey(file, filesRefreshKey);
   const [initialSourceSnapshot] = useState(() => (
@@ -7848,23 +7790,6 @@ function HtmlViewer({
   // preselect the tab and open this one popover.
   const [deployMenuOpen, setDeployMenuOpen] = useState(false);
   const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
-  const [shareAccess, setShareAccess] = useState<'private' | 'workspace'>('private');
-  const [shareAccessMenuOpen, setShareAccessMenuOpen] = useState(false);
-  const [shareAccessConfirm, setShareAccessConfirm] = useState<'private' | 'workspace' | null>(null);
-  const [shareAccessBusy, setShareAccessBusy] = useState(false);
-  const [publishedFileUrl, setPublishedFileUrl] = useState('');
-  const [publishedFileSlug, setPublishedFileSlug] = useState('');
-  const [publishingPublicFile, setPublishingPublicFile] = useState(false);
-  const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
-  // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
-  // only renders inside the already-published branch, so a failed FIRST publish
-  // used to leave no trace on screen at all — the button simply returned to idle.
-  const [publishFailureKey, setPublishFailureKey] = useState<PublicFilePublishFailureKey | null>(null);
-  const filePublished = publishedFileUrl.length > 0;
-  // Public links need a signed-in workspace (any type); see canPublishPublicFile.
-  const canPublishPublic = canPublishPublicFile(workspaceContext);
-  const publicFileRequestSeqRef = useRef(0);
-  const publicFileIdentityRef = useRef({ projectId, fileName: file.name });
   // False when closed; otherwise records which entry opened the modal so the
   // surface_view impression can carry entry_from.
   const [toolbarMoreOpen, setToolbarMoreOpen] = useState(false);
@@ -7948,7 +7873,7 @@ function HtmlViewer({
   useEffect(() => {
     if (!workspaceActive) return;
     let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
+    const refreshShareAccess = () => void Promise.resolve(false).then((shared) => {
       if (!cancelled) setShareAccess(shared ? 'workspace' : 'private');
     });
     refreshShareAccess();
@@ -7975,7 +7900,6 @@ function HtmlViewer({
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     if (!workspaceActive) return;
-    // Off-team the read can only 409; don't spend a request per file open on it.
     if (!canPublishPublic) return;
     // A readonly viewer's publish surface is disabled outright, and the daemon
     // answers its probe with a slow fixed 403 (2.1 s in the packaged trace) —
@@ -7983,21 +7907,6 @@ function HtmlViewer({
     // failing (Batch A §4.4). `viewerOnly` fails closed while ownership is
     // still unknown, and this effect re-runs when it flips writable.
     if (viewerOnly) return;
-    void fetchProjectFilePublicPublication(projectId, file.name, workspaceContext)
-      .then((publication) => {
-        const current = publicFileIdentityRef.current;
-        if (
-          cancelled ||
-          publicFileRequestSeqRef.current !== requestSeq ||
-          current.projectId !== projectId ||
-          current.fileName !== file.name
-        ) {
-          return;
-        }
-        setPublishedFileUrl(publication?.url ?? '');
-        setPublishedFileSlug(publication?.slug ?? '');
-      })
-      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -8073,7 +7982,7 @@ function HtmlViewer({
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
-      const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      const response = await publishProjectFilePublic(requestProjectId, requestFileName);
       firePublishResult({
         action: 'publish',
         result: 'success',
@@ -8087,8 +7996,8 @@ function HtmlViewer({
       ) {
         return;
       }
-      setPublishedFileUrl(response.url);
-      setPublishedFileSlug(response.slug);
+      setPublishedFileUrl((response as { url?: string })?.url ?? '');
+      setPublishedFileSlug((response as { slug?: string })?.slug ?? '');
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
       const recoveryPublication = publicFileManualRevokePublication(error);
@@ -8099,9 +8008,9 @@ function HtmlViewer({
         publish_duration_ms: Math.round(performance.now() - publishStarted),
       });
       if (publicFileRequestSeqRef.current === requestSeq) {
-        if (recoveryPublication) {
-          setPublishedFileUrl(recoveryPublication.url);
-          setPublishedFileSlug(recoveryPublication.slug);
+        if (false) {
+          setPublishedFileUrl('');
+          setPublishedFileSlug('');
           setPublishLinkFeedback(null);
           setPublishFailureKey(null);
         } else {
@@ -8125,7 +8034,7 @@ function HtmlViewer({
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
-      await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug);
       firePublishResult({
         action: 'unpublish',
         result: 'success',
@@ -8193,7 +8102,6 @@ function HtmlViewer({
       await moveWorkspaceProject({
         projectId,
         visibility: nextAccess === 'workspace' ? 'team' : 'personal',
-        workspaceContext,
       });
       setShareAccess(nextAccess);
       notifyTeamProjectsChanged();
@@ -9321,7 +9229,7 @@ function HtmlViewer({
   ) {
     const requestSeq = ++deployProviderLoadSeqRef.current;
     setDeployProviderId(providerId);
-    const deployments = await fetchProjectDeployments(projectId, workspaceContext);
+    const deployments = await fetchProjectDeployments(projectId);
     const nextDeploymentsByProvider = deploymentMapForCurrentFile(deployments);
     const exactDeployment = nextDeploymentsByProvider[providerId] ?? null;
     const fallbackDeployment = options?.fallbackToExisting
@@ -9558,14 +9466,12 @@ function HtmlViewer({
         ? fetchProjectFileTextPreview(projectId, file.name, {
           limit: HTML_ROUTING_TEXT_PREVIEW_LIMIT,
           cacheBustKey,
-          workspaceContext,
         }).then(async (preview) => {
           const previewText = preview?.text ?? null;
           if (previewTextNeedsFullSourceForSafeInline(previewText)) {
             const fullText = await fetchProjectFileText(projectId, file.name, {
               cache: 'no-store',
               cacheBustKey,
-              workspaceContext,
             });
             if (fullText !== null) {
               return {
@@ -9584,7 +9490,6 @@ function HtmlViewer({
       : fetchProjectFileText(projectId, file.name, {
           cache: 'no-store',
           cacheBustKey,
-          workspaceContext,
         }).then((text) => ({
         text,
         poweredPreviewRequired: false,
@@ -9691,7 +9596,7 @@ function HtmlViewer({
     setDeployError(null);
     setCopiedDeployLink(null);
     setDeployPhase('idle');
-    void fetchProjectDeployments(projectId, workspaceContext).then((items) => {
+    void fetchProjectDeployments(projectId).then((items) => {
       if (cancelled || deploymentsLoadSeqRef.current !== requestSeq) return;
       const nextDeploymentsByProvider = deploymentMapForCurrentFile(items);
       const current = nextDeploymentsByProvider[deployProviderId] ?? null;
@@ -9713,7 +9618,7 @@ function HtmlViewer({
     if (!deployMenuOpen) return;
     const requestSeq = ++deploymentsLoadSeqRef.current;
     let cancelled = false;
-    void fetchProjectDeployments(projectId, workspaceContext).then((items) => {
+    void fetchProjectDeployments(projectId).then((items) => {
       if (cancelled || deploymentsLoadSeqRef.current !== requestSeq) return;
       const nextDeploymentsByProvider = deploymentMapForCurrentFile(items);
       const current = nextDeploymentsByProvider[deployProviderId] ?? null;
@@ -9886,7 +9791,7 @@ function HtmlViewer({
   // paint can leak an unscoped font/image request before the async rewrite
   // finishes.
   const scopedRelativeAssetRefs =
-    workspaceContext?.workspaceType === 'team' && relativeProjectAssetRefs;
+    false && relativeProjectAssetRefs;
   const livePreviewSource = scopedRelativeAssetRefs && inlinedSource === null
     ? null
     : (inlinedSource ?? deckVisualSource);
@@ -10006,7 +9911,7 @@ function HtmlViewer({
     // project. Aborting on cleanup lets a fresh mount issue a fresh read.
     const controller = new AbortController();
     setProjectFilePathSet(null);
-    void fetchProjectFiles(projectId, { workspaceContext, signal: controller.signal })
+    void fetchProjectFiles(projectId, { signal: controller.signal })
       .then((files) => {
         if (!controller.signal.aborted) {
           setProjectFilePathSet(new Set(files.map((entry) => entry.name)));
@@ -10035,8 +9940,8 @@ function HtmlViewer({
     // renderer for the exact files it is already loading. Team previews keep
     // the preflight because browser-owned iframe requests cannot surface the
     // daemon's scoped raw-route refusal safely to the host UI.
-    if (workspaceContext?.workspaceType !== 'team') return;
     if (mode !== 'preview' || effectiveDeck) return;
+    if (projectFilePathSet === null) return;
     const s = routingHtmlSource;
     if (!s) return;
     const assetPaths = collectPreviewAssetPaths(s, file.name, projectFilePathSet)
@@ -10052,7 +9957,7 @@ function HtmlViewer({
         try {
           const resp = await fetch(
             appendResourceQuery(
-              projectRawUrl(projectId, assetPath, workspaceContext),
+              projectRawUrl(projectId, assetPath),
               `previewAssetCheck=${encodeURIComponent(cacheBust)}`,
             ),
             workspaceContext
@@ -10089,7 +9994,6 @@ function HtmlViewer({
     reloadKey,
     routingHtmlSource,
     workspaceActive,
-    workspaceContext,
   ]);
   // A real WebGL/Worker/WASM/SharedArrayBuffer artifact needs the "powered
   // preview" path — a cross-origin-isolated iframe with allow-same-origin —
@@ -10184,7 +10088,7 @@ function HtmlViewer({
   );
   useEffect(() => {
     if (
-      workspaceContext?.workspaceType !== 'team'
+      true
       ||
       useUrlLoadPreview
       || authoredSrcDocBase !== false
@@ -10213,7 +10117,6 @@ function HtmlViewer({
     srcDocPreviewBaseIdentity,
     useUrlLoadPreview,
     workspaceActive,
-    workspaceContext,
   ]);
   const urlPreviewBaseIdentity = `url\0${srcDocPreviewBaseIdentity}`;
   const effectiveUrlLoadedPreviewBase =
@@ -10351,7 +10254,7 @@ function HtmlViewer({
   ]);
   const basePreviewSrcUrl = useMemo(
     () => appendResourceQuery(
-      projectRawUrl(projectId, file.name, workspaceContext),
+      projectRawUrl(projectId, file.name),
       `v=${Math.round(file.mtime)}&r=${reloadKey}&${previewBridgeQuery}`,
     ),
     [projectId, file.name, file.mtime, previewBridgeQuery, reloadKey, workspaceContext],
@@ -10668,7 +10571,7 @@ function HtmlViewer({
     // refs also keep this pass because they first need project-file-list
     // normalization before the stable base can resolve them correctly.
     const requiresAssetMaterialization =
-      workspaceContext?.workspaceType === 'team' || projectRootAssetRefs;
+      Boolean(projectRootAssetRefs);
     if (!requiresAssetMaterialization) return;
     // Root-relative project asset refs need the confirmed file list before
     // they can be normalized; wait for it rather than inlining a half-fixed
@@ -10681,7 +10584,6 @@ function HtmlViewer({
       projectId,
       file.name,
       projectFilePathSet,
-      workspaceContext,
     ).then((next) => {
       if (!cancelled) setInlinedSource(next);
     });
@@ -10698,11 +10600,10 @@ function HtmlViewer({
     relativeProjectAssetRefs,
     scopedRelativeAssetRefs,
     projectFilePathSet,
-    workspaceContext,
   ]);
 
   const srcDocBaseSeedHref = effectiveScopedSrcDocPreviewBase?.href
-    ?? previewRuntimeUrl(projectRawUrl(projectId, baseDirFor(file.name), workspaceContext));
+    ?? previewRuntimeUrl(projectRawUrl(projectId, baseDirFor(file.name)));
   const srcDocBaseSelectionIdentity = [
     srcDocPreviewBaseIdentity,
     sourceSnapshotRefreshKey,
@@ -13242,7 +13143,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: label,
         ...(parentVersionId ? { parentVersionId } : {}),
-      }, workspaceContext);
+      });
       if (!saved.ok) {
         const status = 'status' in saved ? saved.status : undefined;
         const code = 'code' in saved ? saved.code : undefined;
@@ -13334,7 +13235,6 @@ function HtmlViewer({
     const persisted = await fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: Date.now(),
-      workspaceContext,
     });
     if (persisted == null || persisted === expectedSource) return true;
     setSource(persisted);
@@ -13390,7 +13290,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Undo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
-      }, workspaceContext);
+      });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the undo result', saved));
         finish('failed', 'save_failed');
@@ -13454,7 +13354,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Redo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
-      }, workspaceContext);
+      });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the redo result', saved));
         finish('failed', 'save_failed');
@@ -13611,7 +13511,7 @@ function HtmlViewer({
     try {
       const saved = await writeProjectTextFile(projectId, file.name, nextSource, {
         artifactManifest: file.artifactManifest,
-      }, workspaceContext);
+      });
       if (!saved) throw new Error('speaker_notes_save_failed');
       setSource(nextSource);
       sourceRef.current = nextSource;
@@ -13766,7 +13666,7 @@ function HtmlViewer({
       const saved = await writeProjectTextFileDetailed(projectId, file.name, next, {
         versionSource: 'manual',
         versionLabel: t('fileViewer.edit'),
-      }, workspaceContext);
+      });
       if (!saved.ok) {
         throw new Error(saved.message || `Save failed (${saved.status ?? ''})`);
       }
@@ -14342,7 +14242,6 @@ function HtmlViewer({
         deployProviderId,
         cloudflarePagesSelection,
         deployProviderId === CLOUDFLARE_PAGES_PROVIDER_ID ? deployTarget : undefined,
-        workspaceContext,
       );
       setDeploymentsByProvider((current) => ({
         ...current,
@@ -14391,7 +14290,7 @@ function HtmlViewer({
     setDeployError(null);
     setDeployPhase('preparing-link');
     try {
-      const next = await checkDeploymentLink(projectId, current.id, workspaceContext);
+      const next = await checkDeploymentLink(projectId, current.id);
       setDeploymentsByProvider((items) => ({
         ...items,
         [next.providerId]: next,
@@ -15002,7 +14901,6 @@ function HtmlViewer({
         projectId,
         fileName: file.name,
         title: pdfTitle,
-        workspaceContext,
         // Broader deck signal than the viewer's nav so runtime-managed decks
         // (<deck-stage>) paginate per slide; the vector fallback below uses
         // the SAME signal, so an artifact exports identically with or without
@@ -15023,7 +14921,6 @@ function HtmlViewer({
       filePath: file.name,
       projectId,
       title: pdfTitle,
-      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     });
   }
@@ -15038,7 +14935,6 @@ function HtmlViewer({
       filePath: file.name,
       fallbackHtml: context?.content ?? source ?? '',
       fallbackTitle: context?.title ?? exportTitle,
-      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     }), context);
   }
@@ -15048,7 +14944,6 @@ function HtmlViewer({
       projectId,
       filePath: file.name,
       fallbackTitle: context?.title ?? exportTitle,
-      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     }), context);
   }
@@ -15187,7 +15082,6 @@ function HtmlViewer({
           projectId,
           fileName: file.name,
           deck: imageDeckSignal,
-          workspaceContext,
           ...(plan.index != null ? { index: plan.index } : {}),
           ...(exportViewport?.width != null ? { width: exportViewport.width } : {}),
           ...(exportViewport?.height != null ? { height: exportViewport.height } : {}),
@@ -15854,7 +15748,7 @@ function HtmlViewer({
         : { top: 12, right: 12, width: 320 }}
       onFloatingPositionChange={selectedManualEditTarget ? setManualEditPanelPosition : undefined}
       onPickImage={async (pickedFile) => {
-        const result = await uploadProjectFiles(projectId, [pickedFile], undefined, workspaceContext);
+        const result = await uploadProjectFiles(projectId, [pickedFile], undefined);
         const uploaded = result.uploaded[0];
         if (!uploaded?.path) {
           setManualEditError(result.error ?? t('manualEdit.uploadImageFailed'));
@@ -15903,37 +15797,17 @@ function HtmlViewer({
   // current user's to act on, so it reads as "mine". Only the author may EDIT
   // their own note; the author OR the project owner may delete it or send it to
   // the agent. The B lane enforces the same rules server-side.
-  const myMemberId = collab.member?.memberId ?? null;
-  const iAmProjectOwner = collab.isOwner;
-  const commentAuthoredByMe = (comment: PreviewComment | null | undefined): boolean => {
-    // No persisted comment means this is the create flow: the draft belongs
-    // to the current viewer, including a read-only member/admin annotating
-    // someone else's shared project.
-    if (!comment) return true;
-    const authorId = comment?.authorMemberId ?? null;
-    // A legacy shared comment without an author is deliberately owner-only.
-    // Treating it as "mine" for every member made the client advertise a
-    // destructive action the daemon must reject. Personal/unshared comments
-    // retain their historical single-user behavior.
-    if (authorId == null) return !collab.enabled || iAmProjectOwner;
-    return authorId === myMemberId;
-  };
-  const canSendCommentToAgent = (comment: PreviewComment | null | undefined): boolean =>
-    commentAuthoredByMe(comment) || iAmProjectOwner;
-  const canEditActiveComment = commentAuthoredByMe(activeComposerComment);
-  const canDeleteActiveComment = canEditActiveComment || iAmProjectOwner;
-  const canSendActiveComment = canEditActiveComment || iAmProjectOwner;
+  const commentAuthoredByMe = (_comment: PreviewComment | null | undefined): boolean => true;
+  const canSendCommentToAgent = (_comment: PreviewComment | null | undefined): boolean => true;
+  const canEditActiveComment = true;
+  const canDeleteActiveComment = canEditActiveComment;
+  const canSendActiveComment = canEditActiveComment;
   // The viewer's own author identity for the comment cards. Derived from the
   // workspace context this component ALREADY reads (see `workspaceContext`
   // above) — no extra request. Deliberately NOT `collab.member`, which is null
   // on a personal workspace and on an unshared project, i.e. exactly the cases
   // where a comment lost its avatar and name.
-  const commentAuthorSelf = useMemo(
-    () => currentUserDirectoryEntry(
-      projectResourceReadBlocked ? null : workspaceContext,
-    ),
-    [workspaceContext, projectResourceReadBlocked],
-  );
+  const commentAuthorSelf = null;
   const commentComposerPortalMetrics = (() => {
     if (!commentComposerHost || !commentPreviewCanvasNode) return null;
     const hostRect = commentComposerHost.getBoundingClientRect();
@@ -15973,7 +15847,7 @@ function HtmlViewer({
       images={boardImagePreviews}
       existingImages={
         activeComposerAttachments.map((attachment) => ({
-          url: projectRawUrl(projectId, attachment.path, workspaceContext),
+          url: projectRawUrl(projectId, attachment.path),
           name: attachment.name,
         }))
       }
@@ -16949,7 +16823,7 @@ function HtmlViewer({
                       ) }
                       {publishFailureKey ? (
                         <p className="chrome-publish-error" role="status">
-                          {t(publishFailureKey)}
+                          {t(publishFailureKey as Parameters<typeof t>[0])}
                         </p>
                       ) : null}
                       </>
@@ -17093,7 +16967,6 @@ function HtmlViewer({
                             projectId,
                             fileName: file.name,
                             title: exportTitle,
-                            workspaceContext,
                             // Broader deck signal than the viewer's nav so
                             // runtime-managed decks (<deck-stage>) paginate per
                             // slide; the vector fallback below uses the SAME
@@ -17117,7 +16990,6 @@ function HtmlViewer({
                           filePath: file.name,
                           projectId,
                           title: exportTitle,
-                          workspaceContext,
                         });
                       });
                     }}
@@ -17176,7 +17048,6 @@ function HtmlViewer({
                         filePath: file.name,
                         fallbackHtml: source ?? '',
                         fallbackTitle: exportTitle,
-                        workspaceContext,
                       }));
                     }}
                   >
@@ -17195,7 +17066,6 @@ function HtmlViewer({
                         projectId,
                         filePath: file.name,
                         fallbackTitle: exportTitle,
-                        workspaceContext,
                       }));
                     }}
                   >
@@ -17558,9 +17428,8 @@ function HtmlViewer({
                 <CommentPreviewOverlays
                   comments={commentCreateMode ? creationSortedSideComments : []}
                   provisionalPinNumber={nextProvisionalPinNumber}
-                  driftLadder={collab.enabled}
-                  currentVersion={collab.publishedVersion ?? undefined}
-                  {...(collab.onLostAnchors ? { onLostAnchors: collab.onLostAnchors } : {})}
+                  driftLadder={false}
+
                   liveTargets={liveCommentTargets}
                   hoveredTarget={hoveredCommentTarget}
                   hoveredPodMemberId={hoveredPodMemberId}
@@ -17945,7 +17814,6 @@ function HtmlViewer({
                       title: exportTitle,
                       deck: true,
                       editable,
-                      workspaceContext,
                     });
                     if (!res.ok) {
                       // `unavailable` covers two very different situations and
@@ -18557,7 +18425,7 @@ async function inlineRelativeAssets(
   workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
   const toRawUrl = (projectPath: string) =>
-    projectRawUrl(projectId, projectPath, workspaceContext);
+    projectRawUrl(projectId, projectPath);
   // Root-relative project asset refs (confirmed against the real file list)
   // become owner-relative first, so the stylesheet/script inlining below and
   // the srcDoc <base href> rebasing treat them like any other relative ref.
@@ -18572,7 +18440,7 @@ async function inlineRelativeAssets(
     const href = readHtmlAttr(tag, 'href');
     if (!rel || !/\bstylesheet\b/i.test(rel) || !href) continue;
     replacements.push(
-      fetchProjectRelativeText(projectId, fileName, href, workspaceContext).then((asset) =>
+      fetchProjectRelativeText(projectId, fileName, href).then((asset) =>
         asset == null
           ? null
           : {
@@ -18591,7 +18459,7 @@ async function inlineRelativeAssets(
     const src = readHtmlAttr(tag, 'src');
     if (!src) continue;
     replacements.push(
-      fetchProjectRelativeText(projectId, fileName, src, workspaceContext).then((asset) => {
+      fetchProjectRelativeText(projectId, fileName, src).then((asset) => {
         if (asset == null) return null;
         const js = projectFilePaths
           ? rewriteInlinedScriptAssetRefs(asset.text, asset.filePath, projectFilePaths, toRawUrl)
@@ -18616,9 +18484,7 @@ async function inlineRelativeAssets(
     (next, { from, to }) => next.replace(from, () => to),
     normalized,
   );
-  return workspaceContext?.workspaceType === 'team' && projectFilePaths
-    ? rewriteProjectAssetRefsToRawUrls(inlined, fileName, projectFilePaths, toRawUrl)
-    : inlined;
+  return inlined;
 }
 
 async function fetchProjectRelativeText(
@@ -18631,7 +18497,7 @@ async function fetchProjectRelativeText(
   if (!filePath) return null;
   try {
     const resp = await fetch(
-      projectRawUrl(projectId, filePath, workspaceContext),
+      projectRawUrl(projectId, filePath),
       workspaceContext
         ? { headers: workspaceProjectHeaders(workspaceContext) }
         : undefined,
@@ -18679,9 +18545,9 @@ function ImageViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const url = appendResourceQuery(
-    projectFileUrl(projectId, file.name, workspaceContext),
+    projectFileUrl(projectId, file.name),
     `v=${Math.round(file.mtime)}`,
   );
   return (
@@ -18697,14 +18563,14 @@ function ImageViewer({
         <div className="viewer-toolbar-actions">
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name, workspaceContext)}
+            href={projectFileUrl(projectId, file.name)}
             download={file.name}
           >
             {t('fileViewer.download')}
           </a>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name, workspaceContext)}
+            href={projectFileUrl(projectId, file.name)}
             target="_blank"
             rel="noreferrer noopener"
           >
@@ -18727,7 +18593,7 @@ function SketchViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   return (
     <div className="viewer image-viewer sketch-viewer">
       <div className="viewer-toolbar">
@@ -18743,7 +18609,6 @@ function SketchViewer({
           projectId={projectId}
           file={file}
           className="viewer-sketch-preview"
-          workspaceContext={workspaceContext}
         />
       </div>
     </div>
@@ -18758,9 +18623,9 @@ function VideoViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const url = appendResourceQuery(
-    projectFileUrl(projectId, file.name, workspaceContext),
+    projectFileUrl(projectId, file.name),
     `v=${Math.round(file.mtime)}`,
   );
   return (
@@ -18788,9 +18653,9 @@ function AudioViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const url = appendResourceQuery(
-    projectFileUrl(projectId, file.name, workspaceContext),
+    projectFileUrl(projectId, file.name),
     `v=${Math.round(file.mtime)}`,
   );
   return (
@@ -18830,14 +18695,14 @@ export function SvgViewer({
   initialSource,
 }: SvgViewerProps) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const [mode, setMode] = useState<SvgViewerMode>(initialMode);
   const [source, setSource] = useState<string | null>(initialSource ?? null);
   const [loadingSource, setLoadingSource] = useState(false);
   const [sourceError, setSourceError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const url = appendResourceQuery(
-    projectFileUrl(projectId, file.name, workspaceContext),
+    projectFileUrl(projectId, file.name),
     `v=${Math.round(file.mtime)}&r=${reloadKey}`,
   );
 
@@ -18850,7 +18715,6 @@ export function SvgViewer({
     void fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: `${Math.round(file.mtime)}-${reloadKey}`,
-      workspaceContext,
     }).then((next) => {
       if (cancelled) return;
       if (next === null) {
@@ -18871,7 +18735,6 @@ export function SvgViewer({
     initialSource,
     mode,
     reloadKey,
-    workspaceContext,
   ]);
 
   return (
@@ -18913,14 +18776,14 @@ export function SvgViewer({
           </button>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name, workspaceContext)}
+            href={projectFileUrl(projectId, file.name)}
             download={file.name}
           >
             {t('fileViewer.download')}
           </a>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name, workspaceContext)}
+            href={projectFileUrl(projectId, file.name)}
             target="_blank"
             rel="noreferrer noopener"
           >
@@ -18959,14 +18822,14 @@ function TextViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const [text, setText] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     setText(null);
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((t) => {
+    void fetchProjectFileText(projectId, file.name, {}).then((t) => {
       if (!cancelled) setText(t ?? '');
     });
     return () => {
@@ -19186,7 +19049,7 @@ function MarkdownViewer({
   viewerOnly?: boolean;
 }) {
   const { t, locale } = useI18n();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext = null;
   const [text, setText] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
@@ -19245,7 +19108,7 @@ function MarkdownViewer({
       copyBlockTimerRef.current = null;
     }
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((next) => {
+    void fetchProjectFileText(projectId, file.name, {}).then((next) => {
       if (cancelled) return;
       if (
         loadedFileKeyRef.current === markdownFileKey &&
@@ -19323,7 +19186,7 @@ function MarkdownViewer({
         const showSaving = saveOptions.showSaving !== false;
         if (showSaving) setSaveState('saving');
         try {
-          const saved = await writeProjectTextFile(projectId, file.name, nextValue, undefined, workspaceContext);
+          const saved = await writeProjectTextFile(projectId, file.name, nextValue, undefined);
           if (!saved) throw new Error('write failed');
           lastSavedTextRef.current = nextValue;
           bumpSavedRevision((n) => n + 1);
@@ -19442,7 +19305,7 @@ function MarkdownViewer({
       const images = files.filter((item) => isMarkdownImageFile(item));
       if (images.length === 0) return false;
       const targetDir = markdownDirectory(file.name);
-      const result = await uploadProjectFiles(projectId, images, targetDir, workspaceContext);
+      const result = await uploadProjectFiles(projectId, images, targetDir);
       if (result.uploaded.length > 0) {
         await onFileSaved?.();
         const snippet = result.uploaded
@@ -19511,7 +19374,6 @@ function MarkdownViewer({
       decorateMarkdownCodeBlocks(renderPartial(text)),
       projectId,
       file.name,
-      workspaceContext,
     );
   }, [file.name, projectId, text, workspaceContext]);
   const html = highlightedHtml?.source === baseHtml && highlightedHtml.themeRevision === highlightThemeRevision

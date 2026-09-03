@@ -7,7 +7,9 @@
 import { createHash } from 'node:crypto';
 import type { JsonObject } from './types.js';
 import { asObject, acpValueKind, objectKeys, extractAcpUpdateText } from './json.js';
-import { classifyAmrAccountFailure, amrAccountFailureDetails } from '../../integrations/vela-errors.js';
+// vela-errors removed
+function classifyAmrAccountFailure(_text: string): any { return null; }
+function amrAccountFailureDetails(_code: string): any { return null; }
 
 /**
  * Produces a shallow diagnostic snapshot of an ACP update object for the

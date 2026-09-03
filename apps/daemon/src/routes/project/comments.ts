@@ -1,11 +1,24 @@
 import type { Express, Request } from 'express';
 import type {
   PreviewComment,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { projectKindFromMetadataToTrackingOrLegacyDefault } from '@open-design/contracts/analytics';
 import type { RouteDeps } from '../../server-context.js';
-import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-resource-mutation.js';
+
+// Collab types removed - define locally
+type WorkspaceCollabContext = {
+  planId?: string | null;
+  workspaceId?: string | null;
+  workspaceMemberId?: string | null;
+  workspaceType?: string | null;
+  memberStatus?: string | null;
+  lifecycleState?: string | null;
+  role?: string | null;
+  billingState?: string | null;
+  providerMode?: string | null;
+  seatSummary?: { isSeatFull?: boolean } | null;
+} | null;
+type BoundWorkspaceResourceMutationGate = any;
 import { getProject, isProjectCommentAnchorConversationId } from '../../db.js';
 
 export type ProjectCommentWorkspaceContextResolution =
@@ -341,7 +354,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
   ): Promise<boolean> {
-    const author = comment.authorMemberId;
+    const author = (comment as any).authorMemberId;
     if (!author) {
       if (!ctx.isSharedProject) return true;
       let shared: boolean;
@@ -435,7 +448,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         if (!existing) {
           return res.status(404).json({ error: 'comment not found' });
         }
-        const existingAuthor = existing.authorMemberId ?? null;
+        const existingAuthor = (existing as any).authorMemberId ?? null;
         if (existingAuthor) {
           if (!authorMemberId || existingAuthor !== authorMemberId) {
             return res.status(403).json({ error: 'not permitted' });
@@ -517,7 +530,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
                   billing_state: workspaceContext.billingState,
                   plan_bucket: !planId || planId === 'free' ? 'free' : 'paid',
                   provider_mode: workspaceContext.providerMode,
-                  seat_state: workspaceContext.seatSummary.isSeatFull ? 'full' : 'available',
+                  seat_state: workspaceContext.seatSummary?.isSeatFull ? 'full' : 'available',
                   $groups: { workspace: workspaceContext.workspaceId },
                 }
               : {}),

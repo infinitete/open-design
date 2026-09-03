@@ -30,7 +30,9 @@ import {
   getWorkspaceResourceByResourceId,
   updateWorkspaceResource,
 } from '../db.js';
-import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
+
+// Collab team-resource-materialization removed - stub
+function teamResourceWorkspaceRoot(..._args: any[]): any { return null; }
 
 type SqliteDb = Database.Database;
 

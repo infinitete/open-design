@@ -1,4 +1,3 @@
-import type { WorkspaceCollabContext } from '@open-design/contracts';
 import {
   fetchProjectFilePreview,
   fetchProjectFileText,
@@ -23,7 +22,6 @@ const MAX_API_ATTACHMENT_TOTAL_CHARS = 64_000;
 
 export interface ApiAttachmentContextOptions {
   omitNativeImageAttachments?: boolean;
-  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 export async function historyWithApiAttachmentContext(
@@ -105,7 +103,6 @@ async function buildApiAttachmentContext(
       file,
       remaining,
       index + 1,
-      options.workspaceContext,
     );
     if (!block) continue;
     blocks.push(block.text);
@@ -129,7 +126,6 @@ async function renderApiAttachmentBlock(
   file: ProjectFile | undefined,
   budget: number,
   order: number,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<{ text: string; charsUsed: number } | null> {
   const path = file?.path ?? file?.name ?? attachment.path;
   const name = file?.name ?? attachment.name;
@@ -151,18 +147,13 @@ async function renderApiAttachmentBlock(
     const text = await fetchProjectFileText(projectId, path, {
       cache: 'no-store',
       cacheBustKey: file?.mtime,
-      ...(workspaceContext
-        ? { workspaceContext }
-        : {}),
     });
     if (text) {
       body = clipAttachmentText(text, maxContentChars);
       language = codeFenceLanguage(path);
     }
   } else if (maxContentChars > 0 && API_ATTACHMENT_PREVIEW_KINDS.has(kind)) {
-    const preview = workspaceContext
-      ? await fetchProjectFilePreview(projectId, path, workspaceContext)
-      : await fetchProjectFilePreview(projectId, path);
+    const preview = await fetchProjectFilePreview(projectId, path);
     const previewText = preview
       ? preview.sections
           .map((section) => [`## ${section.title}`, ...section.lines].join('\n'))

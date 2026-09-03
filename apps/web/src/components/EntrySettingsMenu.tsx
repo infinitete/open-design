@@ -306,7 +306,7 @@ export function EntrySettingsMenu({
               trackSettingsPopoverClick(analytics.track, {
                 page_name: pageName,
                 area: 'settings_popover',
-                element: 'workspace_teams',
+                element: 'open_settings',
               });
               setOpen(false);
             }}

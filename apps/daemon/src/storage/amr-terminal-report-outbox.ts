@@ -5,7 +5,8 @@ import {
   velaCommandStdout,
   type VelaCommandOptions,
 } from '../integrations/vela-command.js';
-import { classifyAmrAccountFailure } from '../integrations/vela-errors.js';
+// vela-errors removed - stub
+function classifyAmrAccountFailure(_text: string): any { return null; }
 import { redactSecrets } from '../redact.js';
 
 export type AmrTerminalReportOutcome = 'failed' | 'canceled';

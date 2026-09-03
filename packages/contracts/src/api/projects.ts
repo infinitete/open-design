@@ -5,9 +5,6 @@ import type {
   ProjectContextMcpServerRef,
   ProjectContextPluginRef,
 } from './context.js';
-import type { ProjectSyncIntent, ProjectSyncIntentEvent, ProjectSyncState } from './project-sync.js';
-import type { TeamResourceState } from './team-resources.js';
-import type { WorkspaceCollabContext } from './collab.js';
 
 export type ProjectKind =
   | 'prototype'
@@ -155,22 +152,6 @@ export interface PromptTemplateMetadata {
   source?: PromptTemplateMetadataSource;
 }
 
-/**
- * The local Workspace/member partition from which a catalogue item was picked.
- *
- * This is lookup provenance only. It does not bind the project to a Workspace,
- * prove current membership, or authorize a remote operation.
- */
-export interface LocalCatalogScope {
-  workspaceId: string;
-  workspaceMemberId: string;
-}
-
-export interface ProjectResourceCatalogScopes {
-  skill?: LocalCatalogScope;
-  designSystem?: LocalCatalogScope;
-}
-
 export type DesignSystemReviewDecision = 'looks-good' | 'needs-work';
 
 export type DesignSystemReviewTaskStatus = 'queued' | 'sent' | 'failed';
@@ -296,12 +277,6 @@ export interface ProjectMetadata {
   contextPlugins?: ProjectContextPluginRef[];
   contextMcpServers?: ProjectContextMcpServerRef[];
   contextConnectors?: ProjectContextConnectorRef[];
-  /**
-   * Daemon-stamped provenance for locally selected project resources. This
-   * keeps the first run on the same local catalogue partition when Workspace
-   * identity is still loading; it is never Workspace ownership or authority.
-   */
-  localCatalogScopes?: ProjectResourceCatalogScopes;
   /** Daemon-owned, exact provenance for the scenario currently pinned here. */
   scenarioBinding?: ProjectScenarioBinding;
   /** Daemon-owned automatic OD Next route, independent of plugin selection. */
@@ -353,28 +328,6 @@ export interface Project {
   // pick a plugin they already selected.
   appliedPluginSnapshotId?: string;
   customInstructions?: string;
-  /**
-   * The daemon-authoritative visibility from this project's
-   * `workspace_projects` row.
-   *
-   * This is a read projection, not project storage. It lets clients classify a
-   * local project even when that resource is synchronized through a non-project
-   * hub (for example, a Design System backing project). Absent means the reader
-   * did not carry workspace visibility and must be treated as "no opinion".
-   */
-  workspaceVisibility?: ProjectVisibility;
-  /**
-   * The workspace this project belongs to — exactly one, per the 2026-07-21
-   * ruling that 草稿 and shared projects are both bound to a workspace.
-   *
-   * A read model, not storage: the daemon resolves it from the project's single
-   * `workspace_projects` row. Absent means the daemon has not bound the project
-   * to a workspace yet (a pre-workspace project awaiting adoption on the next
-   * personal-workspace read), NOT "belongs to no workspace" — so a client must
-   * treat absence as "no opinion" and never hide a project on the strength of a
-   * missing value.
-   */
-  workspaceId?: string | null;
 }
 
 export interface ProjectTemplate {
@@ -436,11 +389,7 @@ export interface CreateProjectRequest {
   /** Optional project library location id. Omit or use `default` for .od/projects. */
   projectLocationId?: string;
   skillId?: string | null;
-  /** Local lookup provenance captured when the Skill was selected. */
-  skillCatalogScope?: LocalCatalogScope;
   designSystemId?: string | null;
-  /** Local lookup provenance captured when the Design System was selected. */
-  designSystemCatalogScope?: LocalCatalogScope;
   pendingPrompt?: string;
   metadata?: ProjectMetadata;
   pluginId?: string;
@@ -545,126 +494,6 @@ export interface ProjectDesignTokenSuggestionsResponse {
 // `resolveProjectDir(...)` so the web client never reconstructs the path.
 export interface ProjectDetailResponse extends ProjectResponse {
   resolvedDir: string;
-}
-
-export type ProjectVisibility = 'personal' | 'team';
-
-/**
- * Daemon-authoritative workspace and billing scope for one persisted project.
- *
- * `visibility` answers whether the project itself is a private draft or shared
- * with the team. It is deliberately independent from `kind`: a private draft
- * may still belong to a team workspace and therefore use that workspace's
- * wallet. The tagged union prevents clients from treating every non-null
- * workspace id as a team-billing scope.
- */
-export type ProjectWorkspaceScope =
-  | {
-      kind: 'unbound';
-      projectId: string;
-      workspaceId: null;
-      context: null;
-    }
-  | {
-      kind: 'unavailable';
-      projectId: string;
-      workspaceId: string;
-      visibility: ProjectVisibility;
-      context: null;
-    }
-  | {
-      kind: 'personal';
-      projectId: string;
-      workspaceId: string;
-      visibility: ProjectVisibility;
-      context: WorkspaceCollabContext & { workspaceType: 'personal' };
-    }
-  | {
-      kind: 'team';
-      projectId: string;
-      workspaceId: string;
-      visibility: ProjectVisibility;
-      context: WorkspaceCollabContext & { workspaceType: 'team' };
-    };
-
-/** GET /api/projects/:id/workspace-scope. */
-export interface ProjectWorkspaceScopeResponse {
-  scope: ProjectWorkspaceScope;
-}
-
-// Local D-lane placeholder until the B-owned CurrentWorkspaceContext is
-// imported into open-design. The route adapter keeps this replaceable.
-export type WorkspaceProjectRole = 'owner' | 'admin' | 'member';
-
-// C owns project sync orchestration. D exposes this on its read model and emits
-// intent metadata when visibility changes, but it does not upload or mirror
-// project content directly.
-export type WorkspaceProjectSyncIntentEvent = ProjectSyncIntentEvent;
-
-export type WorkspaceProjectSyncIntent = ProjectSyncIntent;
-
-export type ProjectDisabledReason =
-  | 'workspace_locked'
-  | 'workspace_deleted'
-  | 'permission_denied'
-  | 'sync_pending'
-  | 'resource_frozen';
-
-export interface ProjectAccessFlags {
-  canOpen: boolean;
-  canRename: boolean;
-  canDelete: boolean;
-  canDuplicate: boolean;
-  canMoveToTeam: boolean;
-  canMoveToPersonal: boolean;
-  canExport: boolean;
-  canSendTo: boolean;
-  canRestoreVersion: boolean;
-  disabledReason?: ProjectDisabledReason;
-}
-
-export interface WorkspaceProjectSummary {
-  id: string;
-  name: string;
-  workspaceId: string;
-  visibility: ProjectVisibility;
-  resourceState: TeamResourceState;
-  createdByWorkspaceMemberId: string | null;
-  updatedByWorkspaceMemberId?: string | null;
-  /**
-   * E resource-hub mapping seam. When present, this is Spec E's
-   * ResourceRecord.id for a `kind: 'project'` cloud resource. Personal projects
-   * are local-only and normally keep this null; team-visible projects receive
-   * the cloud resource through C's orchestration of E's upload/version/mirror
-   * mechanism.
-   */
-  resourceHubResourceId?: string | null;
-  /** Set when a previously shared cloud resource should be tombstoned. */
-  cloudTombstonedAt?: number | null;
-  currentUserAccess: ProjectAccessFlags;
-  syncState?: ProjectSyncState;
-  pendingSyncIntent?: WorkspaceProjectSyncIntent;
-  createdAt: number;
-  updatedAt: number;
-  metadata?: ProjectMetadata;
-  project: Project;
-}
-
-export interface WorkspaceProjectsResponse {
-  projects: WorkspaceProjectSummary[];
-}
-
-export interface MoveWorkspaceProjectRequest {
-  visibility: ProjectVisibility;
-}
-
-export interface BatchDeleteWorkspaceProjectsRequest {
-  projectIds: string[];
-}
-
-export interface BatchMoveWorkspaceProjectsRequest {
-  projectIds: string[];
-  visibility: ProjectVisibility;
 }
 
 export interface CreateProjectResponse extends ProjectResponse {

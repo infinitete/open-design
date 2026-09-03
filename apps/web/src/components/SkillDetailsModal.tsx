@@ -10,7 +10,6 @@ import {
 } from '../i18n/content';
 import { fetchSkill } from '../providers/registry';
 import { Icon } from './Icon';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 
 interface Props {
   skillId: string;
@@ -26,8 +25,7 @@ interface Props {
 
 export function SkillDetailsModal({ skillId, summary, onClose, onUse }: Props) {
   const { locale, t } = useI18n();
-  const { context: workspaceContext } = useWorkspaceContext();
-  const closeRef = useRef<HTMLButtonElement | null>(null);
+    const closeRef = useRef<HTMLButtonElement | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -38,7 +36,7 @@ export function SkillDetailsModal({ skillId, summary, onClose, onUse }: Props) {
     setLoading(true);
     setDetail(null);
     setLoadError(false);
-    void fetchSkill(skillId, workspaceContext).then((next) => {
+    void fetchSkill(skillId).then((next) => {
       if (cancelled) return;
       if (!next) {
         setLoadError(true);
@@ -51,7 +49,7 @@ export function SkillDetailsModal({ skillId, summary, onClose, onUse }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [skillId, reloadToken, workspaceContext]);
+  }, [skillId, reloadToken]);
 
   useEffect(() => {
     closeRef.current?.focus();

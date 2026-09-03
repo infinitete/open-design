@@ -1,33 +1,8 @@
-import {
-  API_ERROR_CODES,
-  workspaceSeatCapacityState,
-  type WorkspaceCollabContext,
-} from '@open-design/contracts';
+import { API_ERROR_CODES } from '@open-design/contracts';
 import type {
   TrackingCountBucket,
-  TrackingWorkspaceDimensions,
   TrackingWorkspacePage,
 } from '@open-design/contracts/analytics';
-
-/** Convert product context to the bounded, PII-free Workspace dimensions. */
-export function workspaceAnalyticsDimensions(
-  context: WorkspaceCollabContext | null | undefined,
-): TrackingWorkspaceDimensions {
-  if (!context) return {};
-  const plan = context.planId?.trim().toLowerCase();
-  const planBucket = !plan || plan === 'free' ? 'free' : 'paid';
-  return {
-    workspace_key: context.workspaceId,
-    workspace_type: context.workspaceType,
-    workspace_role: context.role,
-    workspace_lifecycle: context.lifecycleState,
-    billing_state: context.billingState,
-    plan_bucket: planBucket,
-    provider_mode: context.providerMode,
-    seat_state: workspaceSeatCapacityState(context.seatSummary),
-    $groups: { workspace: context.workspaceId },
-  };
-}
 
 export function countBucket(count: number): TrackingCountBucket {
   if (count <= 0) return '0';

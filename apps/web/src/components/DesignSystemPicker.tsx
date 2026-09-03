@@ -12,12 +12,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { DesignSystemSummary, WorkspaceCollabContext } from '@open-design/contracts';
 import { useI18n } from '../i18n';
 import {
   localizeDesignSystemCategory,
   localizeDesignSystemSummary,
 } from '../i18n/content';
+import type { DesignSystemSummary } from '../types';
 import { navigate } from '../router';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { useBrandsByDesignSystemId } from '../runtime/brands';
@@ -68,7 +68,6 @@ interface Props {
   /** Hide the recursive "Create" action when the picker is already on create. */
   showCreateAction?: boolean;
   /** Project-owned identity used for preview reads while shell context catches up. */
-  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 export function DesignSystemPicker({
@@ -80,7 +79,6 @@ export function DesignSystemPicker({
   variant = 'project',
   label,
   showCreateAction = true,
-  workspaceContext,
 }: Props) {
   const { locale, t } = useI18n();
   const triggerDisabled = Boolean(loading || disabled);
@@ -424,7 +422,6 @@ export function DesignSystemPicker({
                   >
                     <DesignSystemKitPreview
                       system={previewSystem}
-                      workspaceContext={workspaceContext}
                       brandSummary={brandsByDesignSystem.get(previewSystem.id) ?? null}
                       variant="compact"
                       showCover={false}
@@ -458,7 +455,6 @@ export function DesignSystemPicker({
   const previewModal: ReactNode = previewModalSystem ? (
     <DesignSystemPreviewModal
       system={previewModalSystem}
-      workspaceContext={workspaceContext}
       onClose={() => setPreviewModalSystem(null)}
     />
   ) : null;

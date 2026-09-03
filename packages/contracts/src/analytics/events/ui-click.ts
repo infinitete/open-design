@@ -7,7 +7,7 @@ import type { TrackingPageName, TrackingSettingsPage } from './event-names.js';
 import type { OnboardingClickProps, TrackingOnboardingFirstLoopStep, TrackingOnboardingProductType, TrackingOnboardingRole, TrackingOnboardingUseCase } from './onboarding.js';
 import type { TrackingRunRecoveryActionType } from './result-events.js';
 import type { TrackingAmrEntrySource, TrackingArtifactKind, TrackingByokProviderId, TrackingCampaignConversionSource, TrackingCampaignDeliveryMode, TrackingCampaignId, TrackingCampaignUserState, TrackingCliProviderId, TrackingExecutionMode, TrackingExportFormat, TrackingFeedbackProviderId, TrackingNewProjectTab, TrackingProjectKind, TrackingProjectSource } from './shared-enums.js';
-import type { AccountMenuClickProps, CommunityTemplateClickProps, EntryNavigationClickProps, ExtensionMarketplaceClickProps, ProjectCollectionClickProps, TrackingWorkspaceScope, WorkspaceInviteClickProps, WorkspaceSwitcherClickProps } from './workspace.js';
+import type { AccountMenuClickProps, CommunityTemplateClickProps, EntryNavigationClickProps, ExtensionMarketplaceClickProps, ProjectCollectionClickProps } from './workspace.js';
 // ---- ui_click ------------------------------------------------------------
 //
 // Each surface lives in its own `*ClickProps` interface so call sites stay
@@ -44,7 +44,7 @@ export interface HelpPopoverClickProps {
 export interface HomeToolbarClickProps {
   page_name: 'home';
   area: 'toolbar';
-  element: 'star' | 'execution_settings' | 'use_everywhere' | 'workspace_teams' | 'settings';
+  element: 'star' | 'execution_settings' | 'use_everywhere' | 'settings';
 }
 
 export interface ExecutionSettingsPopoverClickProps {
@@ -84,7 +84,6 @@ export interface SettingsPopoverClickProps {
   element:
     | 'language_select'
     | 'share_channel'
-    | 'workspace_teams'
     | 'join_discord'
     | 'follow_x'
     | 'follow_threads'
@@ -552,7 +551,6 @@ export interface DesignSystemsTopClickProps {
   area: 'design_systems';
   element: 'search_input' | 'search_dropdown' | 'filter_chip' | 'create';
   filter_name?: string;
-  resource_scope?: TrackingWorkspaceScope;
 }
 
 export interface DesignSystemsTemplateCardClickProps {
@@ -561,7 +559,6 @@ export interface DesignSystemsTemplateCardClickProps {
   element: 'templates_card';
   templates_id?: string;
   templates_type?: string;
-  resource_scope?: TrackingWorkspaceScope;
 }
 
 export interface DesignSystemsTemplatesModalClickProps {
@@ -674,7 +671,6 @@ export interface DesignSystemEditClickProps {
   artifact_kind?: 'design_system';
   design_system_id?: string;
   project_id?: string;
-  resource_scope?: TrackingWorkspaceScope;
 }
 
 // INTEGRATIONS
@@ -987,33 +983,6 @@ export interface DeepSeekCampaignBadgeClickProps {
   element: 'open_pricing';
   campaign_id: TrackingCampaignId;
   user_state: TrackingCampaignUserState;
-}
-
-// Terminal outcome of one AMR (vela) sign-in attempt, fired exactly once
-// per attempt when the login poll loop settles. This is the main-app-side
-// completion signal that pairs with the amr_entry click: dashboards count
-// AMR-authorized users from this event without joining the separate AMR
-// PostHog project. `result` semantics:
-//   success   — poll observed loggedIn=true within the budget
-//   failed    — `vela login` failed to spawn or exited before sign-in
-//   cancelled — the user clicked Cancel (or backed out mid-start)
-//   timeout   — the 5-minute poll budget elapsed
-export interface AmrAuthResultProps {
-  page_name: TrackingPageName;
-  area: 'amr_auth';
-  result: 'success' | 'failed' | 'cancelled' | 'timeout';
-  error_code?: string;
-  duration_ms: number;
-  // Attribution carried over from the amr_entry click that started this
-  // attempt; absent when login was started without a recorded entry.
-  entry_id?: string;
-  source_detail?: TrackingAmrEntrySource;
-  auth_attempt_id?: string;
-  last_stage?: import('./amr-auth.js').AmrAuthStage;
-  last_stage_result?: import('./amr-auth.js').AmrAuthStageResult;
-  last_error_kind?: import('./amr-auth.js').AmrAuthErrorKind;
-  network_path?: import('./amr-auth.js').AmrAuthNetworkPath;
-  fallback_used?: boolean;
 }
 
 export interface ChatPanelResourcesPopoverClickProps {
@@ -1644,8 +1613,6 @@ export interface SettingsExternalMcpClickProps {
 export type UiClickProps =
   | EntryNavigationClickProps
   | AccountMenuClickProps
-  | WorkspaceSwitcherClickProps
-  | WorkspaceInviteClickProps
   | ProjectCollectionClickProps
   | CommunityTemplateClickProps
   | ExtensionMarketplaceClickProps

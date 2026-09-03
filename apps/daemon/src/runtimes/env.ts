@@ -7,7 +7,8 @@ import { readAppConfigSync } from '../app-config.js';
 import { resolveProjectRelativePath } from '../home-expansion.js';
 import { expandConfiguredEnv } from './paths.js';
 import { resolveAmrOpenCodeExecutable } from './executables.js';
-import { amrVelaProfileEnv } from '../integrations/vela-profile.js';
+// vela-profile removed - stub
+function amrVelaProfileEnv(_env?: Record<string, string | undefined>): Record<string, string> { return {}; }
 import { resolveProjectRootFromNestedModule } from '../project-root.js';
 import {
   applySandboxRuntimeEnv,

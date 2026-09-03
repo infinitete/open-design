@@ -1696,16 +1696,11 @@ process.stdin.on("end", () => {
     expect(preflight).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).general_medium)");
     expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0");
     expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0_heavy");
-    expect(uiP0).toContain("matrix.shard == 'project-collab'");
-    expect(uiP0).toContain(
-      "toJSON(matrix.shard == 'project-collab' && fromJSON(needs.runners.outputs.runs_on).ui_p0_heavy || fromJSON(needs.runners.outputs.runs_on).ui_p0)",
-    );
     expect(uiP0).toContain("include: ${{ fromJSON(needs.plan.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
       "project-workspace",
       "project-workspace-editor",
-      "project-collab",
       "project-runtime",
       "workspace-restoration",
     ]);
@@ -1724,10 +1719,6 @@ process.stdin.on("end", () => {
         "ui/workspace-team-design-system-picker.test.ts",
       ],
     });
-    expect(uiP0Groups["project-collab"].files).toEqual([
-      "ui/workspace-multi-client-collab.test.ts",
-    ]);
-    expect(uiP0Groups["project-collab"].workers).toBe(1);
     expect(uiP0Groups["critical-extras"]).toEqual({
       grep: "@merge-extra",
       workers: 1,

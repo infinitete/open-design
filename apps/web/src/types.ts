@@ -97,6 +97,7 @@ export type {
   CloudflarePagesDeploymentInfo,
   CloudflarePagesZonesResponse,
   ChatCommentSelectionKind,
+  FigmaImportResult,
   OrbitRunSummary,
   OrbitStatusResponse,
   ProjectLocation,
@@ -298,10 +299,6 @@ export interface OrbitConfig {
   time: string;
   /** Optional skill id from the examples gallery where scenario === "orbit". */
   templateSkillId?: string | null;
-  workspaceScope?: {
-    workspaceId: string;
-    workspaceMemberId: string;
-  } | null;
 }
 
 export interface AppConfig {

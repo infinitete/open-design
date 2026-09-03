@@ -26,10 +26,12 @@ import {
   listProjectsAwaitingInput,
   type insertProject,
 } from './db.js';
-import type { CreatedProjectWorkspaceResolver } from './collab/created-project-workspace.js';
-import type { AuthorizeProjectRequest } from './collab/project-request-authority.js';
-import type { WorkspaceResourceContext } from './collab/workspace-resource-mutation.js';
 import type { DesignSystemSummary, UserDesignSystemInput } from './design-systems/index.js';
+
+// Collab types removed - define locally
+type CreatedProjectWorkspaceResolver = (...args: any[]) => any;
+type AuthorizeProjectRequest = (...args: any[]) => any;
+type WorkspaceResourceContext = Record<string, never>;
 import { resolveProjectDir } from './projects.js';
 import {
   continueBrandExtraction,

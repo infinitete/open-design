@@ -10,8 +10,6 @@
 // nothing (the modal hides the hero entirely).
 
 import { useMemo, useState } from 'react';
-import type { WorkspaceCollabContext } from '@open-design/contracts';
-import { workspaceResourceUrl } from '../../collab/workspace-identity';
 import { Icon } from '../Icon';
 
 export interface PluginExampleEntry {
@@ -23,7 +21,6 @@ interface Props {
   pluginId: string;
   pluginTitle: string;
   examples: PluginExampleEntry[];
-  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 interface NormalizedExample {
@@ -37,11 +34,10 @@ export function PluginPreviewHero({
   pluginId,
   pluginTitle,
   examples,
-  workspaceContext = null,
 }: Props) {
   const items = useMemo<NormalizedExample[]>(
-    () => examples.map((e, idx) => normalize(pluginId, e, idx, workspaceContext)),
-    [pluginId, examples, workspaceContext],
+    () => examples.map((e, idx) => normalize(pluginId, e, idx)),
+    [pluginId, examples],
   );
   const [activeKey, setActiveKey] = useState<string | null>(
     items[0]?.key ?? null,
@@ -137,15 +133,11 @@ function normalize(
   pluginId: string,
   entry: PluginExampleEntry,
   index: number,
-  workspaceContext: WorkspaceCollabContext | null,
 ): NormalizedExample {
   const segments = entry.path.split(/[\\/]/).filter(Boolean);
   const base = segments[segments.length - 1] ?? `${index}`;
   const stem = base.replace(/\.[^.]+$/, '');
   const name = entry.title ?? stem;
-  const href = workspaceResourceUrl(
-    `/api/plugins/${encodeURIComponent(pluginId)}/example/${encodeURIComponent(stem)}`,
-    workspaceContext,
-  );
+  const href = `/api/plugins/${encodeURIComponent(pluginId)}/example/${encodeURIComponent(stem)}`;
   return { key: `${entry.path}-${index}`, name, stem, href };
 }

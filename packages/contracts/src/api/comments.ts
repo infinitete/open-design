@@ -146,8 +146,6 @@ export interface PreviewComment {
   anchorState?: PreviewCommentAnchorState;
   /** Content version the comment was anchored to; drives the "based on older vN" badge. */
   anchoredVersion?: number;
-  /** Comment author's workspaceMemberId (for cross-member attribution/display). */
-  authorMemberId?: string;
   /**
    * Bbox written back on each successful anchor. The `lost` ghost pin renders
    * here (last known-good position), NOT the creation-time `position`, which
@@ -165,11 +163,6 @@ export interface PreviewCommentUpsertRequest {
   target: PreviewCommentTarget;
   note: string;
   attachments?: PreviewCommentAttachment[];
-  /**
-   * Team collaboration: comment author's workspaceMemberId. Server-set from the request
-   * identity (B token → member context); clients do not supply it.
-   */
-  authorMemberId?: string;
 }
 
 /**

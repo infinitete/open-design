@@ -1,7 +1,14 @@
-import type {
-  WorkspaceDirectoryItem,
-  WorkspaceDirectoryResponse,
-} from '@open-design/contracts';
+// WorkspaceDirectoryItem and WorkspaceDirectoryResponse removed from contracts
+export interface WorkspaceDirectoryItem {
+  workspaceId: string;
+  workspaceMemberId: string;
+  workspaceType: 'personal' | 'team';
+  memberStatus: string;
+  lifecycleState: string;
+}
+export interface WorkspaceDirectoryResponse {
+  items: WorkspaceDirectoryItem[];
+}
 
 /**
  * Workspace-aware request context for the MCP stdio bridge (#6569).

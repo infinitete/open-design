@@ -18,9 +18,7 @@
 
 import type {
   InstalledPluginRecord,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
-import { workspaceResourceUrl } from '../../collab/workspace-identity';
 
 export type PluginPreviewKind = 'media' | 'html' | 'design' | 'text';
 
@@ -68,7 +66,6 @@ export interface DesignPreviewSpec {
   brand: string;
   designSystemId: string | null;
   swatches: string[];
-  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 export interface TextPreviewSpec {
@@ -189,7 +186,6 @@ export function inferPluginPreview(
   record: InstalledPluginRecord,
   opts?: {
     preferBaked?: boolean;
-    workspaceContext?: WorkspaceCollabContext | null;
   },
 ): PluginPreviewSpec {
   // Gallery tiles opt in to a pre-baked hover-pan clip (cheap thumbnail) when
@@ -256,10 +252,7 @@ export function inferPluginPreview(
     if (t === 'html' && entry) {
       return {
         kind: 'html',
-        src: workspaceResourceUrl(
-          `/api/plugins/${encodeURIComponent(record.id)}/preview`,
-          opts?.workspaceContext,
-        ),
+        src: `/api/plugins/${encodeURIComponent(record.id)}/preview`,
         label: entry.replace(/^\.\//, '').split(/[\\/]/).pop() ?? entry,
         source: 'preview',
       };
@@ -273,10 +266,7 @@ export function inferPluginPreview(
         typeof examples[0]!.title === 'string' ? (examples[0]!.title as string) : stem;
       return {
         kind: 'html',
-        src: workspaceResourceUrl(
-          `/api/plugins/${encodeURIComponent(record.id)}/example/${encodeURIComponent(stem)}`,
-          opts?.workspaceContext,
-        ),
+        src: `/api/plugins/${encodeURIComponent(record.id)}/example/${encodeURIComponent(stem)}`,
         label: title,
         source: 'example',
         exampleStem: stem,
@@ -290,9 +280,6 @@ export function inferPluginPreview(
       brand: brandLabel(record),
       designSystemId: designSystemRef(record),
       swatches: deriveSwatches(record),
-      ...(opts?.workspaceContext
-        ? { workspaceContext: opts.workspaceContext }
-        : {}),
     };
   }
 

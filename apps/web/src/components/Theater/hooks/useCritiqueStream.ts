@@ -12,7 +12,6 @@ import {
   type CritiqueEventsConnection,
   type CritiqueEventsConnectionOptions,
 } from '../state/sse';
-import { workspaceIdentityCacheKey } from '../../../collab/workspace-identity';
 
 export interface UseCritiqueStreamOptions extends CritiqueEventsConnectionOptions {
   /**
@@ -58,7 +57,7 @@ export function useCritiqueStream(
   useEffect(() => {
     // Clear any state from the previous project / enabled session
     // before we decide whether to open a new connection. Without this,
-    // a workspace that switches from project A (which already streamed
+    // a previous stream that switched from project A (which already streamed
     // a critique) to project B would keep rendering project A's
     // Theater state until B's run_started arrived, and a flip from
     // enabled=true to enabled=false would leave the in-flight run
@@ -78,7 +77,6 @@ export function useCritiqueStream(
         maxBackoffMs: options.maxBackoffMs,
         setTimeoutFn: options.setTimeoutFn,
         clearTimeoutFn: options.clearTimeoutFn,
-        workspaceContext: options.workspaceContext,
       },
     );
     return () => conn.close();
@@ -88,7 +86,6 @@ export function useCritiqueStream(
   }, [
     projectId,
     enabled,
-    workspaceIdentityCacheKey(options.workspaceContext),
     options.EventSourceCtor,
     options.initialBackoffMs,
     options.maxBackoffMs,

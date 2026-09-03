@@ -3,17 +3,14 @@ import {
   trackDeepSeekCampaignBadgeClick,
   trackDeepSeekCampaignBadgeSurfaceView,
 } from '../analytics/events';
-import {
-  amrHandoffDeviceId,
-  attributedAmrUrl,
-  recordAmrEntry,
-} from '../analytics/amr-attribution';
 import { getResolvedDeviceId } from '../analytics/client';
 import { useAnalytics } from '../analytics/provider';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { goPlanPricingUrl } from '../campaigns/go-plan';
 import { useI18n } from '../i18n';
 import { Icon } from './Icon';
+
+function amrHandoffDeviceId(..._a: unknown[]): string | null { return null; }
 
 /**
  * The campaign badge is a signed-in-only surface.
@@ -72,23 +69,13 @@ export function WorkbenchCampaignBadge({
         user_state: audience,
       });
     }
-    const attribution = recordAmrEntry(
-      analytics.track,
-      'deepseek_workbench_badge',
-      new Date(),
-      {
-        metricsConsent,
-        campaignId: 'deepseek_v4_pro',
-        conversionSource: 'deepseek_workbench_badge',
-      },
-    );
     const deviceId = amrHandoffDeviceId({
       metricsConsent,
       resolvedDeviceId: getResolvedDeviceId(),
       installationId,
     });
     window.open(
-      attributedAmrUrl(pricingUrl, attribution, deviceId),
+      pricingUrl,
       '_blank',
       'noopener,noreferrer',
     );

@@ -11,7 +11,8 @@ import {
   isModelWindowLimitFailure,
 } from '@open-design/contracts';
 
-import { classifyAmrAccountFailure } from './integrations/vela-errors.js';
+// vela-errors removed - stub for AMR failure classification
+function classifyAmrAccountFailure(_text: string): any { return null; }
 import { summarizeRunToolProgress } from './run-diagnostics.js';
 import { isAcpHandshakeRpcErrorText } from './runtimes/acp-handshake-id.js';
 import { classifyAgentServiceFailure } from './runtimes/auth.js';

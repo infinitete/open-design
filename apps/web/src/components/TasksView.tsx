@@ -29,13 +29,7 @@ import {
   type AutomationTemplateKind,
 } from './NewAutomationModal';
 import { describeRoutineSchedule } from './routineScheduleLabels';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import { listProjects } from '../state/projects';
-import {
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from '../collab/workspace-identity';
-import type { WorkspaceCollabContext } from '@open-design/contracts';
 
 type ProjectSummary = { id: string; name: string };
 type TemplateFilter =
@@ -410,16 +404,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
   // is omitted (that default is right for the Home "Drafts" tab, wrong here —
   // see `workspaceProjectListViewForRoute` in App.tsx for the same per-surface
   // view choice made project-browsing routes).
-  const { context: tasksWorkspaceContext } = useWorkspaceContext();
-  const tasksWorkspaceIdentity = workspaceIdentityCacheKey(tasksWorkspaceContext);
-  const routineHeaders = useMemo(
-    () => tasksWorkspaceContext
-      ? workspaceProjectHeaders(tasksWorkspaceContext)
-      : undefined,
-    // The identity contains every authority field placed on the wire.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasksWorkspaceIdentity],
-  );
+  const routineHeaders = undefined;
   // P2 page_view page_name=automations. Ref-keyed so re-renders don't
   // double-fire while the user is on the page.
   const pageViewFiredRef = useState<{ fired: boolean }>(() => ({ fired: false }))[0];
@@ -493,7 +478,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
         });
       const [rRes, projectList, tJson, proposalJson] = await Promise.all([
         fetch('/api/routines', routineHeaders ? { headers: routineHeaders } : undefined),
-        listProjects({ workspaceContext: tasksWorkspaceContext, workspaceView: 'all' }),
+        listProjects(),
         templateRequest,
         proposalRequest,
       ]);
@@ -521,7 +506,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
     // `tasksWorkspaceIdentity` partitions this callback on every authority
     // field. The captured context belongs to that exact identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routineHeaders, tasksWorkspaceIdentity]);
+  }, [routineHeaders]);
 
   useEffect(() => {
     // Hidden views do not fetch. This one is mounted from the first paint of
@@ -880,7 +865,6 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
                     <AutomationRunHistory
                       routineId={r.id}
                       refreshKey={historyTick}
-                      workspaceContext={tasksWorkspaceContext}
                       crystallizingRunId={crystallizingRunId}
                       onCrystallizeRun={crystallizeRun}
                       onFireClick={fireClick}
@@ -1089,7 +1073,6 @@ function Metric({ label, value }: { label: string; value: number }) {
 function AutomationRunHistory({
   routineId,
   refreshKey,
-  workspaceContext,
   crystallizingRunId,
   onCrystallizeRun,
   onFireClick,
@@ -1097,23 +1080,20 @@ function AutomationRunHistory({
 }: {
   routineId: string;
   refreshKey: number;
-  workspaceContext: WorkspaceCollabContext | null;
   crystallizingRunId: string | null;
   onCrystallizeRun: (routineId: string, runId: string) => void;
   onFireClick: (element: AutomationsClickProps['element']) => void;
   t: TranslateFn;
 }) {
   const [runs, setRuns] = useState<RoutineRun[] | null>(null);
-  const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+  const workspaceIdentity = 'local';
 
   useEffect(() => {
     let cancelled = false;
     setRuns(null);
     void (async () => {
       try {
-        const res = await fetch(`/api/routines/${routineId}/runs?limit=10`, workspaceContext
-          ? { headers: workspaceProjectHeaders(workspaceContext) }
-          : undefined);
+        const res = await fetch(`/api/routines/${routineId}/runs?limit=10`);
         if (!res.ok) throw new Error(`runs: ${res.status}`);
         const json = await res.json();
         if (!cancelled) setRuns(json.runs ?? []);

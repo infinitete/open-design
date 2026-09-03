@@ -11,14 +11,9 @@ import type {
   Conversation,
   ProjectFile,
   ProjectFilesResponse,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { parseProvenance } from '../lib/parse-provenance';
 import { listConversations } from '../state/projects';
-import {
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from '../collab/workspace-identity';
 
 const DESIGN_MD = 'DESIGN.md';
 
@@ -75,7 +70,6 @@ const INITIAL: Omit<DesignMdState, 'refresh'> = {
 export function useDesignMdState(
   projectId: string,
   refreshKey: number = 0,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): DesignMdState {
   const [state, setState] = useState<Omit<DesignMdState, 'refresh'>>(INITIAL);
 
@@ -86,9 +80,6 @@ export function useDesignMdState(
       try {
         const filesResp = await fetch(`/api/projects/${projectIdEnc}/files`, {
           signal,
-          ...(workspaceContext
-            ? { headers: workspaceProjectHeaders(workspaceContext) }
-            : {}),
         });
         if (!filesResp.ok) {
           throw new Error(`GET files → HTTP ${filesResp.status}`);
@@ -110,9 +101,6 @@ export function useDesignMdState(
           `/api/projects/${projectIdEnc}/files/${encodeURIComponent(DESIGN_MD)}`,
           {
             signal,
-            ...(workspaceContext
-              ? { headers: workspaceProjectHeaders(workspaceContext) }
-              : {}),
           },
         );
         if (!designResp.ok) {
@@ -124,9 +112,7 @@ export function useDesignMdState(
 
         // Shared single-flight conversations read (Batch A §4.3); the local
         // abort only detaches this consumer.
-        const conversations = await listConversations(projectId, {
-          workspaceContext,
-        });
+        const conversations = await listConversations(projectId);
         const convsBody: ConversationsResponseShape = { conversations };
         if (signal?.aborted) return;
 
@@ -165,7 +151,7 @@ export function useDesignMdState(
     // (file-changed events, chat-turn completion) re-runs compute without
     // forcing the caller to drill `refresh()` through props. Round 7
     // (mrcfps @ useDesignMdState.ts:131).
-    [projectId, refreshKey, workspaceIdentityCacheKey(workspaceContext)],
+    [projectId, refreshKey],
   );
 
   useEffect(() => {

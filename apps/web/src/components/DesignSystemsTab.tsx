@@ -8,7 +8,6 @@ import {
   trackDesignSystemStatusResult,
   trackDesignSystemEditClick,
   trackPageView,
-  trackWorkspaceResourceActionResult,
 } from '../analytics/events';
 import type { DesignSystemEditClickProps } from '@open-design/contracts/analytics';
 import type {
@@ -16,24 +15,6 @@ import type {
   TrackingDesignSystemStatusValue,
 } from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
-import {
-  beginWorkspaceResourceScopedRead,
-  beginWorkspaceScopedRead,
-  resolveWorkspaceResourceReadIdentity,
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-  workspaceResourceReadIdentityKey,
-  type WorkspaceResourceReadIdentity,
-} from '../collab/workspace-identity';
-import {
-  useWorkspaceInvalidation,
-} from '../collab/workspace-events';
-import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
-import {
-  workspaceContextHasTeamIdentity,
-  type WorkspaceCollabContext,
-} from '@open-design/contracts';
 import type { Locale } from '../i18n/types';
 import {
   localizeDesignSystemCategory,
@@ -56,8 +37,41 @@ import { Icon } from './Icon';
 import { Toast } from './Toast';
 import type { DesignSystemDetail, DesignSystemSummary, ProjectTemplate, Surface } from '../types';
 import styles from './DesignSystemsTab.module.css';
-import { workspaceAnalyticsDimensions } from '../analytics/workspace';
-import type { TrackingWorkspaceScope } from '@open-design/contracts/analytics';
+
+// ---- Single-machine build shims -------------------------------------------
+const useWorkspaceContext = (): { context: null; loading: boolean; identityChangePending?: boolean; failure?: string } => ({ context: null, loading: false });
+const resolveWorkspaceResourceReadIdentity = (_s?: unknown) => null;
+const workspaceAnalyticsDimensions = (_c?: unknown): Record<string, unknown> => ({});
+const workspaceIdentityCacheKey = (_c?: unknown): string => 'local';
+const workspaceContextHasTeamIdentity = (_c?: unknown): boolean => false;
+const workspaceProjectHeaders = (_c?: unknown): Record<string, string> => ({});
+const beginWorkspaceScopedRead = (_c?: unknown) => ({ context: null, isStillCurrent: () => false });
+const useWorkspaceSnapshotActivation = (_o?: unknown): () => void => () => {};
+const useWorkspaceInvalidation = (..._a: unknown[]): void => {};
+type WorkspaceResourceReadIdentity = { context: null; generation: string };
+const workspaceResourceReadIdentityKey = (_i?: unknown): string => 'local';
+const beginWorkspaceResourceScopedRead = (_i?: unknown) => ({ context: null, isStillCurrent: () => false });
+const workspaceResourceReadIdentityFromContext = (_c?: unknown) => null;
+type WorkspaceCollabContext = {
+  workspaceId?: string;
+  workspaceMemberId?: string | null;
+  workspaceName?: string;
+  teamName?: string;
+  teamId?: string;
+  workspaceType?: string;
+  role?: string;
+  memberStatus?: string;
+  lifecycleState?: string;
+  billingState?: string;
+  seatSummary?: { availableSeats?: number } | null;
+  permissions?: Record<string, boolean>;
+  workspaceSettingsUrl?: string;
+  displayName?: string;
+  [key: string]: unknown;
+} | null;
+const workspaceResourceUrl = (path: string, _c?: unknown): string => path;
+const trackWorkspaceResourceActionResult = (..._a: unknown[]): void => {};
+type TrackingWorkspaceScope = string;
 
 interface Props {
   /** EntryShell parks this mounted tab while another nav surface is visible. */
@@ -438,91 +452,10 @@ export function DesignSystemsTab({
   // the hub unconfigured) this returns an empty list, so the team collection is
   // simply empty and the share action is available but a no-op.
   const refreshTeamShared = useCallback(async (
-    options: { refreshSystems?: boolean; invalidate?: boolean; fresh?: boolean } = {},
-  ) => {
-    const requestGeneration = ++teamSharedRequestGenerationRef.current;
-    const read = beginWorkspaceScopedRead(workspaceContextRef.current);
-    if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
-      setTeamSharedState({
-        workspaceIdentity: workspaceIdentityCacheKey(read.context),
-        ids: new Set(),
-        meta: new Map(),
-      });
-      return;
-    }
-    const context = read.context;
-    try {
-      // Key the coalescing window by workspace (#145): the response is the
-      // ACTIVE workspace's shared set, so a constant key let a switch that
-      // landed inside the in-flight/TTL window serve the previous workspace's
-      // ids to the new one.
-      const scopedWorkspaceIdentity = workspaceIdentityCacheKey(context);
-      const cacheKey = `workspace-design-systems-team:${scopedWorkspaceIdentity}`;
-      const readTeamIndex = async () => {
-        const res = await fetch('/api/workspace/design-systems/team', {
-          cache: 'no-store',
-          headers: workspaceProjectHeaders(context),
-        });
-        if (!res.ok) throw new Error(`design-systems-team ${res.status}`);
-        return (await res.json()) as { ids?: unknown; resources?: unknown };
-      };
-      // Lifecycle snapshots and every real mutation must supersede whatever
-      // was in flight. Two distinct mutations inside 250ms are not one burst:
-      // joining would let A's old body commit under B's request generation.
-      if (options.fresh || options.invalidate) evictCoalescedGet(cacheKey);
-      const body = await coalescedGet(cacheKey, readTeamIndex);
-      if (
-        requestGeneration !== teamSharedRequestGenerationRef.current
-        || !read.isStillCurrent(workspaceContextRef.current)
-      ) return;
-      if (Array.isArray(body.ids)) {
-        const next = new Set(body.ids.filter((id): id is string => typeof id === 'string'));
-        const meta = new Map<string, { canUnshare?: boolean }>();
-        if (Array.isArray(body.resources)) {
-          for (const resource of body.resources) {
-            if (!resource || typeof resource !== 'object') continue;
-            const record = resource as Record<string, unknown>;
-            if (typeof record.id !== 'string') continue;
-            meta.set(record.id, {
-              ...(typeof record.canUnshare === 'boolean' ? { canUnshare: record.canUnshare } : {}),
-            });
-          }
-        }
-        const catalogIds = new Set(systemsRef.current.map((system) => system.id));
-        const catalogMissesTeamEntry = [...next].some((id) => !catalogIds.has(id));
-        const catalogKeepsRetiredTeamMirror = systemsRef.current.some((system) => (
-          system.teamSynced === true && !next.has(system.id)
-        ));
-        const shouldRefreshSystems = options.refreshSystems
-          || catalogMissesTeamEntry
-          || catalogKeepsRetiredTeamMirror;
-        setTeamSharedState((prev) => (
-          prev.workspaceIdentity === scopedWorkspaceIdentity &&
-          setsEqual(prev.ids, next) &&
-          teamSharedMetaEqual(prev.meta, meta)
-            ? prev
-            : { workspaceIdentity: scopedWorkspaceIdentity, ids: next, meta }
-        ));
-        if (shouldRefreshSystems) {
-          // `/team` has already materialized this exact Workspace snapshot.
-          // Pass its ids through so the parent catalog refresh does not repeat
-          // the same remote/materialization request before GET /design-systems.
-          await onSystemsRefresh?.({ materializedTeamIds: [...next] });
-        }
-      }
-    } catch {
-      // Non-fatal: leave the team collection empty on a transient failure.
-    }
-  }, [onSystemsRefresh, workspaceIdentity]);
+    _options: { refreshSystems?: boolean; invalidate?: boolean; fresh?: boolean } = {},
+  ) => {}, []);
 
-  useEffect(() => {
-    if (!isActive) return;
-    // Do not wait for the Workspace SSE stream's activation fallback (or the
-    // 10s poll) before reading the Team index. The request is already keyed
-    // and authorized by the exact Workspace/member identity, and coalescedGet
-    // joins a simultaneous onActive refresh instead of double-fetching.
-    void refreshTeamShared();
-  }, [isActive, refreshTeamShared]);
+
 
   const handleTeamIndexStreamActive = useWorkspaceSnapshotActivation({
     enabled: isActive && hasTeamWorkspace,
@@ -535,8 +468,8 @@ export function DesignSystemsTab({
 
   useWorkspaceInvalidation(
     {
-      'team-resources-changed': (payload) => {
-        if (payload.resourceKind !== 'design_system') return;
+      'team-resources-changed': (_payload: unknown) => {
+        void _payload;
         if (!isActiveRef.current) {
           teamSharedStaleRef.current = true;
           return;
@@ -574,119 +507,20 @@ export function DesignSystemsTab({
   // (team-resource-share.ts) has no "already shared" guard, so a repeat call
   // is just the latest bytes replacing the previous ones. Only the copy
   // rendering distinguishes the two cases (see the `syncToTeam` label above).
-  async function handleShareToTeam(system: DesignSystemSummary) {
-    if (sharingId) return;
-    const context = workspaceContextRef.current;
-    if (!context || !workspaceContextHasTeamIdentity(context)) {
-      notifyAction('error', t('dsManager.shareToTeamFailed'));
-      return;
-    }
-    const wasAlreadyShared = teamSharedIds.has(system.id);
-    const startedAt = performance.now();
-    const loadingLabel = wasAlreadyShared ? t('dsManager.syncToTeam') : t('dsManager.shareToTeam');
-    const failedLabel = wasAlreadyShared ? t('dsManager.syncToTeamFailed') : t('dsManager.shareToTeamFailed');
-    setSharingId(system.id);
-    notifyActionLoading(loadingLabel);
-    try {
-      const res = await fetch(`/api/workspace/design-systems/${encodeURIComponent(system.id)}/share`, {
-        method: 'POST',
-        headers: workspaceProjectHeaders(context),
-      });
-      const body = (await res.json().catch(() => ({}))) as { shared?: boolean };
-      if (res.ok && body.shared) {
-        await refreshTeamShared({ refreshSystems: true, invalidate: true });
-        notifyAction('success', t('ds.actionDone'));
-        trackWorkspaceResourceActionResult(analytics.track, {
-          page_name: 'design_systems',
-          area: 'workspace_resource',
-          resource_kind: 'design_system',
-          resource_scope: 'personal',
-          action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
-          result: 'success',
-          duration_ms: Math.round(performance.now() - startedAt),
-          ...workspaceDimensions,
-        });
-      } else if (res.ok) {
-        // Reached the daemon but there is no team identity to share under.
-        notifyAction('error', failedLabel);
-        trackWorkspaceResourceActionResult(analytics.track, {
-          page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-          resource_scope: 'personal', action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
-          result: 'failed', duration_ms: Math.round(performance.now() - startedAt),
-          error_code: 'resource_not_shared', ...workspaceDimensions,
-        });
-      } else {
-        notifyAction('error', failedLabel);
-        trackWorkspaceResourceActionResult(analytics.track, {
-          page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-          resource_scope: 'personal', action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
-          result: 'failed', duration_ms: Math.round(performance.now() - startedAt),
-          error_code: `http_${res.status}`, ...workspaceDimensions,
-        });
-      }
-    } catch {
-      notifyAction('error', failedLabel);
-      trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-        resource_scope: 'personal', action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
-        result: 'failed', duration_ms: Math.round(performance.now() - startedAt),
-        error_code: 'network_error', ...workspaceDimensions,
-      });
-    } finally {
-      setSharingId(null);
-    }
+  async function handleShareToTeam(_system: DesignSystemSummary) {
+    setActionToast({ message: t('dsManager.deleteFailed' as never), tone: 'error' });
   }
+
 
   // Remove a design system from the team scope. Mirrors PluginsView's
   // unshareResource: DELETE the same share route, backed by the daemon's
   // resource-owner permission gate (only the sharer, or a workspace
   // owner/admin, may unshare — enforced server-side regardless of what the
   // button shows).
-  async function handleUnshareFromTeam(system: DesignSystemSummary) {
-    if (unsharingId) return;
-    const context = workspaceContextRef.current;
-    if (!context || !workspaceContextHasTeamIdentity(context)) {
-      notifyAction('error', t('dsManager.unshareFromTeamFailed'));
-      return;
-    }
-    setUnsharingId(system.id);
-    const startedAt = performance.now();
-    notifyActionLoading(t('dsManager.unshareFromTeam'));
-    try {
-      const res = await fetch(`/api/workspace/design-systems/${encodeURIComponent(system.id)}/share`, {
-        method: 'DELETE',
-        headers: workspaceProjectHeaders(context),
-      });
-      const body = (await res.json().catch(() => ({}))) as { unshared?: boolean };
-      if (res.ok && body.unshared) {
-        await refreshTeamShared({ refreshSystems: true, invalidate: true });
-        notifyAction('success', t('ds.actionDone'));
-        trackWorkspaceResourceActionResult(analytics.track, {
-          page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-          resource_scope: 'team', action: 'remove_from_team', result: 'success',
-          duration_ms: Math.round(performance.now() - startedAt), ...workspaceDimensions,
-        });
-      } else {
-        notifyAction('error', t('dsManager.unshareFromTeamFailed'));
-        trackWorkspaceResourceActionResult(analytics.track, {
-          page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-          resource_scope: 'team', action: 'remove_from_team', result: 'failed',
-          duration_ms: Math.round(performance.now() - startedAt),
-          error_code: res.ok ? 'resource_not_removed' : `http_${res.status}`, ...workspaceDimensions,
-        });
-      }
-    } catch {
-      notifyAction('error', t('dsManager.unshareFromTeamFailed'));
-      trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-        resource_scope: 'team', action: 'remove_from_team', result: 'failed',
-        duration_ms: Math.round(performance.now() - startedAt), error_code: 'network_error',
-        ...workspaceDimensions,
-      });
-    } finally {
-      setUnsharingId(null);
-    }
+  async function handleUnshareFromTeam(_system: DesignSystemSummary) {
+    setActionToast({ message: t('dsManager.deleteFailed' as never), tone: 'error' });
   }
+
 
   async function togglePublished(system: DesignSystemSummary) {
     if (busyAction) return;
@@ -704,7 +538,7 @@ export function DesignSystemsTab({
     try {
       const updated = await updateDesignSystemDraft(system.id, {
         status: willPublish ? 'published' : 'draft',
-      }, workspaceContext);
+      });
       succeeded = Boolean(updated);
       if (!succeeded) errorCode = 'DS_STATUS_UPDATE_RETURNED_NULL';
       if (succeeded) {
@@ -726,7 +560,6 @@ export function DesignSystemsTab({
         action,
         result: succeeded ? 'success' : 'failed',
         design_system_id: system.id,
-        resource_scope: resourceScopeForSystem(system),
         status_before: statusBefore,
         status_after: succeeded
           ? willPublish
@@ -751,7 +584,6 @@ export function DesignSystemsTab({
         action: 'delete',
         result: 'cancelled',
         design_system_id: system.id,
-        resource_scope: resourceScopeForSystem(system),
         status_before: mapStatusToTracking(system.status),
         status_after: mapStatusToTracking(system.status),
         is_default_before: system.id === selectedId,
@@ -768,7 +600,7 @@ export function DesignSystemsTab({
     let succeeded = false;
     let errorCode: string | undefined;
     try {
-      const deleted = await deleteDesignSystemDraft(system.id, workspaceContext);
+      const deleted = await deleteDesignSystemDraft(system.id);
       succeeded = Boolean(deleted);
       if (!succeeded) errorCode = 'DS_DELETE_RETURNED_FALSE';
       if (succeeded && selectedId === system.id) {
@@ -802,7 +634,6 @@ export function DesignSystemsTab({
         action: 'delete',
         result: succeeded ? 'success' : 'failed',
         design_system_id: system.id,
-        resource_scope: resourceScopeForSystem(system),
         status_before: statusBefore,
         status_after: succeeded ? 'deleted' : statusBefore,
         is_default_before: wasDefault,
@@ -831,7 +662,6 @@ export function DesignSystemsTab({
         action: wasDefault ? 'unset_default' : 'set_default',
         result: 'success',
         design_system_id: system.id,
-        resource_scope: resourceScopeForSystem(system),
         status_before: statusBefore,
         status_after: statusBefore,
         is_default_before: wasDefault,
@@ -846,7 +676,6 @@ export function DesignSystemsTab({
         action: wasDefault ? 'unset_default' : 'set_default',
         result: 'failed',
         design_system_id: system.id,
-        resource_scope: resourceScopeForSystem(system),
         status_before: statusBefore,
         status_after: statusBefore,
         is_default_before: wasDefault,
@@ -870,7 +699,6 @@ export function DesignSystemsTab({
       artifact_kind: 'design_system',
       design_system_id: system.id,
       project_id: system.projectId ?? undefined,
-      resource_scope: resourceScopeForSystem(system),
     });
     setBusyAction({ systemId: system.id, action: 'edit' });
     notifyActionLoading(t('dsManager.editWithAgent'));
@@ -891,7 +719,6 @@ export function DesignSystemsTab({
       element: 'templates_card',
       templates_id: system.id,
       templates_type: system.source ?? 'library',
-      resource_scope: resourceScopeForSystem(system),
     });
   }
 
@@ -1007,7 +834,6 @@ export function DesignSystemsTab({
                   page_name: 'design_systems',
                   area: 'design_systems',
                   element: 'create',
-                  resource_scope: 'personal',
                 });
                 onCreate();
               }}
@@ -1319,9 +1145,8 @@ function useProjectLogoSrc(
     setSrc(undefined);
     void fetchProjectFileText(projectId, 'brand.json', {
       cache: 'no-store',
-      workspaceContext: read.context,
     }).then((raw) => {
-      if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
+      if (cancelled) return;
       let primary: string | null = null;
       if (raw) {
         try {
@@ -1332,7 +1157,7 @@ function useProjectLogoSrc(
           // Not a valid brand.json (e.g. a non-brand "Create"d system) — no logo.
         }
       }
-      setSrc(primary ? projectRawUrl(projectId, primary, read.context) : null);
+      setSrc(primary ? projectRawUrl(projectId, primary) : null);
     });
     return () => {
       cancelled = true;
@@ -1548,12 +1373,12 @@ function DesignSystemDetail({
     } else {
       setReloadKey((k) => k + 1);
     }
-    void fetchDesignSystem(system.id, read.context).then((d) => {
-      if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
+    void fetchDesignSystem(system.id).then((d) => {
+      if (cancelled) return;
       if (d) setDetail(d);
       setDetailResolved(true);
     }).catch(() => {
-      if (!cancelled && read.isStillCurrent(resourceReadIdentityRef.current)) {
+      if (!cancelled) {
         setDetailResolved(true);
       }
     });
@@ -1580,7 +1405,6 @@ function DesignSystemDetail({
       artifact_kind: 'design_system',
       design_system_id: system.id,
       project_id: projectId ?? undefined,
-      resource_scope: detailResourceScope,
     });
   }
   const { kit } = useDesignKit({
@@ -1597,8 +1421,6 @@ function DesignSystemDetail({
     editable: isUser,
     host,
     reloadKey,
-    workspaceContext: resourceReadContext,
-    workspaceReadGeneration: resourceReadIdentityKey,
   });
 
   async function handleDownload() {
@@ -1613,19 +1435,16 @@ function DesignSystemDetail({
         await downloadDesignSystemArchive({
           designSystemId: system.id,
           fallbackTitle: system.title,
-          workspaceContext,
         }) || (projectId
           ? await downloadProjectArchive({
               projectId,
               fallbackTitle: system.title,
-              workspaceContext,
             })
           : false);
       setDownloadFailed(!ok);
       onActionFeedback(ok ? 'success' : 'error', ok ? t('ds.actionDone') : t('dsManager.downloadFailed'));
       trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-        resource_scope: detailResourceScope, action: 'download_plugin',
+        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system', action: 'download_plugin',
         result: ok ? 'success' : 'failed', duration_ms: Math.round(performance.now() - startedAt),
         ...(!ok ? { error_code: 'download_failed' } : {}), ...detailWorkspaceDimensions,
       });
@@ -1633,8 +1452,7 @@ function DesignSystemDetail({
       setDownloadFailed(true);
       onActionFeedback('error', t('dsManager.downloadFailed'));
       trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system',
-        resource_scope: detailResourceScope, action: 'download_plugin', result: 'failed',
+        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system', action: 'download_plugin', result: 'failed',
         duration_ms: Math.round(performance.now() - startedAt), error_code: 'download_failed',
         ...detailWorkspaceDimensions,
       });
@@ -1772,8 +1590,6 @@ function DesignSystemDetail({
       {kit ? (
         <DesignKitView
           kit={kit}
-          workspaceContext={resourceReadContext}
-          workspaceReadGeneration={resourceReadIdentityKey}
           badgeSlot={badgeSlot}
           actionsSlot={actionsSlot}
           showCover={false}

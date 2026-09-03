@@ -1,17 +1,33 @@
-import type {
-  WorkspaceCollabContext,
-  WorkspaceDirectoryItem,
-  WorkspaceDirectoryResponse,
-} from '@open-design/contracts';
+export interface WorkspaceCollabContext {
+  workspaceId: string;
+  workspaceType: 'team' | 'personal';
+  workspaceMemberId: string;
+  role: string;
+  memberStatus?: string;
+  lifecycleState?: string;
+  billingState?: string;
+  planId?: string;
+  providerMode?: string;
+  workspaceName?: string;
+  teamName?: string;
+  seatSummary?: {
+    seatLimit: number;
+    usedSeats: number;
+    availableSeats: number;
+    isSeatFull: boolean;
+  };
+  permissions?: {
+    canManageMembers: boolean;
+    canManageBilling: boolean;
+    canInviteMembers: boolean;
+    canManageAutoRecharge: boolean;
+    canShareProjects: boolean;
+    canWriteSyncedFiles: boolean;
+    canViewWorkspaceSettings: boolean;
+    canManageSharedResources: boolean;
+  };
+}
 
-/**
- * A complete `WorkspaceCollabContext` whose workspace + member identity the
- * caller chooses and whose remaining fields are valid, uninteresting defaults.
- *
- * Specs about identity-scoped read caches only care about which workspace and
- * which member a read was issued for; spelling the other ~10 contract fields
- * out per case buries that.
- */
 export function workspaceContextFixture(
   overrides: Partial<WorkspaceCollabContext> &
     Pick<WorkspaceCollabContext, 'workspaceId' | 'workspaceMemberId'>,
@@ -54,7 +70,7 @@ export function workspaceDirectoryItemFixture(
     | 'memberStatus'
     | 'lifecycleState'
   > & Partial<Pick<WorkspaceCollabContext, 'workspaceName' | 'teamName'>>,
-): WorkspaceDirectoryItem {
+) {
   return {
     workspaceId: context.workspaceId,
     workspaceName:
@@ -71,10 +87,31 @@ export function workspaceDirectoryItemFixture(
 
 export function workspaceDirectoryFixture(
   contexts: Array<Parameters<typeof workspaceDirectoryItemFixture>[0]>,
-): WorkspaceDirectoryResponse {
+) {
   return {
     items: contexts.map(workspaceDirectoryItemFixture),
-    // Most tests do not model a saved next-start default.
     activeWorkspaceId: null,
+  };
+}
+
+export function buildWorkspacePermissions(_ctx: WorkspaceCollabContext) {
+  return {
+    canManageMembers: false,
+    canManageBilling: false,
+    canInviteMembers: false,
+    canManageAutoRecharge: false,
+    canShareProjects: true,
+    canWriteSyncedFiles: true,
+    canViewWorkspaceSettings: true,
+    canManageSharedResources: false,
+  };
+}
+
+export function buildWorkspaceSeatSummary(_ctx: WorkspaceCollabContext) {
+  return {
+    seatLimit: 5,
+    usedSeats: 2,
+    availableSeats: 3,
+    isSeatFull: false,
   };
 }

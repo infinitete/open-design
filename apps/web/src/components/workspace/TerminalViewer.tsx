@@ -4,7 +4,6 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type {
   TerminalDataEvent,
   TerminalExitEvent,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { useT } from '../../i18n';
 import { Icon } from '../Icon';
@@ -21,7 +20,6 @@ interface Props {
   /** PTY session id (the `terminal:<id>` tab's suffix). */
   terminalId: string;
   projectId: string;
-  workspaceContext?: WorkspaceCollabContext | null;
   /** Close the owning workspace tab (the close button / no-restart paths). */
   onClose: () => void;
   /**
@@ -174,7 +172,6 @@ function subscribeToAppearanceChanges(onChange: () => void): () => void {
 export function TerminalViewer({
   terminalId,
   projectId,
-  workspaceContext,
   onClose,
   onSessionIdChange,
 }: Props) {
@@ -219,8 +216,8 @@ export function TerminalViewer({
     const last = lastSizeRef.current;
     if (last && last.cols === cols && last.rows === rows) return;
     lastSizeRef.current = { cols, rows };
-    void resizeTerminal(projectId, sessionId, cols, rows, workspaceContext);
-  }, [projectId, sessionId, workspaceContext]);
+    void resizeTerminal(projectId, sessionId, cols, rows);
+  }, [projectId, sessionId]);
 
   useEffect(() => {
     const container = surfaceRef.current;
@@ -279,7 +276,7 @@ export function TerminalViewer({
         if (!stdinBuffer) return;
         const data = stdinBuffer;
         stdinBuffer = '';
-        void sendTerminalStdin(projectId, sessionId, data, workspaceContext);
+        void sendTerminalStdin(projectId, sessionId, data);
       };
       dataSub = xterm.onData((data: string) => {
         stdinBuffer += data;
@@ -296,7 +293,7 @@ export function TerminalViewer({
       // SSE down. EventSource auto-reconnects with Last-Event-ID, so the daemon
       // replays buffered output we missed during a transient gap.
       const es = new EventSource(
-        terminalStreamUrl(projectId, sessionId, workspaceContext),
+        terminalStreamUrl(projectId, sessionId),
       );
       source = es;
       es.addEventListener('open', () => {
@@ -359,7 +356,7 @@ export function TerminalViewer({
       // or when the daemon shuts down.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, sessionId, workspaceContext]);
+  }, [projectId, sessionId]);
 
   // Re-fit when the banner appears/disappears so the surface reclaims the row.
   useEffect(() => {
@@ -375,16 +372,15 @@ export function TerminalViewer({
     // stops a stale session from lingering on the daemon if that ever changes.
     void killTerminal(projectId, sessionId, {
       keepalive: true,
-      workspaceContext,
     });
-    const next = await createTerminal(projectId, undefined, workspaceContext);
+    const next = await createTerminal(projectId, undefined);
     if (next?.id) {
       lastSizeRef.current = null;
       setSessionId(next.id);
     } else {
       setPhase('unavailable');
     }
-  }, [projectId, sessionId, workspaceContext]);
+  }, [projectId, sessionId]);
 
   const stopped = phase === 'ended' || phase === 'unavailable';
   const connecting = phase === 'connecting';

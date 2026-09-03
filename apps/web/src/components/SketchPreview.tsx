@@ -1,8 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawElement, NonDeleted } from '@excalidraw/excalidraw/element/types';
-import type { WorkspaceCollabContext } from '@open-design/contracts';
-import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
 import { fetchProjectFileText } from '../providers/registry';
 import type { ProjectFile } from '../types';
 import {
@@ -56,14 +54,12 @@ export function SketchPreview({
   projectId,
   file,
   className,
-  workspaceContext,
 }: {
   projectId: string;
   file: Pick<ProjectFile, 'kind' | 'name' | 'mtime'>;
   className?: string;
-  workspaceContext?: WorkspaceCollabContext | null;
 }) {
-  const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+  const workspaceIdentity = 'local';
   const cacheKey = isRenderableSketchJson(file)
     ? sketchPreviewCacheKey(projectId, file.name, file.mtime, workspaceIdentity)
     : null;
@@ -88,8 +84,7 @@ export function SketchPreview({
     setPreview(null);
     void fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
-      ...(workspaceContext ? { workspaceContext } : {}),
-    }).then(async (text) => {
+        }).then(async (text) => {
       if (cancelled) return;
       const nextPreview = await buildSketchPreviewState(text);
       if (cancelled) return;
@@ -99,7 +94,7 @@ export function SketchPreview({
     return () => {
       cancelled = true;
     };
-  }, [file.kind, file.name, file.mtime, projectId, workspaceContext, workspaceIdentity]);
+  }, [file.kind, file.name, file.mtime, projectId, workspaceIdentity]);
 
   const geometry = useMemo(() => {
     const resolvedItems = preview?.items ?? [];

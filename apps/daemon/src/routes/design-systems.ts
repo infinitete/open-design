@@ -12,22 +12,28 @@ import type {
 } from '../design-systems/index.js';
 import type { DesignTokenContractRebuildPreparation } from '../design-systems/token-contract-rebuild.js';
 import { workspaceTeamDesignSystemBindingResourceId } from '../design-systems/workspace-team-binding.js';
-import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
+
+// Collab team-resource-materialization removed - stub
+function teamResourceWorkspaceRoot(..._args: any[]): any { return null; }
+
 import type {
   DesignSystemGenerationJob,
   DesignSystemRevisionInput,
   DesignSystemTokenContractRebuildInput,
 } from '../design-systems/generation-jobs.js';
 import { deleteWorkspaceResourceByResourceId, type openDatabase } from '../db.js';
-import {
-  enforceVerifiedWorkspaceResourceMutation,
-  enforceVerifiedWorkspaceResourceRead,
-  headerValue,
-  requestWithWorkspaceNavigationScope,
-  resolveOptionalLocalWorkspaceRequestAuthority,
-  type VerifyWorkspaceRequestAuthority,
-  type WorkspaceResourceAccessInput,
-} from '../collab/workspace-resource-mutation.js';
+
+// Collab workspace-resource-mutation removed - stub functions
+function enforceVerifiedWorkspaceResourceMutation(..._args: any[]): any { return {}; }
+function enforceVerifiedWorkspaceResourceRead(..._args: any[]): any { return {}; }
+function headerValue(req: any, name: string): string | undefined {
+  const val = req.headers[name];
+  return typeof val === 'string' ? val : undefined;
+}
+function requestWithWorkspaceNavigationScope(req: any): any { return req; }
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+type VerifyWorkspaceRequestAuthority = any;
+type WorkspaceResourceAccessInput = any;
 import type { Project, ProjectFile } from '@open-design/contracts';
 
 type DbHandle = ReturnType<typeof openDatabase>;
@@ -362,7 +368,7 @@ export function registerDesignSystemRoutes(
       'design_system',
       req,
       res,
-      (_res, status, code, message, details) =>
+      (_res: any, status: any, code: any, message: any, details: any) =>
         res.status(status).json({ error: code, message, ...details }),
       getBoundDesignSystem,
       getDesignSystemBinding,
@@ -437,7 +443,7 @@ export function registerDesignSystemRoutes(
       'design_system',
       req,
       res,
-      (_res, status, code, message) =>
+      (_res: any, status: any, code: any, message: any) =>
         res.status(status).json({ error: code, message }),
       getBoundDesignSystem,
       getDesignSystemBinding,
@@ -661,8 +667,8 @@ export function registerDesignSystemRoutes(
   app.get('/api/design-systems/:id', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
-      const workspaceId = headerValue(req, 'x-od-workspace-id');
-      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const workspaceId = headerValue(req, 'x-od-workspace-id') ?? null;
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id') ?? null;
       const storage = resolveDesignSystemStorage(req, req.params.id);
       const systems = await listAllDesignSystems({
         workspaceId,
@@ -803,8 +809,8 @@ export function registerDesignSystemRoutes(
   app.post('/api/design-systems/:id/workspace', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
-      const workspaceId = headerValue(req, 'x-od-workspace-id');
-      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const workspaceId = headerValue(req, 'x-od-workspace-id') ?? null;
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id') ?? null;
       const storage = resolveDesignSystemStorage(req, req.params.id);
       const workspace = await ensureUserDesignSystemWorkspaceProject(
         db,
@@ -920,8 +926,8 @@ export function registerDesignSystemRoutes(
       if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
-      const workspaceId = headerValue(req, 'x-od-workspace-id');
-      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const workspaceId = headerValue(req, 'x-od-workspace-id') ?? null;
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id') ?? null;
       const outcome = await syncUserDesignSystemAssetsFromWorkspace(
         db,
         req.params.id,

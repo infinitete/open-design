@@ -19,12 +19,6 @@ import { trackDesignSystemEditClick } from '../analytics/events';
 import { requestHomeChip } from '../runtime/home-intent';
 import { brandSummaryToKit } from '../runtime/design-kit';
 import { DesignKitView } from './DesignKitView';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
-import {
-  resolveWorkspaceResourceReadIdentity,
-  workspaceProjectHeaders,
-  workspaceResourceReadIdentityKey,
-} from '../collab/workspace-identity';
 import styles from './BrandPreviewCard.module.css';
 
 // Re-exports preserving the previous public surface of this module.
@@ -52,12 +46,7 @@ export function BrandPreviewCard({
 }: BrandPreviewCardProps) {
   const t = useT();
   const analytics = useAnalytics();
-  const workspaceState = useWorkspaceContext();
-  const mutationWorkspaceContext = workspaceState.context;
-  const resourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
-  const workspaceContext = resourceReadIdentity?.context ?? null;
-  const workspaceReadGeneration = workspaceResourceReadIdentityKey(resourceReadIdentity);
-  const compact = variant === 'compact';
+    const compact = variant === 'compact';
   const { meta, brand } = summary;
   const name = brand?.name?.trim() || (meta.sourceUrl ? new URL(meta.sourceUrl).hostname.replace(/^www\./, '') : 'Brand');
   const extracting = meta.status === 'extracting';
@@ -66,7 +55,7 @@ export function BrandPreviewCard({
   const [busy, setBusy] = useState(false);
   const [backingProjectMissing, setBackingProjectMissing] = useState(false);
 
-  const kit = brandSummaryToKit(summary, workspaceContext);
+  const kit = brandSummaryToKit(summary);
 
   useEffect(() => {
     setBackingProjectMissing(false);
@@ -147,10 +136,7 @@ export function BrandPreviewCard({
     try {
       const response = await fetch(`/api/brands/${encodeURIComponent(meta.id)}`, {
         method: 'DELETE',
-        ...(mutationWorkspaceContext
-          ? { headers: workspaceProjectHeaders(mutationWorkspaceContext) }
-          : {}),
-      });
+              });
       if (!response.ok) throw new Error(`brand delete ${response.status}`);
       navigate({ kind: 'home', view: 'brands' }, { replace: true });
       await onChanged?.();
@@ -166,7 +152,6 @@ export function BrandPreviewCard({
     t,
     analytics.track,
     projectId,
-    mutationWorkspaceContext,
   ]);
 
   const badgeSlot = extracting ? (
@@ -228,8 +213,6 @@ export function BrandPreviewCard({
   return (
     <DesignKitView
       kit={kit}
-      workspaceContext={workspaceContext}
-      workspaceReadGeneration={workspaceReadGeneration}
       variant={variant}
       badgeSlot={badgeSlot}
       actionsSlot={actionsSlot}

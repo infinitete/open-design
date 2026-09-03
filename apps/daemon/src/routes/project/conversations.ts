@@ -3,8 +3,10 @@ import { type ChatSessionMode } from '@open-design/contracts';
 import { readAnalyticsContext } from '../../analytics.js';
 import { backfillBrandExtractionTranscriptForProject } from '../../brands/index.js';
 import type { RouteDeps } from '../../server-context.js';
-import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-resource-mutation.js';
-import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
+
+// Collab types removed - define locally
+type BoundWorkspaceResourceMutationGate = any;
+type AuthorizeProjectRequest = any;
 import { TERMINAL_RUN_STATUSES } from '../../runtimes/runs.js';
 import { strategyTaskTurnsForRunIds } from '../../strategies/task-store.js';
 

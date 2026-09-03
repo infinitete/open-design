@@ -9,13 +9,11 @@
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
 import { isDaemonProxyConnectionFailure } from '../runtime/daemon-proxy-failure';
 import { BackoffController, type BackoffOptions } from '../lib/backoff';
-import { markProjectCreatedByViewer } from '../collab/useProjectCollab';
 import { API_ERROR_CODES, type ApiErrorCode } from '@open-design/contracts';
 import type {
   AppliedPluginSnapshot,
   ApplyResult,
   ChatSessionMode,
-  CollabProjectBootstrapResponse,
   CreateConversationRequest,
   CreateDesignSystemProjectFromProjectResponse,
   CreateProjectExampleReference,
@@ -25,31 +23,14 @@ import type {
   ImportFolderRequest,
   ImportFolderResponse,
   InstalledPluginRecord,
-  LocalCatalogScope,
   PluginDuplicateProjectResponse,
   PluginInstallOutcome,
   PluginShareAction,
   ProjectPluginFolderInstallRequest,
   ProjectScenarioTaskProfile,
-  ProjectVisibility,
-  ProjectWorkspaceScopeResponse,
   TerminalSession,
-  WorkspaceCollabContext,
-  WorkspaceProjectSummary,
-  WorkspaceProjectsResponse,
 } from '@open-design/contracts';
 import { randomUUID } from '../utils/uuid';
-import { markProjectDisplaySnapshotsDirty } from './project-display-cache';
-import {
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-  workspaceResourceUrl,
-} from '../collab/workspace-identity';
-import {
-  currentWorkspaceAccountGeneration,
-  currentWorkspaceContextRequestToken,
-} from '../collab/useWorkspaceContext';
-import type { WorkspaceResourceReadIdentity } from '../collab/workspace-identity';
 import type {
   ChatMessage,
   Conversation,
@@ -63,127 +44,6 @@ import { boundedRequestErrorCode } from '../analytics/workspace';
 
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';
-export { workspaceProjectHeaders } from '../collab/workspace-identity';
-
-export type WorkspaceProjectListView = 'all' | 'recent' | 'drafts' | 'team';
-
-const WORKSPACE_PROJECT_LIST_VIEWS: readonly WorkspaceProjectListView[] = [
-  'all',
-  'recent',
-  'drafts',
-  'team',
-];
-
-function workspaceProjectListCacheKey(
-  context: WorkspaceCollabContext,
-  workspaceView: WorkspaceProjectListView,
-): string {
-  return [
-    'workspace-projects',
-    workspaceIdentityCacheKey(context),
-    workspaceView,
-  ].join(':');
-}
-
-export function invalidateWorkspaceProjectLists(
-  context: WorkspaceCollabContext,
-  accountGeneration?: number,
-): void {
-  for (const workspaceView of WORKSPACE_PROJECT_LIST_VIEWS) {
-    evictCoalescedGet(workspaceProjectListCacheKey(context, workspaceView));
-  }
-  markProjectDisplaySnapshotsDirty({ context, accountGeneration });
-}
-
-export type WorkspaceContextForWrite = {
-  context: WorkspaceCollabContext | null;
-  loading: boolean;
-  identityChangePending?: boolean;
-  failure?: 'unsupported' | 'unavailable' | 'reauth-required';
-  /**
-   * The directory-verified identity the retained `context` was resolved under,
-   * carrying the generation token it belongs to. Present on production state
-   * (`useWorkspaceContext`) whenever a last-good context is held. Used by
-   * {@link resolvedWorkspaceContextForWrite} to decide whether that retained
-   * context still belongs to the CURRENT identity generation.
-   */
-  resourceReadIdentity?: WorkspaceResourceReadIdentity | null;
-};
-
-/**
- * Whether the retained `context` still belongs to the current identity
- * generation — the signal that lets a write proceed on a last-good context
- * during a transient outage without ever letting one account's cached context
- * authorize a write after the identity changed.
- *
- * True only when the state carries a directory-verified `resourceReadIdentity`
- * whose generation matches the LIVE request token AND whose context is the same
- * identity as `state.context`. A snapshot from a retired generation (an account
- * switch bumped the token) fails this check even if `identityChangePending` in
- * the snapshot has not caught up.
- */
-function writeContextBelongsToCurrentGeneration(state: WorkspaceContextForWrite): boolean {
-  const identity = state.resourceReadIdentity;
-  if (!identity || state.context === null) return false;
-  if (identity.generation !== currentWorkspaceContextRequestToken()) return false;
-  return workspaceIdentityCacheKey(identity.context) === workspaceIdentityCacheKey(state.context);
-}
-
-export type WorkspaceContextWriteResolutionOptions = {
-  /**
-   * `unscoped` is reserved for callers whose operation is genuinely local and
-   * does not require AMR Workspace authority. All Workspace-owned writes keep
-   * the default `reject` policy.
-   */
-  unavailablePolicy?: 'reject' | 'unscoped';
-};
-
-/**
- * Preserve headerless old-daemon/anonymous compatibility, but never collapse
- * an unresolved or unavailable modern workspace authority into "anonymous".
- *
- * When the read is momentarily blocked (loading, a pending identity change, or
- * a transient `unavailable` outage) but the shell still holds a directory-
- * verified last-good context that belongs to the CURRENT identity generation,
- * that context is honored instead of throwing. Remote mutation routes still
- * re-verify authority at their network boundary; ordinary `POST /api/projects`
- * is deliberately local-first and no longer uses this helper or performs that
- * verification. A context from a RETIRED generation (an account switch bumped
- * the token) still fails closed — that is the cross-account guard.
- */
-export function resolvedWorkspaceContextForWrite(
-  state: WorkspaceContextForWrite,
-  options: WorkspaceContextWriteResolutionOptions = {},
-): WorkspaceCollabContext | null {
-  if (
-    state.loading
-    || state.identityChangePending === true
-    || state.failure === 'unavailable'
-    || state.failure === 'reauth-required'
-  ) {
-    if (writeContextBelongsToCurrentGeneration(state)) return state.context;
-    if (options.unavailablePolicy === 'unscoped') return null;
-    throw new Error('Workspace context is unavailable. Try again when workspace sync finishes.');
-  }
-  return state.context;
-}
-
-/**
- * A workspace project move the daemon refused, carrying the contract error
- * code (`ApiError.code`) when the response body names one. Kept as a named
- * class so UI callers can branch on `code` — `TEAM_PROJECT_OWNER_CONFLICT`
- * is a permanent ownership conflict that must not render as the generic
- * "try again later" hint.
- */
-export class WorkspaceProjectMoveError extends Error {
-  readonly code: ApiErrorCode | null;
-
-  constructor(message: string, code: ApiErrorCode | null) {
-    super(message);
-    this.name = 'WorkspaceProjectMoveError';
-    this.code = code;
-  }
-}
 
 /** A refused project delete with the daemon's stable status/code preserved. */
 export class ProjectDeleteError extends Error {
@@ -197,115 +57,9 @@ export class ProjectDeleteError extends Error {
   }
 }
 
-/**
- * The contract error code a failed move carries, or null. Duck-typed on a
- * string `code` property (validated against `API_ERROR_CODES`) instead of
- * `instanceof`, so callers and tests can classify any conforming error
- * without importing the concrete class.
- */
-export function workspaceProjectMoveErrorCode(error: unknown): ApiErrorCode | null {
-  if (!(error instanceof Error)) return null;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && (API_ERROR_CODES as readonly string[]).includes(code)
-    ? (code as ApiErrorCode)
-    : null;
-}
-
-export async function moveWorkspaceProject(input: {
-  projectId: string;
-  visibility: ProjectVisibility;
-  workspaceContext: WorkspaceCollabContext | null;
-}): Promise<WorkspaceProjectSummary> {
-  const context = input.workspaceContext;
-  if (!context) throw new Error('Workspace context is required');
-  const resp = await fetch(
-    `/api/workspaces/${encodeURIComponent(context.workspaceId)}/projects/${encodeURIComponent(input.projectId)}/move`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...workspaceProjectHeaders(context),
-      },
-      body: JSON.stringify({ visibility: input.visibility }),
-    },
-  );
-  if (!resp.ok) {
-    let message = `workspace project move failed with status ${resp.status}`;
-    let code: ApiErrorCode | null = null;
-    try {
-      const body = await resp.json() as { error?: unknown };
-      if (body.error && typeof body.error === 'object') {
-        const errorBody = body.error as { code?: unknown; message?: unknown };
-        if (
-          typeof errorBody.code === 'string' &&
-          (API_ERROR_CODES as readonly string[]).includes(errorBody.code)
-        ) {
-          code = errorBody.code as ApiErrorCode;
-        }
-        if (typeof errorBody.message === 'string' && errorBody.message.trim()) {
-          message = errorBody.message;
-        }
-      }
-    } catch {
-      // Keep the generic fallback when the error body is absent or invalid.
-    }
-    throw new WorkspaceProjectMoveError(message, code);
-  }
-  // A share/unshare changes membership across several projections at once
-  // (`recent`, `drafts`, `team`, and `all`). Do not let the coalescing window
-  // replay the pre-move snapshot into the immediate refresh.
-  invalidateWorkspaceProjectLists(context);
-  const json = (await resp.json()) as { project: WorkspaceProjectSummary };
-  return json.project;
-}
-
-function omitWorkspaceContext<T extends { workspaceContext?: WorkspaceCollabContext | null }>(
-  input: T,
-): Omit<T, 'workspaceContext'> {
-  const { workspaceContext: _workspaceContext, ...rest } = input;
-  return rest;
-}
-
 export async function listProjects(options?: {
   throwOnError?: boolean;
-  workspaceContext?: WorkspaceCollabContext | null;
-  workspaceView?: WorkspaceProjectListView;
 }): Promise<Project[]> {
-  const context = options?.workspaceContext ?? null;
-  if (context) {
-    const summaries = await listWorkspaceProjectSummaries({
-      context,
-      workspaceView: options?.workspaceView,
-      throwOnError: options?.throwOnError,
-    });
-    const seenProjectIds = new Set<string>();
-    return summaries.flatMap((summary) => {
-      // Workspace list responses carry the authoritative scope on the summary
-      // wrapper. Remote catalog projects can omit it from the nested project,
-      // and a stale nested value must not leak another Workspace into a card.
-      const project: Project = {
-        ...summary.project,
-        workspaceId: summary.workspaceId,
-        workspaceVisibility: summary.visibility,
-      };
-      // Workspace summaries have resource-level identities, so the same
-      // logical project can legitimately appear more than once when local and
-      // remote catalog records overlap. Project cards are opened by project.id;
-      // keep the first (the daemon orders local summaries before remote ones)
-      // instead of rendering duplicate cards with duplicate React keys.
-      if (seenProjectIds.has(project.id)) return [];
-      seenProjectIds.add(project.id);
-      return [project];
-    });
-  }
-  // No resolved workspace identity at all — either the context has not landed
-  // yet or this daemon has no workspace plane. The key is a constant on
-  // purpose: it caches the ONE unscoped `/api/projects` answer, and it is
-  // unreachable once a context exists (the workspace branch above returns
-  // first), so it can never serve one workspace's rows to another. The
-  // workspace-scoped read's own key is built in
-  // `listWorkspaceProjectSummaries` below and carries the full wire identity
-  // plus the requested view.
   try {
     return await coalescedGet('local-projects', async () => {
       const resp = await fetch('/api/projects');
@@ -321,41 +75,9 @@ export async function listProjects(options?: {
   }
 }
 
-export async function listWorkspaceProjectSummaries(options: {
-  context: WorkspaceCollabContext;
-  throwOnError?: boolean;
-  workspaceView?: WorkspaceProjectListView;
-}): Promise<WorkspaceProjectSummary[]> {
-  const { context } = options;
-  const workspaceView = options.workspaceView ?? 'drafts';
-  const key = workspaceProjectListCacheKey(context, workspaceView);
+export async function getProject(id: string): Promise<Project | null> {
   try {
-    return await coalescedGet(key, async () => {
-      const resp = await fetch(
-        `/api/workspaces/${encodeURIComponent(context.workspaceId)}/projects?view=${encodeURIComponent(workspaceView)}`,
-        { headers: workspaceProjectHeaders(context) },
-      );
-      if (!resp.ok) throw new Error(`projects ${resp.status}`);
-      const json = (await resp.json()) as WorkspaceProjectsResponse;
-      return json.projects ?? [];
-    });
-  } catch (err) {
-    if (options.throwOnError) throw err;
-    return [];
-  }
-}
-
-export async function getProject(
-  id: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): Promise<Project | null> {
-  try {
-    const resp = await fetch(
-      `/api/projects/${encodeURIComponent(id)}`,
-      workspaceContext
-        ? { headers: workspaceProjectHeaders(workspaceContext) }
-        : undefined,
-    );
+    const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { project: Project };
     return json.project;
@@ -368,116 +90,34 @@ export type ProjectRouteBootstrapResult =
   | {
       kind: 'found';
       project: Project;
-      scope: ProjectWorkspaceScopeResponse['scope'];
       resolvedDir: string | null;
-    }
-  | { kind: 'not-found' }
-  | { kind: 'forbidden' }
-  | { kind: 'unavailable' };
-
-export type FirstOpenTeamProjectBootstrapResult =
-  | {
-      kind: 'found';
-      project: Project;
-      scope: ProjectWorkspaceScopeResponse['scope'];
-      resolvedDir: string | null;
-      awaitingFirstMaterialization: boolean;
     }
   | { kind: 'not-found' }
   | { kind: 'forbidden' }
   | { kind: 'unavailable' };
 
 /**
- * Bootstrap a fresh project deep link without borrowing the shell's ambient
- * Workspace. A card-opening witness goes straight through the scoped endpoint;
- * a context-free deep link uses its first headerless response only to discover
- * the persisted binding, then re-confirms it with exact Workspace/member
- * headers. The project row is read only after either exact check succeeds.
+ * Bootstrap a fresh project deep link. Reads the project row directly; the
+ * daemon is the single local authority, so there is no separate scope
+ * negotiation on a single-machine install.
  */
 export async function bootstrapProjectRoute(
   projectId: string,
   options: {
     accountGeneration: number;
-    exactContext?: WorkspaceCollabContext | null;
   },
 ): Promise<ProjectRouteBootstrapResult> {
-  const suppliedContext = options.exactContext ?? null;
-  const suppliedIdentity = workspaceIdentityCacheKey(suppliedContext);
   const key = [
     'project-route-bootstrap',
     options.accountGeneration,
     projectId,
-    suppliedIdentity,
   ].join(':');
   const result = await coalescedGet(key, async (): Promise<ProjectRouteBootstrapResult> => {
     try {
-      const scopeResponse = await fetch(
-        `/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
-        {
-          cache: 'no-store',
-          ...(suppliedContext
-            ? { headers: workspaceProjectHeaders(suppliedContext) }
-            : {}),
-        },
-      );
-      if (!scopeResponse.ok) {
-        if (scopeResponse.status === 404) return { kind: 'not-found' };
-        if (scopeResponse.status === 403) return { kind: 'forbidden' };
-        return { kind: 'unavailable' };
-      }
-      let body = (await scopeResponse.json()) as ProjectWorkspaceScopeResponse;
-      if (!body.scope || body.scope.projectId !== projectId) {
-        return { kind: 'unavailable' };
-      }
-      let context = body.scope.context;
-      if (suppliedContext) {
-        if (
-          !context
-          || body.scope.workspaceId !== suppliedContext.workspaceId
-          || workspaceIdentityCacheKey(context) !== suppliedIdentity
-        ) {
-          // A caller-supplied witness is exact authority, never a hint. If the
-          // daemon cannot re-confirm it, do not retry this project headerless or
-          // let it fall through to Personal/local scope.
-          return { kind: 'forbidden' };
-        }
-      } else if (context) {
-        // Headerless scope is discovery only. Once it names the exact persisted
-        // Workspace/member pair, prove that claim through the ordinary
-        // fail-closed authorization lane before trusting it as ProjectView's
-        // seed. This also ensures an already-known Team route never completes
-        // with headerless scope as its last authorization request.
-        const exactScopeResponse = await fetch(
-          `/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
-          {
-            cache: 'no-store',
-            headers: workspaceProjectHeaders(context),
-          },
-        );
-        if (!exactScopeResponse.ok) {
-          if (exactScopeResponse.status === 404) return { kind: 'not-found' };
-          if (exactScopeResponse.status === 403) return { kind: 'forbidden' };
-          return { kind: 'unavailable' };
-        }
-        const exactBody = (await exactScopeResponse.json()) as ProjectWorkspaceScopeResponse;
-        const exactContext = exactBody.scope?.context;
-        if (
-          !exactBody.scope
-          || exactBody.scope.projectId !== projectId
-          || !exactContext
-          || exactBody.scope.workspaceId !== context.workspaceId
-          || workspaceIdentityCacheKey(exactContext) !== workspaceIdentityCacheKey(context)
-        ) {
-          return { kind: 'forbidden' };
-        }
-        body = exactBody;
-        context = exactContext;
-      }
       const projectResponse = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}`,
         {
           cache: 'no-store',
-          ...(context ? { headers: workspaceProjectHeaders(context) } : {}),
         },
       );
       if (!projectResponse.ok) {
@@ -492,21 +132,9 @@ export async function bootstrapProjectRoute(
       if (!projectBody.project || projectBody.project.id !== projectId) {
         return { kind: 'unavailable' };
       }
-      if (
-        context
-        && projectBody.project.workspaceId !== context.workspaceId
-      ) {
-        // The binding changed between the scope witness and the detail read.
-        // Do not mount the row under stale authority.
-        return { kind: 'forbidden' };
-      }
-      if (!context && projectBody.project.workspaceId) {
-        return { kind: 'forbidden' };
-      }
       return {
         kind: 'found',
         project: projectBody.project,
-        scope: body.scope,
         resolvedDir:
           typeof projectBody.resolvedDir === 'string'
             ? projectBody.resolvedDir
@@ -522,91 +150,9 @@ export async function bootstrapProjectRoute(
   return result;
 }
 
-/**
- * Progressive first-open lane for a Team project that is present in the hub
- * but absent from this daemon's local data root.
- *
- * `/collab/bootstrap` owns the exact-directory authorization, shared-owner
- * discovery, placeholder stamp, and background single-flight pull. Its
- * idempotent PUT is safely replayable by the sidecar proxy after a reused
- * keep-alive socket resets. A current daemon atomically binds the placeholder
- * to this exact Team principal before answering; the follow-up route bootstrap
- * proves that local binding through the ordinary scope/detail gates before
- * ProjectView may mount.
- * Older daemons leave the row unbound, which deliberately returns `unavailable`
- * so App keeps the pre-existing full-materialization fallback.
- */
-export async function bootstrapFirstOpenTeamProjectRoute(
-  projectId: string,
-  options: {
-    accountGeneration: number;
-    exactContext: WorkspaceCollabContext;
-  },
-): Promise<FirstOpenTeamProjectBootstrapResult> {
-  const { exactContext } = options;
-  if (
-    exactContext.workspaceType !== 'team'
-    || exactContext.memberStatus !== 'active'
-    || exactContext.lifecycleState !== 'active'
-  ) {
-    return { kind: 'not-found' };
-  }
-  let bootstrapResponse: CollabProjectBootstrapResponse;
-  try {
-    const response = await fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/collab/bootstrap`,
-      {
-        method: 'PUT',
-        cache: 'no-store',
-        headers: workspaceProjectHeaders(exactContext),
-      },
-    );
-    if (!response.ok) {
-      if (response.status === 403) return { kind: 'forbidden' };
-      if (response.status === 404) return { kind: 'not-found' };
-      return { kind: 'unavailable' };
-    }
-    bootstrapResponse = (await response.json()) as CollabProjectBootstrapResponse;
-  } catch {
-    return { kind: 'unavailable' };
-  }
-  // The optimistic route read immediately before this helper may have cached
-  // the expected 404 for the same exact principal. The successful PUT changed
-  // local authority state, so that negative read is no longer reusable.
-  evictCoalescedGet([
-    'project-route-bootstrap',
-    options.accountGeneration,
-    projectId,
-    workspaceIdentityCacheKey(exactContext),
-  ].join(':'));
-  const bootstrap = await bootstrapProjectRoute(projectId, {
-    accountGeneration: options.accountGeneration,
-    exactContext,
-  });
-  if (bootstrap.kind === 'forbidden') return { kind: 'unavailable' };
-  if (bootstrap.kind !== 'found') return bootstrap;
-  if (
-    bootstrap.scope.kind !== 'team'
-    || bootstrap.scope.context?.workspaceType !== 'team'
-    || workspaceIdentityCacheKey(bootstrap.scope.context)
-      !== workspaceIdentityCacheKey(exactContext)
-  ) {
-    // A shared placeholder must never be rendered through an unbound/local or
-    // mismatched principal, including when the web is paired with an older
-    // daemon that only registered a row without its Team binding.
-    return { kind: 'unavailable' };
-  }
-  return {
-    ...bootstrap,
-    awaitingFirstMaterialization:
-      bootstrapResponse.awaitingFirstMaterialization === true,
-  };
-}
-
 export async function getProjectDetail(
   id: string,
   opts?: { ensureDir?: boolean },
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<{ project: Project; resolvedDir: string | null } | null> {
   try {
     // `ensureDir` asks the daemon to materialize a managed project's folder
@@ -615,9 +161,6 @@ export async function getProjectDetail(
     const query = opts?.ensureDir ? '?ensureDir=1' : '';
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(id)}${query}`,
-      workspaceContext
-        ? { headers: workspaceProjectHeaders(workspaceContext) }
-        : undefined,
     );
     if (!resp.ok) return null;
     const json = (await resp.json()) as { project: Project; resolvedDir?: unknown };
@@ -710,16 +253,6 @@ export class ProjectCreateError extends Error {
   }
 }
 
-/**
- * Whether a failed workspace-scoped write should be retried. The daemon marks
- * `WORKSPACE_AUTHORITY_UNAVAILABLE` (vela membership authority momentarily down)
- * as a 503 `retryable: true`; a cross-workspace 403 or a validation 4xx is
- * permanent and must surface immediately.
- */
-function isRetryableWorkspaceWriteFailure(status: number, retryable: boolean): boolean {
-  return status === 503 && retryable;
-}
-
 export async function createProject(
   input: {
     /** Optional caller-minted id used for an optimistic route handoff. */
@@ -727,9 +260,7 @@ export async function createProject(
     name: string;
     projectLocationId?: string;
     skillId: string | null;
-    skillCatalogScope?: LocalCatalogScope | null;
     designSystemId: string | null;
-    designSystemCatalogScope?: LocalCatalogScope | null;
     pendingPrompt?: string;
     metadata?: ProjectMetadata;
     conversationMode?: ChatSessionMode;
@@ -747,7 +278,6 @@ export async function createProject(
      * the local catalogue. Never accompanies `pluginId`/`appliedPluginSnapshotId`.
      */
     exampleReference?: CreateProjectExampleReference;
-    workspaceContext?: WorkspaceCollabContext | null;
   },
   retryOptions: CreateProjectRetryOptions = {},
 ): Promise<{ project: Project; conversationId: string; appliedPluginSnapshotId?: string }> {
@@ -773,9 +303,8 @@ export async function createProject(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(input.workspaceContext ? workspaceProjectHeaders(input.workspaceContext) : {}),
         },
-        body: JSON.stringify({ id, ...omitWorkspaceContext(input) }),
+        body: JSON.stringify({ id, ...input }),
       });
       if (resp.ok) {
         const created = (await resp.json()) as {
@@ -783,11 +312,6 @@ export async function createProject(
           conversationId: string;
           appliedPluginSnapshotId?: string;
         };
-        // Preserve the exact Workspace authority used by this create request.
-        // `useProjectCollab` may use this only to skip the initial status-unknown
-        // read-only window; another Workspace with the same project id must not
-        // inherit the signal.
-        markProjectCreatedByViewer(created.project.id, input.workspaceContext ?? null);
         return created;
       }
       if (await isDaemonProxyConnectionFailure(resp)) {
@@ -803,7 +327,7 @@ export async function createProject(
         resp,
         'Could not create project',
       );
-      if (isRetryableWorkspaceWriteFailure(resp.status, retryable) && attempt < maxRetries) {
+      if (resp.status === 503 && retryable && attempt < maxRetries) {
         await sleep(backoff.nextDelay());
         continue;
       }
@@ -817,14 +341,12 @@ export async function createProject(
 export async function createDesignSystemProjectFromProject(
   projectId: string,
   input: { name?: string; pendingPrompt?: string } = {},
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<CreateDesignSystemProjectFromProjectResponse> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/design-system-copy`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify(input),
     });
@@ -857,14 +379,12 @@ export async function createDesignSystemProjectFromProject(
 export async function duplicateProject(
   projectId: string,
   input: { name?: string } = {},
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<DuplicateProjectResponse> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/duplicate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify(input),
     });
@@ -888,9 +408,7 @@ export async function duplicateProject(
       }
       throw new Error(message);
     }
-    const created = (await resp.json()) as DuplicateProjectResponse;
-    markProjectCreatedByViewer(created.project.id, workspaceContext ?? null);
-    return created;
+    return (await resp.json()) as DuplicateProjectResponse;
   } catch (err) {
     throw err instanceof Error ? err : new Error('Could not duplicate project');
   }
@@ -929,13 +447,11 @@ export async function pickLocalFolderPath(): Promise<string | null> {
 
 export async function importFolderProject(
   input: ImportFolderRequest,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ImportFolderResponse> {
   const resp = await fetch('/api/import/folder', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
     },
     body: JSON.stringify(input),
   });
@@ -952,13 +468,11 @@ export async function importFolderProject(
 
 export async function importClaudeDesignZip(
   file: File,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<{ project: Project; conversationId: string; entryFile: string }> {
   const form = new FormData();
   form.append('file', file);
   const resp = await fetch('/api/import/claude-design', {
     method: 'POST',
-    ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     body: form,
   });
   if (!resp.ok) {
@@ -1077,14 +591,12 @@ type ProjectPatch = Omit<Partial<Project>, 'pendingPrompt' | 'customInstructions
 export async function patchProject(
   id: string,
   patch: ProjectPatch,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<Project | null> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify(patch),
     });
@@ -1094,14 +606,7 @@ export async function patchProject(
     // lists (name, metadata, updatedAt, bindings displayed on cards). A list
     // read started immediately after this write must not reuse the settled
     // pre-write value from coalescedGet's one-second burst window.
-    if (workspaceContext) {
-      invalidateWorkspaceProjectLists(
-        workspaceContext,
-        currentWorkspaceAccountGeneration(),
-      );
-    } else {
-      evictCoalescedGet('local-projects');
-    }
+    evictCoalescedGet('local-projects');
     return json.project;
   } catch {
     return null;
@@ -1109,27 +614,13 @@ export async function patchProject(
 }
 
 /**
- * Delete a project.
- *
- * `workspaceContext`, when known, MUST be attached: `enforceWorkspaceProjectMutation`
- * (apps/daemon/src/routes/project/index.ts) treats a request carrying NEITHER
- * `x-od-workspace-id` NOR `x-od-workspace-member-id` as a legacy pre-workspace
- * caller and skips its ownership check entirely (`ctx === null` → allowed).
- * Omitting these headers — which this call used to do unconditionally — meant
- * every delete from a workspace-team build bypassed the daemon's own
- * cross-workspace permission check, so a project that leaked into the wrong
- * workspace's 草稿 grid (recvq5bz3HIDVt) was ALSO really deletable from there
- * (recvq5ecTkar91), not just visible. See {@link moveWorkspaceProject} for the
- * same headers on the sibling move endpoint.
+ * Delete a project. The local daemon is the single authority, so the DELETE
+ * goes straight to the project row.
  */
-export async function deleteProject(
-  id: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): Promise<true> {
+export async function deleteProject(id: string): Promise<true> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     });
     if (!resp.ok) {
       let message = `project delete failed with status ${resp.status}`;
@@ -1161,7 +652,7 @@ export async function deleteProject(
       // can still mean the route itself is unavailable on an incompatible
       // daemon and must remain visible as a failure.
       if (resp.status === 404 && code === 'PROJECT_NOT_FOUND') {
-        removeCachedTabs(id, workspaceContext);
+        removeCachedTabs(id);
         removeDesignBrowserProjectCache(id);
         return true;
       }
@@ -1169,7 +660,7 @@ export async function deleteProject(
     }
     // Drop per-project browser caches once the project is gone server-side so
     // they do not accumulate in localStorage for the lifetime of the profile.
-    removeCachedTabs(id, workspaceContext);
+    removeCachedTabs(id);
     removeDesignBrowserProjectCache(id);
     return true;
   } catch (error) {
@@ -1201,7 +692,6 @@ type CreateConversationOptions = {
   // The one in-memory fork point to retry with when it never reached the DB.
   forkFallbackMessage?: ChatMessage;
   forkFallbackPredecessorMessageId?: string | null;
-  workspaceContext?: WorkspaceCollabContext | null;
   throwOnError?: boolean;
 };
 
@@ -1209,11 +699,9 @@ export async function listConversations(
   projectId: string,
   options?: {
     throwOnError?: boolean;
-    workspaceContext?: WorkspaceCollabContext | null;
   },
 ): Promise<Conversation[]> {
-  const workspaceContext = options?.workspaceContext ?? null;
-  const readKey = `project-conversations:${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`;
+  const readKey = `project-conversations:${projectId}`;
   try {
     // Concurrent consumers of one project's conversation list share a single
     // request per burst (Batch A §4.3); conversation writes below evict.
@@ -1222,9 +710,6 @@ export async function listConversations(
       async () => {
         const resp = await fetch(
           `/api/projects/${encodeURIComponent(projectId)}/conversations`,
-          workspaceContext
-            ? { headers: workspaceProjectHeaders(workspaceContext) }
-            : undefined,
         );
         if (!resp.ok) throw new ProjectConversationsHttpError(resp.status);
         return (await resp.json()) as { conversations: Conversation[] };
@@ -1238,13 +723,8 @@ export async function listConversations(
 }
 
 /** Thin invalidation for the shared conversations read after a write. */
-function evictConversationsRead(
-  projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): void {
-  evictCoalescedGet(
-    `project-conversations:${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`,
-  );
+function evictConversationsRead(projectId: string): void {
+  evictCoalescedGet(`project-conversations:${projectId}`);
 }
 
 export async function createConversation(
@@ -1266,7 +746,7 @@ export async function createConversation(
     if (opts?.forkAfterMessageId) {
       body.forkAfterMessageId = opts.forkAfterMessageId;
     }
-    let resp = await postConversation(projectId, body, opts?.workspaceContext);
+    let resp = await postConversation(projectId, body);
     if (!resp.ok) {
       const message = await readErrorMessage(resp);
       const fallbackMessage = compactForkFallbackMessage(opts);
@@ -1278,7 +758,6 @@ export async function createConversation(
             forkFallbackMessage: fallbackMessage,
             forkFallbackPredecessorMessageId: opts?.forkFallbackPredecessorMessageId,
           },
-          opts?.workspaceContext,
         );
       } else {
         throw new ProjectConversationsHttpError(resp.status, message);
@@ -1288,7 +767,7 @@ export async function createConversation(
       throw new ProjectConversationsHttpError(resp.status, await readErrorMessage(resp));
     }
     const json = (await resp.json()) as { conversation: Conversation };
-    evictConversationsRead(projectId, opts?.workspaceContext);
+    evictConversationsRead(projectId);
     return json.conversation;
   } catch (error) {
     if (opts?.throwOnError) throw error;
@@ -1299,7 +778,6 @@ export async function createConversation(
 function postConversation(
   projectId: string,
   body: CreateConversationRequest,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<Response> {
   return fetch(
     `/api/projects/${encodeURIComponent(projectId)}/conversations`,
@@ -1307,7 +785,6 @@ function postConversation(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify(body),
     },
@@ -1330,7 +807,6 @@ export async function patchConversation(
   projectId: string,
   conversationId: string,
   patch: Partial<Conversation>,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<Conversation | null> {
   try {
     const resp = await fetch(
@@ -1339,14 +815,13 @@ export async function patchConversation(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify(patch),
       },
     );
     if (!resp.ok) return null;
     const json = (await resp.json()) as { conversation: Conversation };
-    evictConversationsRead(projectId, workspaceContext);
+    evictConversationsRead(projectId);
     return json.conversation;
   } catch {
     return null;
@@ -1356,19 +831,13 @@ export async function patchConversation(
 export async function deleteConversation(
   projectId: string,
   conversationId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`,
-      {
-        method: 'DELETE',
-        ...(workspaceContext
-          ? { headers: workspaceProjectHeaders(workspaceContext) }
-          : {}),
-      },
+      { method: 'DELETE' },
     );
-    if (resp.ok) evictConversationsRead(projectId, workspaceContext);
+    if (resp.ok) evictConversationsRead(projectId);
     return resp.ok;
   } catch {
     return false;
@@ -1431,14 +900,10 @@ async function readProjectMessageListError(resp: Response): Promise<{
 export async function listMessages(
   projectId: string,
   conversationId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ChatMessage[]> {
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
-      workspaceContext
-        ? { headers: workspaceProjectHeaders(workspaceContext) }
-        : undefined,
     );
     if (!resp.ok) {
       const failure = await readProjectMessageListError(resp);
@@ -1466,7 +931,6 @@ export interface SaveMessageOptions {
   telemetryFinalized?: boolean;
   /** Claim the row once: the daemon keeps an existing row and returns it. */
   createOnly?: boolean;
-  workspaceContext?: WorkspaceCollabContext | null;
   // Set during page-unload paths (pagehide / visibilitychange→hidden) so
   // the in-flight PUT survives even if the document tears down before the
   // response arrives. Without keepalive the browser cancels the fetch
@@ -1492,9 +956,6 @@ export async function saveMessage(
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          ...(options.workspaceContext
-            ? workspaceProjectHeaders(options.workspaceContext)
-            : {}),
         },
         body: JSON.stringify(body),
         ...(options.keepalive ? { keepalive: true } : {}),
@@ -1522,7 +983,6 @@ export async function saveMessage(
 export async function createTerminal(
   projectId: string,
   init?: CreateTerminalRequest,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<TerminalSession | null> {
   try {
     const resp = await fetch(
@@ -1531,7 +991,6 @@ export async function createTerminal(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify(init ?? {}),
       },
@@ -1548,19 +1007,14 @@ export async function createTerminal(
 export function terminalStreamUrl(
   projectId: string,
   terminalId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): string {
-  return workspaceResourceUrl(
-    `/api/projects/${encodeURIComponent(projectId)}/terminals/${encodeURIComponent(terminalId)}/stream`,
-    workspaceContext,
-  );
+  return `/api/projects/${encodeURIComponent(projectId)}/terminals/${encodeURIComponent(terminalId)}/stream`;
 }
 
 export async function sendTerminalStdin(
   projectId: string,
   terminalId: string,
   data: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   try {
     const resp = await fetch(
@@ -1569,7 +1023,6 @@ export async function sendTerminalStdin(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify({ data }),
       },
@@ -1585,7 +1038,6 @@ export async function resizeTerminal(
   terminalId: string,
   cols: number,
   rows: number,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   try {
     const resp = await fetch(
@@ -1594,7 +1046,6 @@ export async function resizeTerminal(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify({ cols, rows }),
       },
@@ -1613,7 +1064,6 @@ export async function killTerminal(
   // PTY leaks until the daemon GCs it.
   options: {
     keepalive?: boolean;
-    workspaceContext?: WorkspaceCollabContext | null;
   } = {},
 ): Promise<boolean> {
   try {
@@ -1621,9 +1071,6 @@ export async function killTerminal(
       `/api/projects/${encodeURIComponent(projectId)}/terminals/${encodeURIComponent(terminalId)}/kill`,
       {
         method: 'POST',
-        ...(options.workspaceContext
-          ? { headers: workspaceProjectHeaders(options.workspaceContext) }
-          : {}),
         ...(options.keepalive ? { keepalive: true } : {}),
       },
     );
@@ -1637,12 +1084,8 @@ export async function killTerminal(
 
 const PROJECT_TABS_CACHE_PREFIX = 'open-design:project-tabs:v1:';
 
-function tabsCacheKey(
-  projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): string {
-  if (!workspaceContext) return `${PROJECT_TABS_CACHE_PREFIX}${projectId}`;
-  return `${PROJECT_TABS_CACHE_PREFIX}${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`;
+function tabsCacheKey(projectId: string): string {
+  return `${PROJECT_TABS_CACHE_PREFIX}${projectId}`;
 }
 
 function normalizeTabsState(value: unknown): OpenTabsState | null {
@@ -1673,27 +1116,21 @@ function normalizeTabsState(value: unknown): OpenTabsState | null {
   return state;
 }
 
-function readCachedTabs(
-  projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): OpenTabsState | null {
+function readCachedTabs(projectId: string): OpenTabsState | null {
   if (typeof window === 'undefined') return null;
   try {
     return normalizeTabsState(JSON.parse(
-      window.localStorage.getItem(tabsCacheKey(projectId, workspaceContext)) ?? 'null',
+      window.localStorage.getItem(tabsCacheKey(projectId)) ?? 'null',
     ));
   } catch {
     return null;
   }
 }
 
-function removeCachedTabs(
-  projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): void {
+function removeCachedTabs(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(tabsCacheKey(projectId, workspaceContext));
+    window.localStorage.removeItem(tabsCacheKey(projectId));
   } catch {
     // Ignore private-mode/quota errors; the cache entry is best-effort.
   }
@@ -1702,7 +1139,6 @@ function removeCachedTabs(
 function writeCachedTabs(
   projectId: string,
   state: OpenTabsState,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): OpenTabsState {
   const next: OpenTabsState = {
     ...state,
@@ -1711,7 +1147,7 @@ function writeCachedTabs(
   if (typeof window !== 'undefined') {
     try {
       window.localStorage.setItem(
-        tabsCacheKey(projectId, workspaceContext),
+        tabsCacheKey(projectId),
         JSON.stringify(next),
       );
     } catch {
@@ -1734,17 +1170,14 @@ function newestTabsState(
 async function persistTabsToDaemon(
   projectId: string,
   state: OpenTabsState,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<void> {
-  const requestKey =
-    `project-tabs:${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`;
+  const requestKey = `project-tabs:${projectId}`;
   // Thin invalidation: a write makes any burst-shared read stale.
   evictCoalescedGet(requestKey);
   await fetch(`/api/projects/${encodeURIComponent(projectId)}/tabs`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
     },
     body: JSON.stringify(state),
     keepalive: true,
@@ -1753,23 +1186,18 @@ async function persistTabsToDaemon(
 
 export async function loadTabs(
   projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
   options: {
     reconcileNewerCacheToDaemon?: boolean;
   } = {},
 ): Promise<OpenTabsState> {
-  const cached = readCachedTabs(projectId, workspaceContext);
-  const requestKey =
-    `project-tabs:${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`;
+  const cached = readCachedTabs(projectId);
+  const requestKey = `project-tabs:${projectId}`;
   try {
     // Concurrent mounts share one daemon read per burst (Batch A §4.3); the
     // per-caller cache reconciliation below still runs for every caller.
     const saved = await coalescedGet(requestKey, async () => {
       const resp = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}/tabs`,
-        workspaceContext
-          ? { headers: workspaceProjectHeaders(workspaceContext) }
-          : undefined,
       );
       if (!resp.ok) throw new Error(`tabs ${resp.status}`);
       return normalizeTabsState(await resp.json());
@@ -1781,7 +1209,7 @@ export async function loadTabs(
       && latest === cached
       && (cached.updatedAt ?? 0) > (saved?.updatedAt ?? 0)
     ) {
-      void persistTabsToDaemon(projectId, cached, workspaceContext).catch(() => {});
+      void persistTabsToDaemon(projectId, cached).catch(() => {});
     }
     return latest;
   } catch {
@@ -1792,11 +1220,10 @@ export async function loadTabs(
 export async function saveTabs(
   projectId: string,
   state: OpenTabsState,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<void> {
-  const next = writeCachedTabs(projectId, state, workspaceContext);
+  const next = writeCachedTabs(projectId, state);
   try {
-    await persistTabsToDaemon(projectId, next, workspaceContext);
+    await persistTabsToDaemon(projectId, next);
   } catch {
     // best-effort
   }
@@ -1812,19 +1239,17 @@ export async function saveTabs(
 export function cacheTabsLocally(
   projectId: string,
   state: OpenTabsState,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): OpenTabsState {
-  return writeCachedTabs(projectId, state, workspaceContext);
+  return writeCachedTabs(projectId, state);
 }
 
 /** Persist already-stamped tab state to the daemon (the debounced write). */
 export async function persistTabsToDaemonNow(
   projectId: string,
   state: OpenTabsState,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<void> {
   try {
-    await persistTabsToDaemon(projectId, state, workspaceContext);
+    await persistTabsToDaemon(projectId, state);
   } catch {
     // best-effort; the local cache (written via cacheTabsLocally) is canonical
     // and will re-push on the next loadTabs reconciliation.
@@ -1847,23 +1272,6 @@ export async function persistTabsToDaemonNow(
 
 export interface ListPluginsOptions {
   includeHidden?: boolean;
-  /**
-   * When present, attaches the same workspace identity headers project reads
-   * already carry (`workspaceProjectHeaders`) so the daemon's `GET /api/plugins`
-   * can apply its workspace-scoped filter (routes/plugins/index.ts +
-   * `listInstalledPlugins`'s one-way "unclaimed visible everywhere, claimed
-   * elsewhere hidden" rule). Omit for callers that genuinely need the
-   * headerless compatibility catalogue. The complete Workspace/member
-   * identity is part of the cache key below, so a scoped read can never leak
-   * into that headerless partition or a differently scoped caller.
-   */
-  workspaceContext?: WorkspaceCollabContext | null;
-  /**
-   * Account boundary paired with the complete Workspace identity below. Tests
-   * and callers holding a captured generation may pass it explicitly; normal
-   * UI callers use the current generation.
-   */
-  accountGeneration?: number;
 }
 
 interface CachedVisiblePlugins {
@@ -1871,30 +1279,19 @@ interface CachedVisiblePlugins {
   cachedAt: number;
 }
 
-// The plugin catalogue is filtered by the request's Workspace headers. Keep
-// the warm snapshot that avoids Home's 1-2s remount stall, but partition it by
-// BOTH the signed-in account generation and every identity field carried on
-// the wire. A display cache is never an authorization witness: callers still
-// pass the verified context to mutations independently.
+// Warm snapshot that avoids Home's 1-2s remount stall.
 const cachedVisiblePlugins = new Map<string, CachedVisiblePlugins>();
-// Every request start and explicit invalidation advances the exact partition's
-// generation. Deleting the settled value alone is insufficient: an older
-// `listPlugins()` can resolve after a replacement read and otherwise put its
-// stale snapshot back into this cache. Latest-started-wins also covers ordinary
-// same-key request races that do not pass through invalidation. Generations use
-// the same account + Workspace key as the values, so activity in A cannot
-// suppress a concurrent B (or next-account) response.
+// Every request start and explicit invalidation advances the cache generation.
+// Deleting the settled value alone is insufficient: an older `listPlugins()`
+// can resolve after a replacement read and otherwise put its stale snapshot
+// back into this cache. Latest-started-wins also covers ordinary request races
+// that do not pass through invalidation.
 const pluginCatalogCacheGenerations = new Map<string, number>();
 const PLUGINS_CACHE_TTL_MS = 10_000;
 const MAX_PLUGIN_CATALOG_CACHE_ENTRIES = 24;
 
-export function pluginCatalogCacheKey(
-  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
-): string {
-  return JSON.stringify([
-    options.accountGeneration ?? currentWorkspaceAccountGeneration(),
-    workspaceIdentityCacheKey(options.workspaceContext ?? null),
-  ]);
+export function pluginCatalogCacheKey(): string {
+  return 'plugin-catalog';
 }
 
 function cacheVisiblePlugins(
@@ -1913,14 +1310,11 @@ function cacheVisiblePlugins(
 export async function listPlugins(
   options: ListPluginsOptions = {},
 ): Promise<InstalledPluginRecord[]> {
-  const cacheKey = pluginCatalogCacheKey(options);
+  const cacheKey = pluginCatalogCacheKey();
   const requestGeneration = (pluginCatalogCacheGenerations.get(cacheKey) ?? 0) + 1;
   pluginCatalogCacheGenerations.set(cacheKey, requestGeneration);
   try {
-    const resp = await fetch(
-      '/api/plugins',
-      options.workspaceContext ? { headers: workspaceProjectHeaders(options.workspaceContext) } : undefined,
-    );
+    const resp = await fetch('/api/plugins');
     if (!resp.ok) return [];
     const json = (await resp.json()) as { plugins?: InstalledPluginRecord[] };
     const plugins = json.plugins ?? [];
@@ -1939,9 +1333,9 @@ export async function listPlugins(
 // surfaces that mount often (Home) where a slightly stale list is fine and the
 // heavy `/api/plugins` round trip per mount is not.
 export async function listPluginsFresh(
-  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
+  options: ListPluginsOptions = {},
 ): Promise<InstalledPluginRecord[]> {
-  const cached = cachedVisiblePlugins.get(pluginCatalogCacheKey(options));
+  const cached = cachedVisiblePlugins.get(pluginCatalogCacheKey());
   if (cached && Date.now() - cached.cachedAt < PLUGINS_CACHE_TTL_MS) {
     return cached.plugins;
   }
@@ -1956,22 +1350,15 @@ export async function listPluginsFresh(
  * guard: once a catalog has loaded, network latency must not make known plugin
  * actions temporarily unactionable again.
  */
-export function readCachedVisiblePlugins(
-  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
-): InstalledPluginRecord[] | null {
-  return cachedVisiblePlugins.get(pluginCatalogCacheKey(options))?.plugins ?? null;
+export function readCachedVisiblePlugins(): InstalledPluginRecord[] | null {
+  return cachedVisiblePlugins.get(pluginCatalogCacheKey())?.plugins ?? null;
 }
 
 /**
- * Evict one authenticated plugin-catalog partition after a thin Workspace
- * invalidation. Both account generation and the complete Workspace/member
- * identity are required so an event for A cannot discard B's warm catalog.
+ * Evict the warm plugin catalog after a mutation or thin invalidation.
  */
-export function invalidatePluginCatalogCache(options: {
-  workspaceContext: WorkspaceCollabContext | null;
-  accountGeneration: number;
-}): void {
-  const cacheKey = pluginCatalogCacheKey(options);
+export function invalidatePluginCatalogCache(): void {
+  const cacheKey = pluginCatalogCacheKey();
   cachedVisiblePlugins.delete(cacheKey);
   pluginCatalogCacheGenerations.set(
     cacheKey,
@@ -1997,7 +1384,6 @@ export function isVisiblePlugin(plugin: InstalledPluginRecord): boolean {
 export async function duplicatePluginAsProject(
   pluginId: string,
   input: { name?: string } = {},
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginDuplicateProjectResponse> {
   const resp = await fetch(
     `/api/plugins/${encodeURIComponent(pluginId)}/duplicate-project`,
@@ -2005,7 +1391,6 @@ export async function duplicatePluginAsProject(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify(input),
     },
@@ -2017,7 +1402,6 @@ export async function duplicatePluginAsProject(
   if (!json?.ok || !json.projectId) {
     throw new Error('Could not duplicate this template.');
   }
-  markProjectCreatedByViewer(json.projectId, workspaceContext ?? null);
   return json;
 }
 
@@ -2032,7 +1416,6 @@ interface PluginInstallEvent {
 
 export async function installPluginSource(
   source: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginInstallOutcome> {
   const log: string[] = [];
   try {
@@ -2040,7 +1423,6 @@ export async function installPluginSource(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify({ source }),
     });
@@ -2108,12 +1490,7 @@ export async function uploadPluginFolder(files: File[]): Promise<PluginInstallOu
 export async function installGeneratedPluginFolder(
   projectId: string,
   relativePath: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginInstallOutcome> {
-  // Capture the account boundary before the request starts. If sign-in changes
-  // while the install is in flight, the successful response must evict the
-  // catalog that authorized this mutation, never the next account's cache.
-  const accountGeneration = currentWorkspaceAccountGeneration();
   try {
     const request: ProjectPluginFolderInstallRequest = { path: relativePath };
     const resp = await fetch(
@@ -2122,7 +1499,6 @@ export async function installGeneratedPluginFolder(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify(request),
       },
@@ -2130,14 +1506,10 @@ export async function installGeneratedPluginFolder(
     const outcome = await readPluginInstallOutcome(resp);
     if (outcome.ok) {
       // The event refreshes mounted consumers, but it is not durable: Home may
-      // be unmounted or identity-masked while a project installs its generated
-      // plugin. Evict the exact warm partition first so a later mount cannot
-      // reuse the pre-install catalog for the full TTL. Other Workspaces stay
-      // warm and avoid an unrelated refresh/performance regression.
-      invalidatePluginCatalogCache({
-        workspaceContext: workspaceContext ?? null,
-        accountGeneration,
-      });
+      // be unmounted while a project installs its generated plugin. Evict the
+      // warm catalog first so a later mount cannot reuse the pre-install
+      // catalog for the full TTL.
+      invalidatePluginCatalogCache();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
       }
@@ -2197,34 +1569,21 @@ export interface PluginShareTaskSnapshot {
 export async function publishGeneratedPluginToGitHub(
   projectId: string,
   relativePath: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareOutcome> {
-  return postGeneratedPluginShareAction(
-    projectId,
-    relativePath,
-    'publish-github',
-    workspaceContext,
-  );
+  return postGeneratedPluginShareAction(projectId, relativePath, 'publish-github');
 }
 
 export async function contributeGeneratedPluginToOpenDesign(
   projectId: string,
   relativePath: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareOutcome> {
-  return postGeneratedPluginShareAction(
-    projectId,
-    relativePath,
-    'contribute-open-design',
-    workspaceContext,
-  );
+  return postGeneratedPluginShareAction(projectId, relativePath, 'contribute-open-design');
 }
 
 export async function startGeneratedPluginShareTask(
   projectId: string,
   relativePath: string,
   action: 'publish-github' | 'contribute-open-design',
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareTaskStart> {
   const resp = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/plugins/share-tasks`,
@@ -2232,7 +1591,6 @@ export async function startGeneratedPluginShareTask(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
       },
       body: JSON.stringify({ path: relativePath, action }),
     },
@@ -2261,13 +1619,11 @@ export async function waitGeneratedPluginShareTask(
   taskId: string,
   since: number,
   timeoutMs = 25_000,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareTaskSnapshot> {
   const resp = await fetch(`/api/plugins/share-tasks/${encodeURIComponent(taskId)}/wait`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
     },
     body: JSON.stringify({ since, timeoutMs }),
   });
@@ -2295,20 +1651,11 @@ export type PluginShareProjectOutcome =
 
 /**
  * Start a plugin share task, which stands up a real chat project server-side.
- *
- * `workspaceContext` MUST be attached, for the same reason every sibling create
- * in this file attaches it: the project this endpoint creates gets a
- * `workspace_projects` binding from the request's own identity, and a headerless
- * create leaves it unbound — its first run can use the signed-in account wallet,
- * but it has no pinned Workspace for later Team billing or mutations. This call
- * was the one create in this file with no `workspaceContext` parameter at all,
- * so it was permanently unbound rather than merely racy.
  */
 export async function createPluginShareProject(
   pluginId: string,
   action: PluginShareAction,
   locale?: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareProjectOutcome> {
   try {
     const resp = await fetch(
@@ -2317,7 +1664,6 @@ export async function createPluginShareProject(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify({
           action,
@@ -2357,7 +1703,6 @@ async function postGeneratedPluginShareAction(
   projectId: string,
   relativePath: string,
   action: 'publish-github' | 'contribute-open-design',
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginShareOutcome> {
   try {
     const resp = await fetch(
@@ -2366,7 +1711,6 @@ async function postGeneratedPluginShareAction(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
         },
         body: JSON.stringify({ path: relativePath }),
       },
@@ -2507,16 +1851,10 @@ function getUploadRelativePath(file: File): string {
   return withRelativePath.webkitRelativePath || file.name;
 }
 
-export async function uninstallPlugin(
-  id: string,
-  workspaceContext?: WorkspaceCollabContext | null,
-): Promise<boolean> {
+export async function uninstallPlugin(id: string): Promise<boolean> {
   try {
     const resp = await fetch(`/api/plugins/${encodeURIComponent(id)}/uninstall`, {
       method: 'POST',
-      ...(workspaceContext
-        ? { headers: workspaceProjectHeaders(workspaceContext) }
-        : {}),
     });
     return resp.ok;
   } catch {
@@ -2694,7 +2032,6 @@ export async function applyPlugin(
     grantCaps?: string[];
     locale?: string;
     pluginSource?: string;
-    workspaceContext?: WorkspaceCollabContext | null;
   } = {},
 ): Promise<ApplyResult | null> {
   try {
@@ -2706,15 +2043,12 @@ export async function applyPlugin(
       locale: options.locale,
     });
     const pluginUrl = `/api/plugins/${encodeURIComponent(pluginId)}`;
-    let resp = await fetch(
+    const resp = await fetch(
       `${pluginUrl}/${options.pluginSource ? 'apply-local' : 'apply'}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(!options.pluginSource && options.workspaceContext
-            ? workspaceProjectHeaders(options.workspaceContext)
-            : {}),
         },
         body: requestBody,
       },

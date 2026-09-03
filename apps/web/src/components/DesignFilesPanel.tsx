@@ -7,13 +7,12 @@ import { LIBRARY_UI_VISIBLE } from '../features/libraryUi';
 import type { Dict } from '../i18n/types';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
 import { projectFileUrl, projectRawUrl } from '../providers/registry';
-import {
-  appendResourceQuery,
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from '../collab/workspace-identity';
-import { useProjectCollabContext } from '../collab/collab-context';
 import { buildSrcdoc } from '../runtime/srcdoc';
+
+function appendResourceQuery(path: string, query: string): string {
+  if (!query) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${query.replace(/^[?&]+/, '')}`;
+}
 import type { LiveArtifactWorkspaceEntry, ProjectFile, ProjectFileKind, ProjectFolder } from '../types';
 import {
   createFileSystemReadError,
@@ -23,7 +22,6 @@ import {
 import { isVisualStabilityMode } from '../utils/visualStability';
 import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
 import { getPluginFolderCandidates } from './design-files/pluginFolders';
-import { FileSyncBadge } from '../collab/FileSyncBadge';
 import { Icon } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { RemixIcon } from './RemixIcon';
@@ -57,7 +55,6 @@ interface Props {
    * local materialization and remain useful while the next version downloads;
    * only an empty local result swaps the creation CTAs for a syncing notice.
    */
-  downloadPending?: boolean;
   // Basename of the project's working directory when the user has chosen a
   // real folder (e.g. "openclaw"). Shown as the breadcrumb root instead of
   // the generic "project" label. Undefined for default-storage projects.
@@ -448,7 +445,6 @@ export function DesignFilesPanel({
   projectKind,
   filesRefreshKey = 0,
   viewerOnly = false,
-  downloadPending = false,
   rootDirName,
   reloading,
   running = false,
@@ -480,7 +476,6 @@ export function DesignFilesPanel({
   navState,
   onNavStateChange,
 }: Props) {
-  const { workspaceContext } = useProjectCollabContext();
   const t = useT();
   const analytics = useAnalytics();
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -1144,7 +1139,7 @@ export function DesignFilesPanel({
     const isSelected = selected.has(f.name);
     const openLabel = `${t('designFiles.previewOpen')} ${f.name}`;
     const src = appendResourceQuery(
-      projectRawUrl(projectId, f.name, workspaceContext),
+      projectRawUrl(projectId, f.name),
       `v=${Math.round(f.mtime)}`,
     );
     return (
@@ -1243,9 +1238,6 @@ export function DesignFilesPanel({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(workspaceContext
-            ? workspaceProjectHeaders(workspaceContext)
-            : {}),
         },
         body: JSON.stringify({ files: fileList }),
       });
@@ -1537,23 +1529,7 @@ export function DesignFilesPanel({
             </div>
           ) : null}
           {files.length === 0 && liveArtifacts.length === 0 && (folders?.length ?? 0) === 0 ? (
-            downloadPending ? (
-              // A shared project whose local mirror has not caught up yet
-              // reads as EXACTLY the same zero-files result as a genuinely
-              // empty project (this list is a plain local-disk read — see
-              // `downloadPending`'s doc comment). Without this branch the two
-              // are indistinguishable and the CTAs below (which create NEW
-              // content) actively mislead a viewer whose project is about to
-              // have real files. Swap them for a syncing notice instead.
-              <div className="df-empty df-empty-syncing" data-testid="design-files-syncing">
-                <div className="df-empty-pill">
-                  <FileSyncBadge state="downloading" size={20} />
-                  <span className="df-empty-title">
-                    {t('designFiles.syncing')}
-                  </span>
-                </div>
-              </div>
-            ) : (
+            <>
               <div className="df-empty" data-testid="design-files-empty">
                 <div className="df-empty-pill">
                   <span className="df-empty-title">
@@ -1634,7 +1610,7 @@ export function DesignFilesPanel({
                   </div>
                 </div>
               </div>
-            )
+            </>
           ) : (
             <>
               {availableTabs.length > 0 ? (
@@ -1847,7 +1823,7 @@ export function DesignFilesPanel({
               : t('designFiles.copyLocalPath')}
           </button>
           <a
-            href={projectFileUrl(projectId, menuPos.name, workspaceContext)}
+            href={projectFileUrl(projectId, menuPos.name)}
             download={menuPos.name}
             style={{ textDecoration: 'none' }}
           >
@@ -1950,17 +1926,9 @@ function HtmlCardThumbnail({
   file: ProjectFile;
   filesRefreshKey: number;
 }) {
-  const {
-    workspaceContext,
-    workspaceContextLoading,
-  } = useProjectCollabContext();
   const tooLargeForThumbnail = file.size > HTML_THUMBNAIL_INLINE_MAX_BYTES;
-  const url = projectFileUrl(projectId, file.name, workspaceContext);
-  const authorizationScopeKey = workspaceContextLoading
-    ? null
-    : workspaceContext
-      ? `workspace:${workspaceIdentityCacheKey(workspaceContext)}`
-      : 'local';
+  const url = projectFileUrl(projectId, file.name);
+  const authorizationScopeKey = 'local';
   const refreshKey = htmlSourceSnapshotRefreshKey(file, filesRefreshKey);
   const thumbnailIdentity = authorizationScopeKey
     ? {
@@ -1973,7 +1941,6 @@ function HtmlCardThumbnail({
   const baseHref = projectRawUrl(
     projectId,
     baseDirForFile(file.name),
-    workspaceContext,
   );
   const [srcDoc, setSrcDoc] = useState<string | null>(() => {
     if (!thumbnailIdentity) return null;

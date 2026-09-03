@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Button, VisuallyHidden } from '@open-design/components';
-import type {
-  AmrWalletSnapshot,
-  WorkspaceCollabContext,
-} from '@open-design/contracts';
 import { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
 import {
   agentIdToTracking,
@@ -14,12 +10,6 @@ import {
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
 import { byokErrorCode } from '../analytics/byok-error-code';
-import {
-  amrHandoffDeviceId,
-  attributedAmrUrl,
-  recordAmrEntry,
-  type TrackingAmrEntrySource,
-} from '../analytics/amr-attribution';
 import { getResolvedDeviceId } from '../analytics/client';
 import {
   trackByokPreflightBlocked,
@@ -44,20 +34,7 @@ import type { Dict } from '../i18n/types';
 import { AgentIcon } from './AgentIcon';
 import { AgentDiagnosticRow } from './AgentDiagnosticRow';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
-import { AmrLoginPill } from './AmrLoginPill';
-import { PlanBadge } from './PlanBadge';
 import { orderAgentsWithOpenDesignFirst } from './agentOrdering';
-import {
-  AMR_LOGIN_STATUS_EVENT,
-  amrLoginStatusEventReason,
-  isAmrSessionAuthenticated,
-} from './amrLoginPolling';
-import {
-  fetchAmrWalletSnapshot,
-  fetchVelaLoginStatus,
-  formatVelaBalanceUsd,
-  type VelaLoginStatus,
-} from '../providers/daemon';
 import { installDeepSeekHarnessCompanion } from '../providers/agent-companion';
 import { amrProfileBadgeLabel } from '../runtime/amr-guidance';
 import {
@@ -166,17 +143,6 @@ import { DesignSystemsSection } from './DesignSystemsSection';
 import { PrivacySection } from './PrivacySection';
 import { ProjectLocationsSection } from './ProjectLocationsSection';
 import { RoutinesSection } from './RoutinesSection';
-import { SettingsWorkspaceSection } from './SettingsWorkspaceSection';
-import {
-  useWorkspaceBillingResponse,
-  useWorkspaceContext,
-  workspaceBillingBalanceUsd,
-  workspaceBillingSummaryForContext,
-} from '../collab/useWorkspaceContext';
-import { canUpgradeFromPlanTier, resolvePlanTier } from '../collab/team-plan';
-import { planBadgeTierForWorkspace } from './PlanWordmark';
-import { workspaceUpgradeUrl } from './EntryNavRail';
-import { canShowWorkspaceSettings } from '../collab/settings-access';
 import { ConnectorsBrowser } from './ConnectorsBrowser';
 import { MemoryModelInline } from './MemoryModelInline';
 import { MemorySection } from './MemorySection';
@@ -201,11 +167,6 @@ import {
   useCritiqueTheaterEnabled,
 } from './Theater';
 import {
-  projectWorkspaceContext,
-  projectWorkspaceScopeReady,
-  useProjectWorkspaceScope,
-} from '../collab/useProjectWorkspaceScope';
-import {
   applyAppearanceToDocument,
   resolveAccentColor,
 } from '../state/appearance';
@@ -218,6 +179,52 @@ import {
   requestNotificationPermission,
   showCompletionNotification,
 } from '../utils/notifications';
+
+// ---- Single-machine build shims -------------------------------------------
+type VelaLoginStatus = {
+  loggedIn: boolean;
+  user?: { id?: string; email?: string } | null;
+  loginInFlight?: boolean;
+  profile?: string;
+  account?: { plan?: string; balanceUsd?: string | null } | null;
+  authAttemptId?: string;
+};
+type AmrWalletSnapshot = {
+  status?: string;
+  balanceUsd?: string | null;
+  error?: { code?: string; message?: string } | null;
+};
+function isAmrSessionAuthenticated(s: VelaLoginStatus | null): boolean {
+  return Boolean(s?.loggedIn);
+}
+const amrLoginStatusEventReason = (_e: Event): string => 'unknown';
+const AMR_LOGIN_STATUS_EVENT = 'open-design:amr-login-status';
+function recordAmrEntry(..._a: unknown[]): { entryId: string } {
+  return { entryId: 'local' };
+}
+function amrHandoffDeviceId(..._a: unknown[]): string | null { return null; }
+function attributedAmrUrl(baseUrl: string, ..._rest: unknown[]): string { return baseUrl; }
+type TrackingAmrEntrySource = string;
+const useWorkspaceBillingResponse = (..._a: unknown[]) => null;
+const workspaceBillingSummaryForContext = (..._a: unknown[]) => null;
+const canShowWorkspaceSettings = (_c?: unknown): boolean => false;
+const workspaceBillingBalanceUsd = (..._a: unknown[]): string | null => null;
+const resolvePlanTier = (_o?: unknown): string | null => null;
+const canUpgradeFromPlanTier = (_p?: string | null): boolean => false;
+type WorkspaceCollabContext = {
+  workspaceId?: string;
+  workspaceMemberId?: string | null;
+  workspaceType?: string;
+  permissions?: Record<string, boolean>;
+  [key: string]: unknown;
+} | null;
+function PlanBadge(_props: Record<string, unknown>) { return null; }
+const useWorkspaceContext = (): { context: WorkspaceCollabContext; loading: boolean } => ({ context: null, loading: false });
+const fetchVelaLoginStatus = async (): Promise<VelaLoginStatus> => ({ loggedIn: true });
+const fetchAmrWalletSnapshot = async (): Promise<AmrWalletSnapshot | null> => null;
+const formatVelaBalanceUsd = (_r?: string | null): string | null => null;
+const planBadgeTierForWorkspace = (_o?: unknown): string | null => null;
+const resolvePlanLabelTier = (_o?: unknown): string | null => null;
 
 export type SettingsSection =
   | 'general'
@@ -1654,13 +1661,11 @@ export function SettingsDialog({
     workspaceContext,
   );
   const showWorkspaceSettings = canShowWorkspaceSettings(workspaceContext);
+  void workspaceBilling;
   // All generic AMR upgrade buttons route through public Pricing. While the
   // workspace read is pending, hide the owner-only action to avoid a flash for
   // admins or members.
-  const amrUpgradeUrl = (profile: string | null | undefined): string | null =>
-    workspaceContextLoading
-      ? null
-      : workspaceUpgradeUrl(workspaceContext, workspaceBilling, { fallbackProfile: profile });
+  const amrUpgradeUrl = (_profile: string | null | undefined): string | null => null;
   const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
   const [settingsFullscreen, setSettingsFullscreen] = useState(true);
   // Scroll the right-hand content pane back to the top whenever the user
@@ -1711,7 +1716,7 @@ export function SettingsDialog({
       return;
     }
     setAmrWalletReady(false);
-    const next = await fetchAmrWalletSnapshot(options);
+    const next = await fetchAmrWalletSnapshot();
     setAmrWalletSnapshot(next);
     setAmrWalletReady(true);
   }, [workspaceContext?.workspaceType, workspaceContextLoading]);
@@ -1793,7 +1798,7 @@ export function SettingsDialog({
     // login, ping-pongs the action between "Signing in…" and "Authorize".
     const resyncAmrStatus = () => {
       if (document.visibilityState === 'hidden') return;
-      void fetchVelaLoginStatus({ refresh: true }).then((next) => {
+      void fetchVelaLoginStatus().then((next) => {
         if (cancelled || !next) return;
         setAmrCardStatus(next);
         if (isAmrSessionAuthenticated(next)) void refreshAmrWalletSnapshot({ refresh: true });
@@ -4514,20 +4519,7 @@ export function SettingsDialog({
                       identity, so signing in here is that one flow. This used to
                       navigate to onboarding, which walked the user through the
                       whole first-run tour to reach the same authorization. */}
-                  <AmrLoginPill
-                    className="settings-cloud-signin-callout__button"
-                    hideSignedOutStatus
-                    hideSignedInStatus
-                    initialStatus={amrCardStatus}
-                    skipInitialRefresh
-                    signInLabel={t('settings.cloudCalloutButton')}
-                    signInIcon="log-in"
-                    amrEntrySourceDetail="settings_cloud_callout"
-                    metricsConsent={cfg.telemetry?.metrics === true}
-                    installationId={cfg.installationId}
-                    onStatusChange={setAmrCardStatus}
-                    onSignedOut={onAmrSignedOut}
-                  />
+                  
                 </div>
               ) : null}
               {cfg.mode === 'api' ? (
@@ -5025,22 +5017,7 @@ export function SettingsDialog({
                                           {t('settings.amrUpgrade')}
                                         </button>
                                       ) : null}
-                                      <AmrLoginPill
-                                        className="agent-card-amr-auth"
-                                        hideSignedOutStatus
-                                        hideSignedInStatus
-                                        initialStatus={amrCardStatus}
-                                        skipInitialRefresh
-                                        signInLabel={t('settings.amrAuthorize')}
-                                        showConsoleAction={amrCardSignedIn}
-                                        iconOnlySignOut
-                                        amrEntrySourceDetail="settings_amr_authorize"
-                                        metricsConsent={cfg.telemetry?.metrics === true}
-                                        installationId={cfg.installationId}
-                                        revealPendingCancelAction={amrRevealPendingCancelAction}
-                                        onStatusChange={setAmrCardStatus}
-                                        onSignedOut={onAmrSignedOut}
-                                      />
+                                      
                                     </span>
                                   ) : (
                                     <div
@@ -5978,10 +5955,7 @@ export function SettingsDialog({
               </div>
 
               <div className="settings-general-block">
-                <CritiqueTheaterSection
-                  callerWorkspaceContext={workspaceContext}
-                  persistedProjectWorkspaceId={persistedProjectWorkspaceId}
-                />
+                <CritiqueTheaterSection />
               </div>
             </section>
           ) : null}
@@ -6237,9 +6211,6 @@ export function SettingsDialog({
             </section>
           ) : null}
 
-          {activeSection === 'workspace' && showWorkspaceSettings ? (
-            <SettingsWorkspaceSection context={workspaceContext} />
-          ) : null}
           {aboutToast ? (
             <Toast
               message={aboutToast}
@@ -6778,9 +6749,8 @@ interface OrbitRunStartResponse {
 export function orbitLiveArtifactHref(
   projectId: string,
   artifactId: string,
-  workspaceContext: WorkspaceCollabContext | null,
 ): string {
-  return liveArtifactPreviewUrl(projectId, artifactId, 'rendered', workspaceContext);
+  return liveArtifactPreviewUrl(projectId, artifactId, 'rendered');
 }
 
 export async function persistConfigAndRunOrbit(
@@ -6808,7 +6778,6 @@ export async function persistConfigAndRunOrbit(
 
 export function configForManualOrbitRun(
   config: AppConfig,
-  workspaceContext: WorkspaceCollabContext | null = null,
 ): AppConfig {
   const effectiveTemplateSkillId = config.orbit?.templateSkillId || DEFAULT_ORBIT.templateSkillId || '';
   return {
@@ -6816,16 +6785,6 @@ export function configForManualOrbitRun(
     orbit: {
       ...(config.orbit ?? DEFAULT_ORBIT),
       ...(effectiveTemplateSkillId ? { templateSkillId: effectiveTemplateSkillId } : {}),
-      ...(workspaceContext
-        ? {
-            workspaceScope: {
-              workspaceId: workspaceContext.workspaceId,
-              workspaceMemberId: workspaceContext.workspaceMemberId,
-            },
-          }
-        : config.orbit?.workspaceScope
-          ? { workspaceScope: config.orbit.workspaceScope }
-          : {}),
     },
   };
 }
@@ -6857,7 +6816,6 @@ function OrbitSection({
   composioApiKeyConfigured,
   daemonMediaProviders,
   daemonMediaProvidersFetchState,
-  workspaceContext,
   onOpenComposioSection,
   onLeaveForOrbitProject,
 }: {
@@ -6923,16 +6881,6 @@ function OrbitSection({
       orbit: {
         ...(curr.orbit ?? DEFAULT_ORBIT),
         ...patch,
-        ...(workspaceContext
-          ? {
-              workspaceScope: {
-                workspaceId: workspaceContext.workspaceId,
-                workspaceMemberId: workspaceContext.workspaceMemberId,
-              },
-            }
-          : curr.orbit?.workspaceScope
-            ? { workspaceScope: curr.orbit.workspaceScope }
-            : {}),
       },
     }));
   };
@@ -7043,7 +6991,7 @@ function OrbitSection({
 
     void (async () => {
       try {
-        const runConfig = configForManualOrbitRun(cfg, workspaceContext);
+        const runConfig = configForManualOrbitRun(cfg);
         const payload = await persistConfigAndRunOrbit(runConfig, {
           daemonProviders: daemonMediaProviders,
           syncMediaProviders: daemonMediaProvidersFetchState === 'ok',
@@ -7091,7 +7039,6 @@ function OrbitSection({
     ? orbitLiveArtifactHref(
         lastRun.artifactProjectId,
         lastRun.artifactId,
-        workspaceContext,
       )
     : null;
   const isBusy = running || Boolean(status?.running);
@@ -8843,63 +8790,32 @@ function IntegrationsSection() {
  * the user that per-project persistence requires opening a project
  * first. That matches the actual scope of the wire-up.
  */
-function CritiqueTheaterSection({
-  callerWorkspaceContext,
-  persistedProjectWorkspaceId,
-}: {
-  callerWorkspaceContext: WorkspaceCollabContext | null;
-  persistedProjectWorkspaceId: string | null;
-}) {
+function CritiqueTheaterSection(): JSX.Element {
   const route = useRoute();
   const activeProjectId = route.kind === 'project' ? route.projectId : null;
   return activeProjectId
     ? (
-      <ProjectScopedCritiqueTheaterSection
-        projectId={activeProjectId}
-        callerWorkspaceContext={callerWorkspaceContext}
-        persistedProjectWorkspaceId={persistedProjectWorkspaceId}
-      />
+      <ProjectScopedCritiqueTheaterSection projectId={activeProjectId} />
     )
     : (
-      <CritiqueTheaterSectionContent
-        activeProjectId={null}
-        projectScopeReady
-        workspaceContext={null}
-      />
+      <CritiqueTheaterSectionContent activeProjectId={null} />
     );
 }
 
 function ProjectScopedCritiqueTheaterSection({
   projectId,
-  callerWorkspaceContext,
-  persistedProjectWorkspaceId,
 }: {
   projectId: string;
-  callerWorkspaceContext: WorkspaceCollabContext | null;
-  persistedProjectWorkspaceId: string | null;
 }) {
-  const projectScope = useProjectWorkspaceScope(
-    projectId,
-    callerWorkspaceContext,
-    persistedProjectWorkspaceId,
-  );
   return (
-    <CritiqueTheaterSectionContent
-      activeProjectId={projectId}
-      projectScopeReady={projectWorkspaceScopeReady(projectScope.scope)}
-      workspaceContext={projectWorkspaceContext(projectScope.scope)}
-    />
+    <CritiqueTheaterSectionContent activeProjectId={projectId} />
   );
 }
 
 function CritiqueTheaterSectionContent({
   activeProjectId,
-  projectScopeReady,
-  workspaceContext,
 }: {
   activeProjectId: string | null;
-  projectScopeReady: boolean;
-  workspaceContext: WorkspaceCollabContext | null;
 }) {
   const { t } = useI18n();
   const analytics = useAnalytics();
@@ -8915,10 +8831,9 @@ function CritiqueTheaterSectionContent({
       status_after: next ? 'on' : 'off',
       has_active_project: activeProjectId !== null,
     });
-    if (activeProjectId !== null && projectScopeReady) {
+    if (activeProjectId !== null) {
       void setCritiqueTheaterEnabled(next, {
         projectId: activeProjectId,
-        workspaceContext,
       });
     } else {
       void setCritiqueTheaterEnabled(next);

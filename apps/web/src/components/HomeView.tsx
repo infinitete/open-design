@@ -17,10 +17,7 @@ import type {
   InputFieldSpec,
   McpServerConfig,
   InstalledPluginRecord,
-  LocalCatalogScope,
   ProjectKind,
-  WorkspaceCollabContext,
-  WorkspaceProjectSummary,
   AudioVoiceOption,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -51,7 +48,6 @@ import {
   pluginCatalogCacheKey,
   readCachedVisiblePlugins,
   patchProject,
-  resolvedWorkspaceContextForWrite,
   ProjectCreateError,
   renderPluginBriefTemplate,
   resolvePluginQueryFallback,
@@ -112,14 +108,6 @@ import { navigate } from '../router';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { workspaceContextLinkedDirs } from './workspace-context';
 import {
-  currentWorkspaceAccountGeneration,
-  useTeamProjects,
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
-import { useWorkspaceInvalidation } from '../collab/workspace-events';
-import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
-import {
   buildHomeMediaComposer,
   homeMediaSurfaceForChipId,
   metadataForHomeMediaComposer,
@@ -146,13 +134,34 @@ import { localizePluginTitle } from './plugins-home/localization';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { examplePresetSeedPrompt } from './plugins-home/presetSeedPrompt';
 import { localizePluginDescription } from './plugins-home/localization';
-import type { SharedProjectPredicate } from '../collab/all-projects-list';
 import { RecentProjectsStrip } from './RecentProjectsStrip';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
 import { AnimatePresence } from 'motion/react';
 import { DeepSeekV4FlashCampaign } from './DeepSeekV4FlashCampaign';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
+
+// ---- Single-machine build shims -------------------------------------------
+type SharedProjectPredicate = (_id: string) => boolean;
+type WorkspaceProjectSummary = { id: string; [key: string]: unknown };
+type WorkspaceCollabContext = {
+  workspaceId?: string;
+  workspaceMemberId?: string | null;
+  workspaceName?: string;
+  teamName?: string;
+  teamId?: string;
+  workspaceType?: string;
+  permissions?: Record<string, boolean>;
+  [key: string]: unknown;
+} | null;
+type LocalCatalogScope = { workspaceId: string; workspaceMemberId: string };
+const useWorkspaceContext = (): { context: WorkspaceCollabContext; loading: boolean; identityChangePending?: boolean; failure?: string } => ({ context: null, loading: false });
+const workspaceResourceReadContext = (_s?: unknown): null => null;
+const useTeamProjects = (): { projects: Array<{ projectId: string; ownerMemberId?: string; workspaceName?: string }>; loading: boolean } => ({ projects: [], loading: false });
+const useWorkspaceInvalidation = (..._a: unknown[]): void => {};
+const useWorkspaceSnapshotActivation = (_o?: unknown): (() => void) => () => {};
+const resolvedWorkspaceContextForWrite = (_s?: unknown) => null;
+const currentWorkspaceAccountGeneration = (): number => 0;
 
 export interface ActivePlugin {
   record: InstalledPluginRecord;
@@ -410,11 +419,8 @@ function writeHomeComposerDraft(key: string, value: string | null): void {
 function localCatalogScopeFromWorkspaceContext(
   context: WorkspaceCollabContext | null,
 ): LocalCatalogScope | null {
-  if (!context?.workspaceId?.trim() || !context.workspaceMemberId?.trim()) return null;
-  return {
-    workspaceId: context.workspaceId.trim(),
-    workspaceMemberId: context.workspaceMemberId.trim(),
-  };
+  void context;
+  return null;
 }
 
 function readLocalCatalogScopeDraft(key: string): LocalCatalogScope | null {
@@ -532,7 +538,7 @@ export function HomeView({
   const analytics = useAnalytics();
   const workspaceContextState = useWorkspaceContext();
   const { context: workspaceContext } = workspaceContextState;
-  const pluginCatalogWorkspaceContext = workspaceResourceReadContext(workspaceContextState);
+  const pluginCatalogWorkspaceContext: null = null;
   const lastSettledLocalCatalogScopeRef = useRef<LocalCatalogScope | null>(
     localCatalogScopeFromWorkspaceContext(workspaceContext),
   );
@@ -541,18 +547,13 @@ export function HomeView({
       localCatalogScopeFromWorkspaceContext(workspaceContext);
   }
   const pluginAccountGeneration = currentWorkspaceAccountGeneration();
-  const pluginCatalogOptions = {
-    workspaceContext: pluginCatalogWorkspaceContext,
-    accountGeneration: pluginAccountGeneration,
-  };
+
   // Keep the provisional local catalogue available for default-template
   // routing while Workspace discovery runs, but never expose that provisional
   // projection in HomeHero. The prop below keeps the Examples rail in its
   // stable loading shell until the Workspace identity and its exact cache
   // partition have both settled.
-  const desiredPluginCatalogKey = workspaceContextState.identityChangePending
-    ? null
-    : pluginCatalogCacheKey(pluginCatalogOptions);
+  const desiredPluginCatalogKey = pluginCatalogCacheKey();
   // Team-wide catalog from the resource hub via the daemon; empty off-team / when
   // the hub is unconfigured. Only the creator attribution is derived here — the
   // shared/not-shared answer arrives as `isSharedProject` from EntryShell, which
@@ -584,7 +585,7 @@ export function HomeView({
   // the user was in a project. The effect below still revalidates an expired
   // catalog; only a true cold start (no successful catalog yet) stays guarded.
   const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(
-    desiredPluginCatalogKey ? readCachedVisiblePlugins(pluginCatalogOptions) : null,
+    desiredPluginCatalogKey ? readCachedVisiblePlugins() : null,
   );
   const [pluginCatalogKey, setPluginCatalogKey] = useState<string | null>(
     desiredPluginCatalogKey,
@@ -601,7 +602,7 @@ export function HomeView({
   // deliberate identity change is unresolved.
   if (pluginCatalogKey !== desiredPluginCatalogKey) {
     const cached = desiredPluginCatalogKey
-      ? readCachedVisiblePlugins(pluginCatalogOptions)
+      ? readCachedVisiblePlugins()
       : null;
     setPluginCatalogKey(desiredPluginCatalogKey);
     setPlugins(cached ?? []);
@@ -826,7 +827,7 @@ export function HomeView({
   const detailsTemplate = useMemo(() => {
     if (!detailsRecord) return null;
     return (
-      buildCommunityTemplates(plugins, locale, t, workspaceContext)
+      buildCommunityTemplates(plugins, locale, t)
         .find((template) => template.id === detailsRecord.id) ?? null
     );
   }, [detailsRecord, plugins, locale, t, workspaceContext]);
@@ -922,8 +923,8 @@ export function HomeView({
       if (!supersede && current?.key === issuedCatalogKey) return current.promise;
       const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
       const promise = (force
-        ? listPlugins(pluginCatalogOptions)
-        : listPluginsFresh(pluginCatalogOptions)).then((rows) => {
+        ? listPlugins()
+        : listPluginsFresh()).then((rows) => {
         if (
           cancelled
           || requestGeneration !== pluginCatalogRequestGenerationRef.current
@@ -942,7 +943,7 @@ export function HomeView({
       return promise;
     };
     pluginCatalogReloadRef.current = load;
-    if (homeActiveRef.current && pluginCatalogWorkspaceContext?.workspaceType !== 'team') load();
+    if (homeActiveRef.current) load();
     else pluginCatalogStaleRef.current = true;
     const onChanged = () => {
       // A mutation event is newer than any pending snapshot and must supersede
@@ -968,27 +969,23 @@ export function HomeView({
       }
       window.removeEventListener('open-design:plugins-changed', onChanged);
     };
-  }, [desiredPluginCatalogKey, pluginCatalogWorkspaceContext?.workspaceType]);
+  }, [desiredPluginCatalogKey]);
 
   useEffect(() => {
     if (!isActive || !desiredPluginCatalogKey || !pluginCatalogStaleRef.current) return;
-    if (pluginCatalogWorkspaceContext?.workspaceType === 'team') return;
     pluginCatalogStaleRef.current = false;
     pluginCatalogReloadRef.current(true);
-  }, [desiredPluginCatalogKey, isActive, pluginCatalogWorkspaceContext?.workspaceType]);
+  }, [desiredPluginCatalogKey, isActive]);
 
   const handlePluginStreamActive = useWorkspaceSnapshotActivation({
-    enabled: isActive && pluginCatalogWorkspaceContext?.workspaceType === 'team',
+    enabled: false,
     identity: desiredPluginCatalogKey ?? 'no-plugin-catalog',
     refresh: () => { void pluginCatalogReloadRef.current(true, true); },
   });
 
   useWorkspaceInvalidation({}, {
-    workspaceContext:
-      isActive && pluginCatalogWorkspaceContext?.workspaceType === 'team'
-        ? pluginCatalogWorkspaceContext
-        : null,
-    enabled: isActive && pluginCatalogWorkspaceContext?.workspaceType === 'team',
+    workspaceContext: null,
+    enabled: false,
     // App owns the global Skill/Design System catch-up. Home only refreshes
     // its plugin projection.
     onActive: () => {
@@ -1622,15 +1619,11 @@ export function HomeView({
     // During an identity transition, omit attribution instead of blocking Send.
     const writeWorkspaceContext = workspaceContextState.identityChangePending
       ? null
-      : resolvedWorkspaceContextForWrite(
-          workspaceContextState,
-          { unavailablePolicy: 'unscoped' },
-        );
+      : null;
     const result = await applyPlugin(record.id, {
       locale,
       inputs,
       pluginSource: record.source,
-      workspaceContext: writeWorkspaceContext,
     });
     clearPendingApply();
     return result;
@@ -2034,7 +2027,7 @@ export function HomeView({
     try {
       const result = await duplicatePluginAsProject(record.id, {
         name: localizePluginTitle(locale, record),
-      }, resolvedWorkspaceContextForWrite(workspaceContextState));
+      });
       onOpenProject(result.projectId, result.relPath);
     } catch {
       setError(t('pluginCard.duplicateFailed'));
@@ -2060,13 +2053,6 @@ export function HomeView({
         // EntryShell.startBlankProjectFromRail.
         metadata: { kind: 'other', nameSource: 'generated' },
         // Blank project creation is local too. During an identity transition,
-        // omit stale attribution instead of blocking on Workspace discovery.
-        workspaceContext: workspaceContextState.identityChangePending
-          ? null
-          : resolvedWorkspaceContextForWrite(
-              workspaceContextState,
-              { unavailablePolicy: 'unscoped' },
-            ),
       });
       onOpenProject(project.id);
     } catch {
@@ -3100,7 +3086,6 @@ export function HomeView({
       />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero
-        workspaceContext={workspaceContext}
         ref={inputRef}
         active={isActive}
         firstRunGuide={projectsLoading ? undefined : projects.length === 0}
@@ -3232,7 +3217,7 @@ export function HomeView({
         {...(onProjectShared ? { onProjectShared } : {})}
         {...(onProjectShareFailed ? { onProjectShareFailed } : {})}
         {...(onProjectUnshared ? { onProjectUnshared } : {})}
-        projectOwnerMemberIds={homeProjectOwnerMemberIds}
+        projectOwnerMemberIds={homeProjectOwnerMemberIds as ReadonlyMap<string, string>}
         limit={1000}
         {...(projectsLoading !== undefined ? { loading: projectsLoading } : {})}
         onOpen={(id) => {
@@ -3303,8 +3288,7 @@ export function HomeView({
         ) : detailsRecord ? (
           <PluginDetailsModal
             record={detailsRecord}
-            workspaceContext={workspaceContext}
-            onClose={() => {
+                onClose={() => {
               // Covers the close button, Esc and the backdrop — every
               // variant funnels dismissal through this single onClose.
               trackPluginDetailModalClick(analytics.track, {
@@ -3354,8 +3338,7 @@ export function HomeView({
         {figmaModalOpen ? (
           <FigmaImportModal
             onClose={() => setFigmaModalOpen(false)}
-            workspaceContext={workspaceContext}
-            resolveProjectId={async () => {
+                resolveProjectId={async () => {
               // The homepage has no project yet; create a bare one to decode
               // the Figma file into, then navigate into it.
               try {
@@ -3363,7 +3346,6 @@ export function HomeView({
                   name: 'Imported from Figma',
                   skillId: null,
                   designSystemId: null,
-                  workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
                 });
                 return project.id;
               } catch {
@@ -3372,7 +3354,7 @@ export function HomeView({
             }}
             onImported={(result, projectId) => {
               void (async () => {
-                await patchProject(projectId, { pendingPrompt: result.suggestedPrompt }, workspaceContext);
+                await patchProject(projectId, { pendingPrompt: result.suggestedPrompt });
                 setFigmaModalOpen(false);
                 onOpenProject(projectId);
               })();
@@ -3386,7 +3368,6 @@ export function HomeView({
                     skillId: null,
                     designSystemId: null,
                     pendingPrompt: reshapePrompt,
-                    workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
                   });
                   setFigmaModalOpen(false);
                   onOpenProject(project.id);

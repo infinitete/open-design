@@ -27,29 +27,8 @@ import {
 } from '../providers/registry';
 import type { DesignSystemSummary, Project, ProjectDisplayStatus, ProjectFile } from '../types';
 import { Icon } from './Icon';
-import { InviteDialog } from './InviteDialog';
 import { STATUS_LABEL_KEYS } from './DesignsTab';
 import { isDesignSystemProject, isPublishedDesignSystemProject } from './design-system-project';
-import type { SharedProjectPredicate } from '../collab/all-projects-list';
-import { useTeamMembers } from '../collab/useTeamMembers';
-import {
-  notifyTeamProjectsChanged,
-  useWorkspaceBilling,
-  useWorkspaceContext,
-} from '../collab/useWorkspaceContext';
-import {
-  canAccessWorkspaceInviteFlow,
-  resolveWorkspaceInviteTarget,
-  workspaceInviteAvailableSeats,
-  workspaceUpgradeUrl,
-} from './EntryNavRail';
-import { moveWorkspaceProject, workspaceProjectMoveErrorCode } from '../state/projects';
-import {
-  workspaceContextHasTeamIdentity,
-  type WorkspaceCollabContext,
-  type WorkspaceProjectSummary,
-} from '@open-design/contracts';
-import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import {
   THUMBNAIL_OVERSCAN_MARGIN,
   resumeThumbnailLoads,
@@ -63,20 +42,13 @@ import {
   setProjectCoverSnapshot,
 } from '../lib/project-cover-cache';
 import { useInView } from './plugins-home/useInView';
-import {
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from '../collab/workspace-identity';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackProjectCollectionClick,
-  trackWorkspaceProjectActionResult,
-  trackWorkspaceSharedProjectOpenResult,
 } from '../analytics/events';
 import {
   countBucket,
   stableAnalyticsRequestErrorCode,
-  workspaceAnalyticsDimensions,
 } from '../analytics/workspace';
 import type { ProjectCollectionClickProps } from '@open-design/contracts/analytics';
 
@@ -91,6 +63,34 @@ import {
   selectProjectFileCover,
   type ProjectCoverOverride,
 } from './project-cover';
+
+// ---- Single-machine build shims -------------------------------------------
+type SharedProjectPredicate = (_id: string) => boolean;
+type WorkspaceCollabContext = {
+  workspaceMemberId?: string | null;
+  displayName?: string;
+  avatarUrl?: string | null;
+  permissions?: Record<string, boolean>;
+  [key: string]: unknown;
+} | null;
+type WorkspaceProjectSummary = { id: string; [key: string]: unknown };
+const useTeamMembers = (..._a: unknown[]): { resolve: (id?: string | null) => { displayName: string } | null } => ({ resolve: () => ({ displayName: '' }) });
+const useWorkspaceContext = (): { context: WorkspaceCollabContext; loading: boolean } => ({ context: null, loading: false });
+const useWorkspaceBilling = () => null;
+const workspaceIdentityCacheKey = (_c?: unknown): string => 'local';
+const workspaceProjectHeaders = (_c?: unknown): Record<string, string> => ({});
+function notifyTeamProjectsChanged(): void {}
+const moveWorkspaceProject = async (..._a: unknown[]): Promise<never> => {
+  throw new Error('Workspace project sharing is not available.');
+};
+function workspaceProjectMoveErrorCode(_e: unknown): string | null { return null; }
+const trackWorkspaceProjectActionResult = (..._a: unknown[]): void => {};
+const trackWorkspaceSharedProjectOpenResult = (..._a: unknown[]): void => {};
+const workspaceAnalyticsDimensions = (_c?: unknown): Record<string, unknown> => ({});
+const canAccessWorkspaceInviteFlow = (_c?: unknown): boolean => false;
+const workspaceUpgradeUrl = (..._a: unknown[]): string | null => null;
+const resolveWorkspaceInviteTarget = (_c?: unknown): { kind: string; url?: string } => ({ kind: 'unavailable' });
+const workspaceInviteAvailableSeats = (_c?: unknown): number | undefined => undefined;
 
 interface Props {
   projects: Project[];
@@ -377,17 +377,16 @@ export function RecentProjectsStrip({
   const workspaceBilling = useWorkspaceBilling();
   const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   function trackCollection(
-    element: ProjectCollectionClickProps['element'],
-    properties: Partial<Omit<ProjectCollectionClickProps, 'page_name' | 'area' | 'element'>> = {},
+    element: string,
+    properties: Record<string, unknown> = {},
     requestId?: string,
   ) {
     trackProjectCollectionClick(analytics.track, {
       page_name: analyticsPage,
       area: 'project_collection',
       element,
-      ...workspaceDimensions,
       ...properties,
-    }, requestId ? { requestId } : undefined);
+    } as Parameters<typeof trackProjectCollectionClick>[1], requestId ? { requestId } : undefined);
   }
   const selfMemberId = workspaceContext?.workspaceMemberId ?? null;
   // `canShareProjects` alone is a ROLE permission ("could this member share IF
@@ -401,17 +400,13 @@ export function RecentProjectsStrip({
   // "Deriving it twice is how a UI grows a button that can only ever fail."
   const collaborationAvailable =
     collaborationEnabled ??
-    (workspaceContextHasTeamIdentity(workspaceContext) &&
-      workspaceContext?.permissions.canShareProjects === true);
+    false;
   const canAccessInviteFlow = canAccessWorkspaceInviteFlow(workspaceContext);
   // The invite dialog's seat-gate upgrade CTA shares the public Pricing
   // destination owned by `workspaceUpgradeUrl` in EntryNavRail.tsx.
   const inviteUpgradeUrl = workspaceUpgradeUrl(workspaceContext, workspaceBilling);
   const inviteTarget = resolveWorkspaceInviteTarget(workspaceContext);
-  const canManageCollection =
-    canManageProjectCollection ??
-    (workspaceContext?.permissions.canManageSharedResources === true ||
-      workspaceContext?.permissions.canShareProjects === true);
+  const canManageCollection = canManageProjectCollection ?? false;
   const [responsiveLimit, setResponsiveLimit] = useState(DEFAULT_RECENT_PROJECT_LIMIT);
   const resolvedLimit = limit ?? responsiveLimit;
   const hasRecentProjects = projects.length > 0;
@@ -736,7 +731,6 @@ export function RecentProjectsStrip({
     try {
       files = await fetchProjectFiles(project.id, {
         signal,
-        workspaceContext: requestWorkspaceContext,
         ...(freshFiles ? { fresh: true } : {}),
       });
     } catch {
@@ -748,7 +742,6 @@ export function RecentProjectsStrip({
         project.id,
         files,
         signal,
-        requestWorkspaceContext,
       )) ?? null;
     }
     const cover = selectProjectFileCover(files);
@@ -758,12 +751,11 @@ export function RecentProjectsStrip({
       project.id,
       cover.name,
       cover.mtime,
-      requestWorkspaceContext,
     );
     const diagnostic = `${project.id}:${cover.name}`;
     if (project.metadata?.kind === 'deck') {
       try {
-        await loadDeckCover(src, signal, requestWorkspaceContext);
+        await loadDeckCover(src, signal);
         return signal.aborted ? undefined : cover;
       } catch (err) {
         if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) return undefined;
@@ -929,7 +921,7 @@ export function RecentProjectsStrip({
     // authority before the forced scan so another force refresh in the same
     // burst cannot make the file-list layer reuse its earlier [] response.
     invalidateProjectCoverSnapshots(projectId);
-    invalidateProjectFilesCache(projectId, workspaceContextRef.current);
+    invalidateProjectFilesCache(projectId);
     const project = visibleProjectsRef.current.get(projectId);
     if (!project) return;
     if (!coverSentinelSeenRef.current.has(projectId)) return;
@@ -937,35 +929,6 @@ export function RecentProjectsStrip({
     // the pre-pull filesystem.
     void requestProjectCover(project, { force: true });
   }, [requestProjectCover]);
-
-  useWorkspaceInvalidation(
-    {
-      'team-project-content-ready': ({ projectId, workspaceId }) => {
-        if (!activeRef.current) return;
-        if (workspaceContext?.workspaceId !== workspaceId) return;
-        void refreshProjectCover(projectId);
-      },
-    },
-    {
-      workspaceContext,
-      // Thin SSE events are not replayed. On reconnect/focus, retry only cards
-      // whose initial scan found no local cover, closing a missed-ready gap
-      // without re-fetching every already-resolved card in the grid.
-      onActive: () => {
-        if (!activeRef.current) return;
-        for (const { project } of visibleProjects) {
-          if (!coverSentinelSeenRef.current.has(project.id)) continue;
-          if (coverByProject[project.id] == null) {
-            if (coverInFlightRef.current.has(project.id)) continue;
-            // `null` is normally a cacheable no-cover decision. Reconnect is
-            // specifically the missed-invalidation recovery path, so bypass
-            // that snapshot and re-probe the exact current Workspace.
-            void requestProjectCover(project, { force: true });
-          }
-        }
-      },
-    },
-  );
 
   useEffect(() => {
     const visibleIds = new Set(visibleProjects.map(({ project }) => project.id));
@@ -1317,7 +1280,7 @@ export function RecentProjectsStrip({
     const moved = await Promise.all(
       ids.map(async (id) => {
         try {
-          const project = await moveWorkspaceProject({ projectId: id, visibility, workspaceContext });
+          const project = (await moveWorkspaceProject({ projectId: id, visibility, workspaceContext })) as WorkspaceProjectSummary;
           return { id, project };
         } catch (err) {
           if (action === 'to-team') onProjectShareFailed?.(id);
@@ -2218,23 +2181,6 @@ export function RecentProjectsStrip({
           </DialogFooter>
         </Dialog>
       ) : null}
-      <InviteDialog
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-        workspaceContext={workspaceContext}
-        canAssignRoles={
-          canAssignInviteRoles ?? workspaceContext?.permissions.canInviteMembers === true
-        }
-        availableSeats={workspaceInviteAvailableSeats(workspaceContext)}
-        entryFrom="all_projects"
-        onUpgrade={
-          inviteUpgradeUrl
-            ? () => {
-                window.open(inviteUpgradeUrl, '_blank', 'noopener,noreferrer');
-              }
-            : undefined
-        }
-      />
     </section>
   );
 }
@@ -2382,7 +2328,7 @@ function DeckCoverThumb({
     // Deck covers fetch the full document text; defer that until the card is
     // actually near the viewport (Batch A §4.2).
     if (!inView) return;
-    loadDeckCover(src, undefined, workspaceContext)
+    loadDeckCover(src, undefined)
       .then((next) => {
         if (!cancelled) setSrcDoc(next);
       })
@@ -2439,15 +2385,11 @@ function DeckCoverThumb({
 async function loadDeckCover(
   src: string,
   signal?: AbortSignal,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
   const cached = deckCoverCache.get(src);
   if (cached) return cached;
   if (signal) {
-    const response = await fetch(src, {
-      signal,
-      ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
-    });
+    const response = await fetch(src, { signal });
     if (!response.ok) throw new Error(`Failed to load project cover: ${response.status}`);
     const parsed = deckPreviewSrcDoc(await response.text());
     if (!signal.aborted) deckCoverCache.set(src, parsed);
@@ -2653,7 +2595,6 @@ export function projectCover(
         project.id,
         override.name,
         override.mtime,
-        workspaceContext,
       ),
       style,
       initial,
@@ -2667,7 +2608,6 @@ export function projectCover(
       project.id,
       entry,
       project.updatedAt,
-      workspaceContext,
     );
     if (meta?.kind === 'image') return { kind: 'image', src, style, initial };
     if (meta?.kind === 'video') return { kind: 'video', src, style, initial };
@@ -2758,14 +2698,12 @@ async function findDesignSystemCover(
   projectId: string,
   files: ProjectFile[],
   signal?: AbortSignal,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ProjectCoverOverride | null> {
   const knownFiles = new Map(files.map((file) => [file.path ?? file.name, file]));
   const brandCover = await designSystemCoverFromBrandJson(
     projectId,
     knownFiles,
     signal,
-    workspaceContext,
   );
   if (signal?.aborted) return null;
   if (brandCover) return brandCover;
@@ -2779,12 +2717,10 @@ async function designSystemCoverFromBrandJson(
   projectId: string,
   knownFiles: ReadonlyMap<string, ProjectFile>,
   signal?: AbortSignal,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ProjectCoverOverride | null> {
   const raw = await fetchProjectFileText(projectId, 'brand.json', {
     cache: 'no-store',
     signal,
-    workspaceContext,
   });
   if (signal?.aborted) return null;
   if (!raw) return null;

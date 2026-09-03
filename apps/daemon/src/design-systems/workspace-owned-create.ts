@@ -1,4 +1,9 @@
-import type { WorkspaceResourceContext } from '../collab/workspace-resource-mutation.js';
+// Collab workspace-resource-mutation removed - stub type
+type WorkspaceResourceContext = {
+  workspaceId: string;
+  workspaceMemberId: string;
+};
+
 import {
   createUserDesignSystem,
   deleteUserDesignSystem,

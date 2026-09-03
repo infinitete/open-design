@@ -1,6 +1,8 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
-import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
+
+// Collab type removed - define locally
+type AuthorizeProjectRequest = any;
 
 export interface RegisterHandoffRoutesDeps
   extends RouteDeps<

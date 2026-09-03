@@ -34,8 +34,10 @@ import {
   ANALYTICS_HEADER_SESSION_ID,
   buildProjectRawFileUrl,
   type McpAnalyticsContextResponse,
-  type WorkspaceProjectsResponse,
 } from '@open-design/contracts';
+
+// Type removed from contracts - define locally
+type WorkspaceProjectsResponse = { projects: any[] };
 import { randomUUID } from 'node:crypto';
 
 import { postCreateArtifactRequest } from './artifacts/create.js';
@@ -49,7 +51,9 @@ import {
   OPEN_DESIGN_BRIEF_APP_HTML,
   OPEN_DESIGN_BRIEF_APP_VERSION,
 } from './mcp-apps/brief-resource.js';
-import { DEFAULT_AMR_RECHARGE_URL } from './integrations/vela-errors.js';
+
+// vela-errors removed - stub
+const DEFAULT_AMR_RECHARGE_URL = '';
 import {
   type ExternalPluginContext,
   logicalPluginRequestDigest,

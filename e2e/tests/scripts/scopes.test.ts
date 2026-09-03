@@ -175,7 +175,7 @@ describe("workflow scope planner", () => {
     const candidate = plan("pr", ["apps/daemon/src/runtimes/defs/codex.ts"]);
     expect(candidate.trace.uiP0Shadow.mode).toBe("candidate");
     expect(candidate.trace.uiP0Shadow.matrix.map((entry) => entry.name)).toEqual([
-      "entry-settings", "project-workspace", "project-collab", "project-runtime",
+      "entry-settings", "project-workspace", "project-runtime",
     ]);
     expect(plan("pr", ["apps/daemon/src/server.ts"]).trace.uiP0Shadow.mode).toBe("full-fallback");
   });

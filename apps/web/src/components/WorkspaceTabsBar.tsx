@@ -105,7 +105,7 @@ interface Props {
   /**
    * Stable "AMR account + active workspace" identity key the currently open
    * tabs belong to (derived in App.tsx from `amrLoginStatus` +
-   * `workspaceContext` — see the comment there for the exact composition).
+   * caller).
    * `null` means "not resolved yet" (before the first AMR status read
    * completes): the bar leaves whatever it already restored from
    * localStorage untouched rather than guessing.

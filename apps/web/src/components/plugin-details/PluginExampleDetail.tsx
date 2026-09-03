@@ -8,7 +8,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   InstalledPluginRecord,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { useI18n } from '../../i18n';
 import { localizePluginChrome } from '../../i18n/plugin-content';
@@ -33,7 +32,6 @@ interface Props {
   onDuplicate?: (record: InstalledPluginRecord) => void;
   isApplying?: boolean;
   hideUseAction?: boolean;
-  workspaceContext?: WorkspaceCollabContext | null;
   // Analytics — forwarded to PreviewModal's share popover.
   onSharePopoverItemClick?: (item: PreviewSharePopoverItem) => void;
 }
@@ -46,7 +44,6 @@ export function PluginExampleDetail({
   onDuplicate,
   isApplying,
   hideUseAction,
-  workspaceContext = null,
   onSharePopoverItemClick,
 }: Props) {
   const { t, locale } = useI18n();
@@ -65,8 +62,8 @@ export function PluginExampleDetail({
       setError(null);
       setUnavailableKind(null);
       const result: SkillExampleResult = exampleStem
-        ? await fetchPluginExampleHtml(record.id, exampleStem, workspaceContext)
-        : await fetchPluginPreviewHtml(record.id, workspaceContext);
+        ? await fetchPluginExampleHtml(record.id, exampleStem)
+        : await fetchPluginPreviewHtml(record.id);
       if ('html' in result) {
         setHtml(result.html);
       } else if ('error' in result) {
@@ -88,7 +85,7 @@ export function PluginExampleDetail({
     } finally {
       inFlightRef.current = false;
     }
-  }, [record.id, exampleStem, workspaceContext]);
+  }, [record.id, exampleStem]);
 
   useEffect(() => {
     void load();

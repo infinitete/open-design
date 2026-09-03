@@ -1,6 +1,8 @@
 import type { Express } from 'express';
 import type { BrowserSessionService } from '../browser-sessions.js';
-import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
+
+// Collab type removed - define locally
+type AuthorizeProjectRequest = any;
 import type { RouteDeps } from '../server-context.js';
 
 export interface RegisterBrowserSessionRoutesDeps extends RouteDeps<'db' | 'http' | 'projectStore'> {

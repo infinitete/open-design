@@ -36,12 +36,12 @@ import { newInsertId, readAnalyticsContext } from '../analytics.js';
 import type { AnalyticsContext } from '../analytics.js';
 import { spawnEnvForAgent } from '../agents.js';
 import { agentCliEnvForAgent, readAppConfig } from '../app-config.js';
-import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
-import {
-  workspaceResourceContextFromRequest,
-  type BoundWorkspaceResourceMutationGate,
-  type WorkspaceResourceAccessInput,
-} from '../collab/workspace-resource-mutation.js';
+
+// Collab types removed - define locally
+type AuthorizeProjectRequest = any;
+function workspaceResourceContextFromRequest(..._args: any[]): any { return null; }
+type BoundWorkspaceResourceMutationGate = any;
+type WorkspaceResourceAccessInput = any;
 import {
   codexSessionIdFromRunEvents,
   readCodexRolloutFirstCall,

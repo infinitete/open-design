@@ -9,9 +9,8 @@
 // coarse status the New Brand modal / onboarding step render.
 
 import { useCallback, useRef, useState } from 'react';
-import type { BrandExtractStartResponse, BrandStatus, WorkspaceCollabContext } from '@open-design/contracts';
+import type { BrandExtractStartResponse, BrandStatus } from '@open-design/contracts';
 import { useI18n } from '../i18n';
-import { workspaceProjectHeaders } from '../state/projects';
 
 /** Coarse kickoff phase. */
 export type BrandExtractPhase = 'idle' | 'starting' | 'done' | 'error';
@@ -66,7 +65,6 @@ export interface UseBrandExtract {
        * /api/chat's workspace-identity gate then 403s the very first agent
        * turn against it (spec 04 §9.3, recvqb1t4FrckM).
        */
-      workspaceContext?: WorkspaceCollabContext | null;
     },
   ) => Promise<BrandExtractStartResponse | null>;
   reset: () => void;
@@ -88,7 +86,6 @@ export function useBrandExtract(): UseBrandExtract {
       description?: string;
       designMd?: string;
       throwOnError?: boolean;
-      workspaceContext?: WorkspaceCollabContext | null;
     } = {},
   ): Promise<BrandExtractStartResponse | null> => {
     if (inFlightRef.current) return null;
@@ -110,8 +107,7 @@ export function useBrandExtract(): UseBrandExtract {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          ...(options.workspaceContext ? workspaceProjectHeaders(options.workspaceContext) : {}),
-        },
+                  },
         body: JSON.stringify({
           ...(url.trim() ? { url } : {}),
           ...(options.description?.trim() ? { description: options.description.trim() } : {}),

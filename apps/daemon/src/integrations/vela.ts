@@ -6,25 +6,28 @@ import path from 'node:path';
 
 import { createCommandInvocation } from '@open-design/platform';
 import type {
-  AmrAuthErrorKind,
-  AmrAuthNetworkPath,
-  AmrAuthStage,
-  AmrAuthStageResult,
   AmrEntryAttribution,
   TrackingAmrEntrySource,
   TrackingCampaignConversionSource,
   TrackingCampaignId,
   TrackingPageName,
 } from '@open-design/contracts/analytics';
-import type { AmrSessionState } from '@open-design/contracts';
+
+// Types removed from contracts - define locally
+type AmrAuthErrorKind = string;
+type AmrAuthNetworkPath = string;
+type AmrAuthStage = string;
+type AmrAuthStageResult = string;
+export type AmrSessionState = 'authenticated' | 'signed_out' | 'session_expired' | 'reauth_required';
 
 import { resolveAgentLaunch } from '../runtimes/launch.js';
 import { spawnEnvForAgent } from '../runtimes/env.js';
 import { getAgentDef } from '../runtimes/registry.js';
-import { resolveAmrProfile } from './vela-profile.js';
-import { resolveEffectiveVelaConsoleOrigin } from './vela-console-origin.js';
 
-export { resolveAmrProfile } from './vela-profile.js';
+// vela-profile and vela-console-origin removed - stub functions
+function resolveAmrProfile(_env: Record<string, string | undefined>): any { return null; }
+function resolveEffectiveVelaConsoleOrigin(_env: Record<string, string | undefined>, _configured: Record<string, string>): string { return ''; }
+export { resolveAmrProfile };
 
 const AMR_ENTRY_SOURCES: ReadonlySet<TrackingAmrEntrySource> = new Set([
   'onboarding_amr_card',

@@ -1,11 +1,11 @@
 import type { Express, Request, Response } from 'express';
 import type * as BetterSqlite3 from 'better-sqlite3';
 import path from 'node:path';
-import type { WorkspaceCollabContext } from '@open-design/contracts';
-import {
-  resolveOptionalLocalWorkspaceRequestAuthority,
-  type VerifyWorkspaceRequestAuthority,
-} from '../../collab/workspace-resource-mutation.js';
+
+// Collab types removed - define locally
+type WorkspaceCollabContext = { workspaceId?: string | null; workspaceMemberId?: string | null } | null;
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+type VerifyWorkspaceRequestAuthority = any;
 
 export interface RegisterPluginAssetRoutesDeps {
   db: PluginDbLike;
@@ -122,7 +122,7 @@ export function registerPluginAssetRoutes(app: Express, deps: RegisterPluginAsse
   const navigationScopeQuery = (
     authority: WorkspaceCollabContext | null,
   ): string => authority
-    ? `?workspaceId=${encodeURIComponent(authority.workspaceId)}&workspaceMemberId=${encodeURIComponent(authority.workspaceMemberId)}`
+    ? `?workspaceId=${encodeURIComponent(authority.workspaceId ?? '')}&workspaceMemberId=${encodeURIComponent(authority.workspaceMemberId ?? '')}`
     : '';
 
   async function servePluginSandboxedHtml(req: Request, res: Response, pickCandidates: (plugin: InstalledPluginLike) => Promise<string[]> | string[]) {

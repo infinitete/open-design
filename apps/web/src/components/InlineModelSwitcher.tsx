@@ -18,7 +18,6 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { AmrWalletSnapshot } from '@open-design/contracts';
 import { VisuallyHidden } from '@open-design/components';
 import { useT } from '../i18n';
 import {
@@ -27,12 +26,6 @@ import {
   modelIdForTracking,
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
-import {
-  amrHandoffDeviceId,
-  attributedAmrUrl,
-  recordAmrEntry,
-  type AmrEntryAttribution,
-} from '../analytics/amr-attribution';
 import { amrPlansUrlForProfile } from '../runtime/amr-guidance';
 import { codingPlanModelDecision } from '../runtime/amr-unlimited-models';
 import { getResolvedDeviceId } from '../analytics/client';
@@ -40,46 +33,15 @@ import {
   trackDeepSeekCampaignModelBenefitSurfaceView,
   trackExecutionSettingsPopoverClick,
 } from '../analytics/events';
-import {
-  beginAmrAuthTracking,
-  confirmAmrAuthTracking,
-  observeAmrAuthTracking,
-  reconcileAmrAuthAttemptId,
-  resolveAmrAuthTracking,
-} from '../analytics/amr-auth';
-import {
-  useWorkspaceBillingResponse,
-  useWorkspaceContext,
-  workspaceBillingBalanceUsd,
-} from '../collab/useWorkspaceContext';
 import { KNOWN_PROVIDERS } from '../state/config';
 import { fetchProviderModels } from '../providers/provider-models';
 import { SUGGESTED_MODELS_BY_PROTOCOL } from '../state/apiProtocols';
-import {
-  canUpgradeVelaPlan,
-  cancelVelaLogin,
-  fetchAmrWalletSnapshot,
-  fetchVelaLoginStatus,
-  formatVelaBalanceUsd,
-  startVelaLogin,
-  type VelaLoginStatus,
-} from '../providers/daemon';
 import type { AgentInfo, ApiProtocol, AppConfig, ExecMode } from '../types';
 import { apiProtocolLabel } from '../utils/apiProtocol';
 import { isVisibleLocalCliAgent } from '../utils/visibleAgents';
 import { AgentIcon } from './AgentIcon';
 import { Icon } from './Icon';
 import { modelProviderIconSrc } from './modelProviderIcon';
-import { PlanBadge } from './PlanBadge';
-import {
-  AMR_LOGIN_STATUS_EVENT,
-  AMR_LOGIN_POLL_INTERVAL_MS,
-  AMR_LOGIN_STARTUP_SETTLE_MS,
-  amrLoginPollOutcome,
-  amrLoginStatusEventReason,
-  isAmrSessionAuthenticated,
-  notifyAmrLoginStatusChanged,
-} from './amrLoginPolling';
 import { orderAgentsWithOpenDesignFirst } from './agentOrdering';
 import {
   agentModelIsSelectable,
@@ -98,6 +60,37 @@ import {
 } from './providerModelsCache';
 import { isDeepSeekV4FlashCampaignModel } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
+
+type VelaLoginStatus = { loggedIn: boolean; user?: { id?: string; email?: string } | null; loginInFlight?: boolean; account?: { plan?: string; balanceUsd?: string | null } | null; profile?: string; authAttemptId?: string };
+type AmrWalletSnapshot = { status?: string; balanceUsd?: string | null; codingPlanModels?: string[] };
+function attributedAmrUrl(baseUrl: string, ..._rest: unknown[]): string { return baseUrl; }
+const canUpgradeVelaPlan = (_p?: string | null): boolean => false;
+const cancelVelaLogin = async (..._a: unknown[]) => ({ ok: true, canceled: true });
+const fetchAmrWalletSnapshot = async (): Promise<AmrWalletSnapshot | null> => null;
+const fetchVelaLoginStatus = async (): Promise<VelaLoginStatus | null> => null;
+const formatVelaBalanceUsd = (_r?: string | null): string | null => null;
+const startVelaLogin = async (..._a: unknown[]) => ({ ok: true, status: 200, authAttemptId: undefined as string | undefined, alreadyRunning: false, error: undefined as string | undefined });
+const workspaceBillingBalanceUsd = (..._a: unknown[]): string | null => null;
+const useWorkspaceContext = (): { context: { workspaceType?: string; permissions?: Record<string, boolean> } | null; loading: boolean } => ({ context: null, loading: false });
+function PlanBadge(_p: Record<string, unknown>) { return null; }
+const useWorkspaceBillingResponse = (..._a: unknown[]) => null;
+const AMR_LOGIN_STARTUP_SETTLE_MS = 1500;
+const AMR_LOGIN_POLL_INTERVAL_MS = 1000;
+function isAmrSessionAuthenticated(s: VelaLoginStatus | null): boolean { return Boolean(s?.loggedIn); }
+function amrLoginPollOutcome(_s: VelaLoginStatus | null, _t: number): string { return 'signed-in'; }
+function observeAmrAuthTracking(..._a: unknown[]): void {}
+function resolveAmrAuthTracking(..._a: unknown[]): void {}
+function notifyAmrLoginStatusChanged(_r?: string): void {}
+type AmrEntryAttribution = { entryId: string; sourceDetail: string };
+function beginAmrAuthTracking(..._a: unknown[]): string { return 'local-attempt'; }
+function reconcileAmrAuthAttemptId(..._a: unknown[]): string | null { return null; }
+function confirmAmrAuthTracking(..._a: unknown[]): void {}
+function recordAmrEntry(..._a: unknown[]): AmrEntryAttribution {
+  return { entryId: 'local', sourceDetail: 'inline_model_switcher_amr_row', sourceProduct: 'open_design', occurredAt: new Date().toISOString() } as AmrEntryAttribution;
+}
+function amrHandoffDeviceId(..._a: unknown[]): string | null { return null; }
+function amrLoginStatusEventReason(_e: Event): string { return 'unknown'; }
+const AMR_LOGIN_STATUS_EVENT = 'open-design:amr-login-status';
 
 interface Props {
   config: AppConfig;

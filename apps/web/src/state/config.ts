@@ -1261,12 +1261,6 @@ export async function syncConfigToDaemon(
       method: 'PUT',
       headers: {
         'content-type': 'application/json',
-        ...(prefs.orbit?.workspaceScope
-          ? {
-              'x-od-workspace-id': prefs.orbit.workspaceScope.workspaceId,
-              'x-od-workspace-member-id': prefs.orbit.workspaceScope.workspaceMemberId,
-            }
-          : {}),
       },
       body: JSON.stringify(prefs),
     });

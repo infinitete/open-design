@@ -1,9 +1,10 @@
 import type Database from 'better-sqlite3';
 import type { InstalledPluginRecord } from '@open-design/contracts';
-import {
-  readTeamResourceMaterialization,
-  teamResourceMaterializationDir,
-} from '../collab/team-resource-materialization.js';
+
+// Collab team-resource-materialization removed - stub
+function readTeamResourceMaterialization(..._args: any[]): any { return null; }
+function teamResourceMaterializationDir(..._args: any[]): string { return ''; }
+
 import { isSafePluginId } from './installer.js';
 import {
   getInstalledPlugin,

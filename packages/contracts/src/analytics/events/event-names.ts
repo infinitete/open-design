@@ -47,13 +47,6 @@ export type AnalyticsEventName =
   | 'artifact_deploy_result'
   | 'artifact_publish_result'
   | 'file_version_restore_result'
-  // Workspace redesign: authoritative outcome events. Clicks and impressions
-  // continue to use the core ui_click/surface_view catalogue.
-  | 'workspace_switch_result'
-  | 'workspace_invite_result'
-  | 'workspace_project_action_result'
-  | 'workspace_shared_project_open_result'
-  | 'workspace_resource_action_result'
   | 'project_comment_create_result'
   // Message-level conversation forking. Entry clicks stay on `ui_click`;
   // this result event records whether the new conversation was created.
@@ -77,9 +70,6 @@ export type AnalyticsEventName =
   // that learns an installed CLI cannot actually be used; without this, the
   // only way we hear about it is a user filing a report with a diagnostics zip.
   | 'agent_detect_diagnostic'
-  // AMR (hosted model) account auth result.
-  | 'amr_auth_stage'
-  | 'amr_auth_result'
   // Onboarding-only result events. UI clicks + page_views inside the
   // onboarding flow reuse the generic `ui_click` / `page_view` shapes
   // with `page_name=onboarding`; the three `onboarding_*` names below
@@ -132,8 +122,7 @@ export type TrackingPageName =
   // the design system picker. Reported when a DS picker / module renders
   // inside a project.
   | 'studio'
-  | 'settings'
-  | 'workspace_settings';
+  | 'settings';
 
 // Alias kept for backwards-compatibility inside the contracts file; v2 wire
 // format uses the field name `page_name` for settings events too.

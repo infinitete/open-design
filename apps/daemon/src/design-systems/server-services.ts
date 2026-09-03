@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import {
-  readTeamResourceMaterialization,
-  teamResourceWorkspaceRoot,
-} from '../collab/team-resource-materialization.js';
+
+// Collab team-resource-materialization removed - stub
+function readTeamResourceMaterialization(..._args: any[]): any { return null; }
+function teamResourceWorkspaceRoot(..._args: any[]): any { return null; }
+
 import {
   getWorkspaceProjectByProjectId,
   getWorkspaceResourceByResourceId,

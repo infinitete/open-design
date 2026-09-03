@@ -16,10 +16,8 @@ import { canDuplicatePluginPreview } from './plugins-home/duplicate';
 import { PluginDetailsModal } from './PluginDetailsModal';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { useInView } from './plugins-home/useInView';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import { useAnalytics } from '../analytics/provider';
 import { trackCommunityTemplateClick, trackPageView } from '../analytics/events';
-import { workspaceAnalyticsDimensions } from '../analytics/workspace';
 
 export interface CommunityTemplateUseTarget {
   templateId: string;
@@ -81,8 +79,6 @@ interface CommunityViewProps {
 export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: CommunityViewProps) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const { context: workspaceContext } = useWorkspaceContext();
-  const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const pageViewRecordedRef = useRef(false);
   useEffect(() => {
     // React StrictMode replays mount effects in development. Keep one
@@ -143,8 +139,8 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     return () => { cancelled = true; };
   }, []);
   const templates = useMemo(
-    () => buildCommunityTemplates(plugins, locale, t, workspaceContext),
-    [plugins, locale, t, workspaceContext],
+    () => buildCommunityTemplates(plugins, locale, t),
+    [plugins, locale, t],
   );
   const pluginById = useMemo(
     () => new Map(plugins.map((record) => [record.id, record])),
@@ -166,10 +162,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     const subtypeMatches = activeSubtype === 'All' || template.subtype === activeSubtype;
     return typeMatches && subtypeMatches;
   });
-  const templateScope = (templateId: string) => {
-    const sourceKind = plugins.find((row) => row.id === templateId)?.sourceKind;
-    return sourceKind === 'bundled' || sourceKind === 'marketplace' ? 'official' as const : 'personal' as const;
-  };
   const handleTemplateAction = (template: TemplateDemo) => {
     // Synchronous check-and-set on the ref: this is what actually decides
     // whether a request goes out. See the remixingIdRef comment above for
@@ -178,11 +170,8 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     trackCommunityTemplateClick(analytics.track, {
       page_name: 'community',
       area: 'community_templates',
-      element: 'remix',
-      template_key: template.id,
-      template_type: template.type,
-      resource_scope: templateScope(template.id),
-      ...workspaceDimensions,
+      element: 'use_template',
+      template_kind: template.id,
     });
     remixingIdRef.current = template.id;
     setRemixingId(template.id);
@@ -193,11 +182,8 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     trackCommunityTemplateClick(analytics.track, {
       page_name: 'community',
       area: 'community_templates',
-      element: 'use_prompt',
-      template_key: template.id,
-      template_type: template.type,
-      resource_scope: templateScope(template.id),
-      ...workspaceDimensions,
+      element: 'use_template',
+      template_kind: template.id,
     });
     const record = pluginById.get(template.id);
     if (record && onUsePlugin) {
@@ -220,11 +206,8 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     trackCommunityTemplateClick(analytics.track, {
       page_name: 'community',
       area: 'community_templates',
-      element: 'template_detail',
-      template_key: template.id,
-      template_type: template.type,
-      resource_scope: templateScope(template.id),
-      ...workspaceDimensions,
+      element: 'use_template',
+      template_kind: template.id,
     });
     const record = plugins.find((row) => row.id === template.id) ?? null;
     setDetailsRecord(record);
@@ -275,14 +258,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                 type="button"
                 className={activeType === type ? 'is-active' : ''}
                 onClick={() => {
-                  trackCommunityTemplateClick(analytics.track, {
-                    page_name: 'community',
-                    area: 'community_templates',
-                    element: 'filter',
-                    filter_type: 'category',
-                    filter_value: type,
-                    ...workspaceDimensions,
-                  });
                   setSelectedType(type);
                   setActiveSubtype('All');
                 }}
@@ -299,14 +274,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
               type="button"
               className={activeSubtype === 'All' ? 'is-active' : ''}
               onClick={() => {
-                trackCommunityTemplateClick(analytics.track, {
-                  page_name: 'community',
-                  area: 'community_templates',
-                  element: 'filter',
-                  filter_type: 'subtype',
-                  filter_value: 'all',
-                  ...workspaceDimensions,
-                });
                 setActiveSubtype('All');
               }}
             >
@@ -318,14 +285,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                 type="button"
                 className={activeSubtype === subtype ? 'is-active' : ''}
                 onClick={() => {
-                  trackCommunityTemplateClick(analytics.track, {
-                    page_name: 'community',
-                    area: 'community_templates',
-                    element: 'filter',
-                    filter_type: 'subtype',
-                    filter_value: subtype,
-                    ...workspaceDimensions,
-                  });
                   setActiveSubtype(subtype);
                 }}
               >
@@ -384,7 +343,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
       {detailsRecord ? (
         <PluginDetailsModal
           record={detailsRecord}
-          workspaceContext={workspaceContext}
           onClose={() => setDetailsRecord(null)}
           onUse={handleDetailsUse}
           onDuplicate={handleDetailsRemix}

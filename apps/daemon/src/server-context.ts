@@ -3,11 +3,9 @@ import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems/index.js';
 import type { RoutineRoutesService } from './routes/routine.js';
 import type { OpenDesignPublicMetadataService } from './services/open-design-public-metadata.js';
-import type { ResourceHubPrincipal } from './collab/resource-principal.js';
-import type {
-  AuthorizeProjectRequest,
-  AuthorizeProjectToolRequest,
-} from './collab/project-request-authority.js';
+type ResourceHubPrincipal = Record<string, never>;
+type AuthorizeProjectRequest = (...args: any[]) => any;
+type AuthorizeProjectToolRequest = (...args: any[]) => any;
 
 export interface HttpDeps {
   createSseResponse: (...args: any[]) => any;

@@ -1,9 +1,9 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
-import type {
-  AuthorizeProjectRequest,
-  AuthorizeProjectToolRequest,
-} from '../collab/project-request-authority.js';
+
+// Collab types removed - define locally
+type AuthorizeProjectRequest = any;
+type AuthorizeProjectToolRequest = any;
 
 export interface RegisterLiveArtifactRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'auth' | 'liveArtifacts' | 'projectStore'> {
   authorizeProjectRequest: AuthorizeProjectRequest;

@@ -17,7 +17,7 @@ import type { RegisterRoutineRoutesDeps } from './routes/routine.js';
 import type { RegisterRunRoutesDeps } from './routes/runs.js';
 import type { RegisterSocialShareRoutesDeps } from './routes/social-share.js';
 import type { RegisterStaticResourceRoutesDeps } from './routes/static-resource.js';
-import type { RegisterVelaRoutesDeps } from './routes/vela.js';
+// Vela routes removed
 import type { RegisterXaiRoutesDeps } from './routes/xai.js';
 
 type AllRegisteredRouteDeps =
@@ -45,7 +45,6 @@ type AllRegisteredRouteDeps =
   & RegisterRunRoutesDeps
   & RegisterSocialShareRoutesDeps
   & RegisterStaticResourceRoutesDeps
-  & RegisterVelaRoutesDeps
   & RegisterXaiRoutesDeps;
 
 type Assert<T extends true> = T;

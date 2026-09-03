@@ -15,13 +15,7 @@ import type {
 } from '@open-design/contracts';
 import {
   applyPlugin,
-  resolvedWorkspaceContextForWrite,
 } from '../state/projects';
-import type { WorkspaceContextState } from '../collab/useWorkspaceContext';
-import {
-  workspaceProjectHeaders,
-  workspaceResourceUrl,
-} from '../collab/workspace-identity';
 import { goBack, navigate } from '../router';
 import {
   createPluginUseHandoff,
@@ -41,12 +35,13 @@ import {
   normalizePluginSkillAssetPath,
 } from '../runtime/plugin-skill-descriptions';
 
+const workspaceResourceUrl = (path: string, _c?: unknown): string => path;
+
 interface Props {
   pluginId: string;
-  workspaceContextState?: WorkspaceContextState;
 }
 
-const LEGACY_WORKSPACE_CONTEXT_STATE: WorkspaceContextState = {
+const workspaceContextState: { context: null; loading: boolean } = {
   context: null,
   loading: false,
 };
@@ -177,8 +172,7 @@ function DetailSection({
 }
 
 export function PluginDetailView(props: Props) {
-  const workspaceContextState =
-    props.workspaceContextState ?? LEGACY_WORKSPACE_CONTEXT_STATE;
+  const workspaceContextState = { context: null, loading: false, identityChangePending: false, failure: null as string | null };
   const pluginWorkspaceContextReady =
     !workspaceContextState.loading
     && !workspaceContextState.identityChangePending
@@ -211,7 +205,7 @@ export function PluginDetailView(props: Props) {
     let cancelled = false;
     void fetch(`/api/plugins/${encodeURIComponent(props.pluginId)}`, {
       ...(pluginWorkspaceContext
-        ? { headers: workspaceProjectHeaders(pluginWorkspaceContext) }
+        ? { headers: undefined }
         : {}),
     })
       .then((response) => {
@@ -238,7 +232,6 @@ export function PluginDetailView(props: Props) {
       plugin.id,
       knowledgeSkillsFor(plugin),
       controller.signal,
-      pluginWorkspaceContext,
     ).then((descriptions) => {
       if (!controller.signal.aborted) {
         setSkillDescriptionState({ pluginId: plugin.id, descriptions });
@@ -300,7 +293,6 @@ export function PluginDetailView(props: Props) {
     setError(null);
     const result = await applyPlugin(plugin.id, {
       locale,
-      workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
     });
     setApplying(false);
     if (!result) {
@@ -416,7 +408,6 @@ export function PluginDetailView(props: Props) {
               title={`${localizedTitle} preview`}
               src={workspaceResourceUrl(
                 `/api/plugins/${encodeURIComponent(plugin.id)}/preview`,
-                pluginWorkspaceContext,
               )}
               sandbox="allow-scripts"
               className="plugin-detail__preview-frame"
@@ -456,7 +447,6 @@ export function PluginDetailView(props: Props) {
                     <a
                       href={workspaceResourceUrl(
                         `/api/plugins/${encodeURIComponent(plugin.id)}/example/${encodeURIComponent(stem)}`,
-                        pluginWorkspaceContext,
                       )}
                       target="_blank"
                       rel="noreferrer"

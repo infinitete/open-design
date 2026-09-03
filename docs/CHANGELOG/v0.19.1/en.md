@@ -40,12 +40,12 @@ keeps Home and team projects responsive under load.
 
 - 🔐 **An expired Cloud session returns you to sign-in.** Invalid
   credentials are cleared, the existing sign-in flow takes over, and transient
-  workspace-authority failures retry without duplicating the request. Headless
+  workspace authorization failures retry without duplicating the request. Headless
   operators also gain `od amr status` and `od amr logout` for checking and
   resetting Cloud authentication from the CLI. (#6786)
 
 - ⚡ **Team workspaces keep background work within bounds.** Shared-resource
-  pulls are batched, sync fan-out is capped, workspace-authority reads are
+  pulls are batched, sync fan-out is capped, workspace authorization reads are
   cached safely, and large project scans, archives, and push queues have firm
   limits. Workspace and billing refreshes now coalesce under event bursts and
   back off during an outage instead of multiplying upstream requests.

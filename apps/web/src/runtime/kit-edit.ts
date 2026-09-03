@@ -1,4 +1,4 @@
-import type { Brand, BrandColorRole, WorkspaceCollabContext } from '@open-design/contracts';
+import type { Brand, BrandColorRole } from '@open-design/contracts';
 import {
   deleteProjectFile,
   fetchProjectFileText,
@@ -9,11 +9,9 @@ export type KitTextModule = 'identity' | 'voice' | 'imagery-layout' | 'design-md
 
 async function readBrand(
   projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<Brand | null> {
   const raw = await fetchProjectFileText(projectId, 'brand.json', {
-    cache: 'no-store',
-    workspaceContext,
+    cache: 'no-store'
   });
   if (!raw) return null;
   try {
@@ -26,14 +24,12 @@ async function readBrand(
 async function writeBrand(
   projectId: string,
   brand: Brand,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   const file = await writeProjectTextFile(
     projectId,
     'brand.json',
     JSON.stringify(brand, null, 2),
-    undefined,
-    workspaceContext,
+    undefined
   );
   return Boolean(file);
 }
@@ -41,12 +37,11 @@ async function writeBrand(
 export async function patchBrand(
   projectId: string,
   mutate: (brand: Brand) => void,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
-  const brand = await readBrand(projectId, workspaceContext);
+  const brand = await readBrand(projectId);
   if (!brand) return false;
   mutate(brand);
-  return writeBrand(projectId, brand, workspaceContext);
+  return writeBrand(projectId, brand);
 }
 
 type EditableBrand = Brand & { seed?: Record<string, unknown> };
@@ -97,16 +92,15 @@ export async function updateBrandColor(
   projectId: string,
   index: number,
   hex: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   const nextHex = normalizeHex(hex);
   if (!nextHex) return false;
-  const brand = await readBrand(projectId, workspaceContext);
+  const brand = await readBrand(projectId);
   const color = brand?.colors?.[index];
   if (!brand || !color) return false;
   color.hex = nextHex;
   syncSeedForColor(brand as EditableBrand, color.role, nextHex);
-  return writeBrand(projectId, brand, workspaceContext);
+  return writeBrand(projectId, brand);
 }
 
 export function replaceDesignMdColorAtIndex(body: string, index: number, hex: string): string | null {
@@ -132,7 +126,6 @@ export function replaceDesignMdColorAtIndex(body: string, index: number, hex: st
 export async function deleteBrandLogo(
   projectId: string,
   index: number,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   let fileToDelete: string | null = null;
   const ok = await patchBrand(projectId, (brand) => {
@@ -147,42 +140,38 @@ export async function deleteBrandLogo(
     }
     fileToDelete = relativeProjectAssetPath(alternates[index - 1]);
     logo.alternates = alternates.filter((_, i) => i !== index - 1);
-  }, workspaceContext);
-  if (ok && fileToDelete) await deleteProjectFile(projectId, fileToDelete, workspaceContext);
+  });
+  if (ok && fileToDelete) await deleteProjectFile(projectId, fileToDelete);
   return ok;
 }
 
 export async function deleteBrandImage(
   projectId: string,
   index: number,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
   let fileToDelete: string | null = null;
   const ok = await patchBrand(projectId, (brand) => {
     if (!brand.imagery?.samples) return;
     fileToDelete = relativeProjectAssetPath(brand.imagery.samples[index]?.file);
     brand.imagery.samples = brand.imagery.samples.filter((_, i) => i !== index);
-  }, workspaceContext);
-  if (ok && fileToDelete) await deleteProjectFile(projectId, fileToDelete, workspaceContext);
+  });
+  if (ok && fileToDelete) await deleteProjectFile(projectId, fileToDelete);
   return ok;
 }
 
 export async function readDesignMd(
   projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
   return (await fetchProjectFileText(projectId, 'DESIGN.md', {
-    cache: 'no-store',
-    workspaceContext,
+    cache: 'no-store'
   })) ?? '';
 }
 
 export async function writeDesignMd(
   projectId: string,
   body: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<boolean> {
-  const file = await writeProjectTextFile(projectId, 'DESIGN.md', body, undefined, workspaceContext);
+  const file = await writeProjectTextFile(projectId, 'DESIGN.md', body, undefined);
   return Boolean(file);
 }
 

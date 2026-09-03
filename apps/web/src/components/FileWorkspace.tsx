@@ -70,10 +70,6 @@ import { removeSpeakerNotesFromHtml } from '../runtime/speaker-notes';
 import { useDesignKit, hostnameOf, type KitColor } from '../runtime/design-kit';
 import { useKitModuleUpload } from '../runtime/kit-upload';
 import {
-  appendResourceQuery,
-  workspaceIdentityCacheKey,
-} from '../collab/workspace-identity';
-import {
   DesignKitView,
   type DesignKitActionFeedbackTone,
   type DesignKitEditFocusRequest,
@@ -108,15 +104,8 @@ import {
   type ChatSessionMode,
   type InstalledPluginRecord,
   type LocalizedText,
-  type WorkspaceCollabContext,
   type WorkspaceContextItem,
 } from '@open-design/contracts';
-import {
-  notifyTeamProjectsChanged,
-  TEAM_PROJECTS_CHANGED_EVENT,
-} from '../collab/useWorkspaceContext';
-import { useProjectCollabContext } from '../collab/collab-context';
-import { createTerminal, killTerminal, listPlugins, moveWorkspaceProject } from '../state/projects';
 import { MoveToTeamConfirmDialog, moveConfirmSkipped } from './MoveToTeamConfirmDialog';
 import { DesignFilesPanel, type DesignFilesNavState } from './DesignFilesPanel';
 import {
@@ -132,8 +121,6 @@ import { APP_CHROME_FILE_ACTIONS_ID } from './AppChromeHeader';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
 import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { Icon, type IconName } from './Icon';
-import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
-import { FileSyncBadge, type FileSyncBadgeState } from '../collab/FileSyncBadge';
 import { Toast } from './Toast';
 import { TabLauncherMenu } from './workspace/TabLauncherMenu';
 import { buildLauncherActions, type LauncherContext } from './workspace/tab-launcher';
@@ -170,6 +157,24 @@ import {
 import { AnimatePresence } from 'motion/react';
 import type { ChatMessage } from '../types';
 import type { CommentSendResult } from './comment-send-result';
+
+import { listPlugins } from '../state/projects';
+import { killTerminal, createTerminal } from '../state/projects';
+
+function appendResourceQuery(path: string, query: string): string {
+  if (!query) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${query.replace(/^[?&]+/, '')}`;
+}
+function workspaceIdentityCacheKey(_ctx: unknown): string { return 'local'; }
+const projectIsSharedWithWorkspace = async (_projectId: string): Promise<boolean> => false;
+const notifyTeamProjectsChanged = () => {};
+const TEAM_PROJECTS_CHANGED_EVENT = 'open-design:team-projects-changed';
+const moveWorkspaceProject = async (..._args: unknown[]): Promise<never> => {
+  throw new Error('Workspace project sharing is not available.');
+};
+type WorkspaceCollabContext = null;
+type FileSyncBadgeState = 'downloading' | 'uploading' | null;
+function FileSyncBadge(_props: { state: string; size?: number }) { return null; }
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
@@ -1378,7 +1383,7 @@ export function FileWorkspace({
     await onRefreshFiles();
   }, [onRefreshFiles]);
   const { locale, t } = useI18n();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: null = null;
   const iframeKeepAlivePool = useIframeKeepAlivePool();
   const analytics = useAnalytics();
   // P1 page_view page_name=file_manager — once per project the user lands
@@ -1668,9 +1673,9 @@ export function FileWorkspace({
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      void listPlugins({ workspaceContext }).then((records) => {
+      void listPlugins({}).then((records) => {
         if (cancelled) return;
-        setCommunityPluginPresets(communityPluginPagePresets(records, workspaceContext));
+        setCommunityPluginPresets(communityPluginPagePresets(records));
       });
     };
     load();
@@ -1695,7 +1700,7 @@ export function FileWorkspace({
     const promise = (async () => {
       try {
         const text = workspaceContext
-          ? await fetchProjectFileText(projectId, file.name, { workspaceContext })
+          ? await fetchProjectFileText(projectId, file.name, {})
           : await fetchProjectFileText(projectId, file.name);
         const doc = parseSketchWorkspaceDocument(text);
         if (activeProjectIdRef.current !== projectId) return false;
@@ -1733,7 +1738,7 @@ export function FileWorkspace({
   );
 
   const refreshProjectFolders = useCallback(async (): Promise<ProjectFolder[]> => {
-    const next = await fetchProjectFolders(projectId, workspaceContext);
+    const next = await fetchProjectFolders(projectId);
     setProjectFolders(next);
     return next;
   }, [projectId, workspaceContext]);
@@ -1742,7 +1747,7 @@ export function FileWorkspace({
     let cancelled = false;
     // The synchronous clear happens during render (see projectFoldersProjectIdRef
     // above); here we only fetch the new project's folders.
-    void fetchProjectFolders(projectId, workspaceContext).then((next) => {
+    void fetchProjectFolders(projectId).then((next) => {
       if (!cancelled) setProjectFolders(next);
     });
     return () => {
@@ -2274,7 +2279,6 @@ export function FileWorkspace({
       const liveId = terminalLiveSessionsRef.current.get(originalId) ?? originalId;
       void killTerminal(projectId, liveId, {
         keepalive: true,
-        workspaceContext,
       });
       terminalLiveSessionsRef.current.delete(originalId);
     }
@@ -2351,7 +2355,7 @@ export function FileWorkspace({
     const cohort = deriveUploadCohort(picked);
     let result: UploadProjectFilesResult;
     try {
-      result = await uploadProjectFiles(projectId, picked, uploadDir, workspaceContext);
+      result = await uploadProjectFiles(projectId, picked, uploadDir);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setUploadError(`Upload failed for ${picked.length} file(s) (${detail}).`);
@@ -2536,7 +2540,7 @@ export function FileWorkspace({
   async function handleDelete(name: string) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
     if (!confirm(t('workspace.deleteFileConfirm', { name }))) return;
-    const ok = await deleteProjectFile(projectId, name, workspaceContext);
+    const ok = await deleteProjectFile(projectId, name);
     if (ok) {
       await onRefreshFiles();
       const nextTabs = persistedTabs.filter((n) => n !== name);
@@ -2572,7 +2576,7 @@ export function FileWorkspace({
     const deleted: string[] = [];
     const failed: string[] = [];
     for (const name of names) {
-      const ok = await deleteProjectFile(projectId, name, workspaceContext);
+      const ok = await deleteProjectFile(projectId, name);
       if (ok) deleted.push(name);
       else failed.push(name);
     }
@@ -2615,7 +2619,7 @@ export function FileWorkspace({
       );
     }
 
-    const result = await renameProjectFile(projectId, oldName, nextName, workspaceContext);
+    const result = await renameProjectFile(projectId, oldName, nextName);
     const renamed = result.file;
     await onRefreshFiles();
     await refreshProjectFolders();
@@ -2692,7 +2696,6 @@ export function FileWorkspace({
       target,
       initialMarkdownDocument(target, projectKind, t),
       undefined,
-      workspaceContext,
     );
     if (!file) return;
     await onRefreshFiles();
@@ -2711,12 +2714,11 @@ export function FileWorkspace({
         preset,
         t,
         locale,
-        workspaceContext,
       );
       const file = await writeProjectTextFile(projectId, target, content, {
         versionSource: 'manual',
         versionPrompt: pagePresetVersionPrompt(preset, t, locale),
-      }, workspaceContext);
+      });
       if (!file) {
         // Never let a failed create read as a silent no-op click.
         setLauncherToast({ message: t('workspace.pageCreateFailed'), tone: 'error' });
@@ -2872,7 +2874,7 @@ export function FileWorkspace({
     const startedAt = Date.now();
     let result: boolean | undefined;
     try {
-      const file = await writeProjectTextFile(projectId, name, text, undefined, workspaceContext);
+      const file = await writeProjectTextFile(projectId, name, text, undefined);
       const elapsed = Date.now() - startedAt;
       // Ensures saving UI shows so the button does not flicker
       if (showSaving && elapsed < 500) await new Promise((resolve) => setTimeout(resolve, 500 - elapsed));
@@ -3003,7 +3005,7 @@ export function FileWorkspace({
   ): Promise<{ fileName: string } | false> {
     const targetDir = parentDirForProjectFile(sketchName);
     const targetName = targetDir ? `${targetDir}/${imageFileName}` : imageFileName;
-    const file = await writeProjectBase64File(projectId, targetName, base64, workspaceContext);
+    const file = await writeProjectBase64File(projectId, targetName, base64);
     if (!file) {
       setUploadError(t('common.exportImageFailed'));
       return false;
@@ -3780,7 +3782,7 @@ export function FileWorkspace({
 
   useEffect(() => {
     let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
+    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId).then((shared) => {
       if (!cancelled) setProjectShareAccess(shared ? 'workspace' : 'private');
     });
     refreshShareAccess();
@@ -3824,7 +3826,7 @@ export function FileWorkspace({
     // Surface a toast when the daemon can't start one (e.g. node-pty not
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
-      const term = await createTerminal(projectId, undefined, workspaceContext);
+      const term = await createTerminal(projectId, undefined);
       if (!term) {
         setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
         return null;
@@ -3854,7 +3856,6 @@ export function FileWorkspace({
       await moveWorkspaceProject({
         projectId,
         visibility: nextAccess === 'workspace' ? 'team' : 'personal',
-        workspaceContext,
       });
       setProjectShareAccess(nextAccess);
       notifyTeamProjectsChanged();
@@ -4234,7 +4235,6 @@ export function FileWorkspace({
             projectId={projectId}
             projectKind={projectKind}
             viewerOnly
-            downloadPending
             files={[]}
             folders={[]}
             liveArtifacts={[]}
@@ -4281,7 +4281,6 @@ export function FileWorkspace({
             projectKind={projectKind}
             filesRefreshKey={filesRefreshKey}
             viewerOnly={viewerOnly}
-            downloadPending={fileSyncBadge === 'downloading'}
             rootDirName={rootDirName}
             reloading={reloading}
             running={Boolean(streaming)}
@@ -4453,7 +4452,6 @@ export function FileWorkspace({
             config={chatConfig}
             agentsById={chatAgentsById}
             locale={chatLocale ?? 'en'}
-            workspaceContext={workspaceContext}
             projectFiles={visibleFiles}
             projectFileNames={sideChatFileNames}
             projectResolvedDir={resolvedDir}
@@ -4471,7 +4469,6 @@ export function FileWorkspace({
             key={activeTab}
             projectId={projectId}
             terminalId={terminalIdFromTabId(activeTab)}
-            workspaceContext={workspaceContext}
             onClose={() => closeTab(activeTab)}
             onSessionIdChange={handleTerminalSessionChange}
           />
@@ -4590,7 +4587,6 @@ export function FileWorkspace({
                   projectId,
                   dir,
                   { includeElement: true },
-                  workspaceContext,
                 );
                 if (res?.relPath) lastRelPath = res.relPath;
                 if (res?.elementRelPath) lastRelPath = res.elementRelPath;
@@ -4680,7 +4676,7 @@ function DesignSystemProjectPanel({
 }) {
   const t = useT();
   const analytics = useAnalytics();
-  const { workspaceContext } = useProjectCollabContext();
+  const workspaceContext: null = null;
   // Match the exact fields sent by workspaceProjectHeaders. Billing-only
   // refreshes must not blank and reload the kit, while a role, membership, or
   // permission change must discard every prior identity's source snapshot.
@@ -4749,7 +4745,7 @@ function DesignSystemProjectPanel({
 
   const refreshKitDependencies = useCallback(async (options?: { finalizeBrand?: boolean }) => {
     if (options?.finalizeBrand && brandId) {
-      const outcome = await finalizeBrandProject(brandId, projectId, workspaceContext);
+      const outcome = await finalizeBrandProject(brandId, projectId);
       if (!outcome.ok) throw new Error(outcome.error);
     }
     setKitReloadKey((k) => k + 1);
@@ -4762,10 +4758,9 @@ function DesignSystemProjectPanel({
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
-      readDesignMd(projectId, workspaceContext),
+      readDesignMd(projectId),
       fetchProjectFileText(projectId, 'brand.json', {
         cache: 'no-store',
-        workspaceContext,
       }),
     ]).then(([designMd, brandJson]) => {
       if (cancelled) return;
@@ -4786,7 +4781,6 @@ function DesignSystemProjectPanel({
   const { uploading: kitUploading, uploadModule: kitUploadModule } = useKitModuleUpload({
     projectId,
     title: system.title,
-    workspaceContext,
     onUploaded: (module) => {
       setKitActionBusy(`upload:${module}`);
       notifyKit('loading', t('ds.uploading'));
@@ -4809,16 +4803,14 @@ function DesignSystemProjectPanel({
     editable,
     host: kitHost,
     reloadKey: kitReloadKey,
-    workspaceContext,
   });
   async function persistDesignMd(nextBody: string) {
     const updated = await updateDesignSystemDraft(
       system.id,
       { body: nextBody },
-      workspaceContext,
     );
     if (!updated) throw new Error(t('ds.actionFailed'));
-    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, undefined, workspaceContext);
+    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, undefined);
     if (!file) throw new Error(t('ds.actionFailed'));
     setDesignMdBody(nextBody);
     await refreshKitDependencies();
@@ -4852,7 +4844,6 @@ function DesignSystemProjectPanel({
         const job = await startDesignSystemTokenContractRebuildJob(
           system.id,
           { force: true },
-          workspaceContext,
         );
         if (!job) throw new Error(t('ds.actionFailed'));
         await refreshKitDependencies();
@@ -4875,12 +4866,10 @@ function DesignSystemProjectPanel({
         await downloadProjectArchive({
           projectId,
           fallbackTitle: system.title,
-          workspaceContext,
         }) ||
         await downloadDesignSystemArchive({
           designSystemId: system.id,
           fallbackTitle: system.title,
-          workspaceContext,
         });
       if (!ok) throw new Error(t('ds.actionFailed'));
       notifyKit('success', t('ds.actionDone'));
@@ -4918,7 +4907,7 @@ function DesignSystemProjectPanel({
         setKitActionBusy(null);
         return;
       }
-      await deleteDesignSystemDraft(system.id, workspaceContext);
+      await deleteDesignSystemDraft(system.id);
       await onDesignSystemsRefresh?.();
     } catch {
       notifyKit('error', t('ds.actionFailed'));
@@ -4933,7 +4922,7 @@ function DesignSystemProjectPanel({
     setKitActionBusy('color');
     notifyKit('loading', t('ds.saving'));
     try {
-      const ok = await updateBrandColor(projectId, index, nextHex, workspaceContext);
+      const ok = await updateBrandColor(projectId, index, nextHex);
       if (!ok) {
         const nextBody = designMdBodyWithColor(designMdBody, kit?.colors ?? [], index, nextHex);
         await persistDesignMd(nextBody);
@@ -4965,7 +4954,7 @@ function DesignSystemProjectPanel({
     setKitActionBusy(`delete-logo:${index}`);
     notifyKitLoading(t('ds.deleteLogo'));
     try {
-      const ok = await deleteBrandLogo(projectId, index, workspaceContext);
+      const ok = await deleteBrandLogo(projectId, index);
       if (!ok) throw new Error(t('ds.actionFailed'));
       await refreshKitDependencies({ finalizeBrand: true });
       notifyKit('success', t('ds.actionDone'));
@@ -4981,7 +4970,7 @@ function DesignSystemProjectPanel({
     setKitActionBusy(`delete-image:${index}`);
     notifyKitLoading(t('ds.deleteImage', { caption: '' }).trim());
     try {
-      const ok = await deleteBrandImage(projectId, index, workspaceContext);
+      const ok = await deleteBrandImage(projectId, index);
       if (!ok) throw new Error(t('ds.actionFailed'));
       await refreshKitDependencies({ finalizeBrand: true });
       notifyKit('success', t('ds.actionDone'));
@@ -5007,7 +4996,6 @@ function DesignSystemProjectPanel({
     let cancelled = false;
     void fetchProjectFileText(projectId, manifestFileName, {
       cache: 'no-store',
-      workspaceContext,
       cacheBustKey: manifestCacheBustKey,
     }).then((text) => {
       if (cancelled) return;
@@ -5100,7 +5088,6 @@ function DesignSystemProjectPanel({
       const updated = await updateDesignSystemDraft(
         system.id,
         { status: nextStatus },
-        workspaceContext,
       );
       if (!updated) throw new Error(t('ds.actionFailed'));
       setStatus(updated.status ?? nextStatus);
@@ -5583,7 +5570,6 @@ function DesignSystemProjectPanel({
       {kit ? (
         <DesignKitView
           kit={kit}
-          workspaceContext={workspaceContext}
           actionsSlot={actionsSlot}
           headerMenuActions={headerMenuActions}
           topSlot={topSlot}
@@ -6784,8 +6770,8 @@ function communityPluginPagePresets(
         fileBaseName: slugifyPageFileBaseName(record.title || record.manifest?.title || record.id),
         source: 'community',
         plugin: record,
-        pluginPreview: inferPluginPreview(record, { preferBaked: true, workspaceContext }),
-        pluginHtmlPreview: inferPluginPreview(record, { workspaceContext }),
+        pluginPreview: inferPluginPreview(record, { preferBaked: true }),
+        pluginHtmlPreview: inferPluginPreview(record, {}),
         featured: curatedPluginPriority(record) !== null,
       };
     })
@@ -6846,11 +6832,10 @@ async function contentForPagePreset(
   if (preset.plugin && preset.pluginHtmlPreview?.kind === 'html') {
     const preview = preset.pluginHtmlPreview;
     const result = preview.source === 'preview'
-      ? await fetchPluginPreviewHtml(preset.plugin.id, workspaceContext)
+      ? await fetchPluginPreviewHtml(preset.plugin.id)
       : await fetchPluginExampleHtml(
           preset.plugin.id,
           preview.exampleStem ?? '',
-          workspaceContext,
         );
     if ('html' in result && typeof result.html === 'string' && result.html.trim().length > 0) {
       html = result.html;
@@ -7466,8 +7451,8 @@ function DesignSystemInlinePreview({
   projectId: string;
   file: ProjectFile;
 }) {
-  const { workspaceContext } = useProjectCollabContext();
-  const url = projectFileUrl(projectId, file.name, workspaceContext);
+  const workspaceContext: null = null;
+  const url = projectFileUrl(projectId, file.name);
   const [srcDoc, setSrcDoc] = useState<string | null>(null);
   const [srcDocReady, setSrcDocReady] = useState(false);
 
@@ -7479,7 +7464,6 @@ function DesignSystemInlinePreview({
     void fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: Math.round(file.mtime),
-      workspaceContext,
     }).then(async (html) => {
       if (cancelled) return;
       if (!html) {
@@ -7490,14 +7474,12 @@ function DesignSystemInlinePreview({
         html,
         projectId,
         file.name,
-        workspaceContext,
       );
       if (cancelled) return;
       setSrcDoc(buildSrcdoc(inlinedHtml, {
         baseHref: projectRawUrl(
           projectId,
           baseDirForDesignSystemPreviewFile(file.name),
-          workspaceContext,
         ),
       }));
       setSrcDocReady(true);
@@ -7536,14 +7518,12 @@ async function inlineDesignSystemPreviewRelativeAssets(
     if (!stylesheetPath) continue;
     replacements.push(fetchProjectFileText(projectId, stylesheetPath, {
       cache: 'no-store',
-      workspaceContext,
     }).then((css) => {
       if (css == null) return null;
       const safeCss = rewriteDesignSystemPreviewCssUrls(
         css,
         projectId,
         stylesheetPath,
-        workspaceContext,
       )
         .replace(/<\/style/gi, '<\\/style');
       return {
@@ -7565,7 +7545,6 @@ async function inlineDesignSystemPreviewRelativeAssets(
       projectId,
       ownerFileName,
       src,
-      workspaceContext,
     ).then((js) => {
       if (js == null) return null;
       const open = tag.match(/^<script\b[^>]*>/i)?.[0] ?? '<script>';
@@ -7595,13 +7574,11 @@ async function inlineDesignSystemPreviewRelativeAssets(
     withInlineAssets,
     projectId,
     ownerFileName,
-    workspaceContext,
   );
   return rewriteDesignSystemPreviewHtmlAssetUrls(
     withInlineCssAssets,
     projectId,
     ownerFileName,
-    workspaceContext,
   );
 }
 
@@ -7609,11 +7586,10 @@ async function fetchDesignSystemPreviewRelativeText(
   projectId: string,
   ownerFileName: string,
   assetRef: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string | null> {
   const filePath = resolveDesignSystemPreviewRelativePath(ownerFileName, assetRef);
   if (!filePath) return null;
-  return fetchProjectFileText(projectId, filePath, { cache: 'no-store', workspaceContext });
+  return fetchProjectFileText(projectId, filePath, { cache: 'no-store' });
 }
 
 type DesignSystemPreviewAssetPath = {
@@ -7657,7 +7633,7 @@ function designSystemPreviewAssetUrl(
   assetPath: DesignSystemPreviewAssetPath,
   workspaceContext?: WorkspaceCollabContext | null,
 ): string {
-  const baseUrl = projectRawUrl(projectId, assetPath.filePath, workspaceContext);
+  const baseUrl = projectRawUrl(projectId, assetPath.filePath);
   const hashIndex = assetPath.suffix.indexOf('#');
   const query = (hashIndex >= 0 ? assetPath.suffix.slice(0, hashIndex) : assetPath.suffix)
     .replace(/^\?/, '');
@@ -7676,7 +7652,7 @@ function rewriteDesignSystemPreviewCssUrls(
     const assetPath = resolveDesignSystemPreviewAssetPath(stylesheetFileName, ref);
     if (!assetPath) return match;
     return `url("${escapeDesignSystemPreviewCssUrl(
-      designSystemPreviewAssetUrl(projectId, assetPath, workspaceContext),
+      designSystemPreviewAssetUrl(projectId, assetPath),
     )}")`;
   });
 }
@@ -7697,7 +7673,6 @@ function rewriteDesignSystemPreviewHtmlAssetUrls(
       rawRef,
       projectId,
       ownerFileName,
-      workspaceContext,
     );
     if (rewritten === rawRef) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
@@ -7711,7 +7686,6 @@ function rewriteDesignSystemPreviewHtmlAssetUrls(
       rawSrcset,
       projectId,
       ownerFileName,
-      workspaceContext,
     );
     if (rewritten === rawSrcset) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
@@ -7729,7 +7703,7 @@ function rewriteDesignSystemPreviewInlineCssAssetUrls(
     attrs: string,
     css: string,
   ) => {
-    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName, workspaceContext);
+    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName);
     if (rewritten === css) return match;
     return `<style${attrs}>${rewritten}</style>`;
   });
@@ -7739,7 +7713,7 @@ function rewriteDesignSystemPreviewInlineCssAssetUrls(
     quote: string,
     css: string,
   ) => {
-    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName, workspaceContext);
+    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName);
     if (rewritten === css) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
   });
@@ -7752,7 +7726,7 @@ function rewriteDesignSystemPreviewHtmlAssetRef(
   workspaceContext?: WorkspaceCollabContext | null,
 ): string {
   const assetPath = resolveDesignSystemPreviewAssetPath(ownerFileName, ref.trim());
-  return assetPath ? designSystemPreviewAssetUrl(projectId, assetPath, workspaceContext) : ref;
+  return assetPath ? designSystemPreviewAssetUrl(projectId, assetPath) : ref;
 }
 
 function rewriteDesignSystemPreviewSrcset(
@@ -7771,7 +7745,6 @@ function rewriteDesignSystemPreviewSrcset(
         match[1] ?? '',
         projectId,
         ownerFileName,
-        workspaceContext,
       );
       return `${rewritten}${match[2] ?? ''}`;
     })

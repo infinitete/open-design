@@ -8,7 +8,6 @@
 
 import { useEffect, useState } from 'react';
 import { isVisualStabilityMode } from '../../../utils/visualStability';
-import { workspaceResourceUrl } from '../../../collab/workspace-identity';
 import type { DesignPreviewSpec } from '../preview';
 
 interface Props {
@@ -40,10 +39,7 @@ export function DesignSystemSurface({ preview, inView }: Props) {
           {ready ? (
             <iframe
               title={`${preview.brand} showcase preview`}
-              src={workspaceResourceUrl(
-                `/api/design-systems/${encodeURIComponent(preview.designSystemId)}/showcase`,
-                preview.workspaceContext,
-              )}
+              src={`/api/design-systems/${encodeURIComponent(preview.designSystemId)}/showcase`}
               sandbox="allow-scripts"
               loading="lazy"
               tabIndex={-1}

@@ -234,12 +234,12 @@ managed storage, and applies safe path resolution to every later file access.
 When paired with desktop, folder import is guarded by a short-lived,
 single-use HMAC token minted by the trusted main process after the native
 folder picker succeeds. Packaged/headless and web-only launches explicitly
-select whether that desktop-auth gate applies. Imported projects that may use
+select whether that folder-import gate applies. Imported projects that may use
 the desktop open-path bridge carry a server-controlled trusted-picker marker;
 ordinary project create/update requests cannot forge it.
 
-The implementation source of truth is `apps/daemon/src/desktop-auth.ts`,
-`apps/daemon/src/import-export-routes.ts`, and the desktop/packaged launchers.
+The implementation source of truth is `apps/daemon/src/import-export-routes.ts`
+and the desktop/packaged launchers.
 Shared DTOs live in `packages/contracts`.
 
 ## 7. Security boundaries

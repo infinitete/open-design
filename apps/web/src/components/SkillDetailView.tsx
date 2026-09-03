@@ -15,7 +15,6 @@ import {
 } from '../i18n/content';
 import { fetchSkill } from '../providers/registry';
 import { Icon } from './Icon';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 
 interface Props {
   skill: SkillSummary;
@@ -80,8 +79,7 @@ export function SkillDetailView({
   onUse,
 }: Props) {
   const { locale, t } = useI18n();
-  const { context: workspaceContext } = useWorkspaceContext();
-  const titleRef = useRef<HTMLHeadingElement | null>(null);
+    const titleRef = useRef<HTMLHeadingElement | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -92,7 +90,7 @@ export function SkillDetailView({
     setDetail(null);
     setLoading(true);
     setLoadFailed(false);
-    void fetchSkill(summary.id, workspaceContext).then((next) => {
+    void fetchSkill(summary.id).then((next) => {
       if (cancelled) return;
       setDetail(next);
       setLoadFailed(!next);
@@ -101,7 +99,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [summary.id, reloadToken, workspaceContext]);
+  }, [summary.id, reloadToken]);
 
   useEffect(() => {
     titleRef.current?.focus();

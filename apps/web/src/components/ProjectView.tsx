@@ -56,18 +56,15 @@ import {
   runAgentProviderId,
 } from '../analytics/run-task';
 import { useCoalescedCallback } from '../hooks/useCoalescedCallback';
-import { requestAmrArtifactUpgrade } from '../runtime/amr-artifact-upgrade';
 import {
   resolveQuestionFormStrategyTaskExecutionId,
   strategySettledMessageFields,
 } from '../runtime/strategy-question-continuation';
 import {
-  type AmrWalletSnapshot,
   type ByokChatProviderConfig,
   type ByokMediaDefaults,
   type ByokChatProtocol,
   type ChatTaskExecutionAnalytics,
-  type ProjectWorkspaceScope,
   type ResearchOptions,
 } from '@open-design/contracts';
 import {
@@ -125,10 +122,6 @@ import { playSound, showCompletionNotification } from '../utils/notifications';
 import { randomUUID } from '../utils/uuid';
 import { DEFAULT_NOTIFICATIONS, KNOWN_PROVIDERS } from '../state/config';
 import type { TodoItem } from '../runtime/todos';
-import type {
-  AmrAuthRetryContinuation,
-  AmrAuthRetryPersonalAdoptionWitness,
-} from '../runtime/amr-auth-retry-continuation';
 import {
   appendErrorStatusEvent,
   removeErrorStatusEvent,
@@ -144,16 +137,6 @@ import {
 } from '../runtime/design-delivery';
 import { notifyArtifactDelivered } from './experience-survey-trigger';
 import { RESUME_CONTINUE_PROMPT } from '../runtime/resume';
-import {
-  amrBalanceGateScopeForWorkspaceContext,
-  amrBalanceGateScopesMatch,
-  checkAmrBalanceGate,
-  isAmrBalanceGateScope,
-  type AmrBalanceGateScope,
-} from '../runtime/amr-balance-gate';
-import { isPaidAmrPlan, resolveAmrPlan } from '../runtime/amr-low-balance-plan';
-import { AmrBalanceDialog } from './AmrBalanceDialog';
-import { AmrLowBalanceDialog, type AmrLowBalanceDecision } from './AmrLowBalanceDialog';
 import {
   cancelBrandExtraction,
   continueBrandExtraction,
@@ -207,7 +190,6 @@ import {
   cacheTabsLocally,
   persistTabsToDaemonNow,
   listPlugins,
-  resolvedWorkspaceContextForWrite,
   type SaveMessageOptions,
   waitGeneratedPluginShareTask,
 } from '../state/projects';
@@ -218,7 +200,6 @@ import type {
   ChatSessionMode,
   InstalledPluginRecord,
   RunContextSelection,
-  WorkspaceCollabContext,
   WorkspaceContextItem,
 } from '@open-design/contracts';
 import type {
@@ -258,31 +239,6 @@ import { Icon } from './Icon';
 import { useWorkspaceTabsDockRef } from './workspaceTabsDock';
 import { localizePluginTitle } from './plugins-home/localization';
 import { DesignSystemPicker } from './DesignSystemPicker';
-import { PresenceBar } from '../collab/PresenceBar';
-import { useProjectCollab } from '../collab/useProjectCollab';
-import {
-  currentUserDirectoryEntry,
-  useTeamMembers,
-} from '../collab/useTeamMembers';
-import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
-import {
-  useWorkspaceContext,
-  workspaceIdentityCanBillAmr,
-} from '../collab/useWorkspaceContext';
-import {
-  projectWorkspaceContext,
-  projectWorkspaceScopeAuthorizesAmr,
-  projectWorkspaceScopeReady,
-  runWorkspaceIdentity,
-  runWorkspacePersonalAdoptionWitness,
-  useProjectWorkspaceScope,
-} from '../collab/useProjectWorkspaceScope';
-import {
-  CollabProvider,
-  type CollabContextValue,
-  type ProjectResourceAuthority,
-} from '../collab/collab-context';
-import { persistCommentAnchors } from '../collab/comment-anchor-client';
 import type { AnchorWriteBack } from '../comments';
 import { PluginDetailsModal } from './PluginDetailsModal';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
@@ -438,14 +394,12 @@ function conversationForkPoint(
 
 export async function listConversationsWithRetry(
   projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<Conversation[]> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= CONVERSATION_LOAD_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
       return await listConversations(projectId, {
         throwOnError: true,
-        workspaceContext,
       });
     } catch (err) {
       lastError = err;
@@ -456,7 +410,6 @@ export async function listConversationsWithRetry(
       if (
         !(err instanceof ProjectConversationsHttpError)
         || err.status !== 404
-        || workspaceContext?.workspaceType !== 'team'
       ) {
         throw err;
       }
@@ -615,41 +568,7 @@ function ensureConversationPresent(
 
 interface Props {
   project: Project;
-  /**
-   * Exact project-bound Workspace authority resolved by the route gate.
-   * Production deep links pass this instead of borrowing the shell's mutable
-   * current/default Workspace. Tests and legacy embedded callers may omit it
-   * and retain the existing provider behavior.
-   */
-  workspaceContextOverride?: WorkspaceCollabContext | null;
-  /** Fresh route-bootstrap witnesses, reused to avoid repeating scope/detail reads. */
-  initialWorkspaceScope?: ProjectWorkspaceScope | null;
   initialProjectDetail?: ProjectDetailSeed | null;
-  /** The seeded project row is a Team-bound placeholder, not content authority. */
-  initialMaterializationPending?: boolean;
-  /** Workspace/member authorization lifetime for async title reads. */
-  projectAuthorizationKey?: string;
-  amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
-  onArmAmrAuthRetryContinuation?: (
-    continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
-  ) => void;
-  onConsumeAmrAuthRetryContinuation?: (
-    continuation: AmrAuthRetryContinuation,
-  ) => boolean;
-  onDiscardAmrAuthRetryContinuation?: (
-    continuation: AmrAuthRetryContinuation,
-  ) => void;
-  /**
-   * The current title from the team catalog when this project is shared by
-   * another member. That catalog is the naming authority; the member's local
-   * mirror may carry an older real name with a newer local timestamp.
-   */
-  authoritativeProjectName?: string;
-  /** Re-read the catalog after a metadata invalidation before merging detail. */
-  resolveAuthoritativeProjectName?: (
-    projectId: string,
-    expectedAuthorizationKey: string,
-  ) => Promise<ProjectNameAuthorityResolution>;
   routeFileName: string | null;
   /**
    * Routed conversation id. When set (the URL is
@@ -687,7 +606,6 @@ interface Props {
   onApiModelChange?: (model: string) => void;
   onRefreshAgents: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
-  onOpenAmrSettings?: () => void;
   onOpenMcpSettings?: () => void;
   onBrowsePlugins?: () => void;
   onOpenConnectors?: () => void;
@@ -719,8 +637,6 @@ interface Props {
 }
 
 export type ProjectRenameFenceToken = Readonly<{
-  accountGeneration: number;
-  scopeKey: string;
   projectId: string;
   mutationVersion: number;
 }>;
@@ -774,13 +690,7 @@ const DESIGN_SYSTEM_AUDIT_AUTO_REPAIR_ATTEMPTS = 2;
 const CONVERSATION_LOAD_RETRY_DELAYS_MS = [
   120, 300, 600, 1000, 1500, 2000, 2500, 3500,
 ] as const;
-type ConversationMaterializationRecovery = {
-  projectId: string;
-  authorityKey: string;
-  generation: number;
-  workspaceContext: WorkspaceCollabContext;
-  errorMessage: string;
-};
+type ConversationMaterializationRecovery = null;
 export function reconcileConversationRecoveryGlobalError(
   current: string | null,
   previousConversationError: string,
@@ -1240,22 +1150,6 @@ function readAutoSendContext(projectId: string): RunContextSelection | null {
     return isStoredRunContextSelection(parsed) ? parsed : null;
   } catch {
     return null;
-  }
-}
-
-function readAutoSendAmrGateWitness(
-  projectId: string,
-): AmrBalanceGateScope | undefined {
-  if (typeof window === 'undefined') return undefined;
-  try {
-    const raw = window.sessionStorage.getItem(
-      autoSendAmrGateWitnessKey(projectId),
-    );
-    if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as unknown;
-    return isAmrBalanceGateScope(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
   }
 }
 
@@ -1759,16 +1653,6 @@ function isOpenCodeByokChatProtocol(
 function projectEventToAgentEvent(evt: ProjectEvent): LiveArtifactEventItem['event'] | null {
   if (evt.type === 'file-changed') return null;
   if (evt.type === 'conversation-created') return null;
-  // Collab realtime hop-2 invalidations are handled directly in
-  // `handleProjectEvent` (they trigger targeted re-fetches, not artifact cards).
-  if (
-    evt.type === 'comment-changed' ||
-    evt.type === 'presence-changed' ||
-    evt.type === 'project-metadata-changed' ||
-    evt.type === 'project-content-transfer-state'
-  ) {
-    return null;
-  }
   if (evt.type === 'live_artifact') {
     return {
       kind: 'live_artifact',
@@ -1850,17 +1734,7 @@ export function reconcileProjectDetail(
 
 export function ProjectView({
   project,
-  workspaceContextOverride,
-  initialWorkspaceScope,
   initialProjectDetail,
-  initialMaterializationPending = false,
-  projectAuthorizationKey = project.id,
-  amrAuthRetryContinuation = null,
-  onArmAmrAuthRetryContinuation,
-  onConsumeAmrAuthRetryContinuation,
-  onDiscardAmrAuthRetryContinuation,
-  authoritativeProjectName,
-  resolveAuthoritativeProjectName,
   routeFileName,
   routeConversationId = null,
   config,
@@ -1875,7 +1749,6 @@ export function ProjectView({
   onApiModelChange,
   onRefreshAgents,
   onOpenSettings,
-  onOpenAmrSettings,
   onOpenMcpSettings,
   onBrowsePlugins,
   onOpenConnectors,
@@ -1895,142 +1768,7 @@ export function ProjectView({
   onRunActivityChange,
 }: Props) {
   const { locale, t } = useI18n();
-  const amrAuthRetryMountIdRef = useRef<string | null>(null);
-  if (amrAuthRetryMountIdRef.current === null) {
-    amrAuthRetryMountIdRef.current = randomUUID();
-  }
-  const activeAuthorizationLifetimeRef = useRef<string | null>(projectAuthorizationKey);
-  useEffect(() => {
-    activeAuthorizationLifetimeRef.current = projectAuthorizationKey;
-    return () => {
-      if (activeAuthorizationLifetimeRef.current === projectAuthorizationKey) {
-        activeAuthorizationLifetimeRef.current = null;
-      }
-    };
-  }, [projectAuthorizationKey]);
   const analytics = useAnalytics();
-  const ambientWorkspaceContextState = useWorkspaceContext();
-  const workspaceContextState = workspaceContextOverride !== undefined
-    ? {
-        context: workspaceContextOverride,
-        loading: false,
-        identityChangePending: false,
-      }
-    : ambientWorkspaceContextState;
-  const { context: workspaceContext } = workspaceContextState;
-  const projectWorkspaceScopeState = useProjectWorkspaceScope(
-    project.id,
-    workspaceContext,
-    project.workspaceId,
-    initialWorkspaceScope,
-  );
-  // The project's resolved scope when there is one. While that first read is
-  // pending, the persisted project binding may witness the matching caller;
-  // answered unavailable states deliberately do not borrow it.
-  const resolvedProjectRunWorkspaceContext = runWorkspaceIdentity(
-    projectWorkspaceScopeState,
-    workspaceContext,
-    project.workspaceId,
-  );
-  const personalAdoptionContext = runWorkspacePersonalAdoptionWitness(
-    projectWorkspaceScopeState,
-    workspaceContext,
-    project.workspaceId,
-  );
-  // Scope revalidation returns a freshly decoded context object even when the
-  // data-plane authority did not change. Project hydration is keyed to the
-  // authority carried by resource requests, not that object's allocation:
-  // replacing an equivalent object must not blank conversations, messages,
-  // tabs, or files while the same project remains open.
-  const projectRunAuthorityKey = workspaceIdentityCacheKey(
-    resolvedProjectRunWorkspaceContext,
-  );
-  const amrAuthRetryPersonalAdoptionWitness:
-    AmrAuthRetryPersonalAdoptionWitness | null = personalAdoptionContext
-      ? {
-          workspaceIdentityKey: workspaceIdentityCacheKey(personalAdoptionContext),
-          workspaceId: personalAdoptionContext.workspaceId,
-          workspaceMemberId: personalAdoptionContext.workspaceMemberId,
-          workspaceType: 'personal',
-          memberStatus: 'active',
-        }
-      : null;
-  const canonicalProjectRunWorkspaceContextRef = useRef<{
-    authorityKey: string;
-    context: WorkspaceCollabContext | null;
-  }>({
-    authorityKey: projectRunAuthorityKey,
-    context: resolvedProjectRunWorkspaceContext,
-  });
-  if (
-    canonicalProjectRunWorkspaceContextRef.current.authorityKey
-    !== projectRunAuthorityKey
-  ) {
-    canonicalProjectRunWorkspaceContextRef.current = {
-      authorityKey: projectRunAuthorityKey,
-      context: resolvedProjectRunWorkspaceContext,
-    };
-  }
-  const projectRunWorkspaceContext =
-    canonicalProjectRunWorkspaceContextRef.current.context;
-  const projectResourceAuthority: ProjectResourceAuthority =
-    projectWorkspaceScopeState.failure === 'forbidden'
-    || projectWorkspaceScopeState.failure === 'unsupported'
-      ? 'denied'
-      : projectWorkspaceScopeState.scope?.kind === 'unbound'
-        ? 'local'
-        : projectRunWorkspaceContext
-          ? 'workspace'
-          : 'pending';
-  const projectResourceAuthorityRef = useRef(projectResourceAuthority);
-  projectResourceAuthorityRef.current = projectResourceAuthority;
-  const projectRunWorkspaceContextRef = useRef(projectRunWorkspaceContext);
-  projectRunWorkspaceContextRef.current = projectRunWorkspaceContext;
-  // The AMR pre-run balance gate uses the project's resolved scope, or the one
-  // narrow adoption witness returned above: an exact active Personal caller
-  // for an explicitly unbound historical project. When no safe witness exists,
-  // handleSend skips the local balance preflight and lets the daemon return its
-  // explicit authorization/adoption decision. It must never inspect an
-  // unrelated account wallet just because project scope is inconclusive.
-  const projectRunBillingContext = projectWorkspaceContext(
-    projectWorkspaceScopeState.scope,
-  );
-  // A pending first scope read may use the exact ambient caller only when
-  // runWorkspaceIdentity has already proven it matches project.workspaceId.
-  // That same safe witness is valid for the balance preflight. Settled
-  // unavailable/forbidden states produce no run identity and therefore no
-  // preflight context; they must never fall through to the Personal wallet.
-  const projectRunPreflightContext =
-    projectRunBillingContext ?? projectRunWorkspaceContext;
-  const cloudModelSelected = config.mode === 'daemon' && config.agentId === 'amr';
-  const projectRunRequiresWorkspaceScope = cloudModelSelected;
-  // An OpenDesign Cloud run needs a wallet, and the ONLY client-side veto is
-  // "there is no billing principal at all". Either witness suffices: the
-  // caller's own cloud identity, or a project scope that already names an
-  // explicit personal/team principal.
-  //
-  // What this deliberately stops doing is requiring the PROJECT's membership
-  // projection to resolve before a send. A transient directory failure says
-  // nothing authoritative about access or billing: the daemon still forwards
-  // the project's persisted Workspace id with the signed-in account, and Vela
-  // makes the final membership/balance decision. It must not be converted to a
-  // Personal run. A settled unbound historical project is also allowed to
-  // reach the daemon: with an exact Personal witness it may be transactionally
-  // adopted; with a Team/absent witness the daemon rejects it explicitly.
-  // An explicit backend rejection is preferable to a client-side dead button
-  // or a popup for the wrong wallet.
-  //
-  // Strictly a widening: every state this admits was previously blocked, and
-  // nothing previously admitted becomes blocked.
-  const projectRunHasBillableAmrPrincipal =
-    !projectRunRequiresWorkspaceScope ||
-    projectWorkspaceScopeState.scope?.kind === 'unbound' ||
-    workspaceIdentityCanBillAmr(workspaceContextState) ||
-    projectWorkspaceScopeAuthorizesAmr(projectWorkspaceScopeState.scope);
-  // Onboarding first-generation funnel (spec §11.1). Consume the pending entry
-  // (set by the Home recommendation) exactly once on mount; the refs guard the
-  // two lifecycle events so each fires only for the genuine first send / first
-  // successful generation of a recommendation-started project.
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
   // The prompt the recommendation prefilled into the composer. Prefer the seed
@@ -2070,96 +1808,29 @@ export function ProjectView({
   useEffect(() => () => {
     invalidateHtmlSourceSnapshotProject(project.id);
   }, [project.id]);
-  // Team collaboration: presence for a shared project. Dormant (no heartbeat,
-  // renders nothing) unless the workspace context marks the viewer an active
-  // team member — safe to mount unconditionally.
-  const projectCollab = useProjectCollab(project?.id ?? null, {
-    workspaceContext: projectRunWorkspaceContext,
-    workspaceContextLoading: projectWorkspaceScopeState.loading,
-    initialMaterializationPending,
-    presenceFilePath: project?.metadata?.entryFile ?? null,
-  });
-  // A Team-bound placeholder is safe to render and comment around, but its
-  // empty tree is never a writer authority. Reuse the established viewer-only
-  // gates for content/run/project mutations until the daemon's own status poll
-  // proves first materialization finished. Keep the read-only ownership banner
-  // keyed to `projectCollab.viewerOnly` below so an owner reinstall sees a
-  // syncing project, not the misleading “shared by someone else” notice.
-  const projectMutationReadOnly =
-    projectCollab.viewerOnly || projectCollab.materializationPending;
-  const { resolve: resolvePresenceMember } = useTeamMembers(
-    currentUserDirectoryEntry(projectRunWorkspaceContext),
-    projectRunWorkspaceContext,
-  );
-  // Tab layout is private browser state for a read-only Team viewer. Keep its
-  // identity-partitioned local cache working, but only let a positively proven
-  // project writer update the daemon's shared project row. Personal and legacy
-  // unbound projects retain their existing local-daemon persistence once the
-  // daemon has settled that scope. The local project row is not an unbound
-  // authority witness: it can lag a daemon-side Team binding.
-  const projectTabsCanPersistToDaemon =
-    projectWorkspaceScopeState.scope?.kind === 'unbound'
-    || projectWorkspaceScopeState.scope?.kind === 'personal'
-    || (
-      projectWorkspaceScopeState.scope?.kind === 'team'
-      && projectCollab.writerAuthority === 'allowed'
-    );
-  const projectTabsCanPersistToDaemonRef = useRef(
-    projectTabsCanPersistToDaemon,
-  );
-  projectTabsCanPersistToDaemonRef.current = projectTabsCanPersistToDaemon;
-  // Stable references (useCallback with empty deps inside useCollab) — safe
-  // for the project-events handler's dependency array without re-subscribing.
-  const {
-    refreshPresence: collabRefreshPresence,
-    checkStatusNow: collabCheckStatusNow,
-  } = projectCollab;
-  // Read-only banner copy: when the collab cloud resolved who shared this project,
-  // name them ("这是 麻薯 创建的共享项目…"); otherwise fall back to the name-less
-  // notice. Only computed when the viewer is actually read-only.
-  const readonlyNoticeText = projectCollab.viewerOnly
-    ? projectCollab.ownerDisplayName
-      ? t('workspace.readonlyNoticeBy', { owner: projectCollab.ownerDisplayName })
-      : t('workspace.readonlyNotice')
-    : undefined;
-  // Team-share file-sync badge for the design-files tab bar + empty state
-  // (recvqghymxqQQq). A member downloads (their local mirror trails the
-  // published head); the owner uploads (a local edit hasn't published yet).
-  // The two are mutually exclusive — a project has exactly one writer — so at
-  // most one of these is ever true.
-  const fileSyncBadge: 'downloading' | 'uploading' | null = projectCollab.downloadPending
-    ? 'downloading'
-    : projectCollab.enabled && projectCollab.isOwner && projectCollab.syncState === 'pending_upload'
-      ? 'uploading'
-      : null;
+  const projectRunWorkspaceContextRef = useRef<null>(null);
+  const projectMutationReadOnly = false;
+  const projectRunWorkspaceContext = null;
+  const projectRunAuthorityKey = project.id;
   const projectDetail = useProjectDetail(
     project.id,
-    projectRunWorkspaceContext,
-    project.workspaceId,
     initialProjectDetail,
   );
   const detailedProject = projectDetail.project?.id === project.id ? projectDetail.project : null;
   const currentProject = reconcileProjectDetail(
     project,
     detailedProject,
-    authoritativeProjectName,
+    null,
   );
   let projectTitleTooltip = currentProject.name;
   if (projectMutationReadOnly) projectTitleTooltip = t('workspace.readonlyNotice');
-  if (projectCollab.materializationPending) projectTitleTooltip = t('designFiles.syncing');
   const resolvedProjectDesignSystemId = resolveProjectDesignSystemId(currentProject);
-  // A project can outlive a Design System being disabled in Settings. Keep the
-  // persisted project value intact for recovery, but do not inject a disabled
-  // system into a new runtime turn.
   const projectDesignSystemId = resolvedProjectDesignSystemId;
   const runtimeDesignSystemId =
     projectDesignSystemId && (config.disabledDesignSystems ?? []).includes(projectDesignSystemId)
       ? null
       : projectDesignSystemId;
   const projectIsDesignSystemProject = isDesignSystemProject(currentProject);
-  // Website-clone turns reproduce a whole multi-page site; auto-open should
-  // land on the site entry (index.html), not the last-written subpage. See
-  // `SelectAutoOpenOptions.preferSiteEntry`.
   const autoOpenArtifactOptions = {
     preferSiteEntry: currentProject.metadata?.intent === 'web-clone',
   };
@@ -2168,13 +1839,6 @@ export function ProjectView({
     : null;
   const projectIsProgrammaticBrandExtraction =
     isProgrammaticBrandExtractionProject(currentProject.metadata);
-  // P0 page_view page_name=chat_panel — fire once per project mount.
-  // ProjectView outlives conversation switches (ChatPane is keyed by
-  // activeConversationId so it remounts when the user switches chats,
-  // but this component does not), so page_view stays a "chat-panel
-  // entry" metric instead of becoming a "conversation switch" count.
-  // Reviewer #2285 (mrcfps, 2026-05-20 04:08) flagged the previous
-  // ChatComposer-level emit for skewing the funnel.
   const chatPanelPageViewFiredRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const trackedTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -2246,37 +1910,6 @@ export function ProjectView({
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
-  );
-  // Team collaboration: persist a comment that drifted to `lost` so its ghost
-  // pin survives reload. Only ProjectView has the active conversation id the
-  // anchor route needs; fed to the drift ladder through the collab context.
-  const handleLostAnchors = useCallback(
-    (writeBacks: AnchorWriteBack[]) => {
-      if (!activeConversationId || writeBacks.length === 0) return;
-      void persistCommentAnchors({
-        projectId: project.id,
-        conversationId: activeConversationId,
-        writeBacks,
-        workspaceContext: projectRunWorkspaceContext,
-      });
-    },
-    [project.id, activeConversationId, projectRunWorkspaceContext],
-  );
-  const collabValue = useMemo<CollabContextValue>(
-    () => ({
-      ...projectCollab,
-      workspaceContext: projectRunWorkspaceContext,
-      workspaceContextLoading: projectWorkspaceScopeState.loading,
-      projectResourceAuthority,
-      onLostAnchors: handleLostAnchors,
-    }),
-    [
-      projectCollab,
-      projectRunWorkspaceContext,
-      projectWorkspaceScopeState.loading,
-      projectResourceAuthority,
-      handleLostAnchors,
-    ],
   );
   const activeSessionMode = activeConversation?.sessionMode ?? 'design';
   const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
@@ -2459,9 +2092,8 @@ export function ProjectView({
   const designMdState = useDesignMdState(
     project.id,
     designMdRefreshKey,
-    projectRunWorkspaceContext,
   );
-  const finalize = useFinalizeProject(project.id, projectRunWorkspaceContext);
+  const finalize = useFinalizeProject(project.id);
   const terminalLauncher = useTerminalLaunch();
   const [projectActionsToast, setProjectActionsToast] = useState<{
     message: string;
@@ -2483,9 +2115,7 @@ export function ProjectView({
     browserAssist: brandBrowserAssist,
     dismissBrowserAssist: dismissBrandBrowserAssist,
   } = useBrandReadyPrompt(currentProject.metadata);
-  const currentBrandExtractionId = projectIsProgrammaticBrandExtraction
-    ? currentProject.metadata?.brandId?.trim() || null
-    : null;
+  const currentBrandExtractionId = null;
   const [brandExtractionStatusOverride, setBrandExtractionStatusOverride] =
     useState<{ brandId: string; status: BrandStatus } | null>(null);
   useEffect(() => {
@@ -2522,21 +2152,10 @@ export function ProjectView({
   // Hard block from the pre-run balance gate (empty wallet or signed out);
   // non-null renders the AmrBalanceDialog. `conversationId` remembers whose
   // queue to resume when the dialog resolves (sign-in done / recharge landed).
-  const [amrBalanceGateBlock, setAmrBalanceGateBlock] = useState<
-    {
-      reason: 'insufficient' | 'signed_out';
-      snapshot: AmrWalletSnapshot;
-      conversationId: string;
-    } | null
-  >(null);
+  const amrBalanceGateBlock = null;
   // Soft low-balance warning holding a pending send: the dialog resolves the
   // promise the gate is awaiting ('proceed' continues the very same send).
-  const [amrLowBalanceWarn, setAmrLowBalanceWarn] = useState<
-    {
-      snapshot: AmrWalletSnapshot;
-      resolve: (decision: AmrLowBalanceDecision) => void;
-    } | null
-  >(null);
+  const amrLowBalanceWarn = null;
   // Conversations with a balance-gate check currently in flight. Sends that
   // arrive during the check queue instead of racing a duplicate run through
   // the not-yet-busy window the gate's await opens.
@@ -2760,7 +2379,6 @@ export function ProjectView({
     && !currentConversationStreaming
     && !currentConversationHasProgrammaticBrandExtractionRun;
   const currentConversationSendDisabled = projectMutationReadOnly
-    || !projectRunHasBillableAmrPrincipal
     || currentConversationLoading
     || failedMessagesConversationId === activeConversationId
     || currentConversationAwaitingActiveRunAttach;
@@ -2819,7 +2437,6 @@ export function ProjectView({
       try {
         const list = await listConversationsWithRetry(
           project.id,
-          requestWorkspaceContext,
         );
         if (cancelled) return;
         conversationsLoadedProjectIdRef.current = project.id;
@@ -2833,7 +2450,7 @@ export function ProjectView({
           setActiveConversationId(null);
           setPendingEmptyConversationSeed({
             projectId: project.id,
-            authorityKey: projectRunAuthorityKey,
+            authorityKey: 'current',
           });
         } else {
           setPendingEmptyConversationSeed(null);
@@ -2856,18 +2473,7 @@ export function ProjectView({
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Could not load conversations for this project.';
-        const materializationRecovery =
-          err instanceof ProjectConversationsHttpError
-          && err.status === 404
-          && requestWorkspaceContext?.workspaceType === 'team'
-            ? {
-                projectId: project.id,
-                authorityKey: projectRunAuthorityKey,
-                generation,
-                workspaceContext: requestWorkspaceContext,
-                errorMessage: message,
-              }
-            : null;
+        const materializationRecovery = null;
         conversationMaterializationRecoveryRef.current = materializationRecovery;
         setPendingEmptyConversationSeed(null);
         const accessRevoked =
@@ -2884,12 +2490,6 @@ export function ProjectView({
     return () => {
       cancelled = true;
       conversationMaterializationGenerationController.invalidate(generation);
-      if (
-        conversationMaterializationRecoveryRef.current?.generation
-        === generation
-      ) {
-        conversationMaterializationRecoveryRef.current = null;
-      }
     };
   }, [
     commitPreviewComments,
@@ -2898,114 +2498,18 @@ export function ProjectView({
     projectRunAuthorityKey,
   ]);
 
-  const recoverMaterializedConversations = useCallback(async (
-    signalProjectId: string,
-    signalAuthorityKey: string,
-  ) => {
-    const recovery = conversationMaterializationRecoveryRef.current;
-    if (!recovery) return;
-    if (recovery.projectId !== signalProjectId) return;
-    if (recovery.authorityKey !== signalAuthorityKey) return;
-    if (!conversationMaterializationGenerationController.isCurrent(recovery.generation)) return;
-    if (projectIdRef.current !== recovery.projectId) return;
-    if (projectRunAuthorityKeyRef.current !== recovery.authorityKey) return;
-    if (conversationMaterializationRecoveryInFlightRef.current === recovery) return;
-    conversationMaterializationRecoveryInFlightRef.current = recovery;
-    try {
-      // Materialization completion is already our retry signal, so perform one
-      // exact-scoped read here instead of extending the fixed initial retry
-      // schedule. A still-early 404 leaves recovery armed for the next signal.
-      const list = await listConversations(recovery.projectId, {
-        throwOnError: true,
-        workspaceContext: recovery.workspaceContext,
-      });
-      if (conversationMaterializationRecoveryRef.current !== recovery) return;
-      if (!conversationMaterializationGenerationController.isCurrent(recovery.generation)) return;
-      if (projectIdRef.current !== recovery.projectId) return;
-      if (projectRunAuthorityKeyRef.current !== recovery.authorityKey) return;
-
-      conversationMaterializationRecoveryRef.current = null;
-      setConversationLoadError(null);
-      setError((current) => (
-        current === recovery.errorMessage ? null : current
-      ));
-      if (list.length === 0) {
-        setConversations([]);
-        setActiveConversationId(null);
-        setPendingEmptyConversationSeed({
-          projectId: recovery.projectId,
-          authorityKey: recovery.authorityKey,
-        });
-        return;
-      }
-
-      setPendingEmptyConversationSeed(null);
-      setConversations(list);
-      const routedMatch = routeConversationId
-        ? list.find((candidate) => candidate.id === routeConversationId) ?? null
-        : null;
-      setActiveConversationId(routedMatch ? routedMatch.id : list[0]!.id);
-    } catch (err) {
-      if (conversationMaterializationRecoveryRef.current !== recovery) return;
-      if (!conversationMaterializationGenerationController.isCurrent(recovery.generation)) return;
-      if (projectIdRef.current !== recovery.projectId) return;
-      if (projectRunAuthorityKeyRef.current !== recovery.authorityKey) return;
-      if (
-        err instanceof ProjectConversationsHttpError
-        && err.status === 404
-      ) {
-        return;
-      }
-      // A completion signal exposed a settled non-404 failure. Stop treating
-      // it as a materialization race and surface that exact response now; a
-      // later project/authority load owns only any further retry.
-      conversationMaterializationRecoveryRef.current = null;
-      const message = err instanceof Error
-        ? err.message
-        : 'Could not load conversations for this project.';
-      setConversationLoadError(message);
-      setError((current) => reconcileConversationRecoveryGlobalError(
-        current,
-        recovery.errorMessage,
-        message,
-      ));
-    } finally {
-      if (conversationMaterializationRecoveryInFlightRef.current === recovery) {
-        conversationMaterializationRecoveryInFlightRef.current = null;
-      }
-    }
-  }, [
-    conversationMaterializationGenerationController,
-    routeConversationId,
-  ]);
-
-  const emptyConversationWriterAuthorized =
-    projectWorkspaceScopeState.scope?.kind === 'personal'
-    || projectWorkspaceScopeState.scope?.kind === 'unbound'
-    || (
-      projectWorkspaceScopeState.scope?.kind === 'team'
-      && projectCollab.writerAuthority === 'allowed'
-    );
-  const emptyConversationReadOnlySettled =
-    pendingEmptyConversationSeed?.projectId === project.id
-    && pendingEmptyConversationSeed.authorityKey === projectRunAuthorityKey
-    && projectCollab.writerAuthority === 'denied';
   useEffect(() => {
     if (
       !pendingEmptyConversationSeed
       || pendingEmptyConversationSeed.projectId !== project.id
-      || pendingEmptyConversationSeed.authorityKey !== projectRunAuthorityKey
-      || !emptyConversationWriterAuthorized
+      || pendingEmptyConversationSeed.authorityKey !== 'current'
     ) {
       return;
     }
     let cancelled = false;
-    const requestWorkspaceContext = projectRunWorkspaceContextRef.current;
     (async () => {
       try {
-        const fresh = await createConversation(project.id, undefined, {
-          workspaceContext: requestWorkspaceContext,
-        });
+        const fresh = await createConversation(project.id, undefined, {});
         if (cancelled) return;
         if (!fresh) {
           throw new Error('Could not create a conversation for this project.');
@@ -3029,9 +2533,7 @@ export function ProjectView({
     };
   }, [
     pendingEmptyConversationSeed,
-    emptyConversationWriterAuthorized,
     project.id,
-    projectRunAuthorityKey,
   ]);
 
   // Issue #1505: when the URL changes the routed conversation id while
@@ -3072,20 +2574,6 @@ export function ProjectView({
     sharedNonOwnerChatDefaultAppliedRef.current = null;
   }, [project.id]);
 
-  useEffect(() => {
-    if (sharedNonOwnerChatDefaultAppliedRef.current === project.id) return;
-    if (
-      !shouldDefaultCollapseChatForSharedNonOwner({
-        enabled: projectCollab.enabled,
-        isSharedNonOwner: projectCollab.isSharedNonOwner,
-      })
-    ) {
-      return;
-    }
-    setWorkspaceFocused(true);
-    sharedNonOwnerChatDefaultAppliedRef.current = project.id;
-  }, [project.id, projectCollab.enabled, projectCollab.isSharedNonOwner]);
-
   // Load messages whenever the active conversation changes. This happens
   // on project mount (after conversations load) and on user-triggered
   // conversation switches.
@@ -3106,14 +2594,13 @@ export function ProjectView({
     }
     const reloadingCurrentConversation =
       messagesConversationIdRef.current === activeConversationId
-      && messagesAuthorityKeyRef.current === projectRunAuthorityKey;
+      && messagesAuthorityKeyRef.current === 'current';
     const liveReloadMessageIds = new Set<string>();
     if (
       messagesConversationIdRef.current === activeConversationId
       && streamingConversationIdRef.current === activeConversationId
       && abortRef.current !== null
       && cancelRef.current !== null
-      && projectResourceAuthorityRef.current !== 'denied'
     ) {
       const currentMessages = messagesRef.current;
       let assistantIndex = -1;
@@ -3174,7 +2661,6 @@ export function ProjectView({
         void fetchPreviewComments(
           project.id,
           activeConversationId,
-          requestWorkspaceContext,
         ).then((comments) => {
           if (cancelled || previewCommentsGenerationRef.current !== commentsGeneration) return;
           setPreviewComments(comments);
@@ -3185,7 +2671,6 @@ export function ProjectView({
         const list = await listMessages(
           project.id,
           activeConversationId,
-          requestWorkspaceContext,
         );
         if (cancelled) return;
         setMessages((current) =>
@@ -3236,11 +2721,11 @@ export function ProjectView({
     activeConversationId,
     commitPreviewComments,
     messageLoadRetryNonce,
-    projectRunAuthorityKey,
+    'current',
   ]);
 
   useEffect(() => {
-    if (!projectIsProgrammaticBrandExtraction) return undefined;
+    if (false) return undefined;
     if (!activeConversationId || !messagesInitialized || messages.length > 0) return undefined;
     if (streaming || currentConversationStreaming) return undefined;
     const key = `${project.id}:${activeConversationId}`;
@@ -3260,7 +2745,6 @@ export function ProjectView({
     messagesInitialized,
     project.id,
     projectDetail.refresh,
-    projectIsProgrammaticBrandExtraction,
     streaming,
   ]);
 
@@ -3379,15 +2863,12 @@ export function ProjectView({
   // local state coherent.
   useEffect(() => {
     let cancelled = false;
-    const requestWorkspaceContext = projectRunWorkspaceContextRef.current;
     tabsLoadedRef.current = false;
     tabsHydratedFromSavedStateRef.current = false;
     hasAppliedInitialPrimaryOpenRef.current = false;
     setOpenTabsState({ tabs: [], active: null });
     (async () => {
-      const state = await loadTabs(project.id, requestWorkspaceContext, {
-        reconcileNewerCacheToDaemon: projectTabsCanPersistToDaemonRef.current,
-      });
+      const state = await loadTabs(project.id, {});
       if (cancelled) return;
       const routeActive = routeFileNameRef.current;
       let nextState = routeActive
@@ -3410,15 +2891,11 @@ export function ProjectView({
         nextState = cacheTabsLocally(
           project.id,
           nextState,
-          requestWorkspaceContext,
         );
-        if (projectTabsCanPersistToDaemonRef.current) {
-          void persistTabsToDaemonNow(
-            project.id,
-            nextState,
-            requestWorkspaceContext,
-          );
-        }
+        void persistTabsToDaemonNow(
+          project.id,
+          nextState,
+        );
       }
       tabsHydratedFromSavedStateRef.current = state.hasSavedState === true;
       setOpenTabsState(nextState);
@@ -3440,7 +2917,6 @@ export function ProjectView({
   const pendingDaemonTabsRef = useRef<{
     projectId: string;
     state: OpenTabsState;
-    workspaceContext: WorkspaceCollabContext | null;
   } | null>(null);
   const flushTabsDaemonSave = useCallback(() => {
     if (tabsDaemonSaveTimerRef.current != null) {
@@ -3453,7 +2929,6 @@ export function ProjectView({
       void persistTabsToDaemonNow(
         pending.projectId,
         pending.state,
-        pending.workspaceContext,
       );
     }
   }, []);
@@ -3466,20 +2941,10 @@ export function ProjectView({
       const stamped = cacheTabsLocally(
         project.id,
         next,
-        projectRunWorkspaceContext,
       );
-      if (!projectTabsCanPersistToDaemon) {
-        if (tabsDaemonSaveTimerRef.current != null) {
-          clearTimeout(tabsDaemonSaveTimerRef.current);
-          tabsDaemonSaveTimerRef.current = null;
-        }
-        pendingDaemonTabsRef.current = null;
-        return;
-      }
       pendingDaemonTabsRef.current = {
         projectId: project.id,
         state: stamped,
-        workspaceContext: projectRunWorkspaceContext,
       };
       if (tabsDaemonSaveTimerRef.current != null) {
         clearTimeout(tabsDaemonSaveTimerRef.current);
@@ -3492,29 +2957,14 @@ export function ProjectView({
           void persistTabsToDaemonNow(
             pending.projectId,
             pending.state,
-            pending.workspaceContext,
           );
         }
       }, TAB_PERSIST_DEBOUNCE_MS);
     },
     [
       project.id,
-      projectRunWorkspaceContext,
-      projectTabsCanPersistToDaemon,
     ],
   );
-
-  // Revocation can arrive without another tab interaction. Discard a queued
-  // write immediately instead of letting its old authority fire after the
-  // project has become read-only.
-  useEffect(() => {
-    if (projectTabsCanPersistToDaemon) return;
-    if (tabsDaemonSaveTimerRef.current != null) {
-      clearTimeout(tabsDaemonSaveTimerRef.current);
-      tabsDaemonSaveTimerRef.current = null;
-    }
-    pendingDaemonTabsRef.current = null;
-  }, [projectTabsCanPersistToDaemon]);
 
   // Flush any pending tab write when the project changes or the view unmounts,
   // so a fast project switch / close doesn't leave the daemon a debounce behind.
@@ -3555,7 +3005,6 @@ export function ProjectView({
     let next: ProjectFile[];
     try {
       next = await fetchProjectFiles(project.id, {
-        workspaceContext: projectRunWorkspaceContextRef.current,
         requireAuthoritative: true,
         ...(options?.fresh ? { fresh: true } : {}),
       });
@@ -3601,7 +3050,6 @@ export function ProjectView({
       if (cached && cached.mtime === mtime) return cached.text;
       try {
         const text = await fetchProjectFileText(project.id, name, {
-          workspaceContext: projectRunWorkspaceContextRef.current,
         });
         htmlContentCacheRef.current.set(name, { mtime, text });
         return text;
@@ -3615,7 +3063,6 @@ export function ProjectView({
 
   const refreshLiveArtifacts = useCallback(async (): Promise<LiveArtifactSummary[]> => {
     const next = await fetchLiveArtifacts(project.id, {
-      workspaceContext: projectRunWorkspaceContextRef.current,
     });
     setLiveArtifacts(next);
     return next;
@@ -3648,46 +3095,6 @@ export function ProjectView({
     authorityKey: string;
     pending: boolean;
   } | null>(null);
-  useEffect(() => {
-    const previous = previousMaterializationDownloadRef.current;
-    const sameAuthority = previous?.projectId === project.id
-      && previous.authorityKey === projectRunAuthorityKey;
-    previousMaterializationDownloadRef.current = {
-      projectId: project.id,
-      authorityKey: projectRunAuthorityKey,
-      pending: projectCollab.downloadPending,
-    };
-    if (
-      !sameAuthority
-      || !previous.pending
-      || projectCollab.downloadPending
-    ) {
-      return;
-    }
-
-    // The first file read for a newly opened Team mirror can legitimately
-    // observe the empty placeholder directory. Materialization replaces that
-    // directory without producing a chokidar event for a stream that was not
-    // connected yet, so settling the download is itself an authoritative file
-    // invalidation. Fence the placeholder snapshot and fetch the exact scoped
-    // directory now; otherwise the first view stays empty until it is reopened.
-    invalidateProjectFilesCache(
-      project.id,
-      projectRunWorkspaceContextRef.current,
-    );
-    void refreshWorkspaceItems({ freshProjectFiles: true }).catch(() => {
-      // Preserve the last accepted snapshot on a transient transport failure.
-      // The project event stream and ordinary refresh paths remain retries.
-    });
-    void recoverMaterializedConversations(project.id, projectRunAuthorityKey);
-  }, [
-    project.id,
-    projectRunAuthorityKey,
-    projectCollab.downloadPending,
-    recoverMaterializedConversations,
-    refreshWorkspaceItems,
-  ]);
-
   useEffect(() => {
     if (!currentBrandExtractionId) {
       terminalBrandPreviewRefreshRef.current = null;
@@ -3859,7 +3266,7 @@ export function ProjectView({
             });
       const file = await writeProjectTextFile(project.id, fileName, artifactToPersist.html, {
         artifactManifest: manifest ?? undefined,
-      }, projectRunWorkspaceContext);
+      });
       if (file) {
         savedArtifactRef.current = file.name;
         bumpFilesRefresh();
@@ -3974,27 +3381,13 @@ export function ProjectView({
     // can return its short-lived settled cache (or an already-joined response
     // that was captured before this event) and leave the restored project on
     // the old file snapshot.
-    invalidateProjectFilesCache(
-      project.id,
-      projectRunWorkspaceContextRef.current,
-    );
+    invalidateProjectFilesCache(project.id);
     bumpFilesRefresh();
     // Round 7 (mrcfps): file mutations are the dominant staleness signal
     // post-finalize — bump the refresh key so DESIGN.md staleness
     // recomputes against the new mtimes.
     setDesignMdRefreshKey((n) => n + 1);
-    // Team-share upload badge (recvqghymxqQQq): this fires on the SAME
-    // chokidar-backed `file-changed` event the daemon's collab-publish-watcher
-    // uses to flip `syncState` to 'pending_upload' (markLocalChangePending in
-    // apps/daemon/src/collab/runtime.ts), and that state typically reverts to
-    // 'synced' within one debounce window (~400ms) plus a publish — far
-    // shorter than CollabClient's 5s status-poll cadence. Without checking
-    // status right here, the owner's own tab almost never catches the
-    // transient and the file-tab "uploading" icon never appears to change.
-    // Mirrors the existing `project-metadata-changed` → `checkStatusNow()`
-    // hub-push pattern below, just triggered by the LOCAL watcher instead.
-    collabCheckStatusNow();
-  }, [collabCheckStatusNow, project.id]);
+  }, [project.id]);
   const reconcileFilesWhenProjectEventsBecomeReady = useCallback(async () => {
     // The initial file snapshot and the project-event stream are established
     // independently. Re-read once after the stream handshake to close the
@@ -4003,12 +3396,8 @@ export function ProjectView({
     // good first navigation and load the same document twice.
     const hadAcceptedSnapshot = projectFilesGenerationRef.current > 0;
     const previousFiles = projectFilesRef.current;
-    invalidateProjectFilesCache(
-      project.id,
-      projectRunWorkspaceContextRef.current,
-    );
+    invalidateProjectFilesCache(project.id);
     const nextFiles = await refreshProjectFiles({ fresh: true });
-    collabCheckStatusNow();
     if (
       !hadAcceptedSnapshot
       || projectFileContentSnapshotsEqual(previousFiles, nextFiles)
@@ -4022,7 +3411,6 @@ export function ProjectView({
     setDesignMdRefreshKey((n) => n + 1);
   }, [
     bumpFilesRefresh,
-    collabCheckStatusNow,
     project.id,
     refreshProjectFiles,
   ]);
@@ -4043,85 +3431,6 @@ export function ProjectView({
       iframeKeepAlivePool.evictProject(project.id);
       invalidateHtmlSourceSnapshotProject(project.id);
       coalescedFileChangedRefresh();
-      void recoverMaterializedConversations(project.id, projectRunAuthorityKey);
-      return;
-    }
-    if (evt.type === 'comment-changed') {
-      // Collab realtime hop-2 (reference path): the daemon merged a teammate's
-      // comment change into local storage and pushed this thin signal. Re-fetch
-      // the comment list so it appears without waiting for the fallback poll.
-      // `refreshPreviewComments` is defined later in this component, so reach it
-      // through a ref to avoid a temporal-dead-zone reference here.
-      if (evt.projectId === project.id) void refreshPreviewCommentsRef.current?.();
-      return;
-    }
-    if (evt.type === 'presence-changed') {
-      // Hub push channel: a teammate joined/left. Refresh the roster now
-      // instead of waiting for the next 10s heartbeat tick.
-      if (evt.projectId === project.id) collabRefreshPresence();
-      return;
-    }
-    if (evt.type === 'project-metadata-changed') {
-      // Hub push channel: rename or a fresh content publish landed. Run one
-      // status check now (drives the member auto-pull) instead of waiting for
-      // the next 5s status tick.
-      if (evt.projectId === project.id) {
-        invalidateHtmlSourceSnapshotProject(project.id);
-        collabCheckStatusNow();
-        void recoverMaterializedConversations(project.id, projectRunAuthorityKey);
-        // The daemon also pushes this signal when a pull just swapped the
-        // shared-project placeholder record for the real name
-        // (registerPulledProject → notifyProjectMetadataChanged). App.tsx's
-        // `projects` state never re-reads a project record on its own, so
-        // without this refetch a member's sidebar/tab title stays on the
-        // "共享项目" placeholder until a full page reload (recvqhwv6RPU1j).
-        // Thin-event model: re-fetch the record, propagate up only when a
-        // rendered field actually changed — an unconditional apply would
-        // re-render the whole App on every content-publish nudge.
-        const capturedProjectId = project.id;
-        const capturedAuthorizationKey = projectAuthorizationKey;
-        const capturedProjectWorkspaceContext = projectRunWorkspaceContext;
-        void Promise.all([
-          getProject(capturedProjectId, capturedProjectWorkspaceContext),
-          resolveAuthoritativeProjectName
-            ? resolveAuthoritativeProjectName(capturedProjectId, capturedAuthorizationKey)
-            : Promise.resolve<ProjectNameAuthorityResolution>({
-                kind: 'resolved',
-                name: authoritativeProjectName ?? null,
-              }),
-        ]).then(([fresh, authorityResolution]) => {
-          if (!fresh) return;
-          if (authorityResolution.kind === 'stale') return;
-          if (activeAuthorizationLifetimeRef.current !== capturedAuthorizationKey) return;
-          // User switched projects while the fetch was in flight.
-          if (projectIdRef.current !== capturedProjectId) return;
-          const current = projectRef.current;
-          const reconciled = reconcileProjectDetail(
-            current,
-            fresh,
-            authorityResolution.name,
-          );
-          if (
-            reconciled.name === current.name
-            && reconciled.skillId === current.skillId
-            && reconciled.designSystemId === current.designSystemId
-          ) {
-            return;
-          }
-          onProjectChange(reconciled);
-        });
-      }
-      return;
-    }
-    if (evt.type === 'project-content-transfer-state') {
-      if (evt.projectId === project.id) {
-        // The daemon intentionally emits no transfer payload here. A project
-        // id can be reused across workspace/owner/resource bindings, so direct
-        // application could let scope A's idle hide scope B's download.
-        // Re-read the exact-scoped status; CollabClient's request/tombstone
-        // fences reject stale responses.
-        collabCheckStatusNow();
-      }
       return;
     }
     if (evt.type === 'conversation-created') {
@@ -4139,7 +3448,6 @@ export function ProjectView({
       void (async () => {
         try {
           const list = await listConversations(capturedProjectId, {
-            workspaceContext: projectRunWorkspaceContext,
           });
           // Bail if the user switched projects while this request was in
           // flight (#1361 review, Codex P1). The captured project id is the
@@ -4172,20 +3480,12 @@ export function ProjectView({
     // also imply the conversation transcript changed.
     setDesignMdRefreshKey((n) => n + 1);
   }, [
-    authoritativeProjectName,
     coalescedFileChangedRefresh,
-    collabCheckStatusNow,
-    collabRefreshPresence,
     iframeKeepAlivePool,
     onProjectChange,
     onProjectsRefresh,
     refreshLiveArtifacts,
-    recoverMaterializedConversations,
-    resolveAuthoritativeProjectName,
     project.id,
-    projectAuthorizationKey,
-    projectRunAuthorityKey,
-    projectRunWorkspaceContext,
   ]);
   // A bound project must not open a headerless EventSource while its exact
   // authority is unresolved or forbidden: that request can only fail and the
@@ -4195,7 +3495,7 @@ export function ProjectView({
   // not sufficient: that project row can lag a hidden daemon-side Team mirror.
   const projectEventsEnabled =
     daemonLive
-    && projectWorkspaceScopeReady(projectWorkspaceScopeState.scope);
+    && true;
   useProjectFileEvents(project.id, projectEventsEnabled, handleProjectEvent, {
     onConnectedChange: setProjectEventsSseConnected,
     // Files or comments can change after their initial snapshots but before
@@ -4206,7 +3506,7 @@ export function ProjectView({
       void reconcileFilesWhenProjectEventsBecomeReady();
       void refreshPreviewCommentsRef.current?.();
     },
-  }, projectRunWorkspaceContext);
+  });
 
   const activePromptContextSignature = useMemo(() => {
     const skill = project.skillId
@@ -4326,7 +3626,6 @@ export function ProjectView({
       if (isPhantomDaemonRunMessage(m)) return;
       void saveMessage(project.id, activeConversationId, m, {
         ...options,
-        workspaceContext: projectRunWorkspaceContext,
       });
     },
     [project.id, activeConversationId, projectRunWorkspaceContext],
@@ -4340,7 +3639,6 @@ export function ProjectView({
         if (found && !isPhantomDaemonRunMessage(found)) {
           void saveMessage(project.id, activeConversationId, found, {
             ...options,
-            workspaceContext: projectRunWorkspaceContext,
           });
         }
         return curr;
@@ -4371,7 +3669,6 @@ export function ProjectView({
         if (persist && saved && activeConversationId && !isPhantomDaemonRunMessage(saved)) {
           void saveMessage(project.id, activeConversationId, saved, {
             ...persistOptions,
-            workspaceContext: projectRunWorkspaceContext,
           });
         }
         return next;
@@ -4396,7 +3693,6 @@ export function ProjectView({
       if (persist) {
         void saveMessage(project.id, conversationId, message, {
           ...options,
-          workspaceContext: projectRunWorkspaceContext,
         });
       }
     },
@@ -4408,7 +3704,6 @@ export function ProjectView({
       const manifestText = await fetchProjectFileText(project.id, BROWSER_PAGE_ARCHIVE_INDEX_FILE, {
         cache: 'no-store',
         cacheBustKey: Date.now(),
-        workspaceContext: projectRunWorkspaceContext,
       });
       if (!manifestText) {
         return { status: 'unavailable', message: t('chat.brandBrowserLocalSnapshotMissing') };
@@ -4429,12 +3724,10 @@ export function ProjectView({
         fetchProjectFileText(project.id, parsed.htmlFile, {
           cache: 'no-store',
           cacheBustKey: parsed.capturedAt,
-          workspaceContext: projectRunWorkspaceContext,
         }),
         fetchProjectFileText(project.id, parsed.cssFile, {
           cache: 'no-store',
           cacheBustKey: parsed.capturedAt,
-          workspaceContext: projectRunWorkspaceContext,
         }),
       ]);
       if (!html?.trim()) {
@@ -4447,7 +3740,7 @@ export function ProjectView({
         baseUrl: parsed.baseUrl || parsed.url,
       };
     },
-    [project.id, projectRunWorkspaceContext, t],
+    [project.id, t],
   );
 
   const readBrandBrowserSnapshot = useCallback(
@@ -4671,7 +3964,6 @@ export function ProjectView({
       if (persist) {
         void saveMessage(project.id, conversationId, message, {
           ...options,
-          workspaceContext: projectRunWorkspaceContext,
         });
       }
     },
@@ -4685,7 +3977,6 @@ export function ProjectView({
         const serverMessages = await listMessages(
           project.id,
           conversationId,
-          projectRunWorkspaceContext,
         );
         if (messagesConversationIdRef.current !== conversationId) return;
         setMessages((current) => mergeServerMessagesIntoConversation(current, serverMessages));
@@ -4818,10 +4109,10 @@ export function ProjectView({
           reasonCodes: change.reasonCodes ?? [],
           hasCustomReason: !!change.customReason,
           customReason: normalizeCustomReason(change.customReason),
-        }, projectRunWorkspaceContext);
+        });
       }
     },
-    [updateMessageById, activeConversationId, projectRunWorkspaceContext],
+    [updateMessageById, activeConversationId],
   );
 
   // `code` is the structured API error code (e.g. AGENT_AUTH_REQUIRED); it
@@ -4854,7 +4145,6 @@ export function ProjectView({
           const outcome = await finalizeBrandProject(
             designSystemBrandId,
             project.id,
-            projectRunWorkspaceContext,
           );
           if (outcome.ok) {
             await Promise.all([
@@ -4901,7 +4191,6 @@ export function ProjectView({
         }
         const audit = await fetchProjectDesignSystemPackageAudit(
           project.id,
-          projectRunWorkspaceContext,
         );
         if (!audit) return;
         const auditSummary = summarizeDesignSystemPackageAudit(audit);
@@ -4959,7 +4248,6 @@ export function ProjectView({
     const next = await fetchPreviewComments(
       project.id,
       activeConversationId,
-      projectRunWorkspaceContext,
     );
     if (previewCommentsGenerationRef.current !== commentsGeneration) return;
     setPreviewComments(next);
@@ -4987,12 +4275,8 @@ export function ProjectView({
   // slows to a safety-net cadence (30s) while the SSE is connected and runs at
   // the original ~5s cadence while the SSE is unavailable (packaged old shell /
   // tests), so a client whose stream never connects has zero regression.
-  // Gated on `projectCollab.enabled` so a personal / off-team project never
-  // polls. This only replaces the loaded comment LIST — the composer /
-  // create-form drafts are separate local state, so an in-flight comment the
-  // user is typing is never clobbered.
   useEffect(() => {
-    if (!projectCollab.enabled || !activeConversationId) return undefined;
+    if (!activeConversationId) return undefined;
     const pollMs = projectEventsSseConnected ? 30_000 : 5_000;
     const interval = setInterval(() => {
       void refreshPreviewComments();
@@ -5005,7 +4289,7 @@ export function ProjectView({
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [projectCollab.enabled, activeConversationId, refreshPreviewComments, projectEventsSseConnected]);
+  }, [activeConversationId, refreshPreviewComments, projectEventsSseConnected]);
 
   const savePreviewComment = useCallback(
     async (
@@ -5025,7 +4309,6 @@ export function ProjectView({
         });
         return null;
       }
-      if (projectCollab.materializationPending) return null;
       // Upload any attached images first so the saved comment carries durable
       // file paths — this is what lets the comment list / re-opened popover
       // re-display the images instead of losing them on echo.
@@ -5034,8 +4317,6 @@ export function ProjectView({
         const result = await uploadProjectFiles(
           project.id,
           images,
-          undefined,
-          projectRunWorkspaceContext,
         );
         if (result.uploaded.length !== images.length) {
           setProjectActionsToast({
@@ -5061,7 +4342,6 @@ export function ProjectView({
           note,
           ...(attachments.length > 0 ? { attachments } : {}),
         },
-        projectRunWorkspaceContext,
       );
       if (!saved) {
         // Do not fail silently (recvq5BVsolIxi follow-up): a missing/expired
@@ -5087,9 +4367,7 @@ export function ProjectView({
       routeConversationId,
       commitPreviewComments,
       previewComments,
-      projectRunWorkspaceContext,
       t,
-      projectCollab.materializationPending,
     ],
   );
 
@@ -5105,12 +4383,10 @@ export function ProjectView({
         });
         return false;
       }
-      if (projectCollab.materializationPending) return false;
       const ok = await deletePreviewComment(
         project.id,
         commentConversationId,
         commentId,
-        projectRunWorkspaceContext,
       );
       if (!ok) {
         setProjectActionsToast({
@@ -5130,9 +4406,7 @@ export function ProjectView({
       activeConversationId,
       routeConversationId,
       commitPreviewComments,
-      projectRunWorkspaceContext,
       t,
-      projectCollab.materializationPending,
     ],
   );
 
@@ -5160,7 +4434,6 @@ export function ProjectView({
         });
         return;
       }
-      if (projectCollab.materializationPending) return;
       commitPreviewComments((current) =>
         current.map((comment) => (comment.id === commentId ? { ...comment, sortKey } : comment)),
       );
@@ -5169,7 +4442,6 @@ export function ProjectView({
         commentConversationId,
         commentId,
         sortKey,
-        projectRunWorkspaceContext,
       );
       if (saved) {
         commitPreviewComments((current) => mergeSavedPreviewComment(current, saved));
@@ -5187,9 +4459,7 @@ export function ProjectView({
       activeConversationId,
       routeConversationId,
       commitPreviewComments,
-      projectRunWorkspaceContext,
       t,
-      projectCollab.materializationPending,
     ],
   );
 
@@ -5222,7 +4492,6 @@ export function ProjectView({
             activeConversationId,
             attachment.id,
             status,
-            projectRunWorkspaceContext,
           ),
         ),
       );
@@ -5233,7 +4502,6 @@ export function ProjectView({
       activeConversationId,
       commitPreviewComments,
       refreshPreviewComments,
-      projectRunWorkspaceContext,
     ],
   );
 
@@ -5270,11 +4538,10 @@ export function ProjectView({
         ? await listActiveChatRuns(
             project.id,
             reattachConversationId,
-            projectRunWorkspaceContext,
           )
         : [];
       const historicalRuns = missingRunIdMessages.length > 0
-        ? (await listProjectRuns(projectRunWorkspaceContext)).filter(
+        ? (await listProjectRuns()).filter(
             (run) => run.projectId === project.id && run.conversationId === reattachConversationId,
           )
         : [];
@@ -5377,7 +4644,7 @@ export function ProjectView({
         }
 
         const physicalStatus = fallbackRun
-          ?? await fetchChatRunStatus(runId, projectRunWorkspaceContext);
+          ?? await fetchChatRunStatus(runId);
         if (cancelled) return;
         if (!physicalStatus) {
           // `fetchChatRunStatus` returns null on ANY non-OK response or fetch
@@ -5508,7 +4775,6 @@ export function ProjectView({
           const endedAt = await resolveTerminalEndedAt(
             runId,
             status,
-            projectRunWorkspaceContext,
           );
           updateMessageById(
             message.id,
@@ -5581,7 +4847,6 @@ export function ProjectView({
             const legacyReplayEndedAt = await resolveTerminalEndedAt(
               runId,
               status,
-              projectRunWorkspaceContext,
             );
             updateMessageById(
               message.id,
@@ -5902,7 +5167,6 @@ export function ProjectView({
           runId: reattachRunId,
           projectId: project.id,
           conversationId: reattachConversationId,
-          workspaceContext: projectRunWorkspaceContext,
           signal: controller.signal,
           cancelSignal: cancelController.signal,
           initialLastEventId:
@@ -6014,7 +5278,6 @@ export function ProjectView({
               const endedAt = await resolveTerminalEndedAt(
                 activeReattachRunId,
                 activeReattachRunId === runId ? status : null,
-                projectRunWorkspaceContext,
               );
               updateMessageById(
                 message.id,
@@ -6185,7 +5448,6 @@ export function ProjectView({
                     if (recoveredArtifactMessagesRef.current.has(message.id)) return;
                     const latestRunStatus = await fetchChatRunStatus(
                       runId,
-                      projectRunWorkspaceContext,
                     ).catch(() => null);
                     const artifactToPersist = parsedArtifact?.html
                       ? parsedArtifact
@@ -6322,7 +5584,6 @@ export function ProjectView({
                   }, 3000);
                   const latestRunStatus = await fetchChatRunStatus(
                     runId,
-                    projectRunWorkspaceContext,
                   ).catch(() => null);
                   if (!latestRunStatus || isActiveRunStatus(latestRunStatus.status)) {
                     // If the backoff elapsed while this probe was still in
@@ -6552,7 +5813,6 @@ export function ProjectView({
         const serverMessages = await listMessages(
           project.id,
           activeConversationId,
-          projectRunWorkspaceContext,
         ).catch(() => null);
         if (cancelled) return;
         const recoveryMessages = serverMessages && serverMessages.length > 0
@@ -6602,7 +5862,6 @@ export function ProjectView({
           if (!artifactToPersist?.html) continue;
           const latestRunStatus = await fetchChatRunStatus(
             runId,
-            projectRunWorkspaceContext,
           ).catch(() => null);
           let nextFiles = await refreshProjectFiles();
           if (cancelled) return;
@@ -6659,7 +5918,6 @@ export function ProjectView({
           const recoveredArtifactEndedAt = await resolveTerminalEndedAt(
             runId,
             latestRunStatus,
-            projectRunWorkspaceContext,
           );
           updateMessageById(
             message.id,
@@ -6826,7 +6084,6 @@ export function ProjectView({
               input.conversationId,
               commentId,
               'applying',
-              projectRunWorkspaceContext,
             ),
           ),
         ).catch(() => {});
@@ -6889,11 +6146,6 @@ export function ProjectView({
         attachments.length === 0 &&
         commentAttachments.length === 0
       ) return false;
-      // AMR must resolve this project's persisted billing principal before a
-      // run can start. Local CLI and BYOK runtimes do not consume the Vela
-      // wallet, so old daemons without this endpoint and directory outages
-      // must not disable those runtimes.
-      if (!projectRunHasBillableAmrPrincipal) return false;
       const effectiveAttachments = mergeChatAttachments(
         attachments,
         ...commentAttachments.map((attachment) =>
@@ -6965,157 +6217,6 @@ export function ProjectView({
           meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
         });
         return meta?.acceptDurableQueue === true;
-      }
-      // OpenDesign Cloud pre-run balance gate: a definitively insufficient
-      // wallet blocks the run BEFORE any message is persisted or a daemon run
-      // spawned, surfacing the subscription dialog instead of a mid-run
-      // AMR_INSUFFICIENT_BALANCE failure. Sends the home submit already gated
-      // (amrGatePrechecked) pass straight through — the user answered there.
-      if (config.mode === 'daemon' && config.agentId === 'amr' && !meta?.amrGatePrechecked) {
-        const gateConversationId = activeConversationId;
-        // The gate's await opens a window where the conversation is not yet
-        // marked busy. A second send arriving during that window behaves like
-        // a busy conversation: it queues instead of racing a duplicate run.
-        if (amrGateInFlightConversationsRef.current.has(gateConversationId)) {
-          if (retryTarget) return false;
-          queueChatSendForCurrentConversation({
-            conversationId: gateConversationId,
-            prompt,
-            attachments: effectiveAttachments,
-            commentAttachments,
-            meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
-          });
-          return meta?.acceptDurableQueue === true;
-        }
-        amrGateInFlightConversationsRef.current.add(gateConversationId);
-        try {
-          // A persisted project Workspace is the spawn billing address even
-          // when the local membership/scope read is temporarily unavailable.
-          // In that state there is no trustworthy member-scoped wallet for a
-          // client preflight, so defer authorization and billing to the daemon
-          // and Vela backend. Passing `undefined` here would instead inspect
-          // the Personal/account wallet and could block a valid Team run (or
-          // present a Personal recharge prompt) before the backend sees the
-          // project's persisted Workspace id. An unbound project uses an exact
-          // Personal preflight only when runWorkspaceIdentity supplied the
-          // active Personal adoption witness. Team/absent witnesses skip the
-          // account preflight and let the daemon explicitly reject adoption.
-          // A resolved Personal or Team scope keeps its exact member-scoped
-          // preflight.
-          const persistedWorkspaceId = project.workspaceId?.trim() ?? '';
-          const deferAmrPreflightToDaemon =
-            !projectRunPreflightContext
-            && (
-              persistedWorkspaceId.length > 0
-              || projectWorkspaceScopeState.scope?.kind === 'unbound'
-            );
-          const amrModelId = effectiveAgentModelId(
-            agentsById.get('amr'),
-            config.agentModels?.amr,
-          );
-          const gate =
-            deferAmrPreflightToDaemon
-              ? { kind: 'allow' as const }
-              : await checkAmrBalanceGate(
-                  projectRunPreflightContext
-                    ? {
-                        workspaceType: projectRunPreflightContext.workspaceType,
-                        workspaceId: projectRunPreflightContext.workspaceId,
-                        workspaceMemberId:
-                          projectRunPreflightContext.workspaceMemberId,
-                      }
-                    : undefined,
-                  amrModelId,
-                );
-          // A blocked send parks in the conversation queue with its FULL
-          // payload (prompt, attachments, comment context) — the composer
-          // already cleared itself, and a text-only draft restore would
-          // silently drop staged attachments. Retries keep their error card
-          // and queue drains already have their queue item, so both skip the
-          // re-queue. The pause keeps queued items from re-hitting the gate
-          // (and re-popping a dialog) on every unrelated state change; any
-          // later send that passes the gate lifts it, and a manual "run now"
-          // on a queued item bypasses it deliberately.
-          const queueGateSend = (): boolean => {
-            if (!retryTarget && !meta?.queueDrain) {
-              queueChatSendForCurrentConversation({
-                conversationId: gateConversationId,
-                prompt,
-                attachments: effectiveAttachments,
-                commentAttachments,
-                meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
-              });
-              return true;
-            }
-            return false;
-          };
-          const parkBlockedSend = (): boolean => {
-            const queued = queueGateSend();
-            amrGatePausedQueueConversationsRef.current.add(gateConversationId);
-            return queued;
-          };
-          const acceptedDurableQueue = (queued: boolean): boolean => {
-            return queued && meta?.acceptDurableQueue === true;
-          };
-          // The await may have raced a conversation switch; re-run the entry
-          // guard before touching any state so this stale closure can't write
-          // the old conversation's messages into the now-visible view. The
-          // composer has already cleared, so keep the full payload queued for
-          // the original conversation instead of dropping it.
-          if (messagesConversationIdRef.current !== activeConversationId) {
-            return acceptedDurableQueue(queueGateSend());
-          }
-          if (gate.kind === 'hard') {
-            const recoveryActionInstanceId = `blocked:${taskAnalytics.taskExecutionId}`;
-            trackRunStartBlockedSurfaceView(analytics.track, {
-              page_name: 'chat_panel',
-              area: 'chat_composer',
-              element: 'run_start_blocked',
-              task_execution_id: taskAnalytics.taskExecutionId,
-              recovery_action_instance_id: recoveryActionInstanceId,
-              block_reason: gate.reason,
-              agent_provider_id: 'amr',
-              model_id: config.agentModels?.amr?.model?.trim() || 'default',
-            });
-            taskAnalytics = {
-              ...taskAnalytics,
-              recoveryActionType: 'manual_retry',
-              recoveryActionInstanceId,
-            };
-            setAmrBalanceGateBlock({
-              reason: gate.reason,
-              snapshot: gate.snapshot,
-              conversationId: gateConversationId,
-            });
-            return acceptedDurableQueue(parkBlockedSend());
-          }
-          if (gate.kind === 'unavailable') {
-            return acceptedDurableQueue(parkBlockedSend());
-          }
-          if (gate.kind === 'soft') {
-            // Low balance: pause THIS send while the reminder dialog waits
-            // for a decision. 'proceed' resumes the very same send below —
-            // a continuation, not a re-submit.
-            const plan = await resolveAmrPlan(gate.snapshot);
-            if (messagesConversationIdRef.current !== activeConversationId) {
-              return acceptedDurableQueue(queueGateSend());
-            }
-            if (isPaidAmrPlan(plan)) {
-              const decision = await new Promise<AmrLowBalanceDecision>((resolve) => {
-                setAmrLowBalanceWarn({ snapshot: gate.snapshot, resolve });
-              });
-              setAmrLowBalanceWarn(null);
-              // Same conversation-switch guard for the dialog-open window; the
-              // payload is parked (not sent) so nothing is lost either way.
-              if (decision !== 'proceed' || messagesConversationIdRef.current !== activeConversationId) {
-                return acceptedDurableQueue(parkBlockedSend());
-              }
-            }
-          }
-          amrGatePausedQueueConversationsRef.current.delete(gateConversationId);
-        } finally {
-          amrGateInFlightConversationsRef.current.delete(gateConversationId);
-        }
       }
       if (resumesBlockedTask) blockedRunTaskRef.current = null;
       // First genuine send in a recommendation-started project — the
@@ -7266,7 +6367,6 @@ export function ProjectView({
           void Promise.resolve(
             saveMessage(project.id, runConversationId, userMsg, {
               createOnly: true,
-              workspaceContext: projectRunWorkspaceContext,
             }),
           ).then((stored) => {
             if (!stored || stored.content === userMsg.content) return;
@@ -7314,7 +6414,6 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title },
-            projectRunWorkspaceContext,
           );
         }
         const projectName = fallbackProjectName;
@@ -7336,7 +6435,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: projectName,
             ...(metadata ? { metadata } : {}),
-          }, projectRunWorkspaceContext);
+          });
         }
       }
       const canReplaceConversationTitle = (title: string | null | undefined) => {
@@ -7367,7 +6466,6 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title: agentTitle },
-            projectRunWorkspaceContext,
           );
         }
         if (
@@ -7387,7 +6485,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: agentTitle,
             ...(metadata ? { metadata } : {}),
-          }, projectRunWorkspaceContext);
+          });
         }
       };
 
@@ -7451,7 +6549,6 @@ export function ProjectView({
             abortRef.current !== controller
             || projectIdRef.current !== project.id
             || activeConversationIdRef.current !== runConversationId
-            || projectResourceAuthorityRef.current === 'denied'
           ) {
             return curr;
           }
@@ -8060,7 +7157,6 @@ export function ProjectView({
                 }, 3000);
                 const latestRunStatus = await fetchChatRunStatus(
                   runIdForGenericDisconnect,
-                  projectRunWorkspaceContext,
                 ).catch(() => null);
                 if (latestRunStatus?.artifactPaths) {
                   authoritativeArtifactPaths = latestRunStatus.artifactPaths;
@@ -8304,7 +7400,6 @@ export function ProjectView({
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
           designSystemId: runtimeDesignSystemId ?? null,
-          workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
           sessionMode: runSessionMode,
@@ -8383,7 +7478,6 @@ export function ProjectView({
             // The view may already be on a different project/conversation;
             // pin the daemon run to the original row so returning can reattach.
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
-              workspaceContext: projectRunWorkspaceContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -8493,7 +7587,6 @@ export function ProjectView({
           projectFiles,
           {
             omitNativeImageAttachments: usesAnthropicProxy(config),
-            workspaceContext: projectRunWorkspaceContext,
           },
         );
         // Session-dimension hints on the BYOK-OpenCode path too, so
@@ -8519,7 +7612,6 @@ export function ProjectView({
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
           designSystemId: runtimeDesignSystemId ?? null,
-          workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
           sessionMode: runSessionMode,
@@ -8590,7 +7682,6 @@ export function ProjectView({
             };
             latestAssistantMsg = pinnedAssistant;
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
-              workspaceContext: projectRunWorkspaceContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -8647,7 +7738,6 @@ export function ProjectView({
       agentsById,
       onTouchProject,
       project.id,
-      project.workspaceId,
       projectDesignSystemId,
       runtimeDesignSystemId,
       project.name,
@@ -8677,11 +7767,7 @@ export function ProjectView({
       byokImageModelOptionsPV,
       byokVideoModelOptionsPV,
       byokSpeechModelOptionsPV,
-      projectRunPreflightContext,
-      projectRunWorkspaceContext,
-      projectRunHasBillableAmrPrincipal,
       projectMutationReadOnly,
-      projectWorkspaceScopeState.scope,
     ],
   );
 
@@ -8692,17 +7778,9 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       meta?: ChatSendMeta,
     ): Promise<ChatSendOutcome> => {
-      if (activeConversationId && cloudModelSelected) {
-        const decision = await requestAmrArtifactUpgrade({
-          projectId: project.id,
-          conversationId: activeConversationId,
-          source: 'chat_send',
-        });
-        if (decision === 'cancel') return 'restore-draft';
-      }
       void handleSend(prompt, attachments, commentAttachments, meta);
     },
-    [activeConversationId, cloudModelSelected, handleSend, project.id],
+    [handleSend],
   );
 
   // Cancel every in-flight run for the current conversation (the user's own
@@ -8832,7 +7910,6 @@ export function ProjectView({
               comment.conversationId,
               comment.id,
               'open',
-              projectRunWorkspaceContext,
             ),
           ),
         ).catch(() => {});
@@ -8952,41 +8029,6 @@ export function ProjectView({
     [currentConversationActionDisabled, handleSend, messages],
   );
 
-  // "Switch to AMR & retry" crosses the Settings route, which intentionally
-  // unmounts this ProjectView. Arm the exact failed turn in App before any
-  // config or navigation write; a fresh ProjectView may consume it only after
-  // re-proving the same project, conversation and Workspace authority.
-  const handleSwitchToAmrAndRetry = useCallback(
-    (failedAssistant: ChatMessage) => {
-      if (currentConversationActionDisabled) return;
-      if (
-        activeConversationId
-        && amrAuthRetryMountIdRef.current
-        && onArmAmrAuthRetryContinuation
-      ) {
-        onArmAmrAuthRetryContinuation({
-          projectId: project.id,
-          conversationId: activeConversationId,
-          assistantId: failedAssistant.id,
-          workspaceIdentityKey: projectRunAuthorityKey,
-          originMountId: amrAuthRetryMountIdRef.current,
-        });
-      }
-      onModeChange('daemon');
-      onAgentChange('amr');
-      onOpenAmrSettings?.();
-    },
-    [
-      activeConversationId,
-      currentConversationActionDisabled,
-      onAgentChange,
-      onArmAmrAuthRetryContinuation,
-      onModeChange,
-      onOpenAmrSettings,
-      project.id,
-      projectRunAuthorityKey,
-    ],
-  );
   // PR #3157: Antigravity's `agy -p` cannot complete OAuth on its own,
   // so the auth banner offers a one-click "Sign in via terminal"
   // button that POSTs to the daemon. The daemon opens a system
@@ -9048,8 +8090,6 @@ export function ProjectView({
         const result = await uploadProjectFiles(
           project.id,
           images,
-          undefined,
-          projectRunWorkspaceContext,
         );
         if (result.uploaded.length !== images.length) {
           return { status: 'rejected', commentIds: [] };
@@ -9143,7 +8183,6 @@ export function ProjectView({
           outcome = await installGeneratedPluginFolder(
             project.id,
             relativePath,
-            pluginWorkflowWorkspaceContext,
           );
         } finally {
           setActivePluginActionPaths((prev) => {
@@ -9169,7 +8208,6 @@ export function ProjectView({
           project.id,
           relativePath,
           shareAction,
-          pluginWorkflowWorkspaceContext,
         );
       } catch (error) {
         setActivePluginActionPaths((prev) => {
@@ -9233,7 +8271,6 @@ export function ProjectView({
             taskStart.taskId,
             since,
             25_000,
-            pluginWorkflowWorkspaceContext,
           );
           since = snapshot.nextSince;
           if (snapshot.progress.length > 0) {
@@ -9387,7 +8424,6 @@ export function ProjectView({
       currentConversationActionDisabled,
       pluginWorkflowAgentName,
       project.id,
-      projectRunWorkspaceContext,
       replaceConversationMessage,
     ],
   );
@@ -9437,7 +8473,7 @@ export function ProjectView({
       },
     };
     onProjectChange({ ...project, metadata });
-    void patchProject(project.id, { metadata }, projectRunWorkspaceContext);
+    void patchProject(project.id, { metadata });
   }, [onProjectChange, project, projectRunWorkspaceContext]);
 
   const sendDesignSystemFeedback = useCallback((
@@ -9544,7 +8580,6 @@ export function ProjectView({
     setConversationLoadError(null);
     try {
       const fresh = await createConversation(project.id, undefined, {
-        workspaceContext: projectRunWorkspaceContext,
       });
       if (!fresh) throw new Error('Could not create a conversation for this project.');
       // Eagerly clear messages and update ref so rapid clicks don't create
@@ -9592,7 +8627,6 @@ export function ProjectView({
     messages.length,
     navigate,
     openTabsState.active,
-    projectRunWorkspaceContext,
     projectRunAuthorityKey,
     projectMutationReadOnly,
   ]);
@@ -9636,7 +8670,6 @@ export function ProjectView({
       const myToken = ++conversationsRefreshTokenRef.current;
       try {
         const list = await listConversations(capturedProjectId, {
-          workspaceContext: projectRunWorkspaceContext,
         });
         if (projectIdRef.current !== capturedProjectId) return false;
         if (conversationsRefreshTokenRef.current !== myToken) return false;
@@ -9661,7 +8694,6 @@ export function ProjectView({
       const ok = await deleteConversationApi(
         project.id,
         id,
-        projectRunWorkspaceContext,
       );
       if (!ok) return;
       // The deleted conversation may have owned an unanswered
@@ -9677,7 +8709,6 @@ export function ProjectView({
           // Re-seed so the project always has at least one conversation
           // to write into.
           void createConversation(project.id, undefined, {
-            workspaceContext: projectRunWorkspaceContext,
           }).then((fresh) => {
             if (fresh) {
               setConversations([fresh]);
@@ -9694,7 +8725,6 @@ export function ProjectView({
       project.id,
       activeConversationId,
       onProjectsRefresh,
-      projectRunWorkspaceContext,
       projectMutationReadOnly,
     ],
   );
@@ -9710,10 +8740,9 @@ export function ProjectView({
         project.id,
         id,
         { title: trimmed },
-        projectRunWorkspaceContext,
       );
     },
-    [project.id, projectRunWorkspaceContext, projectMutationReadOnly],
+    [project.id, projectMutationReadOnly],
   );
 
   const handleConversationSessionModeChange = useCallback(
@@ -9728,7 +8757,6 @@ export function ProjectView({
         project.id,
         id,
         { sessionMode },
-        projectRunWorkspaceContext,
       );
       if (updated) {
         setConversations((curr) =>
@@ -9738,7 +8766,7 @@ export function ProjectView({
         );
       }
     },
-    [project.id, projectRunWorkspaceContext, projectMutationReadOnly],
+    [project.id, projectMutationReadOnly],
   );
 
   const handleActiveConversationSessionModeChange = useCallback(
@@ -9792,7 +8820,6 @@ export function ProjectView({
           forkFallbackMessage:
             forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
           forkFallbackPredecessorMessageId,
-          workspaceContext: projectRunWorkspaceContext,
           throwOnError: true,
         });
         if (!fresh) {
@@ -9883,13 +8910,7 @@ export function ProjectView({
       const trimmed = newName.trim();
       if (!trimmed || trimmed === project.name) return;
       const previousName = project.name;
-      const renameContext = projectRunWorkspaceContextRef.current;
-      const renameWorkspaceIdentity = workspaceIdentityCacheKey(renameContext);
-      const renameKey = JSON.stringify([
-        project.id,
-        project.workspaceId ?? null,
-        renameWorkspaceIdentity,
-      ]);
+      const renameKey = JSON.stringify([project.id]);
       let renameState = projectRenameStatesRef.current.get(renameKey);
       if (!renameState || renameState.pending === 0) {
         renameState = {
@@ -9918,7 +8939,7 @@ export function ProjectView({
         const persisted = await patchProject(project.id, {
           name: trimmed,
           ...(metadata ? { metadata } : {}),
-        }, renameContext);
+        });
         if (persisted) renameState.confirmed = persisted;
         const isLatestQueuedRename =
           projectRenameStatesRef.current.get(renameKey) !== renameState
@@ -9929,8 +8950,6 @@ export function ProjectView({
         onProjectRenameSettled?.(renameFenceToken, settledProject);
         if (
           projectRef.current.id !== project.id
-          || workspaceIdentityCacheKey(projectRunWorkspaceContextRef.current)
-            !== renameWorkspaceIdentity
           || (
             projectRef.current.name !== previousName
             && projectRef.current.name !== trimmed
@@ -10111,7 +9130,7 @@ export function ProjectView({
         updatedAt: Date.now(),
       };
       onProjectChange(updated);
-      void patchProject(project.id, { designSystemId: nextId }, projectRunWorkspaceContext);
+      void patchProject(project.id, { designSystemId: nextId });
     },
     [
       project,
@@ -10120,7 +9139,6 @@ export function ProjectView({
       designSystems,
       analytics.track,
       projectMutationReadOnly,
-      projectRunWorkspaceContext,
     ],
   );
 
@@ -10192,7 +9210,6 @@ export function ProjectView({
   // `teamSynced`, i.e. the caller's own system or a built-in preset) reads as
   // editable, matching every other consumer of this field.
   const designSystemEditable =
-    !projectCollab.materializationPending &&
     designSystemProject?.canMutate !== false &&
     (
       !projectIsProgrammaticBrandExtraction ||
@@ -10629,24 +9646,16 @@ export function ProjectView({
   const autoSendAttachmentsRef = useRef<ChatAttachment[] | null>(null);
   const autoSendContextRef = useRef<RunContextSelection | null>(null);
   const autoSendFirstMessageRef = useRef(false);
-  const autoSendAmrGateWitnessRef = useRef<AmrBalanceGateScope | undefined>(
-    undefined,
-  );
   if (autoSendSeedRef.current === null) {
     let isAutoSend = false;
-    let amrGateWitness: AmrBalanceGateScope | undefined;
     try {
       isAutoSend = Boolean(
         window.sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
       );
-      amrGateWitness = readAutoSendAmrGateWitness(project.id);
     } catch {
       /* sessionStorage may be unavailable; treat as manual flow. */
     }
     autoSendFirstMessageRef.current = isAutoSend;
-    autoSendAmrGateWitnessRef.current = isAutoSend
-      ? amrGateWitness
-      : undefined;
     autoSendSeedRef.current = isAutoSend
       ? (readAutoSendPrompt(project.id) ?? project.pendingPrompt ?? '')
       : '';
@@ -11192,7 +10201,7 @@ export function ProjectView({
     try {
       const result = await duplicatePluginAsProject(record.id, {
         name: localizePluginTitle(locale, record),
-      }, resolvedWorkspaceContextForWrite(workspaceContextState));
+      });
       setContextPluginDetails(null);
       navigate({
         kind: 'project',
@@ -11208,7 +10217,7 @@ export function ProjectView({
         ttlMs: 3000,
       });
     }
-  }, [locale, t, workspaceContextState]);
+  }, [locale, t]);
   const handleOpenContextDesignSystemDetails = useCallback((system: DesignSystemSummary) => {
     setContextDesignSystemDetails(system);
   }, []);
@@ -11271,7 +10280,6 @@ export function ProjectView({
     // render where the state is ready but the ref has already been invalidated
     // for a fresh scoped reload.
     if (messagesConversationIdRef.current !== activeConversationId) return;
-    if (!projectRunHasBillableAmrPrincipal) return;
     // Wait for the initial listMessages DB read to land. Without this gate
     // the auto-send fires before the in-flight DB response, which then
     // arrives with `setMessages([])` and wipes the freshly-pushed user +
@@ -11308,20 +10316,11 @@ export function ProjectView({
     if (!seed && attachments.length === 0) {
       return;
     }
-    const autoSendGateStillMatches =
-      autoSendAmrGateWitnessRef.current !== undefined &&
-      amrBalanceGateScopesMatch(
-        autoSendAmrGateWitnessRef.current,
-        amrBalanceGateScopeForWorkspaceContext(projectRunPreflightContext),
-      );
     autoSendInFlightRef.current = true;
     void handleSend(seed, attachments, [], {
         ...(context ? { context } : {}),
         ...homeAutoSendIdentity(project.id),
         acceptDurableQueue: true,
-        // Only reuse Home's decision for the exact persisted project scope.
-        // A workspace/member mismatch falls through to handleSend's normal gate.
-        ...(autoSendGateStillMatches ? { amrGatePrechecked: true } : {}),
       })
       .then((accepted) => {
         if (!accepted) {
@@ -11356,9 +10355,6 @@ export function ProjectView({
     project.metadata,
     initialDraft,
     project.pendingPrompt,
-    projectRunHasBillableAmrPrincipal,
-    projectRunBillingContext,
-    projectRunPreflightContext,
     handleSend,
   ]);
 
@@ -11427,7 +10423,6 @@ export function ProjectView({
         onOpenSettings={onOpenSettings}
         onRefreshAgents={onRefreshAgents}
         placement="up"
-        projectWorkspaceScope={projectWorkspaceScopeState}
       />
     </>
   );
@@ -11439,11 +10434,10 @@ export function ProjectView({
   // element and replay the `.app` entrance animation, which reads as the
   // project frame flashing twice on the way in from Home.
   return (
-    <CollabProvider value={collabValue}>
+    <>
       <CritiqueTheaterMount
         projectId={project.id}
         enabled={critiqueTheaterEnabled}
-        workspaceContext={projectRunWorkspaceContext}
       />
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
@@ -11492,7 +10486,7 @@ export function ProjectView({
               </button>
             </div>
           ) : null}
-          {activeConversationId || conversationLoadError || emptyConversationReadOnlySettled ? (
+          {activeConversationId || conversationLoadError ? (
             <ChatPane
               // The conversation id is part of the key so switching conversations
               // resets internal scroll/draft state inside ChatPane and ChatComposer.
@@ -11506,12 +10500,8 @@ export function ProjectView({
               sendDisabled={currentConversationSendDisabled || projectMutationReadOnly}
               viewerOnly={projectMutationReadOnly}
               composerPlaceholder={
-                projectCollab.materializationPending
-                  ? t('designFiles.syncing')
-                  : projectMutationReadOnly
-                  ? (projectCollab.ownerDisplayName
-                      ? t('workspace.readonlyNoticeBy', { owner: projectCollab.ownerDisplayName })
-                      : t('workspace.readonlyNotice'))
+                projectMutationReadOnly
+                  ? t('workspace.readonlyNotice')
                   : undefined
               }
               queuedItems={currentConversationQueuedItems}
@@ -11538,13 +10528,6 @@ export function ProjectView({
               onDeleteComment={(commentId) => void removePreviewComment(commentId)}
               onSend={handleComposerSend}
               onRetry={handleRetry}
-              amrAuthRetryContinuation={amrAuthRetryContinuation}
-              amrAuthRetryMountId={amrAuthRetryMountIdRef.current}
-              amrAuthRetryWorkspaceIdentityKey={projectRunAuthorityKey}
-              amrAuthRetryPersonalAdoptionWitness={amrAuthRetryPersonalAdoptionWitness}
-              onArmAmrAuthRetryContinuation={onArmAmrAuthRetryContinuation}
-              onConsumeAmrAuthRetryContinuation={onConsumeAmrAuthRetryContinuation}
-              onDiscardAmrAuthRetryContinuation={onDiscardAmrAuthRetryContinuation}
               onResumeRun={handleResumeRun}
               onStop={handleStop}
               onRemoveQueuedSend={removeQueuedChatSend}
@@ -11575,7 +10558,6 @@ export function ProjectView({
                   ...(sourceAssistant?.runId ? { sourceRunId: sourceAssistant.runId } : {}),
                   fetchRunStatus: (runId) => fetchChatRunStatus(
                     runId,
-                    projectRunWorkspaceContext,
                   ),
                 });
                 if (sourceAssistant && strategyTaskExecutionId) {
@@ -11657,8 +10639,6 @@ export function ProjectView({
                 setError(null);
                 onModeChange('daemon');
               }}
-              onOpenAmrSettings={onOpenAmrSettings}
-              onSwitchToAmrAndRetry={handleSwitchToAmrAndRetry}
               onLaunchAntigravityOauth={handleLaunchAntigravityOauth}
               onOpenMcpSettings={onOpenMcpSettings}
               onBrowsePlugins={onBrowsePlugins}
@@ -11754,7 +10734,6 @@ export function ProjectView({
                   variant="icon"
                   designSystems={designSystems}
                   selectedId={projectDesignSystemId ?? null}
-                  workspaceContext={projectRunWorkspaceContext}
                   disabled={projectMutationReadOnly}
                   onChange={handleChangeDesignSystemId}
                 />
@@ -11799,13 +10778,9 @@ export function ProjectView({
           projectId={project.id}
           projectName={currentProject.name}
           viewerOnly={projectMutationReadOnly}
-          materializationPending={projectCollab.materializationPending}
           readonlyNotice={
-            projectCollab.materializationPending
-              ? t('designFiles.syncing')
-              : readonlyNoticeText
+            projectMutationReadOnly ? t('workspace.readonlyNotice') : undefined
           }
-          fileSyncBadge={fileSyncBadge}
           projectKind={projectKindFromMetadataToTrackingOrLegacyDefault(currentProject.metadata)}
           rootDirName={(() => {
             const baseDir = currentProject.metadata?.baseDir;
@@ -11868,14 +10843,7 @@ export function ProjectView({
           githubConnected={githubConnected}
           commentPortalId={commentInspectorPortalId}
           onCommentModeChange={setCommentInspectorActive}
-          fileActionsBefore={projectCollab.enabled ? (
-            <PresenceBar
-              members={projectCollab.present}
-              selfMember={projectCollab.member}
-              resolveMember={resolvePresenceMember}
-              {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
-            />
-          ) : null}
+          fileActionsBefore={null}
           chatConfig={config}
           chatAgentsById={agentsById}
           handoffAgents={agents}
@@ -11897,7 +10865,6 @@ export function ProjectView({
           messages={messages}
           artifactHtml={artifact?.html}
           conversationError={error}
-          onAuthorizeAndRetry={handleSwitchToAmrAndRetry}
           onLaunchTerminalAuth={handleLaunchAntigravityOauth}
           conversationId={activeConversationId}
         />
@@ -11905,7 +10872,6 @@ export function ProjectView({
       {contextPluginDetails ? (
         <PluginDetailsModal
           record={contextPluginDetails}
-          workspaceContext={projectRunWorkspaceContext}
           onClose={() => setContextPluginDetails(null)}
           onUse={() => setContextPluginDetails(null)}
           onDuplicate={(record) => void handleDuplicateContextPlugin(record)}
@@ -11916,7 +10882,6 @@ export function ProjectView({
       {contextDesignSystemDetails ? (
         <DesignSystemPreviewModal
           system={contextDesignSystemDetails}
-          workspaceContext={projectRunWorkspaceContext}
           initialViewId="kit"
           onClose={() => setContextDesignSystemDetails(null)}
         />
@@ -11928,37 +10893,6 @@ export function ProjectView({
           and burn its once-ever localStorage budget outside the intended flow. */}
       {onboardingEntryRef.current && hasPreviewableArtifact && !currentConversationStreaming ? (
         <FirstArtifactHint />
-      ) : null}
-      {amrBalanceGateBlock ? (
-        <AmrBalanceDialog
-          reason={amrBalanceGateBlock.reason}
-          balanceUsd={amrBalanceGateBlock.snapshot.balanceUsd}
-          profile={amrBalanceGateBlock.snapshot.profile}
-          entrySource="chat_balance_gate_upgrade"
-          metricsConsent={config.telemetry?.metrics === true}
-          installationId={config.installationId}
-          onClose={() => setAmrBalanceGateBlock(null)}
-          onResolved={() => {
-            // Sign-in completed or the recharge landed: lift the balance
-            // pause and kick the drain so the parked send starts on its own
-            // (it still re-gates, so a half-measure recharge surfaces the
-            // soft reminder rather than silently failing mid-run).
-            const conversationId = amrBalanceGateBlock.conversationId;
-            setAmrBalanceGateBlock(null);
-            amrGatePausedQueueConversationsRef.current.delete(conversationId);
-            setQueuedAutoStartTick((tick) => tick + 1);
-          }}
-        />
-      ) : null}
-      {amrLowBalanceWarn ? (
-        <AmrLowBalanceDialog
-          balanceUsd={amrLowBalanceWarn.snapshot.balanceUsd}
-          profile={amrLowBalanceWarn.snapshot.profile}
-          entrySource="chat_low_balance_warn_recharge"
-          metricsConsent={config.telemetry?.metrics === true}
-          installationId={config.installationId}
-          onDecision={amrLowBalanceWarn.resolve}
-        />
       ) : null}
       <AnimatePresence>
         {projectActionsToast && !projectActionsToastInChatPane ? projectActionsToastNode : null}
@@ -11991,7 +10925,7 @@ export function ProjectView({
           />
         ) : null}
       </AnimatePresence>
-    </CollabProvider>
+    </>
   );
 }
 
@@ -12266,12 +11200,11 @@ type RunStatusSnapshot = Awaited<ReturnType<typeof fetchChatRunStatus>>;
 async function resolveTerminalEndedAt(
   runId: string,
   candidate: RunStatusSnapshot | null | undefined,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<number> {
   if (candidate && !isActiveRunStatus(candidate.status)) {
     return candidate.updatedAt;
   }
-  const probed = await fetchChatRunStatus(runId, workspaceContext).catch(() => null);
+  const probed = await fetchChatRunStatus(runId).catch(() => null);
   if (probed && !isActiveRunStatus(probed.status)) {
     return probed.updatedAt;
   }

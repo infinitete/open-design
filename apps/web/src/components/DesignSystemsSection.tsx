@@ -14,8 +14,6 @@ import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
 import { Icon } from './Icon';
 import { orderDesignSystemGroups } from './design-system-group-order';
 import { AnimatePresence } from 'motion/react';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
-import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
 
 // Sibling Settings section that hosts the design-systems registry.
 // Lifted out of the previous LibrarySection so each surface (functional
@@ -74,12 +72,11 @@ export function DesignSystemsSection({
   const [importedDesignSystem, setImportedDesignSystem] = useState<DesignSystemSummary | null>(null);
   const [highlightedDesignSystemId, setHighlightedDesignSystemId] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const { context: workspaceContext } = useWorkspaceContext();
-  const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+    const workspaceIdentity = 'local';
 
   useEffect(() => {
     let cancelled = false;
-    fetchDesignSystems(workspaceContext).then((systems) => {
+    fetchDesignSystems().then((systems) => {
       if (!cancelled) setDesignSystems(systems);
     });
     return () => {
@@ -199,7 +196,6 @@ export function DesignSystemsSection({
     const updated = await updateDesignSystemDraft(
       targetId,
       { title: trimmed },
-      workspaceContext,
     );
     if (updated) {
       // The rename happened server-side, so reflect it in the list even if the

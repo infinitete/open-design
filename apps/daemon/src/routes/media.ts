@@ -13,10 +13,10 @@ import { findMediaModel } from '../media/models.js';
 import type { MediaTaskError } from '../media/tasks.js';
 import type { ImageGenerationRequestSummary } from '../media/image-generation-retry.js';
 import type { RouteDeps } from '../server-context.js';
-import type {
-  AuthorizeProjectRequest,
-  AuthorizeProjectToolRequest,
-} from '../collab/project-request-authority.js';
+
+// Collab types removed - define locally
+type AuthorizeProjectRequest = any;
+type AuthorizeProjectToolRequest = any;
 import { proxyDispatcherRequestInit } from '../connectionTest.js';
 import {
   aihubmixCatalogUrl,

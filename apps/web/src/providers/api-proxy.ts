@@ -5,10 +5,8 @@ import type {
   ProxyMessage,
   ProxyMessageContent,
   ProxyTextContentBlock,
-  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { projectFileUrl } from './registry';
-import { workspaceProjectHeaders } from '../collab/workspace-identity';
 import type { StreamHandlers } from './anthropic';
 import { parseSseFrame } from './sse';
 import { isAnthropicSupportedImagePath } from '../utils/apiProtocol';
@@ -27,8 +25,6 @@ import { isAnthropicSupportedImagePath } from '../utils/apiProtocol';
  */
 export interface ProxyContext {
   projectId?: string;
-  /** Exact persisted scope of `projectId`, captured when the turn starts. */
-  workspaceContext?: WorkspaceCollabContext | null;
   byokImageModel?: string;
   byokVideoModel?: string;
   byokSpeechModel?: string;
@@ -57,9 +53,6 @@ export async function streamProxyEndpoint(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(context?.workspaceContext
-          ? workspaceProjectHeaders(context.workspaceContext)
-          : {}),
       },
       body: JSON.stringify({
         baseUrl: cfg.baseUrl,
@@ -154,7 +147,6 @@ export async function buildProxyMessages(
       content: await buildAnthropicMessageContent(
         message,
         context.projectId,
-        context.workspaceContext,
       ),
     });
   }
@@ -168,7 +160,6 @@ function usesAnthropicMessagesPayload(endpoint: string): boolean {
 async function buildAnthropicMessageContent(
   message: ChatMessage,
   projectId: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ProxyMessageContent> {
   const imageAttachments = sortAttachmentsByUserOrder(
     (message.attachments ?? []).filter((attachment) => attachment.kind === 'image'),
@@ -186,7 +177,6 @@ async function buildAnthropicMessageContent(
     const block = await readAnthropicImageBlock(
       projectId,
       attachment.path,
-      workspaceContext,
     );
     if (block) {
       blocks.push(block);
@@ -220,12 +210,10 @@ function sortAttachmentsByUserOrder<T extends { order?: number }>(attachments: T
 async function readAnthropicImageBlock(
   projectId: string,
   path: string,
-  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ProxyImageContentBlock | null> {
   try {
-    const resp = await fetch(projectFileUrl(projectId, path, workspaceContext), {
+    const resp = await fetch(projectFileUrl(projectId, path), {
       cache: 'no-store',
-      ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     });
     if (!resp.ok) return null;
 

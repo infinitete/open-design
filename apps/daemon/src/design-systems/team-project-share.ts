@@ -1,9 +1,16 @@
-import {
-  TeamResourceAuthorityUnavailableError,
-  TeamResourceShareForbiddenError,
-  type TeamResourceRequestScope,
-  type TeamResourceShareService,
-} from '../collab/team-resource-share.js';
+// Collab team-resource-share removed - stub types
+class TeamResourceAuthorityUnavailableError extends Error {
+  constructor(message?: string | Error) {
+    super(typeof message === 'string' ? message : message?.message ?? 'Unknown error');
+  }
+}
+class TeamResourceShareForbiddenError extends Error {
+  constructor() {
+    super('Team resource share forbidden');
+  }
+}
+type TeamResourceRequestScope = any;
+type TeamResourceShareService = any;
 
 export interface PreparedLinkedProjectShare {
   projectId: string;
@@ -190,7 +197,7 @@ export function createLinkedProjectTeamResourceShareService(
   const { resource } = options;
   const service: TeamResourceShareService = {
     configured: resource.configured,
-    async share(resourceId, scope) {
+    async share(resourceId: any, scope: any) {
       const linkedProject = await options.prepare(resourceId, scope);
       const result = await resource.share(resourceId, scope);
       if (!result) return null;
@@ -219,16 +226,16 @@ export function createLinkedProjectTeamResourceShareService(
       }
       return result;
     },
-    async unshare(resourceId, scope) {
+    async unshare(resourceId: any, scope: any) {
       // This live read is the idempotency boundary. A cached/session fallback
       // may still remember an already-removed design system, so it must never
       // authorize moving the independently shareable backing project.
       let sharedResource;
       try {
         sharedResource = (await resource.sharedResources(scope, { authoritative: true }))
-          .find((candidate) => candidate.id === resourceId);
-      } catch (error) {
-        throw new TeamResourceAuthorityUnavailableError(error);
+          .find((candidate: any) => candidate.id === resourceId);
+      } catch (error: unknown) {
+        throw new TeamResourceAuthorityUnavailableError(error instanceof Error ? error : String(error));
       }
       if (!sharedResource) return false;
       if (!sharedResource.canUnshare) {
@@ -259,8 +266,8 @@ export function createLinkedProjectTeamResourceShareService(
         throw error;
       }
     },
-    sharedIds: (scope) => resource.sharedIds(scope),
-    async sharedResources(scope, readOptions) {
+    sharedIds: (scope: any) => resource.sharedIds(scope),
+    async sharedResources(scope: any, readOptions: any) {
       const resources = await resource.sharedResources(scope, readOptions);
       for (const candidate of resources) {
         // Generic hub capability grants Workspace owner/admin broadly. Linked
@@ -272,7 +279,7 @@ export function createLinkedProjectTeamResourceShareService(
       }
       return resources;
     },
-    isShared: (resourceId, scope) => resource.isShared(resourceId, scope),
+    isShared: (resourceId: any, scope: any) => resource.isShared(resourceId, scope),
   };
   return service;
 }
