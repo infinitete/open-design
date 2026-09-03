@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { mediaModelProviderId } from '../../src/media/models';
+import {
+  IMAGE_MODELS,
+  VIDEO_MODELS,
+  mediaModelProviderId,
+} from '../../src/media/models';
 
 // mediaModelProviderId is the decision core of ProjectView's BYOK seed guard
 // (byokModelSeedForProtocol): the project's creation-time model is only carried
@@ -20,10 +24,6 @@ describe('mediaModelProviderId', () => {
   });
 
   it('resolves static models to their registry provider', () => {
-    // vela/gpt-image-2 is the New Project dialog default → provider vela. On a
-    // SenseAudio run this !== 'senseaudio', so the guard drops the seed and the
-    // user's Settings default is kept.
-    expect(mediaModelProviderId('vela/gpt-image-2')).toBe('vela');
     expect(mediaModelProviderId('gpt-image-2')).toBe('openai');
     expect(mediaModelProviderId('senseaudio-image-2.0-260319')).toBe('senseaudio');
     expect(mediaModelProviderId('senseaudio-tts')).toBe('senseaudio');
@@ -35,18 +35,38 @@ describe('mediaModelProviderId', () => {
   });
 
   // The guard itself is `mediaModelProviderId(picked) === protocol`. Spell out
-  // the four scenarios from the design discussion so the decision is pinned.
+  // the seed-guard scenarios from the design discussion so the decision is
+  // pinned.
   it('drives the seed guard: carry only when provider matches the active protocol', () => {
     const carries = (modelId: string, protocol: string) =>
       mediaModelProviderId(modelId) === protocol;
 
     // AIHubMix run + AIHubMix pick → carried.
     expect(carries('aihubmix-qwen-image-2-pro', 'aihubmix')).toBe(true);
-    // SenseAudio run + dialog-default Vela model → NOT carried (keeps Settings default).
-    expect(carries('vela/gpt-image-2', 'senseaudio')).toBe(false);
     // SenseAudio run + SenseAudio pick → carried.
     expect(carries('senseaudio-image-2.0-260319', 'senseaudio')).toBe(true);
-    // Non-BYOK run never matches (byokImageModel is ignored daemon-side anyway).
-    expect(carries('vela/gpt-image-2', 'official')).toBe(false);
+  });
+});
+
+describe('media registry has no hosted cloud models', () => {
+  it('keeps every image model free of the retired hosted provider namespace', () => {
+    expect(IMAGE_MODELS.some((model) => model.id.startsWith('vela/'))).toBe(false);
+    expect(IMAGE_MODELS.some((model) => String(model.provider) === 'vela')).toBe(false);
+  });
+
+  it('keeps every video model free of the retired hosted provider namespace', () => {
+    expect(VIDEO_MODELS.some((model) => model.id.startsWith('vela/'))).toBe(false);
+    expect(VIDEO_MODELS.some((model) => String(model.provider) === 'vela')).toBe(false);
+  });
+
+  it('keeps representative BYOK media options selectable', () => {
+    // BYOK providers and their seeded models must remain available now that
+    // the hosted cloud models are gone.
+    expect(mediaModelProviderId('gpt-image-2')).toBe('openai');
+    expect(mediaModelProviderId('aihubmix-gpt-image-1')).toBe('aihubmix');
+    expect(mediaModelProviderId('senseaudio-image-2.0-260319')).toBe('senseaudio');
+    expect(
+      VIDEO_MODELS.some((model) => model.provider === 'volcengine'),
+    ).toBe(true);
   });
 });

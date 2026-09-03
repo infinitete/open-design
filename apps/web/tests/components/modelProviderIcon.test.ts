@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { modelProviderIconSrc } from '../../src/components/modelProviderIcon';
 
 describe('modelProviderIconSrc', () => {
-  it('maps AMR-style provider/model ids to their bundled brand mark', () => {
+  it('maps provider/model ids to their bundled brand mark', () => {
     expect(modelProviderIconSrc('anthropic/claude-sonnet-4-5')).toBe('/agent-icons/claude.svg');
     expect(modelProviderIconSrc('openai/gpt-5')).toBe('/model-icons/openai.svg');
     expect(modelProviderIconSrc('google/gemini-2.5-pro')).toBe('/model-icons/google-gemini.svg');

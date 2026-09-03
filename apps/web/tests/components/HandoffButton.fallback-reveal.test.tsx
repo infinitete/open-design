@@ -122,12 +122,12 @@ describe('HandoffButton zero-editors fallback', () => {
     fireEvent.click(await screen.findByTestId('handoff-caret'));
     fireEvent.click(await screen.findByRole('tab', { name: '复制给 CLI' }));
     // The "OpenDesign Cloud website" link was removed from the CLI tab
-    // (acceptance #101); the CLI agent cards remain the surface here.
+    // (acceptance #101), and the retired hosted runtime's CLI card is gone
+    // with it; the local CLI agent cards remain the surface here.
     expect(screen.queryByRole('link', { name: /打开 OpenDesign Cloud 官网/ })).toBeNull();
-    expect(screen.getByTestId('handoff-cli-item-amr').textContent).toContain('OpenDesign');
-    expect(screen.getByTestId('handoff-cli-item-amr').textContent).not.toContain('未安装');
+    expect(screen.queryByTestId('handoff-cli-item-amr')).toBeNull();
     expect(
-      screen.getByTestId('handoff-cli-item-amr').compareDocumentPosition(
+      screen.getByTestId('handoff-cli-item-claude').compareDocumentPosition(
         screen.getByTestId('handoff-cli-item-codex'),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

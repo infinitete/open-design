@@ -2,10 +2,10 @@
 //
 // The daemon pins `mode: 'daemon'` when deriving configure globals for run
 // events and cannot see a saved BYOK key (BYOK creds live in the web client),
-// so its own derivation can only ever report local_cli / amr_cloud / none —
-// never byok. The web client knows the true runtime for the run it launched
-// and passes it via the run request's analytics hint, which must win so the
-// behavioural funnel can split AMR / BYOK / CLI on the server-side events.
+// so its own derivation can only ever report local_cli / none — never byok.
+// The web client knows the true runtime for the run it launched and passes it
+// via the run request's analytics hint, which must win so the behavioural
+// funnel can split BYOK / CLI on the server-side events.
 
 import { describe, expect, it } from 'vitest';
 import { deriveConfigureGlobals } from '@open-design/contracts/analytics';
@@ -30,14 +30,13 @@ describe('runtime_type on daemon run analytics', () => {
   it('falls back to the derived runtime when the hint is missing or invalid', () => {
     const derived = deriveConfigureGlobals({
       mode: 'daemon',
-      agentId: 'amr',
-      agents: [{ id: 'amr', available: true }],
-      amrAuthorized: true,
+      agentId: 'claude',
+      agents: [{ id: 'claude', available: true }],
     }).runtime_type;
-    expect(derived).toBe('amr_cloud');
-    expect(runtimeTypeForRunAnalytics({ derived, hint: undefined })).toBe('amr_cloud');
-    expect(runtimeTypeForRunAnalytics({ derived, hint: 'bogus' })).toBe('amr_cloud');
-    expect(runtimeTypeForRunAnalytics({ derived, hint: 42 })).toBe('amr_cloud');
+    expect(derived).toBe('local_cli');
+    expect(runtimeTypeForRunAnalytics({ derived, hint: undefined })).toBe('local_cli');
+    expect(runtimeTypeForRunAnalytics({ derived, hint: 'bogus' })).toBe('local_cli');
+    expect(runtimeTypeForRunAnalytics({ derived, hint: 42 })).toBe('local_cli');
   });
 });
 

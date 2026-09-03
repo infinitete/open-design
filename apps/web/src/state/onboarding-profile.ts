@@ -2,11 +2,8 @@
 // use case(s), and how they heard about us.
 //
 // Onboarding collects these in component state that is discarded once the flow
-// ends. We persist a tiny copy so any later AMR entry — from the chat error
-// card, settings, the model switcher, etc., long after onboarding — can forward
-// the visitor's self-reported profile to AMR for paid-conversion segmentation.
-// Without this, only a visitor who jumps to AMR during onboarding itself would
-// carry a profile.
+// ends. We persist a tiny copy so the analytics person properties can
+// still carry the visitor's self-reported profile long after onboarding.
 //
 // Values are kept as open strings (mirroring onboarding's own open-string
 // options), trimmed and length/count-capped defensively.

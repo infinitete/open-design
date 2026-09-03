@@ -1,6 +1,9 @@
 import type { AgentInfo } from '../types';
 
-const HIDDEN_LOCAL_CLI_AGENT_IDS = new Set(['byok-opencode']);
+// `byok-opencode` is the internal BYOK carrier (never rendered as a CLI).
+// `amr` is the retired hosted runtime: the daemon no longer reports it, and
+// this set keeps any stale row from ever resurfacing as a selectable agent.
+const HIDDEN_LOCAL_CLI_AGENT_IDS = new Set(['byok-opencode', 'amr']);
 
 export function isVisibleLocalCliAgent(agent: Pick<AgentInfo, 'id'>): boolean {
   return !HIDDEN_LOCAL_CLI_AGENT_IDS.has(agent.id);

@@ -10,7 +10,6 @@ import {
   defaultAgentModelId,
   effectiveAgentModelChoice,
 } from './agentModelSelection';
-import { orderModelOptionsByAvailability } from './modelOptions';
 import {
   mergeProviderModelOptions,
   providerModelsCacheKey,
@@ -160,18 +159,10 @@ export function AvatarMenu({
     () => agents.find((a) => a.id === config.agentId) ?? null,
     [agents, config.agentId],
   );
-  const currentAgentModelOptions = useMemo(() => {
-    const models = currentAgent?.models ?? [];
-    if (currentAgent?.id !== 'amr') return models;
-    return orderModelOptionsByAvailability(models);
-  }, [currentAgent]);
-
-  const amrAgent = useMemo(
-    () => agents.find((a) => a.id === 'amr' && a.available) ?? null,
-    [agents],
+  const currentAgentModelOptions = useMemo(
+    () => currentAgent?.models ?? [],
+    [currentAgent],
   );
-  const amrAvailable = amrAgent !== null;
-  const amrProfile = config.agentCliEnv?.amr?.OPEN_DESIGN_AMR_PROFILE;
 
   // Resolve the user's model + reasoning pick for the active agent. Falls
   // back to the agent's declared default when the saved effort is absent or
@@ -300,9 +291,9 @@ export function AvatarMenu({
         : null;
   const triggerModelIconSrc = modelProviderIconSrc(triggerModelId);
   // Whether the daemon-mode popover can offer a real model radio list. When it
-  // can't (agent unavailable, or its model catalog is empty — e.g. the AMR
-  // member account before the vela catalog resolves), the popover falls back
-  // to a static current-model row so it never opens as an empty shell.
+  // can't (agent unavailable, or its model catalog is empty), the popover
+  // falls back to a static current-model row so it never opens as an empty
+  // shell.
   const hasSelectableModels = Boolean(
     currentAgent &&
       currentAgent.available &&

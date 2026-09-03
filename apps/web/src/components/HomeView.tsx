@@ -59,7 +59,7 @@ import { useI18n, useT } from '../i18n';
 import {
   formatModelWindowRetryAt,
   modelWindowLimitCopy,
-} from '../runtime/amr-guidance';
+} from '../runtime/run-failure-ui';
 import {
   localizeSkillName,
   localizeSkillPrompt,
@@ -288,7 +288,7 @@ interface Props {
   designSystemsLoading?: boolean;
   defaultDesignSystemId?: string | null;
   // `'blocked'` means the shell refused the submit but already surfaced its
-  // own UI (e.g. the AMR balance gate dialog): keep the draft, show no error.
+  // own UI (e.g. a preflight gate dialog): keep the draft, show no error.
   onSubmit: (
     payload: PluginLoopSubmit,
   ) => Promise<boolean | 'blocked' | void> | boolean | 'blocked' | void;
@@ -336,14 +336,6 @@ interface Props {
   executionSwitcher?: ReactNode;
   artifactUpgradeSlot?: ReactNode;
   deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
-  /** Real model switch for the campaign modal's paid 立即使用 CTA (D5).
-   *  EntryShell owns the agent/model persistence callbacks; HomeView only
-   *  threads them through, like the audience above. */
-  onDeepSeekV4FlashCampaignUseNow?: (agentId: string, modelId: string) => void;
-  /** Telemetry opt-in + install id for the modal's consent-gated AMR
-   *  attribution — EntryShell reads them off config, HomeView threads. */
-  deepSeekV4FlashCampaignMetricsConsent?: boolean;
-  deepSeekV4FlashCampaignInstallationId?: string | null;
 }
 
 const EMPTY_DESIGN_SYSTEMS: DesignSystemSummary[] = [];
@@ -538,9 +530,6 @@ export function HomeView({
   executionSwitcher,
   artifactUpgradeSlot,
   deepSeekV4FlashCampaignAudience = 'unknown',
-  onDeepSeekV4FlashCampaignUseNow,
-  deepSeekV4FlashCampaignMetricsConsent = false,
-  deepSeekV4FlashCampaignInstallationId = null,
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -1356,7 +1345,7 @@ export function HomeView({
   // Workspace context. Refresh only a missing value or the value previously
   // supplied by context, preserving an explicit plugin input when one exists.
   // This reads the exact context selected for this tab; it never consults or
-  // writes Vela/daemon account-level active-workspace state. That model cannot
+  // writes daemon account-level active-workspace state. That model cannot
   // represent two clients of one account open in different Workspaces.
   useEffect(() => {
     const nextWorkspaceName = workspaceContext?.workspaceName?.trim() || null;
@@ -3005,7 +2994,7 @@ export function HomeView({
         setError(t('home.createFailed'));
         return;
       }
-      // Blocked-and-handled (AMR balance gate): the shell already shows its
+      // Blocked-and-handled (a preflight gate): the shell already shows its
       // dialog. Keep the composer draft and staged contexts for the retry.
       if (accepted === 'blocked') return;
       // Create accepted — now it is safe to spend the one-shot marker.
@@ -3030,11 +3019,6 @@ export function HomeView({
       if (isTransportFailure) {
         setDaemonRecoveryActive(true);
         setError(t('home.daemonRecovering'));
-      } else if (
-        err instanceof ProjectCreateError
-        && err.code === 'AMR_AUTH_REQUIRED'
-      ) {
-        setError(t('entry.authExpiredBody'));
       } else {
         // A rolling model window is the one upstream failure whose own wording
         // must not reach the user: the gateway writes it in English for API
@@ -3092,9 +3076,6 @@ export function HomeView({
       <DeepSeekV4FlashCampaign
         audience={deepSeekV4FlashCampaignAudience}
         active={isActive}
-        onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}
-        metricsConsent={deepSeekV4FlashCampaignMetricsConsent}
-        installationId={deepSeekV4FlashCampaignInstallationId}
       />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero

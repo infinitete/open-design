@@ -69,29 +69,6 @@ export interface Dict {
   'invite.error.invite_unavailable': string;
   'invite.error.generic': string;
   'invite.error.retry': string;
-  'workspaceInvite.dialogAria': string;
-  'workspaceInvite.title': string;
-  'workspaceInvite.freePlanBody': string;
-  'workspaceInvite.teamPlanBody': string;
-  'workspaceInvite.seatsExhaustedBody': string;
-  'workspaceInvite.seatsExhaustedAction': string;
-  'workspaceInvite.emailLabel': string;
-  'workspaceInvite.roleLabel': string;
-  'workspaceInvite.defaultRoleLabel': string;
-  'workspaceInvite.emailPlaceholder': string;
-  'workspaceInvite.removeRow': string;
-  'workspaceInvite.addMember': string;
-  'workspaceInvite.visibilityQuestion': string;
-  'workspaceInvite.visibilityAnswer': string;
-  'workspaceInvite.sent': string;
-  'workspaceInvite.sending': string;
-  'workspaceInvite.confirm': string;
-  'workspaceInvite.submitFailed': string;
-  'workspaceInvite.errorAlreadyMember': string;
-  'workspaceInvite.errorPendingInvite': string;
-  'workspaceInvite.errorNoSession': string;
-  'workspaceInvite.errorNoWorkspace': string;
-  'workspaceInvite.errorUnreachable': string;
   // Common
   'common.cancel': string;
   'chat.selectFromLibrary': string;
@@ -263,17 +240,6 @@ export interface Dict {
   'settings.onboardingSystemsBody': string;
   'settings.onboardingExecutionTitle': string;
   'settings.onboardingExecutionBody': string;
-  'settings.onboardingAmrCloudBenefitOfficial': string;
-  'settings.onboardingAmrCloudBenefitReady': string;
-  'settings.onboardingAmrCloudBenefitModels': string;
-  'settings.onboardingAmrCloudBenefitPricing': string;
-  'settings.onboardingAmrCloudUpcomingLabel': string;
-  'settings.onboardingAmrCloudUpcomingImageVideo': string;
-  'settings.onboardingAmrCloudUpcomingSkills': string;
-  'settings.onboardingAmrCloudUpcomingRouting': string;
-  'settings.onboardingAmrModelSourceLabel': string;
-  'settings.onboardingAmrCloudAuthorizeAction': string;
-  'settings.onboardingAmrCloudAuthorizedAction': string;
   'settings.onboardingStepConnect': string;
   'settings.onboardingStepDesignSystem': string;
   'settings.onboardingStepProfile': string;
@@ -290,11 +256,9 @@ export interface Dict {
   'settings.onboardingCloudOr': string;
   'settings.onboardingCloudRights': string;
   'settings.onboardingGateTooltipNoRuntime': string;
-  'settings.onboardingGateTooltipAmr': string;
   'settings.onboardingGateTooltipLocal': string;
   'settings.onboardingGateTooltipByok': string;
   'settings.onboardingRecommended': string;
-  'settings.onboardingAmrCloudOfficialBadge': string;
   'settings.onboardingLocalTitle': string;
   'settings.onboardingLocalBody': string;
   'settings.onboardingLocalAction': string;
@@ -428,40 +392,6 @@ export interface Dict {
   'settings.agentAuthRequired': string;
   'settings.agentAuthUnknown': string;
   'settings.advanced': string;
-  'settings.amrLogin': string;
-  'settings.amrLogout': string;
-  'settings.amrLoggingIn': string;
-  'settings.amrLoggingOut': string;
-  'settings.amrLoggedInAs': string;
-  'settings.amrLoggedInWithPlan': string;
-  'settings.amrLoggedInPill': string;
-  'settings.amrNotLoggedIn': string;
-  'settings.amrCloud': string;
-  'settings.amrAuthorize': string;
-  'settings.amrBenefitOfficial': string;
-  'settings.amrBenefitLowerPrice': string;
-  'settings.amrBenefitManyModels': string;
-  'settings.amrPromoBonus': string;
-  'settings.amrSignInToContinue': string;
-  'settings.amrSignIn': string;
-  'settings.amrSignedIn': string;
-  'settings.amrWalletBalance': string;
-  'settings.amrWalletUnavailable': string;
-  'settings.amrWalletUpdatedAt': string;
-  'settings.amrWalletCached': string;
-  'settings.amrWalletRefresh': string;
-  'settings.amrWalletRefreshTitle': string;
-  'settings.amrNotSignedIn': string;
-  'settings.amrSigningIn': string;
-  'settings.amrActivationHint': string;
-  'settings.amrActivationBrowserFailed': string;
-  'settings.amrActivationOpen': string;
-  'settings.amrCancelSignIn': string;
-  'settings.amrAccountStatus': string;
-  'settings.amrConsole': string;
-  'settings.amrBalance': string;
-  'settings.amrPlan': string;
-  'settings.amrUpgrade': string;
   // Settings > Workspace region (E-frontend, D4.3): the role-gated shell for
   // other-lane workspace destinations. Shown only for a team workspace.
   'settings.workspace': string;
@@ -480,8 +410,6 @@ export interface Dict {
   // (back-to-home link, decorative search field, personal group label).
   'settings.pageBackToHome': string;
   'settings.pageNavGroupPersonal': string;
-  'settings.amrModelUpgradeHint': string;
-  'settings.amrLoginErrorCompact': string;
   'settings.apiSection': string;
   'settings.quickFillProvider': string;
   'settings.providerPreset': string;
@@ -1184,7 +1112,7 @@ export interface Dict {
   'entry.accountAddAccount': string;
   'entry.accountSignOut': string;
   // Sign-out confirmation dialog (recvqgMWpJZqhL) — shared by every logout
-  // entry point (nav-rail account menu + AMR account pill) so a stray click
+  // entry point (nav-rail account menu) so a stray click
   // can never sign the user out without an explicit confirm.
   'signOut.confirmTitle': string;
   'signOut.confirmMessage': string;
@@ -1430,7 +1358,6 @@ export interface Dict {
   'handoff.frameworkPrompt.solid': string;
   'handoff.frameworkPrompt.next': string;
   'handoff.frameworkPrompt.vanilla': string;
-  'handoff.amrWebsite': string;
   'handoff.copyPrompt': string;
   'handoff.copyPromptForTarget': string;
   'handoff.copied': string;
@@ -2718,8 +2645,6 @@ export interface Dict {
   'avatar.useApi': string;
   'avatar.codeAgent': string;
   'avatar.rescan': string;
-  'avatar.amrConsole': string;
-  'avatar.amrConsoleMeta': string;
   'avatar.settings': string;
   'avatar.backToProjects': string;
   'avatar.metaActive': string;
@@ -2773,6 +2698,7 @@ export interface Dict {
   'inlineSwitcher.openFullSettings': string;
   'inlineSwitcher.customSuffix': string;
   'inlineSwitcher.unlimitedBadge': string;
+  'inlineSwitcher.modelLockedHint': string;
 
   // Project view / chat pane / composer
   'project.backToProjects': string;
@@ -2799,48 +2725,6 @@ export interface Dict {
   'project.missing': string;
   'project.resizeChatPanel': string;
   'chat.tabChat': string;
-  'chat.amrCard.switchTitle': string;
-  'chat.amrCard.switchBody': string;
-  'chat.amrCard.chipOfficial': string;
-  'chat.amrCard.chipNoKey': string;
-  'chat.amrCard.chipAutoRetry': string;
-  'chat.amrCard.switchCta': string;
-  'chat.amrError.authMessage': string;
-  'chat.amrError.balanceMessage': string;
-  'chat.amrError.authorizeCta': string;
-  'chat.amrError.rechargeCta': string;
-  'chat.amrBalanceGate.title': string;
-  'chat.amrBalanceGate.message': string;
-  'chat.amrBalanceGate.benefitsTitle': string;
-  'chat.amrBalanceGate.benefit1': string;
-  'chat.amrBalanceGate.benefit2': string;
-  'chat.amrBalanceGate.benefit3': string;
-  'chat.amrBalanceGate.benefit4': string;
-  'chat.amrBalanceGate.laterCta': string;
-  'chat.amrBalanceGate.plansCta': string;
-  'chat.amrBalanceGate.signedOutTitle': string;
-  'chat.amrBalanceGate.signedOutMessage': string;
-  'chat.amrBalanceGate.signInCta': string;
-  'chat.amrBalanceGate.watchingWallet': string;
-  'chat.amrLowBalance.title': string;
-  'chat.amrLowBalance.message': string;
-  'chat.amrLowBalance.rechargeCta': string;
-  'chat.amrLowBalance.proceedCta': string;
-  'chat.amrLowBalance.dontRemind': string;
-  'chat.amrArtifactUpgrade.title': string;
-  'chat.amrArtifactUpgrade.message': string;
-  'chat.amrArtifactUpgrade.benefit1': string;
-  'chat.amrArtifactUpgrade.benefit2': string;
-  'chat.amrArtifactUpgrade.benefit3': string;
-  'chat.amrArtifactUpgrade.benefit4': string;
-  'chat.amrArtifactUpgrade.promoBanner': string;
-  'chat.amrArtifactUpgrade.countdownLabel': string;
-  'chat.amrArtifactUpgrade.plansCta': string;
-  'chat.amrArtifactUpgrade.homePlansCta': string;
-  'chat.amrArtifactUpgrade.laterCta': string;
-  'chat.amrArtifactUpgrade.homeTitle': string;
-  'chat.amrArtifactUpgrade.homeMessage': string;
-  'chat.amrArtifactUpgrade.homeArtifactCta': string;
   'chat.antigravityError.launchTerminalCta': string;
   'chat.antigravityError.launchSwitchModelCta': string;
   'chat.connectionDropped': string;
@@ -2868,7 +2752,6 @@ export interface Dict {
   'chat.runError.title.strategyTaskHalted': string;
   'chat.runError.title.generic': string;
   'chat.runError.title.artifactMissing': string;
-  'chat.runError.signInMessage.amr': string;
   'chat.runError.signInMessage.other': string;
   'chat.runError.cliMissingMessage': string;
   'chat.runError.promptTooLargeMessage': string;

@@ -35,7 +35,6 @@ export type McpFailureSource =
   | 'local_mcp'
   | 'open_design_daemon'
   | 'runtime_cli'
-  | 'vela_api'
   | 'model_provider'
   | 'artifact_store'
   | 'preview_delivery'

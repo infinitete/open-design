@@ -37,10 +37,6 @@ export const API_ERROR_CODES = [
   // A handshake failure that DOES name its cause (signed out, throttled, no
   // credit, upstream 5xx) keeps that cause's own code instead.
   'AGENT_CLI_SESSION_REFUSED',
-  'AMR_MODEL_UNAVAILABLE',
-  'AMR_AUTH_REQUIRED',
-  'AMR_INSUFFICIENT_BALANCE',
-  'AMR_TIER_UPGRADE_REQUIRED',
   // The agent emitted a fabricated Markdown role marker
   // (`## user` / `## assistant` / `## system`) inside its own response.
   // The chat host parses those lowercase lines as real turn

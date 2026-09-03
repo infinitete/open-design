@@ -11,13 +11,11 @@
 //     No header block when there is no cloud identity (context === null) —
 //     the rail starts at the search box; expand/collapse lives in the
 //     workspace tabs bar's pinned Home toggle.
-//   • Billing chip — real plan tier + explicitly scoped USD balance when Vela
-//     billing is available, with upgrade linking out to Vela Web.
 //   • Search box (opens the ⌘K project search palette via `onOpenSearch`).
 //   • 最近 (Recents) → home, Community → community.
 //   • Team block (only when `context.workspaceType === 'team'`): an inline team
 //     switcher + the team destinations. In-client views: drafts / all projects /
-//     design systems / 扩展 (plugins). Member management lives in B's vela/web
+//     design systems / 扩展 (plugins). Member management lives in the team web
 //     console, so 成员 / 数据大盘 / Workspace 设置 link OUT to it (target=_blank),
 //     derived from `context.workspaceSettingsUrl`.
 //
@@ -38,12 +36,10 @@ import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
 import { Icon } from './Icon';
 import { GITHUB_STARS_FALLBACK_LABEL, formatStars, useGithubStars } from './useGithubStars';
 import { RemixIcon } from './RemixIcon';
-import { MessageCenter } from './MessageCenter';
 import type { EntrySettingsSection } from './EntrySettingsMenu';
 import { useI18n } from '../i18n';
 import { useDismissOnOutsideInteraction } from '../hooks/useDismissOnOutsideInteraction';
 import { ENTRY_RAIL_TOGGLE_EVENT } from './entryRailBridge';
-import { amrPlansUrlForProfile } from '../runtime/amr-guidance';
 import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 import type { EntryHomeView } from '../router';
@@ -94,25 +90,23 @@ type WorkspaceBillingSummary = {
 const workspaceSeatCapacityState = (_s?: unknown): string => 'ok';
 const resolvePlanLabelTier = (_o?: unknown): string | null => null;
 const planBadgeTierForWorkspace = (_o?: unknown): string | null => null;
-const formatVelaBalanceUsd = (_raw?: string | null): string | null => null;
 const shouldShowCreditsBalance = (_b?: unknown): boolean => false;
 const canUpgradeFromPlanTier = (_p?: string | null): boolean => false;
-const fetchVelaLoginStatus = async (): Promise<{ loggedIn: boolean; user?: { id?: string; email?: string } | null } | null> => null;
 const trackWorkspaceSurfaceView = (..._a: unknown[]): void => {};
 const trackWorkspaceSwitcherClick = (..._a: unknown[]): void => {};
 const trackWorkspaceSwitchResult = (..._a: unknown[]): void => {};
 const workspaceAnalyticsDimensions = (_c?: unknown): Record<string, unknown> => ({});
 function notifyWorkspaceBillingRefresh(): void {}
 function notifyWorkspaceContextRefresh(): void {}
-const velaLogout = async (): Promise<{ ok: boolean }> => ({ ok: true });
 function resetCloudSignInTipDismissal(): void {}
-function notifyAmrLoginStatusChanged(_r?: string): void {}
 function notifyTeamProjectsChanged(): void {}
 const workspaceIdentityCacheKey = (_c?: unknown): string => 'local';
 
 const REPO_URL = 'https://github.com/nexu-io/open-design';
 const GITHUB_HELP_URL = `${REPO_URL}/issues/new`;
 const GITHUB_FEATURE_URL = `${REPO_URL}/pulls`;
+// Public plan-comparison page every generic 「升级」 affordance links to.
+const OPEN_DESIGN_PRICING_URL = 'https://open-design.ai/pricing/';
 const externalLinkProps = { target: '_blank', rel: 'noreferrer noopener' } as const;
 
 // Last directory this shell successfully read. `coalescedGet` only collapses
@@ -224,7 +218,7 @@ interface Props {
   topRightSlot?: ReactNode;
   /** The one shared workspace context; null → local (no cloud identity) state. */
   context?: WorkspaceCollabContext;
-  /** Account billing metadata (via the vela CLI 收口). Null → the billing
+  /** Account billing metadata (via the cloud console). Null → the billing
    *  chip falls back to the context plan-tier hint. */
   billing?: WorkspaceBillingSummary | null;
   /** Explicitly scoped balance in USD for `context`. Team callers must pass
@@ -249,11 +243,6 @@ interface Props {
   updaterSlot?: ReactNode;
   /** Optional notice shown above the footer controls. */
   footerNotice?: ReactNode;
-  /** One-off targeted announcement coordination owned by the Home shell. */
-  priorityAnnouncementActive?: boolean;
-  onPriorityAnnouncementPendingChange?: (pending: boolean) => void;
-  priorityAnnouncementCurrentPlanId?: string | null;
-  priorityAnnouncementMetricsConsent?: boolean;
 }
 
 interface NavButtonProps {
@@ -329,7 +318,7 @@ function handleWorkspaceMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): 
   items[nextIndex]?.focus();
 }
 
-// Team management (members, dashboard, settings) lives in B's vela/web console,
+// Team management (members, dashboard, settings) lives in the team web console,
 // not the local client. We link out to it, deriving the section path from the one
 // workspace-settings URL the context carries. Best-effort: swap/append the section
 // segment, falling back to the raw settings URL when the path can't be rewritten.
@@ -352,7 +341,7 @@ export function teamConsoleUrl(
   // `billing` (the 「额度」 row) is a plain dashboard visit. It used to open a
   // wallet page; that route still answers on B's side but is no longer part of
   // the product's information architecture — balance, manual top-up and the
-  // auto-recharge policy were rehomed onto the dashboard (vela #1055).
+  // auto-recharge policy were rehomed onto the dashboard.
   //
   // Plan comparison is deliberately absent here: every generic upgrade entry
   // uses `workspaceUpgradeUrl` and public Pricing instead of a Cloud modal.
@@ -370,7 +359,7 @@ export function teamConsoleUrl(
       segments.push(path);
     }
     url.pathname = `/${segments.join('/')}`;
-    // Vela owns the final invite action because only its dashboard has the
+    // The console owns the final invite action because only its dashboard has the
     // authoritative subscription + seat state needed to choose between
     // upgrading to Team, buying seats, and sending an invite. `invite=auto`
     // is consumed one-shot by that dashboard and then removed from the URL.
@@ -413,19 +402,19 @@ export function workspaceUpgradeUrl(
   // profile because there is no workspace identity to authorize yet.
   if (context && context.permissions?.canManageBilling !== true) return null;
   if (!context && !options) return null;
-  return amrPlansUrlForProfile(options?.fallbackProfile);
+  return OPEN_DESIGN_PRICING_URL;
 }
 
 export type WorkspaceInviteTarget =
   | { kind: 'local' }
-  | { kind: 'vela'; url: string }
+  | { kind: 'console'; url: string }
   | { kind: 'unavailable' };
 
 /**
  * Whether this member should discover the invite flow.
  *
  * Direct invites and billing recovery are separate capabilities. A Personal
- * Free owner (or a full Team owner) can still enter Vela's upgrade/seat flow
+ * Free owner (or a full Team owner) can still enter the console upgrade/seat flow
  * without direct invite capability, but an admin never acquires billing power
  * from role alone. Unknown capacity remains usable for a member with explicit
  * invite permission; the invite API is still the authority if the plan is full.
@@ -475,7 +464,7 @@ function workspaceSeatFull(
  * Chooses the first safe invite surface. The local form requires direct invite
  * capability and no proof that the team is already full; unknown capacity is
  * resolved by the invite API when the form is submitted.
- * Personal, Free-plan, and proven full-seat owner states go to Vela, whose
+ * Personal, Free-plan, and proven full-seat owner states go to the console, whose
  * dashboard owns the authoritative upgrade/seat/invite decision. Unknown seat
  * data stays on the local permission-gated flow and lets the invite API return
  * an authoritative capacity result.
@@ -498,11 +487,11 @@ export function resolveWorkspaceInviteTarget(
   }
   const settingsUrl = context?.workspaceSettingsUrl?.trim() || null;
   if (!settingsUrl) return { kind: 'unavailable' };
-  return { kind: 'vela', url: teamConsoleUrl(settingsUrl, 'invite') };
+  return { kind: 'console', url: teamConsoleUrl(settingsUrl, 'invite') };
 }
 
 /**
- * Map a raw vela plan id to a display label for the credits card.
+ * Map a raw plan id to a display label for the credits card.
  *
  * B's ids are namespaced by workspace kind and tier (`team_plus`, `team_max`,
  * `pro`, …). The card pairs this label with a PlanWordmark badge that already
@@ -579,10 +568,6 @@ export function EntryTopRightCluster({
   updaterSlot?: ReactNode;
   onOpenSettings?: (section?: EntrySettingsSection) => void;
   onSignedOut?: () => void | Promise<void>;
-  priorityAnnouncementActive?: boolean;
-  onPriorityAnnouncementPendingChange?: (pending: boolean) => void;
-  priorityAnnouncementCurrentPlanId?: string | null;
-  priorityAnnouncementMetricsConsent?: boolean;
 }) {
   return (
     <div className="entry-top-right-cluster">
@@ -594,16 +579,14 @@ export function EntryTopRightCluster({
 
 
 /** Project-view variant. Bound projects pass their route-owned Workspace
- * authority explicitly; an unbound local project deliberately falls back to
- * the shell's ambient account context. */
+ *  authority explicitly; an unbound local project deliberately falls back to
+ *  the shell's ambient account context. */
 export function WorkspaceTopRightAccountCluster(_props: {
   onOpenSettings?: (section?: EntrySettingsSection) => void;
   onSignedOut?: () => void | Promise<void>;
   updaterSlot?: ReactNode;
   workspaceContextOverride?: WorkspaceCollabContext;
   workspaceContextLoading?: boolean;
-  amrLoggedIn?: boolean | null;
-  amrAccountPlan?: string | null;
   metricsConsent?: boolean;
   installationId?: string | null;
 }) {
@@ -626,10 +609,6 @@ export function EntryNavRail({
   onSignedOut,
   updaterSlot,
   footerNotice,
-  priorityAnnouncementActive,
-  onPriorityAnnouncementPendingChange,
-  priorityAnnouncementCurrentPlanId,
-  priorityAnnouncementMetricsConsent,
 }: Props) {
   const { t } = useI18n();
   const analytics = useAnalytics();
@@ -651,12 +630,6 @@ export function EntryNavRail({
   const canAccessInviteFlow = canAccessWorkspaceInviteFlow(context);
   const workspaceSettingsUrl = context?.workspaceSettingsUrl?.trim() || null;
 
-  // Message-center panel for the SIGNED-OUT shell only (its rail item under
-  // 设置 is the one opener there). The signed-in panel — plus the unread badge
-  // on the avatar — lives inside `EntryTopRightCluster` with the account menu.
-  const [messageCenterOpen, setMessageCenterOpen] = useState(false);
-  const [messageUnreadCount, setMessageUnreadCount] = useState(0);
-  const messageCenterRailRef = useRef<HTMLButtonElement | null>(null);
   const [teamOpen, setTeamOpen] = useState(false);
   useEffect(() => {
     if (!teamOpen) return;
@@ -860,23 +833,6 @@ export function EntryNavRail({
             >
               <Icon name="settings" size={16} />
             </NavButton>
-            {/* Signed-out has no account menu (where the 消息中心 row lives when
-                signed in), which left the message panel with no opener at all.
-                It rides here as the rail item under 设置. */}
-            <NavButton
-              ariaLabel={t('messageCenter.title')}
-              label={t('messageCenter.title')}
-              onClick={() => setMessageCenterOpen(true)}
-              testId="entry-nav-message-center"
-              buttonRef={messageCenterRailRef}
-              ariaHasPopup="dialog"
-              ariaExpanded={messageCenterOpen}
-            >
-              <Icon name="bell" size={16} />
-              {messageUnreadCount > 0 ? (
-                <span className="entry-nav-rail__btn-dot" aria-hidden />
-              ) : null}
-            </NavButton>
           </>
         )}
       </div>
@@ -884,25 +840,6 @@ export function EntryNavRail({
         <div className="entry-nav-rail__footer">{footerNotice}</div>
       ) : null}
       </div>
-
-      {/* Signed-out message-center panel + unread polling (the rail's bell
-          item above is its opener). Signed-in mounts move into
-          `EntryTopRightCluster` — context-gating both sides is what keeps
-          exactly one panel (and one unread poller) alive. */}
-      {context ? null : (
-        <MessageCenter
-          hideTrigger
-          returnFocusRef={messageCenterRailRef}
-          open={messageCenterOpen}
-          onOpenChange={setMessageCenterOpen}
-          onUnreadCountChange={setMessageUnreadCount}
-          onOpenNotificationSettings={onOpenSettings ? () => onOpenSettings('notifications') : undefined}
-          priorityAnnouncementActive={priorityAnnouncementActive}
-          onPriorityAnnouncementPendingChange={onPriorityAnnouncementPendingChange}
-          priorityAnnouncementCurrentPlanId={priorityAnnouncementCurrentPlanId}
-          priorityAnnouncementMetricsConsent={priorityAnnouncementMetricsConsent}
-        />
-      )}
 
       {/* Top-right chrome cluster: campaign badge (slot) + credits pill +
           the account module, mounted into the tabs chrome's no-drag actions
@@ -914,10 +851,6 @@ export function EntryNavRail({
         leadingSlot={topRightSlot}
         updaterSlot={updaterSlot}
         onOpenSettings={onOpenSettings}
-        priorityAnnouncementActive={priorityAnnouncementActive}
-        onPriorityAnnouncementPendingChange={onPriorityAnnouncementPendingChange}
-        priorityAnnouncementCurrentPlanId={priorityAnnouncementCurrentPlanId}
-        priorityAnnouncementMetricsConsent={priorityAnnouncementMetricsConsent}
       />
     </nav>
   );

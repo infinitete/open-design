@@ -49,27 +49,6 @@
   box-shadow: 0 5px 16px rgb(20 24 32 / 7%);
 }
 
-.hostedOption.hostedOption.hostedOption {
-  border-color: color-mix(in srgb, var(--brand) 42%, var(--border));
-  background: color-mix(in srgb, var(--brand-soft) 38%, transparent);
-}
-
-.hostedOption.hostedOption.hostedOption:hover {
-  border-color: color-mix(in srgb, var(--brand) 68%, var(--border-strong));
-  background: color-mix(in srgb, var(--brand-soft) 72%, var(--bg-panel));
-}
-
-.hostedOption.optionActive.optionActive {
-  border-color: color-mix(in srgb, var(--brand) 82%, var(--border-strong));
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--brand-soft) 88%, var(--bg-panel)) 0%,
-    color-mix(in srgb, var(--brand-soft) 42%, var(--bg-panel)) 72%
-  );
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent),
-    0 8px 22px color-mix(in srgb, var(--brand) 14%, transparent);
-}
 
 .option.option.option:focus-visible {
   outline: 2px solid var(--accent);
@@ -112,39 +91,6 @@
   align-items: center;
 }
 
-.recommendedBadge {
-  display: inline-flex;
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: 1px solid color-mix(in srgb, var(--brand) 64%, var(--green-border));
-  border-radius: 999px;
-  background: var(--brand-soft);
-  color: var(--brand-text);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 1.35;
-  text-transform: uppercase;
-}
-
-.hostedOption .optionIcon {
-  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
-  background: color-mix(in srgb, var(--brand-soft) 76%, var(--bg));
-  color: var(--brand-text);
-}
-
-.hostedOption.optionActive .optionTitle,
-.hostedOption.optionActive .radio {
-  color: var(--brand-text);
-}
-
-.hostedOption.optionActive .radio {
-  border-color: var(--brand-text);
-}
-
-.hostedOption.optionActive .radio::after {
-  background: var(--brand-text);
-}
 
 .optionBody {
   display: block;

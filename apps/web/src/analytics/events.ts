@@ -73,9 +73,7 @@ import type {
   DesignToolboxClickProps,
   NextStepActionClickProps,
   QuestionsFormClickProps,
-  RunFailedToastClickProps,
   RunRecoveryActionClickProps,
-  AmrEntryClickProps,
   PreviewRunStatusSurfaceViewProps,
   DeepSeekCampaignModalClickProps,
   GoPlanSunsetModalClickProps,
@@ -341,13 +339,6 @@ export function trackQuestionsFormSurfaceView(
   send(track, 'surface_view', props);
 }
 
-export function trackRunFailedToastGoAmrClick(
-  track: Track,
-  props: RunFailedToastClickProps,
-): void {
-  send(track, 'ui_click', props);
-}
-
 export function trackRunRecoveryActionClick(
   track: Track,
   props: RunRecoveryActionClickProps,
@@ -381,13 +372,6 @@ export function trackStudioOnboardingHintSurfaceView(
 export function trackStudioOnboardingHintClick(
   track: Track,
   props: StudioOnboardingHintClickProps,
-): void {
-  send(track, 'ui_click', props);
-}
-
-export function trackAmrEntryClick(
-  track: Track,
-  props: AmrEntryClickProps,
 ): void {
   send(track, 'ui_click', props);
 }

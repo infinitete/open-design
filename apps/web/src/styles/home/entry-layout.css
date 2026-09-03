@@ -378,121 +378,6 @@
 .entry-rail-actions .use-everywhere-chip {
   justify-content: center;
 }
-.entry-local-mode-tip {
-  /* In flow, not absolute. It used to be anchored to the footer's bottom edge
-     (position: absolute; bottom: 3px; z-index: 2), which hid whatever else the
-     footer held for exactly the signed-out users this card is shown to.
-     Sitting in flow keeps it reachable and lets the footer size itself. */
-  order: 2;
-  display: grid;
-  gap: 8px;
-  width: calc(100% - var(--spacing-16, 16px));
-  margin: 0 auto;
-  padding: 8px;
-  box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-panel);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-  text-align: left;
-  cursor: pointer;
-  z-index: 2;
-  /* A mousedown→mouseup gesture that selects the label text (any hair of
-     drag, e.g. a real click made while screen-recording) makes the browser
-     suppress the click event entirely — this card would then silently never
-     call begin(), with no spinner, no browser tab, and no visible error. */
-  user-select: none;
-  transition: border-color 120ms, background 120ms, transform 120ms;
-}
-.entry-local-mode-tip:hover,
-.entry-local-mode-tip:focus-visible {
-  border-color: var(--border-strong);
-  background: var(--bg-subtle);
-  outline: none;
-  transform: translateY(-1px);
-}
-.entry-local-mode-tip__head {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  color: var(--text-strong);
-}
-.entry-local-mode-tip__login-badge {
-  display: inline-flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 30px;
-  overflow: hidden;
-  padding: 0 16px;
-  border-radius: var(--radius-pill, 999px);
-  background: var(--accent);
-  color: #00ff08;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.entry-local-mode-tip p {
-  margin: 0;
-}
-/* While the vela device-auth flow is pending the card stops being a button:
-   the body swaps to a progress line + cancel, so the hover lift would lie. */
-.entry-local-mode-tip.is-signing {
-  cursor: default;
-}
-.entry-local-mode-tip.is-signing:hover {
-  transform: none;
-  border-color: var(--border);
-  background: var(--bg-panel);
-}
-.entry-local-mode-tip__cancel {
-  justify-self: start;
-  margin-top: 2px;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.4;
-  cursor: pointer;
-  transition: border-color 120ms, background 120ms, color 120ms;
-}
-.entry-local-mode-tip__cancel:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-subtle);
-  color: var(--text);
-}
-
-/* ---------- Rail account skeleton (RailAccountSyncTip) ----------
-   Stand-in for the account row (`.entry-nav-rail__account-trigger` below)
-   while the just-signed-in `GET /api/workspace/context` re-read is still in
-   flight. Unlike `.entry-local-mode-tip` (absolutely positioned with a fixed
-   `bottom` so its card shape never collides with the rail-actions row below
-   it), this is a normal flex child of `.entry-nav-rail__footer` — the same
-   flow `.entry-rail-actions` already uses (`width: calc(100% - 18px); margin:
-   0 auto;`). That keeps it clear of the actions row through ordinary flex
-   stacking instead of a guessed pixel offset, AND lands its bottom edge
-   close to the panel's bottom padding the same way the real account-trigger
-   does once it mounts in `.entry-nav-rail__group` — so the loading→loaded
-   swap reads as one row filling in, not a card jumping to a different slot
-   (recvqgpXSYFNTq follow-up, 2026-07-24 product feedback). */
-.entry-rail-account-skeleton {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% - 18px);
-  margin: 0 auto;
-  min-height: 34px;
-  padding: 4px 6px;
-  box-sizing: border-box;
-}
 .entry-rail-account-skeleton__avatar,
 .entry-rail-account-skeleton__name {
   display: block;
@@ -1715,22 +1600,6 @@
 .inline-switcher--compact .inline-switcher__chip-text {
   display: none;
 }
-.inline-switcher__amr-reminder-dot {
-  position: absolute;
-  z-index: 1;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--danger, #dc2626);
-  box-shadow:
-    0 0 0 2px var(--bg-panel),
-    0 0 0 4px color-mix(in srgb, var(--danger, #dc2626) 12%, transparent);
-  pointer-events: none;
-}
-.inline-switcher__amr-reminder-dot--chip {
-  top: -2px;
-  right: -2px;
-}
 
 /* Popover */
 .inline-switcher__popover {
@@ -1934,10 +1803,6 @@
   .inline-switcher--compact .inline-switcher__agent-name {
     transition: none;
   }
-}
-.inline-switcher__amr-reminder-dot--agent {
-  top: 6px;
-  left: 26px;
 }
 .inline-switcher__agent-name {
   flex: 1 1 auto;
@@ -2311,7 +2176,6 @@
   color: var(--text-muted);
 }
 
-
 .inline-switcher__select {
   appearance: none;
   width: 100%;
@@ -2347,9 +2211,9 @@
   appearance: none;
   border: 0;
   /* Pinned to the bottom of the popover's scroll port: the model list can be
-     long (29 models on AMR), and this entry used to scroll away with it — the
-     one link out to where agent switching now lives. Opaque so rows scrolling
-     underneath do not show through. */
+     long, and this entry used to scroll away with it — the one link out to
+     where agent switching now lives. Opaque so rows scrolling underneath do
+     not show through. */
   position: sticky;
   bottom: -12px;
   z-index: 1;
@@ -2710,30 +2574,6 @@
 
 .onboarding-cloud__cancel:hover {
   color: var(--text-strong);
-}
-
-/* Capsule treatment for the activation-retry card on THIS view only — the
- * base `.amr-login-activation` rule (artifacts.css) stays untouched so
- * Settings/AmrLoginPill and CloudSignInTip keep their compact inline card.
- * Compound selector (not cascade order) guarantees this wins over the base
- * padding/radius regardless of stylesheet import order. */
-.amr-login-activation.onboarding-cloud__activation {
-  padding: 16px;
-  border-radius: 28px;
-}
-
-/* Keep the retry controls centered in the activation card. They deliberately
- * retain their intrinsic width instead of stretching from the left edge — the
- * primary "Open sign-in page" action should read as the card's focal CTA. */
-.onboarding-cloud__activation .amr-login-activation__actions {
-  width: 100%;
-  justify-content: center;
-  gap: 8px;
-}
-
-.onboarding-cloud__activation .amr-login-activation__open {
-  flex: 0 0 auto;
-  justify-content: center;
 }
 
 .onboarding-cloud__activation-dismiss {
@@ -3595,19 +3435,6 @@
   box-shadow: 0 18px 40px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.onboarding-view__card--featured.onboarding-view__card--amr {
-  grid-template-columns: max-content minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  column-gap: 22px;
-  row-gap: 18px;
-  align-items: center;
-  min-height: 246px;
-  padding: 40px 34px 36px;
-  overflow: visible;
-  position: relative;
-  z-index: 3;
-}
-
 .onboarding-view__card.is-selected {
   border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
   background: color-mix(in srgb, var(--bg-panel) 94%, var(--accent) 6%);
@@ -3674,11 +3501,6 @@
   border-radius: inherit;
 }
 
-.onboarding-view__card--amr > .onboarding-view__icon {
-  grid-column: 1;
-  grid-row: 1;
-}
-
 .onboarding-view__badge {
   display: inline-flex;
   align-items: center;
@@ -3714,11 +3536,6 @@
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg-panel) 98%, var(--text-muted) 2%);
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
-}
-
-.onboarding-view__card--amr.is-selected .onboarding-view__identity {
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: color-mix(in srgb, var(--bg-panel) 96%, var(--accent) 4%);
 }
 
 .onboarding-view__identity .onboarding-view__card-copy {
@@ -3767,25 +3584,6 @@
   font-size: 13px;
 }
 
-.onboarding-view__benefit-stack {
-  display: grid;
-  gap: 9px;
-  min-width: 0;
-}
-
-.onboarding-view__benefit-aside {
-  grid-column: 2;
-  grid-row: 1;
-  display: grid;
-  min-width: 0;
-  width: 100%;
-  justify-self: stretch;
-}
-
-.onboarding-view__benefit-aside .onboarding-view__benefit-stack {
-  gap: 10px;
-}
-
 .onboarding-view__model-picker {
   display: grid;
   gap: 8px;
@@ -3795,10 +3593,6 @@
 
 .onboarding-view__card-model .onboarding-view__model-picker {
   width: min(260px, 100%);
-}
-
-.onboarding-view__card--amr .onboarding-view__model-picker {
-  width: 100%;
 }
 
 .onboarding-view__alternatives .onboarding-view__model-picker {
@@ -3888,120 +3682,6 @@
   pointer-events: none;
 }
 
-.onboarding-view__benefits {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: fit-content;
-  max-width: 100%;
-  margin-top: 0;
-}
-
-.onboarding-view__benefit-aside .onboarding-view__benefits {
-  flex-wrap: wrap;
-  gap: 7px;
-  width: 100%;
-  max-width: 100%;
-}
-
-.onboarding-view__benefit-aside
-  .onboarding-view__benefits
-  > .onboarding-view__benefit {
-  min-height: 28px;
-  padding: 0 12px;
-  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
-  color: var(--accent-strong);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--accent) 13%, var(--bg-panel)) 0%,
-      color-mix(in srgb, var(--accent) 7%, var(--bg-panel)) 100%
-    );
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent),
-    0 6px 16px color-mix(in srgb, var(--accent) 7%, transparent);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.onboarding-view__benefit {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  padding: 0 8px;
-  border-radius: var(--radius-pill);
-  border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
-  color: color-mix(in srgb, var(--accent-strong) 92%, var(--text));
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.onboarding-view__benefit--hero {
-  min-height: 24px;
-  padding: 0 9px;
-  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
-  color: var(--accent-strong);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--accent) 15%, var(--bg-panel)) 0%,
-      color-mix(in srgb, var(--accent) 7%, var(--bg-panel)) 100%
-    );
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent),
-    0 7px 18px color-mix(in srgb, var(--accent) 8%, transparent);
-}
-
-.onboarding-view__upcoming-benefits {
-  display: flex;
-  align-items: center;
-  justify-self: start;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 0;
-  width: fit-content;
-  max-width: 100%;
-  margin-left: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.onboarding-view__upcoming-label {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  color: color-mix(in srgb, var(--text-muted) 74%, var(--text));
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.onboarding-view__upcoming-label::after {
-  content: "";
-  width: 2px;
-  height: 2px;
-  margin-left: 6px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--text-muted) 40%, transparent);
-}
-
-.onboarding-view__benefit--upcoming {
-  min-height: 22px;
-  padding: 0 8px;
-  border-color: color-mix(in srgb, var(--text-muted) 8%, transparent);
-  color: color-mix(in srgb, var(--text-muted) 68%, var(--text));
-  background: color-mix(in srgb, var(--text-muted) 4%, transparent);
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .onboarding-view__card-status {
   position: absolute;
   left: 24px;
@@ -4011,65 +3691,6 @@
   max-width: min(260px, calc(100% - 72px));
   color: var(--text-muted);
   pointer-events: none;
-}
-
-.onboarding-view__card-status .amr-account-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  max-width: 100%;
-  min-height: 20px;
-  gap: 6px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--bg-panel) 90%, var(--accent) 10%);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
-  color: currentColor;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.onboarding-view__card-status .amr-account-control__status {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.onboarding-view__card-status .amr-account-control__status::before {
-  content: '';
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: currentColor;
-  opacity: 0.7;
-}
-
-.onboarding-view__card-status .amr-account-control--signed-in {
-  color: var(--success-text, #15803d);
-  border-color: color-mix(in srgb, var(--success-text, #15803d) 18%, var(--border));
-  background: color-mix(in srgb, var(--bg-panel) 88%, var(--success-text, #15803d) 12%);
-}
-
-.onboarding-view__card-status .amr-account-control--signing-in {
-  color: var(--accent-strong);
-}
-
-.onboarding-view__card-status .amr-account-control--error {
-  color: var(--danger-text, #991b1b);
-  border-color: color-mix(in srgb, var(--danger-text, #991b1b) 18%, var(--border));
-  background: color-mix(in srgb, var(--bg-panel) 88%, var(--danger-text, #991b1b) 12%);
-}
-
-.onboarding-view__card-status .amr-account-control__error {
-  display: none;
 }
 
 .onboarding-view__card-action {
@@ -4870,8 +4491,6 @@
   margin-inline-end: auto;
 }
 
-
-
 /* ============================================================
    GitHub star pill — sticky top-bar CTA.
 
@@ -5315,21 +4934,9 @@
 }
 
 @media (max-width: 760px) {
-  .onboarding-view__card--featured.onboarding-view__card--amr {
-    grid-template-columns: 1fr;
-    gap: 14px;
-    align-items: center;
-    min-height: 190px;
-    padding: 28px 18px 32px;
-  }
-
   .onboarding-view__identity {
     grid-column: 1 / -1;
     width: 100%;
-  }
-
-  .onboarding-view__card--amr .onboarding-view__card-model {
-    grid-column: 1 / -1;
   }
 
   .onboarding-view__card--benefit-aside .onboarding-view__benefit-aside {
@@ -5350,22 +4957,6 @@
     max-width: min(240px, calc(100% - 72px));
   }
 
-}
-
-/* ============================================================
-   AMR cloud card — detecting / skeleton state
-   Shown while AMR availability is still being probed. Reuses the
-   featured/amr card classes (so min-height: 246px and the responsive
-   grid are inherited — no layout jump when the real card resolves).
-   Only the probe-dependent parts shimmer; the brand stays solid.
-   ============================================================ */
-.onboarding-view__card--skeleton {
-  cursor: default;
-  /* Neutral, un-selected resting surface — the card is not yet actionable,
-     so it must not read as the accent-selected state. */
-  border-color: var(--border);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-xs);
 }
 
 .onboarding-view__card--skeleton:hover {
@@ -5408,13 +4999,6 @@
     color-mix(in srgb, var(--bg-elevated) 70%, var(--bg-muted));
 }
 
-/* Version meta placeholder (sits where "AMR v0.1.0" renders). */
-.onboarding-view__skeleton-line--meta {
-  width: 116px;
-  height: 11px;
-  margin-top: 2px;
-}
-
 /* Benefit list placeholders in the aside column. Staggered widths read as
    real copy rather than a stack of identical bars. */
 .onboarding-view__benefit-stack--skeleton {
@@ -5433,16 +5017,6 @@
   .onboarding-view__skeleton-line--benefit:nth-child(3) { width: 83%; }
 .onboarding-view__benefit-stack--skeleton
   .onboarding-view__skeleton-line--benefit:nth-child(4) { width: 58%; }
-
-/* Model picker placeholder (sits where the AMR model select renders). */
-.onboarding-view__skeleton-model {
-  display: grid;
-  gap: 8px;
-  width: min(260px, 100%);
-}
-.onboarding-view__card--amr .onboarding-view__skeleton-model {
-  width: 100%;
-}
 .onboarding-view__skeleton-model-label {
   width: 96px;
   height: 11px;
@@ -7875,7 +7449,6 @@ button.entry-nav-rail__menu-credits-row:active:not(:disabled) {
   }
 }
 
-
 /* ---- Restored: branch-local styles clobbered by the #5517 whole-file
    entry-layout.css replacement (2567c3e6f) — language submenu, menu chevron,
    workspace menu meta, InviteDialog art, InlineModelSwitcher account block.
@@ -7943,11 +7516,6 @@ button.entry-nav-rail__menu-credits-row:active:not(:disabled) {
   position: relative;
   flex: 0 0 auto;
   display: inline-flex;
-}
-
-.inline-switcher__amr-reminder-dot--account {
-  top: -1px;
-  right: -1px;
 }
 
 .inline-switcher__account-name {
@@ -8148,7 +7716,6 @@ button.entry-nav-rail__menu-credits-row:active:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 
 /* The invite rows scroll within a capped region so adding many members can't
    grow the dialog past the viewport; the header labels and submit stay put. */

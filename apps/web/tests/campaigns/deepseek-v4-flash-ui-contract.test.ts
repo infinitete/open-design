@@ -87,10 +87,11 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(badgeRule).not.toContain('background: transparent');
   });
 
-  it('carries a campaign-specific attribution id into the model upgrade flow', () => {
-    expect(modelSwitcherSource).toContain("'deepseek_model_switcher_upgrade'");
-    expect(modelSwitcherSource).toContain('attributedAmrUrl(');
-    expect(modelSwitcherSource).toContain('campaignNeedsUpgrade');
+  it('keeps the campaign audience branches without hosted attribution plumbing', () => {
+    expect(modelSwitcherSource).toContain('const campaignNeedsUpgrade = false;');
+    // The hosted attribution URL builder is gone with the runtime it served.
+    expect(modelSwitcherSource).not.toContain('attributedAmrUrl(');
+    expect(modelSwitcherSource).not.toContain("'deepseek_model_switcher_upgrade'");
   });
 
   it('mounts the campaign modal gated on the active home view only', () => {
@@ -115,21 +116,14 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     );
   });
 
-  it('wires the paid use_now CTA to the real agent/model switch (D5)', () => {
-    // The modal's callback must reach EntryShell's persistence pair — the
-    // same onAgentChange/onAgentModelChange the InlineModelSwitcher writes
-    // through — so 立即使用 changes the workbench, not just the UI.
-    // Mode must flip to daemon first: a paid BYOK user (mode === 'api')
-    // would otherwise keep the BYOK provider after agent/model ids change.
-    expect(entryShellSource).toContain('applyDeepSeekCampaignModel');
-    expect(entryShellSource).toMatch(
-      /onModeChange\('daemon'\);\s*onAgentChange\(agentId\);\s*onAgentModelChange\(agentId, \{ model: modelId \}\)/,
-    );
-    expect(entryShellSource).toMatch(
-      /\[onAgentChange, onAgentModelChange, onModeChange\]/,
-    );
-    expect(homeViewSource).toContain('onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}');
-    expect(campaignModalSource).toContain("onUseCampaignModel?.('amr', campaign.modelId)");
+  it('keeps the paid use_now CTA free of retired-runtime selection', () => {
+    // The hosted runtime the paid CTA used to switch onto is retired; the
+    // modal must not select any agent, and no surface may wire an agent
+    // switch through the campaign.
+    expect(campaignModalSource).not.toContain('onUseCampaignModel');
+    expect(entryShellSource).not.toContain('applyDeepSeekCampaignModel');
+    expect(homeViewSource).not.toContain('onUseCampaignModel');
+    expect(campaignModalSource).not.toContain("('amr'");
   });
 
   it('keeps every campaign surface free of URL-parameter reads (product decision)', () => {

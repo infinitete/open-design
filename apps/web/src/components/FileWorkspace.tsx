@@ -344,11 +344,11 @@ interface Props {
   artifactHtml?: string | null;
   conversationError?: string | null;
   // Contextual failure recovery, mirrored from the chat error card so the
-  // preview surface can offer the same one-click fix (AMR authorize, terminal
+  // preview surface can offer the same one-click fix (terminal
   // sign-in) instead of a bare retry.
   onAuthorizeAndRetry?: (message: ChatMessage) => void;
   onLaunchTerminalAuth?: () => void;
-  // Conversation id for the AMR promotion-card telemetry payload.
+  // Conversation id for the failure-recovery telemetry payload.
   conversationId?: string | null;
   // Project-level actions (settings, handoff, avatar menu) rendered at the
   // right end of the Design Files tab row. The former standalone chrome header

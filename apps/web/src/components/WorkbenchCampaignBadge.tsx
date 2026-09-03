@@ -3,23 +3,19 @@ import {
   trackDeepSeekCampaignBadgeClick,
   trackDeepSeekCampaignBadgeSurfaceView,
 } from '../analytics/events';
-import { getResolvedDeviceId } from '../analytics/client';
 import { useAnalytics } from '../analytics/provider';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { goPlanPricingUrl } from '../campaigns/go-plan';
 import { useI18n } from '../i18n';
 import { Icon } from './Icon';
 
-function amrHandoffDeviceId(..._a: unknown[]): string | null { return null; }
-
 /**
  * The campaign badge is a signed-in-only surface.
  *
- * It sits inside the top-right account cluster — beside the plan chip, the
- * wallet balance and the avatar — and its click hands off to Pricing with AMR
- * attribution. None of that means anything to a client that is not signed in
- * to Vela, so a signed-out (or not-yet-resolved) login state renders nothing
- * and burns no campaign impression. `loggedIn` is deliberately REQUIRED: the
+ * It sits inside the top-right account cluster and its click hands off to
+ * Pricing. None of that means anything to a client that is not signed in,
+ * so a signed-out (or not-yet-resolved) login state renders nothing and
+ * burns no campaign impression. `loggedIn` is deliberately REQUIRED: the
  * badge is mounted from the entry rail and from the project-detail cluster,
  * which between them cover nearly every page, and a future third mount point
  * must fail typecheck rather than quietly greet signed-out users.
@@ -69,17 +65,12 @@ export function WorkbenchCampaignBadge({
         user_state: audience,
       });
     }
-    const deviceId = amrHandoffDeviceId({
-      metricsConsent,
-      resolvedDeviceId: getResolvedDeviceId(),
-      installationId,
-    });
     window.open(
       pricingUrl,
       '_blank',
       'noopener,noreferrer',
     );
-  }, [analytics.track, audience, installationId, locale, metricsConsent, page]);
+  }, [analytics.track, audience, locale, page]);
 
   if (loggedIn !== true) return null;
 

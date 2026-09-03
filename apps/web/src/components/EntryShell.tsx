@@ -214,7 +214,7 @@ type EntryCreateProjectInput = Omit<CreateInput, 'metadata'> & {
   initialRunContext?: RunContextSelection | null;
   conversationMode?: ChatSessionMode;
   autoSendFirstMessage?: boolean;
-  /** Exact workspace/member authority checked by the Home AMR preflight. */
+  /** Exact workspace/member authority checked by the Home create preflight. */
   requestId?: string;
   pendingFiles?: File[];
   userWorkingDirToken?: string;
@@ -338,20 +338,9 @@ interface Props {
   agents: AgentInfo[];
   // True while the cold-start agent detection stream is still in flight
   // (`fetchAgentsStream` has not reached its terminal `done`). Onboarding
-  // uses this to show the AMR cloud card in a detecting/skeleton state
-  // instead of hiding it during the seconds AMR's probe takes to settle.
+  // uses this to keep the CLI cards in a detecting/skeleton state instead
+  // of hiding them during the seconds the probe takes to settle.
   agentsLoading?: boolean;
-  // Local credential state is independent from the remote workspace read.
-  // During a transient Cloud outage it prevents the rail from presenting a
-  // still-signed-in user as signed out.
-  amrLoggedIn?: boolean | null;
-  amrSessionState?: string;
-  /**
-   * vela login-status account/user plan (ACCOUNT-scoped). Used for personal
-   * workspaces so a confirmed free account is not stuck as campaign audience
-   * `unknown` while billing summary leaves `membershipTier` empty.
-   */
-  amrAccountPlan?: string | null;
   daemonLive: boolean;
   onModeChange: (mode: ExecMode) => void;
   onAgentChange: (id: string) => void;
@@ -476,9 +465,6 @@ export function EntryShell({
   onProviderModelsCacheChange,
   agents,
   agentsLoading = false,
-  amrLoggedIn = null,
-  amrSessionState,
-  amrAccountPlan = null,
   daemonLive,
   onModeChange,
   onAgentChange,
@@ -531,19 +517,14 @@ export function EntryShell({
   const accountFooterNotice: ReactNode = null;
   const railWorkspaceContext = null;
   const usesOpenDesignCloud = false;
-  const amrAuthRequired = false;
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
-  const [goPlanSunsetMessagePending, setGoPlanSunsetMessagePending] = useState(false);
   const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility();
-  const resolvedDeepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
+  const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
     plan: null,
     loggedIn: false,
     now: deepSeekCampaignVisibility.now,
   });
-  const deepSeekV4FlashCampaignAudience = goPlanSunsetMessagePending
-    ? 'unknown'
-    : resolvedDeepSeekV4FlashCampaignAudience;
   const topRightCampaignAudience =
     deepSeekV4FlashCampaignAudience === 'unknown'
       ? null
@@ -669,19 +650,6 @@ export function EntryShell({
     scrollContainer.scrollTop = 0;
   }, [view]);
   const analytics = useAnalytics();
-  // 产品拍板 D5: the campaign modal's paid 立即使用 performs the REAL switch —
-  // daemon execution mode + Cloud agent (amr) + DeepSeek V4 Flash — through
-  // the same persistence callbacks the InlineModelSwitcher writes through.
-  // Mode must flip first: a paid user still on BYOK (`mode === 'api'`) would
-  // otherwise keep the BYOK provider even after agent/model ids change.
-  const applyDeepSeekCampaignModel = useCallback(
-    (agentId: string, modelId: string) => {
-      onModeChange('daemon');
-      onAgentChange(agentId);
-      onAgentModelChange(agentId, { model: modelId });
-    },
-    [onAgentChange, onAgentModelChange, onModeChange],
-  );
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);
     if (navElement) {
@@ -835,10 +803,6 @@ export function EntryShell({
   // projectKind='other', so the agent infers the task type and asks only
   // when the brief cannot be routed reliably.
   async function handlePluginLoopSubmit(payload: PluginLoopSubmit) {
-    if (amrAuthRequired) {
-      navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-      return 'blocked' as const;
-    }
     const summarizedName = summarizeProjectNameFromPrompt(payload.prompt);
     const head = payload.prompt.trim().split(/\s+/).slice(0, 8).join(' ');
     const firstAttachmentName = payload.attachments?.[0]?.name ?? '';
@@ -913,18 +877,7 @@ export function EntryShell({
       autoSendFirstMessage: true,
     };
     const create = () => Promise.resolve(onCreateProject(createInput));
-    try {
-      return await create();
-    } catch (error) {
-      if (
-        error instanceof ProjectCreateError
-        && error.code === 'AMR_AUTH_REQUIRED'
-      ) {
-        navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-        return 'blocked' as const;
-      }
-      throw error;
-    }
+    return await create();
   }
 
   /**
@@ -933,9 +886,8 @@ export function EntryShell({
    * Onboarding is where a signed-out user signs IN, so the workspace context
    * the shell resolved before it is stale by definition. Without this the rail
    * came back in its signed-out shape — no workspace switcher, no 草稿 / 全部项目
-   * / Workspace 设置, and the "sign in to OpenDesign Cloud" callout still in
-   * the bottom-left corner (#140) — until a focus or the 30s poll happened to
-   * re-read it. `CloudSignInTip` fires the same three after its own sign-in.
+   * / Workspace 设置 (#140) — until a focus or the 30s poll happened to
+   * re-read it.
    *
    * EVERY exit from onboarding must call this. It used to live inline in
    * `finishOnboarding` only, so the "go build a design system" door left the
@@ -1043,7 +995,7 @@ export function EntryShell({
                 page="home"
                 metricsConsent={config.telemetry?.metrics === true}
                 installationId={config.installationId}
-                loggedIn={amrLoggedIn}
+                loggedIn={false}
               />
             ) : null
           }
@@ -1057,13 +1009,6 @@ export function EntryShell({
           // only a successful null context (or known local sign-out) may show
           // the sign-in card.
           footerNotice={accountFooterNotice}
-          priorityAnnouncementActive={
-            view === 'home'
-            && goPlanSunsetMessagePending
-          }
-          onPriorityAnnouncementPendingChange={setGoPlanSunsetMessagePending}
-          priorityAnnouncementCurrentPlanId={null}
-          priorityAnnouncementMetricsConsent={config.telemetry?.metrics === true}
         />
         {projectSearchOpen ? (
           <ProjectSearchModal
@@ -1079,7 +1024,7 @@ export function EntryShell({
               the workspace tabs bar (entryRailBridge), the updater popup host
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
-          <WhatsNewPopup active={view === 'home' && !goPlanSunsetMessagePending} />
+          <WhatsNewPopup active={view === 'home'} />
           {/* The campaign badge lives in EntryNavRail's top-right cluster so it
               stays beside the account module across every entry tab. */}
           <div
@@ -1123,9 +1068,6 @@ export function EntryShell({
                 executionSwitcher={view === 'home' ? homeExecutionSwitcher : undefined}
                 artifactUpgradeSlot={artifactUpgradeSlot}
                 deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
-                onDeepSeekV4FlashCampaignUseNow={applyDeepSeekCampaignModel}
-                deepSeekV4FlashCampaignMetricsConsent={config.telemetry?.metrics === true}
-                deepSeekV4FlashCampaignInstallationId={config.installationId ?? null}
               />
             </div>
             <div data-testid="entry-view-projects" data-active={view === 'projects' ? 'true' : 'false'} {...inactiveViewProps(view === 'projects')}>
@@ -1456,11 +1398,11 @@ function OnboardingView({
   const t = useT();
   const analytics = useAnalytics();
   const [step, setStep] = useState(0);
-  const [runtime, setRuntime] = useState<'amr' | 'local' | 'byok' | null>(null);
-  const [modelSource, setModelSource] = useState<'amr' | 'local' | 'byok'>('amr');
+  const [runtime, setRuntime] = useState<'local' | 'byok' | null>(null);
+  const [modelSource, setModelSource] = useState<'local' | 'byok'>('local');
   const modelSourceOptionRefs = useRef<
-    Record<'amr' | 'local' | 'byok', HTMLButtonElement | null>
-  >({ amr: null, local: null, byok: null });
+    Record<'local' | 'byok', HTMLButtonElement | null>
+  >({ local: null, byok: null });
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [cliScanStatus, setCliScanStatus] = useState<'idle' | 'scanning' | 'done'>('idle');
   const [visibleAgentIds, setVisibleAgentIds] = useState<string[]>([]);
@@ -1556,7 +1498,7 @@ function OnboardingView({
       ),
   ) ?? null;
   const candidateCliAgents = agents.filter(
-    (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
+    (agent) => agent.available || deepSeekHarnessNeedsSetup(agent),
   );
   const visibleAgents = candidateCliAgents.filter((agent) => visibleAgentIds.includes(agent.id));
   const selectedAgent = visibleAgents.find((agent) => agent.id === config.agentId) ?? null;
@@ -1635,7 +1577,7 @@ function OnboardingView({
     const scanToken = cliScanTokenRef.current;
     if (cliRefreshPendingTokenRef.current === scanToken) return;
     const currentAvailableAgents = agents.filter(
-      (agent) => agent.available && agent.id !== 'amr',
+      (agent) => agent.available,
     );
     if (currentAvailableAgents.length > 0) {
       const selectedCliAgent = selectDefaultCliAgent(currentAvailableAgents);
@@ -1690,7 +1632,6 @@ function OnboardingView({
   const onboardingStartedAtRef = useRef<number>(Date.now());
   const lifecycleReportedRef = useRef(false);
   function currentRuntimeType(): TrackingOnboardingRuntimeType {
-    if (runtime === 'amr') return 'amr_cloud';
     if (runtime === 'local') return 'local_cli';
     if (runtime === 'byok') return 'byok';
     return 'none';
@@ -1946,9 +1887,9 @@ function OnboardingView({
 
   function handleModelSourceKeyDown(
     event: ReactKeyboardEvent<HTMLButtonElement>,
-    currentSource: 'amr' | 'local' | 'byok',
+    currentSource: 'local' | 'byok',
   ): void {
-    const sources = ['amr', 'local', 'byok'] as const;
+    const sources = ['local', 'byok'] as const;
     const currentIndex = sources.indexOf(currentSource);
     let nextIndex: number | null = null;
 
@@ -1971,18 +1912,6 @@ function OnboardingView({
   }
 
   function continueWithModelSource(): void {
-    if (modelSource === 'amr') {
-      emitOnboardingClick('amr_cloud', 'select_runtime', {
-        runtime_type: 'amr_cloud',
-        is_recommended: true,
-      });
-      setRuntime('amr');
-      onModeChange('daemon');
-      onAgentChange('amr');
-      completeStreamlinedOnboarding('amr_cloud');
-      return;
-    }
-
     if (modelSource === 'local') {
       emitOnboardingClick('local_coding_agent', 'select_runtime', {
         runtime_type: 'local_cli',
@@ -2061,7 +1990,7 @@ function OnboardingView({
   async function scanCliAgents(options: { preferExisting?: boolean } = {}) {
     const scanToken = beginCliScan({ clearVisible: !options.preferExisting });
     const currentCandidateAgents = agents.filter(
-      (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
+      (agent) => agent.available || deepSeekHarnessNeedsSetup(agent),
     );
     const currentAvailableAgents = currentCandidateAgents.filter((agent) => agent.available);
     if (options.preferExisting && currentCandidateAgents.length > 0) {
@@ -2085,9 +2014,9 @@ function OnboardingView({
       const nextAgents = await onRefreshAgents();
       if (cliScanTokenRef.current !== scanToken) return;
       cliRefreshPendingTokenRef.current = null;
-      const availableAgents = nextAgents.filter((agent) => agent.available && agent.id !== 'amr');
+      const availableAgents = nextAgents.filter((agent) => agent.available);
       const candidateAgents = nextAgents.filter(
-        (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
+        (agent) => agent.available || deepSeekHarnessNeedsSetup(agent),
       );
       const selectedCliAgent = selectDefaultCliAgent(availableAgents);
       // Scan-result semantics: zero available CLIs is a `failed` outcome
@@ -2203,7 +2132,7 @@ function OnboardingView({
       showCliAgents(
         cliScanTokenRef.current,
         nextAgents.filter(
-          (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
+          (agent) => agent.available || deepSeekHarnessNeedsSetup(agent),
         ),
         { stagger: false },
       );
@@ -2335,38 +2264,6 @@ function OnboardingView({
               role="radiogroup"
               aria-label={t('settings.onboardingExecutionTitle')}
             >
-              <Button
-                ref={(node) => {
-                  modelSourceOptionRefs.current.amr = node;
-                }}
-                variant="subtle"
-                role="radio"
-                aria-checked={modelSource === 'amr'}
-                tabIndex={modelSource === 'amr' ? 0 : -1}
-                className={`${onboardingSourceStyles.option} ${
-                  onboardingSourceStyles.hostedOption
-                } ${modelSource === 'amr' ? onboardingSourceStyles.optionActive : ''}`}
-                onClick={() => setModelSource('amr')}
-                onKeyDown={(event) => handleModelSourceKeyDown(event, 'amr')}
-              >
-                <span className={onboardingSourceStyles.optionIcon}>
-                  <Icon name="sparkles" size={17} />
-                </span>
-                <span className={onboardingSourceStyles.optionCopy}>
-                  <span className={onboardingSourceStyles.optionHeading}>
-                    <strong className={onboardingSourceStyles.optionTitle}>
-                      {t('settings.onboardingAmrModelSourceLabel')}
-                    </strong>
-                    <span className={onboardingSourceStyles.recommendedBadge}>
-                      {t('settings.onboardingRecommended')}
-                    </span>
-                  </span>
-                  <span className={onboardingSourceStyles.optionBody}>
-                    {t('settings.onboardingAmrCloudBenefitModels')}
-                  </span>
-                </span>
-                <span className={onboardingSourceStyles.radio} aria-hidden="true" />
-              </Button>
               <Button
                 ref={(node) => {
                   modelSourceOptionRefs.current.local = node;

@@ -5,7 +5,6 @@ import type {
 import type { TrackingRunRecoveryActionType } from '@open-design/contracts/analytics';
 
 export function runAgentProviderId(agentId: string): string {
-  if (agentId === 'amr') return 'amr';
   if (agentId === 'claude') return 'claude_code';
   if (agentId === 'codex') return 'codex_cli';
   return agentId;

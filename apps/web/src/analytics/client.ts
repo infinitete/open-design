@@ -42,7 +42,6 @@ let configureGlobals: AnalyticsConfigureGlobals = {
   runtime_type: 'none',
   cli_runnable: false,
   byok_runnable: false,
-  amr_runnable: false,
 };
 // Snapshot of the super-property payload sent on the most recent `loaded()`
 // init. `reset()` clears posthog-js's persisted super-properties as well as
@@ -99,15 +98,13 @@ export function setConfigureGlobals(next: AnalyticsConfigureGlobals): void {
   }
 }
 
-// AMR account id, registered as the `user_id` public param once sign-in
-// state is known. This is the only cross-project join key between the main
-// app's PostHog project and the AMR project (whose events carry the same
-// id as `app_user_id`), so it must survive reset()/identify() flows the
-// same way the configure globals do.
+// Signed-in account id, registered as the `user_id` public param once the
+// identity is known. It must survive reset()/identify() flows the same way
+// the configure globals do.
 let registeredUserId: string | null = null;
 let pendingPersonProperties: Record<string, unknown> | null = null;
 
-// Called from the AnalyticsProvider when the AMR login status resolves
+// Called from the AnalyticsProvider when the signed-in identity resolves
 // (boot fetch or a login/logout mid-session). Passing null unregisters the
 // param so events after a logout stop carrying a stale account id.
 export function setAnalyticsUserId(userId: string | null): void {
@@ -369,7 +366,7 @@ export async function getAnalyticsClient(
             // installationId / local-UUID fallback.
             device_id: distinctId,
             ...(configureGlobals as unknown as Record<string, unknown>),
-            // AMR sign-in can resolve before consent-gated init finishes;
+            // Sign-in can resolve before consent-gated init finishes;
             // fold the already-known account id into the first register.
             ...(registeredUserId ? { user_id: registeredUserId } : {}),
           };

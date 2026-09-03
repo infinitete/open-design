@@ -32,9 +32,7 @@ export interface PluginReplacementModalSurfaceViewProps {
   area: 'plugin_replacement_modal';
 }
 
-// DeepSeek V4 Flash campaign discovery surfaces. These are separate from the
-// existing amr_entry click because an impression is the denominator while an
-// AMR entry is generated only after the user actively enters the billing path.
+// DeepSeek V4 Flash campaign discovery surfaces.
 export interface DeepSeekCampaignModalSurfaceViewProps {
   page_name: 'home';
   area: 'deepseek_campaign_modal';
@@ -114,9 +112,8 @@ export interface DesignSystemsTemplatesModalSurfaceViewProps {
   templates_type?: string;
 }
 
-// Impression of the hosted-AMR nudge under a failed run's error toast. Fires
-// once per render of the toast for a non-AMR agent whose failure is a
-// model/auth/quota error (`error_code` carries the specific class).
+// Impression of a failed run's error toast. Fires once per render of the
+// toast for a failed run (`error_code` carries the specific class).
 export interface RunFailedToastSurfaceViewProps {
   page_name: 'chat_panel';
   area: 'chat_panel';

@@ -81,11 +81,9 @@ import {
   type NextStepActionsVariant,
 } from './NextStepActions';
 import {
-  amrPlansUrlForProfile,
-  amrRechargeUrlForProfile,
   formatModelWindowRetryAt,
   resolveRunFailureUi,
-} from '../runtime/amr-guidance';
+} from '../runtime/run-failure-ui';
 import { RESUME_CONTINUE_PROMPT } from '../runtime/resume';
 import {
   ChatComposer,
@@ -746,8 +744,6 @@ interface Props {
   config?: AppConfig;
 }
 
-const AMR_PROFILE_ENV_KEY = 'OPEN_DESIGN_AMR_PROFILE';
-
 type Tab = 'chat' | 'comments';
 
 const CHAT_MESSAGE_VIRTUALIZE_THRESHOLD = 80;
@@ -1033,7 +1029,6 @@ export function ChatPane({
     ),
     [messages, projectMetadata],
   );
-  const amrProfile = config?.agentCliEnv?.amr?.[AMR_PROFILE_ENV_KEY] ?? null;
   const logRef = useRef<HTMLDivElement | null>(null);
   const chatLogScrollIdleTimerRef = useRef<number | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
@@ -1272,9 +1267,9 @@ export function ChatPane({
     (m) => m.role === 'assistant' && isActiveRunStatus(m.runStatus),
   );
   const retryAssistant = retryableAssistantMessage(displayMessages, lastAssistantId, streaming);
-  // The failed run's error event lives on the (persisted) assistant message, so
-  // the error card + AMR card survive a reload — unlike the ephemeral global
-  // `error` state. Drive both off this event.
+  // The failed run's error event lives on the (persisted) assistant message,
+  // so the error card survives a reload — unlike the ephemeral global `error`
+  // state. Drive it off this event.
   const failedRunErrorEvent = (() => {
     const evs = retryAssistant?.events ?? [];
     for (let i = evs.length - 1; i >= 0; i--) {
@@ -1283,8 +1278,8 @@ export function ChatPane({
     }
     return null;
   })();
-  // Per-case failure UI (button + copy + whether to promote AMR). Only
-  // meaningful for a failed run (retryAssistant present).
+  // Per-case failure UI (button + copy). Only meaningful for a failed run
+  // (retryAssistant present).
   const runFailureUi = retryAssistant
     ? resolveRunFailureUi(
         failedRunErrorEvent?.code,
@@ -1317,9 +1312,9 @@ export function ChatPane({
     [displayMessages, error, errorSourceAssistantId, retryAssistant],
   );
   const currentGlobalError = historicalRunError ? null : error;
-  // Prefer a case-specific message (AMR auth / balance) over the raw upstream
-  // string; otherwise keep a current pane-level error ahead of the persisted
-  // failed-run detail. Historical run errors were already removed above.
+  // Prefer a case-specific message over the raw upstream string; otherwise
+  // keep a current pane-level error ahead of the persisted failed-run
+  // detail. Historical run errors were already removed above.
   const rawError = currentGlobalError ?? failedRunErrorEvent?.detail ?? null;
   // Friendly agent name for {agent} interpolation in failure copy (e.g. the
   // sign-in messages). Falls back to a neutral word when unreadable, never null.
@@ -1349,17 +1344,13 @@ export function ChatPane({
         agentId: retryAssistant?.agentId,
       })
     : null;
-  // Brand (accent) for AMR sign-in/top-up, warning for a self-healing
-  // connection drop, danger for everything else. The shared action card only
-  // tints its icon; the surface itself stays neutral.
+  // Warning for a self-healing connection drop, danger for everything else.
+  // The shared action card only tints its icon; the surface itself stays
+  // neutral.
   const runErrorTone: UserActionCardTone =
-    runFailureUi?.primaryAction === 'authorize' ||
-    runFailureUi?.primaryAction === 'recharge' ||
-    runFailureUi?.primaryAction === 'upgrade'
-      ? 'brand'
-      : failedRunErrorEvent?.code === 'AGENT_CONNECTION_DROPPED'
-        ? 'warning'
-        : 'danger';
+    failedRunErrorEvent?.code === 'AGENT_CONNECTION_DROPPED'
+      ? 'warning'
+      : 'danger';
   const [copiedErrorDiagnostic, setCopiedErrorDiagnostic] = useState(false);
   // Collapsed by default: the error source area shows one line until expanded.
   const [errorSourceOpen, setErrorSourceOpen] = useState(false);
@@ -1389,25 +1380,11 @@ export function ChatPane({
   // this no longer the last assistant — keep their pill so the error survives.
   const errorCardOwnerId =
     retryAssistant && failedRunErrorEvent ? retryAssistant.id : null;
-  // AMR promotion card payload (only the non-AMR model/auth/quota case).
-  const amrSwitchPayload =
-    runFailureUi?.showSwitchCard
-    && failedRunErrorEvent?.code !== 'UPSTREAM_UNAVAILABLE'
-    && retryAssistant
-    && failedRunErrorEvent?.code
-      ? {
-          errorCode: failedRunErrorEvent.code,
-          projectId: projectId ?? '',
-          projectKind: projectKindForTracking,
-          conversationId: activeConversationId,
-          assistantMessageId: retryAssistant.id,
-          runId: retryAssistant.runId ?? null,
-        }
-      : null;
   // A `primaryAction: 'none'` failure (e.g. a hard quota where retrying is
-  // futile) contributes no button of its own — it relies on the AMR switch card
-  // below. Only claim the actions row when a real control will render, so a
-  // no-action card doesn't leave an empty flex row (and a dangling column gap).
+  // futile) contributes no button of its own — the card relies on its
+  // guidance copy. Only claim the actions row when a real control will
+  // render, so a no-action card doesn't leave an empty flex row (and a
+  // dangling column gap).
   const runFailureHasAction = Boolean(
     retryAssistant &&
       onRetry &&
@@ -1417,15 +1394,14 @@ export function ChatPane({
         canResumeFailedRun),
   );
   // The generic local-CLI escape hatch is only used when the failure card has
-  // no direct recovery action. AMR guidance remains visible whenever the
-  // classifier asks for it, alongside a case-specific retry when applicable.
+  // no direct recovery action, alongside a case-specific retry when
+  // applicable.
   const showByokRecoveryCta =
     showByokRecoveryAction && Boolean(onSwitchToLocalCli) && !runFailureHasAction;
   const showErrorActions = showByokRecoveryCta || runFailureHasAction;
   const visibleRecoveryActionTypes = useMemo(() => {
     const actions: TrackingRunRecoveryActionType[] = [];
     if (!retryAssistant || !onRetry || !runFailureUi) return actions;
-    if (runFailureUi.primaryAction === 'authorize') actions.push('authorize_and_retry');
     if (canResumeFailedRun) actions.push('resume_run');
     else if (runFailureUi.primaryAction === 'retry' || runFailureUi.secondaryRetry) {
       actions.push('manual_retry');
@@ -1491,10 +1467,9 @@ export function ChatPane({
   }, [analytics.track, recoveryAnalyticsProps]);
   useEffect(() => {
     if (!displayError || !failedRunErrorEvent?.code || !retryAssistant) return;
-    // The hosted-AMR nudge owns this same surface_view when it renders below
-    // the error card. For all other failed-run guidance (AMR auth/balance,
-    // Antigravity auth/quota, upstream outage, generic retry), the chat error
-    // card itself is the visible run_failed_toast surface.
+    // The chat error card itself is the visible run_failed_toast surface for
+    // every failed-run guidance path (sign-in, quota, upstream outage,
+    // generic retry).
 
     const key = [
       projectId ?? '',
@@ -2620,9 +2595,7 @@ export function ChatPane({
                       ) : null}
                       {retryAssistant && onRetry && runFailureUi ? (
                         <>
-                          {false ? (
-                            null
-                          ) : runFailureUi.primaryAction === 'launch-terminal-auth' ? (
+                          {runFailureUi.primaryAction === 'launch-terminal-auth' ? (
                             <button
                               type="button"
                               className="chat-error-action"

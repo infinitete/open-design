@@ -3,12 +3,10 @@
 // Home composer chip → compact model list → click a model. The chip MUST show
 // the clicked model.
 //
-// The reported bug: the owner clicked `claude-opus-4.6` in the compact list and
-// the chip stayed on `deepseek-v4-flash`. The list offered a model that is above
-// the caller's plan (`enabled: false` from `vela model list --json`) as a plain
-// selectable row; the click was accepted, written to config, and then coerced
-// straight back by `normalizeAgentModelChoice` + the re-normalization effect in
-// `InlineModelSwitcher` — so the click read as a no-op.
+// The reported bug: the owner clicked a catalog-disabled model in the compact
+// list and the chip stayed put. The list offered a model the runtime would
+// reject (`enabled: false` in its catalog) as a plain selectable row; the click
+// was accepted and written to config — so the click read as a no-op.
 //
 // Every assertion here is on the user-visible chip label, never on whether a
 // callback fired: the callback fires today and the chip still does not move.
@@ -38,7 +36,7 @@ const baseConfig: AppConfig = {
   model: 'claude-sonnet-4-5',
   apiProviderBaseUrl: 'https://api.anthropic.com',
   apiProtocolConfigs: {},
-  agentId: 'amr',
+  agentId: 'codex',
   skillId: null,
   designSystemId: null,
   onboardingCompleted: true,
@@ -47,13 +45,12 @@ const baseConfig: AppConfig = {
   agentCliEnv: {},
 };
 
-/** The catalog from the bug report: the two DeepSeek tiers are on the caller's
- *  plan, the Claude tiers are not. `enabled: false` is what `vela model list
- *  --json` reports for a model above the caller's plan. */
-const amrAgent: AgentInfo = {
-  id: 'amr',
-  name: 'AMR (vela)',
-  bin: 'amr',
+/** The catalog shape from the bug report: two tiers enabled, the rest marked
+ *  disabled by the runtime's own catalog. */
+const planGatedAgent: AgentInfo = {
+  id: 'codex',
+  name: 'Codex',
+  bin: 'codex',
   available: true,
   version: '1.0.0',
   models: [
@@ -66,10 +63,10 @@ const amrAgent: AgentInfo = {
   ],
 };
 
-/** Same catalog with every model on-plan — the control case. */
-const amrAgentAllEnabled: AgentInfo = {
-  ...amrAgent,
-  models: (amrAgent.models ?? []).map((model) => ({ ...model, enabled: true })),
+/** Same catalog with every model enabled — the control case. */
+const planGatedAgentAllEnabled: AgentInfo = {
+  ...planGatedAgent,
+  models: (planGatedAgent.models ?? []).map((model) => ({ ...model, enabled: true })),
 };
 
 /**
@@ -156,11 +153,9 @@ describe('compact home model list — a clicked model reaches the chip', () => {
   it('never offers a model whose click the chip will not honor', () => {
     // The invariant, stated as the user sees it. Any row the list presents as
     // clickable must move the chip; a row it will not honor must be presented
-    // as unavailable with a reason. Today `claude-opus-4.6` (and the other
-    // off-plan Claude tiers) are offered as plain rows and clicking them leaves
-    // the chip on `deepseek-v4-flash`.
-    for (const model of amrAgent.models ?? []) {
-      render(<StatefulSwitcher agents={[amrAgent]} />);
+    // as unavailable with a reason.
+    for (const model of planGatedAgent.models ?? []) {
+      render(<StatefulSwitcher agents={[planGatedAgent]} />);
       expect(chipText()).toContain('deepseek-v4-flash');
 
       openSwitcher();
@@ -190,7 +185,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // outside-click/`mousedown` close handler as the cause — if that handler
     // were unmounting the list before the option's click fired, this case would
     // fail too.
-    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
+    render(<StatefulSwitcher agents={[planGatedAgentAllEnabled]} />);
     expect(chipText()).toContain('deepseek-v4-flash');
 
     openSwitcher();
@@ -206,7 +201,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // rendering the raw catalog order, so off-plan models could sit on top of
     // the ones the caller can actually pick.
     const interleaved: AgentInfo = {
-      ...amrAgent,
+      ...planGatedAgent,
       models: [
         { id: 'claude-opus-4.8', label: 'claude-opus-4.8', enabled: false },
         { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash', enabled: true, default: true },
@@ -231,7 +226,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // `syncConfigToDaemon` pushes to the daemon) and a second write reverts it.
     // Two round-trips to store a value the user never gets.
     const persisted = vi.fn();
-    render(<StatefulSwitcher agents={[amrAgent]} onPersist={persisted} />);
+    render(<StatefulSwitcher agents={[planGatedAgent]} onPersist={persisted} />);
     openSwitcher();
     fireEvent.click(compactRow('claude-opus-4.6'));
 
@@ -240,7 +235,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
   });
 
   it('re-selecting the already active model closes the list without changing the chip', () => {
-    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
+    render(<StatefulSwitcher agents={[planGatedAgentAllEnabled]} />);
     openSwitcher();
     fireEvent.click(compactRow('deepseek-v4-flash'));
 
@@ -252,7 +247,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // Campaign visibility is decided by the real window alone: pin the clock
     // inside the window instead of the removed ?campaign= review parameters.
     mockNow(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
-    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
+    render(<StatefulSwitcher agents={[planGatedAgentAllEnabled]} />);
 
     expect(chipText()).toContain('deepseek-v4-flash');
     expect(within(screen.getByTestId('inline-model-switcher-chip')).getByText('Unlimited'))
@@ -273,7 +268,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // The half-open window: at endAtExclusive the campaign is over, and no
     // URL parameter can bring the badge back.
     mockNow(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
-    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
+    render(<StatefulSwitcher agents={[planGatedAgentAllEnabled]} />);
 
     expect(chipText()).toContain('deepseek-v4-flash');
     expect(within(screen.getByTestId('inline-model-switcher-chip')).queryByText('Unlimited'))
@@ -283,21 +278,21 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     expect(within(popover).queryByText('Unlimited')).toBeNull();
   });
 
-  it('never applies the AMR campaign badge to a BYOK model', () => {
+  it('never applies the campaign badge to a BYOK model', () => {
     // BYOK deliberately retains the last local-agent model in `agentModels` so
-    // switching back to local execution restores it. That dormant AMR choice
-    // must not decorate the visible BYOK model: BYOK usage is charged by the
-    // user's own provider and is outside this hosted-model campaign.
+    // switching back to local execution restores it. That dormant choice must
+    // not decorate the visible BYOK model: BYOK usage is charged by the user's
+    // own provider and is outside this hosted-model campaign.
     mockNow(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
     render(
       <StatefulSwitcher
-        agents={[amrAgentAllEnabled]}
+        agents={[planGatedAgentAllEnabled]}
         initialConfig={{
           mode: 'api',
           model: 'grok-4.5',
-          agentId: 'amr',
+          agentId: 'codex',
           agentModels: {
-            amr: { model: DEEPSEEK_V4_FLASH_CAMPAIGN.modelId },
+            codex: { model: DEEPSEEK_V4_FLASH_CAMPAIGN.modelId },
           },
         }}
       />,
@@ -311,7 +306,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
   it('still closes on a click genuinely outside the switcher', () => {
     render(
       <div>
-        <StatefulSwitcher agents={[amrAgentAllEnabled]} />
+        <StatefulSwitcher agents={[planGatedAgentAllEnabled]} />
         <button type="button" data-testid="outside">
           outside
         </button>
@@ -327,7 +322,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     // The non-compact surface the existing portal-class exemption protects. It
     // must keep working: its option list is a `document.body` portal, so its
     // clicks land outside the switcher's wrapper.
-    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} compact={false} />);
+    render(<StatefulSwitcher agents={[planGatedAgentAllEnabled]} compact={false} />);
     openSwitcher();
 
     fireEvent.click(screen.getByTestId('inline-model-switcher-agent-model'));

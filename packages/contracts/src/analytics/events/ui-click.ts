@@ -6,7 +6,7 @@ import type { DesignSystemEnrichClickProps, TrackingDesignSystemEditSurface } fr
 import type { TrackingPageName, TrackingSettingsPage } from './event-names.js';
 import type { OnboardingClickProps, TrackingOnboardingFirstLoopStep, TrackingOnboardingProductType, TrackingOnboardingRole, TrackingOnboardingUseCase } from './onboarding.js';
 import type { TrackingRunRecoveryActionType } from './result-events.js';
-import type { TrackingAmrEntrySource, TrackingArtifactKind, TrackingByokProviderId, TrackingCampaignConversionSource, TrackingCampaignDeliveryMode, TrackingCampaignId, TrackingCampaignUserState, TrackingCliProviderId, TrackingExecutionMode, TrackingExportFormat, TrackingFeedbackProviderId, TrackingNewProjectTab, TrackingProjectKind, TrackingProjectSource } from './shared-enums.js';
+import type { TrackingArtifactKind, TrackingByokProviderId, TrackingCampaignConversionSource, TrackingCampaignDeliveryMode, TrackingCampaignId, TrackingCampaignUserState, TrackingCliProviderId, TrackingExecutionMode, TrackingExportFormat, TrackingFeedbackProviderId, TrackingNewProjectTab, TrackingProjectKind, TrackingProjectSource } from './shared-enums.js';
 import type { AccountMenuClickProps, CommunityTemplateClickProps, EntryNavigationClickProps, ExtensionMarketplaceClickProps, ProjectCollectionClickProps } from './workspace.js';
 // ---- ui_click ------------------------------------------------------------
 //
@@ -920,14 +920,6 @@ export interface QuestionsFormClickProps {
   project_id: string;
 }
 
-// Hosted-AMR nudge shown under a non-AMR agent's model/auth/quota failure.
-// `go_amr` is the link that opens https://open-design.ai/amr.
-export interface RunFailedToastClickProps {
-  page_name: 'chat_panel';
-  area: 'chat_panel';
-  element: 'go_amr';
-}
-
 export interface RunRecoveryActionClickProps {
   page_name: 'chat_panel';
   area: 'chat_panel';
@@ -942,19 +934,6 @@ export interface RunRecoveryActionClickProps {
   failure_reason?: string;
   target_agent_provider_id?: string;
   target_model_id?: string;
-}
-
-export interface AmrEntryClickProps {
-  page_name: TrackingPageName;
-  area: 'amr_entry';
-  element: TrackingAmrEntrySource;
-  action: 'click_amr_entry';
-  entry_id: string;
-  source_product: 'open_design';
-  source_detail: TrackingAmrEntrySource;
-  entry_occurred_at: string;
-  campaign_id?: TrackingCampaignId;
-  conversion_source?: TrackingCampaignConversionSource;
 }
 
 export interface DeepSeekCampaignModalClickProps {
@@ -1216,7 +1195,7 @@ export const TRACKING_HANDOFF_TARGET_IDS = [
   'cursor', 'vscode', 'windsurf', 'zed', 'qoder', 'antigravity', 'webstorm',
   'idea', 'xcode', 'finder', 'explorer', 'file-manager', 'terminal', 'warp',
   // code-agent CLIs (HandoffButton CLI_ORDER; qoder / antigravity already above)
-  'amr', 'claude', 'codex', 'opencode', 'cursor-agent', 'gemini', 'qwen',
+  'claude', 'codex', 'opencode', 'cursor-agent', 'gemini', 'qwen',
   'copilot', 'grok-build', 'deepseek', 'kimi', 'hermes', 'devin', 'kiro',
   'kilo', 'vibe', 'aider', 'trae-cli', 'pi', 'reasonix',
 ] as const;
@@ -1258,9 +1237,7 @@ export interface HandoffClickProps {
     // Launch a specific editor target (or the Finder/Explorer fallback).
     | 'open_editor'
     // Copy the hand-off prompt for a specific CLI agent.
-    | 'copy_cli_prompt'
-    // Open the OpenDesign AMR website link.
-    | 'amr_website';
+    | 'copy_cli_prompt';
   // Bounded enum id of the editor / CLI target, present for `open_editor`,
   // `copy_cli_prompt`, and for `trigger` when it directly launches the
   // preferred editor. Normalized via `handoffTargetIdToTracking` so it is
@@ -1667,9 +1644,7 @@ export type UiClickProps =
   | ComposerBarClickProps
   | NextStepActionClickProps
   | QuestionsFormClickProps
-  | RunFailedToastClickProps
   | RunRecoveryActionClickProps
-  | AmrEntryClickProps
   | DeepSeekCampaignModalClickProps
   | GoPlanSunsetModalClickProps
   | DeepSeekCampaignBadgeClickProps

@@ -8,7 +8,7 @@
 // definition that can be unit-tested exhaustively.
 //
 // Full jitter matters under a struggling transport: when N clients all fail at
-// the same instant (a vela outage, a packaged-client proxy 502 storm), an
+// the same instant (an upstream outage, a packaged-client proxy 502 storm), an
 // un-jittered schedule reconnects them in lockstep and re-creates the very
 // thundering herd that produced the failure. Multiplying each delay by a
 // random factor in [0.5, 1.0) spreads the retries out.

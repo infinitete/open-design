@@ -16,9 +16,9 @@ import { describe, expect, it } from 'vitest';
 // bled through/collided with the "打开执行设置" label.
 //
 // The fix qualifies the footer selector as `.avatar-item.avatar-item--pinned`
-// (two classes), mirroring `.avatar-item.avatar-amr-row` a few lines below it
-// in the same file. This wins by specificity, not by source order, so the
-// footer's background survives a future reshuffle of the stylesheet.
+// (two classes), out-specifying the bare `.avatar-item` reset. This wins by
+// specificity, not by source order, so the footer's background survives a
+// future reshuffle of the stylesheet.
 
 const shellCss = readFileSync(new URL('../../src/styles/shell.css', import.meta.url), 'utf8');
 

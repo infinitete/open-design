@@ -256,9 +256,10 @@ export interface ChatAnalyticsHints {
   recoveryActionType?: TrackingRunRecoveryActionType;
   recoveryActionInstanceId?: string;
   // Active execution runtime for THIS run, computed client-side at launch
-  // (the only layer that can tell BYOK from amr_cloud). The daemon stamps it
-  // onto run_created / run_finished, overriding its own BYOK-blind
-  // derivation. Omitted means "let the daemon keep its derived value".
+  // (the only layer that can tell BYOK from a plain local CLI run). The
+  // daemon stamps it onto run_created / run_finished, overriding its own
+  // BYOK-blind derivation. Omitted means "let the daemon keep its derived
+  // value".
   runtimeType?: TrackingRuntimeType;
   // Analytics-only marker that THIS run is the AI-optimize ("enrich") pass on a
   // programmatically-extracted design system. The web AI-optimize path sets it;
@@ -815,7 +816,7 @@ export interface ChatCommentAttachment {
 export type PersistedAgentEvent =
   // `code` carries the structured API error code for `label: 'error'`
   // status events (e.g. AGENT_AUTH_REQUIRED, RATE_LIMITED). Clients use it to
-  // decide error-specific affordances such as the hosted-AMR nudge.
+  // decide error-specific affordances.
   // `failureCategory` / `failureDetail` carry the daemon's finer classification
   // for the same failure, so the error card can name a specific type + fix even
   // when many causes share one `code` (e.g. hard_quota vs a transient 429).

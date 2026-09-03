@@ -295,7 +295,7 @@ export async function createProject(
     // the Create button into a silent no-op (issue #849).
     //
     // The id is minted ONCE and reused across retries: a retryable 503 fails
-    // vela's authority check before any row is inserted, so replaying the same
+    // the server's authority check before any row is inserted, so replaying the same
     // client-provided id is idempotent, never a duplicate project.
     const id = input.id ?? randomUUID();
     for (let attempt = 0; ; attempt += 1) {

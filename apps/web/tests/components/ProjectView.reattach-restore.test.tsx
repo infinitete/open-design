@@ -28,7 +28,6 @@ const fetchChatRunStatus = vi.fn();
 const listActiveChatRuns = vi.fn();
 const listProjectRuns = vi.fn();
 const reattachDaemonRun = vi.fn();
-const publishDaemonRunFinishedEvent = vi.fn();
 const streamViaDaemon = vi.fn();
 const saveMessage = vi.fn();
 const createConversation = vi.fn();
@@ -68,7 +67,6 @@ vi.mock('../../src/providers/daemon', () => ({
   fetchChatRunStatus: (...args: unknown[]) => fetchChatRunStatus(...args),
   listActiveChatRuns: (...args: unknown[]) => listActiveChatRuns(...args),
   listProjectRuns: (...args: unknown[]) => listProjectRuns(...args),
-  publishDaemonRunFinishedEvent: (...args: unknown[]) => publishDaemonRunFinishedEvent(...args),
   reattachDaemonRun: (...args: unknown[]) => reattachDaemonRun(...args),
   streamViaDaemon: (...args: unknown[]) => streamViaDaemon(...args),
 }));
@@ -764,7 +762,6 @@ describe('ProjectView daemon reattach restore', () => {
     await waitFor(() => expect(reattachDaemonRun).toHaveBeenCalledTimes(1));
     expect(reattachDaemonRun).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'kimi',
-      publishRunFinishedEvent: true,
     }));
     expect(capturedHandlers).not.toBeNull();
 
@@ -842,7 +839,6 @@ describe('ProjectView daemon reattach restore', () => {
     expect(reattachDaemonRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-production',
       initialLastEventId: null,
-      publishRunFinishedEvent: true,
     }));
     await waitFor(() => {
       const normalized = saveMessage.mock.calls
@@ -1205,7 +1201,7 @@ describe('ProjectView daemon reattach restore', () => {
     ).toBe(false);
   });
 
-  it('does not publish a run-finished event while replaying a historical success', async () => {
+  it('replays a historical success from the beginning of its event stream', async () => {
     const startedAt = Date.now() - 10_000;
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([
@@ -1242,9 +1238,8 @@ describe('ProjectView daemon reattach restore', () => {
 
     await waitFor(() => expect(reattachDaemonRun).toHaveBeenCalledTimes(1));
     expect(reattachDaemonRun).toHaveBeenCalledWith(expect.objectContaining({
-      publishRunFinishedEvent: false,
+      initialLastEventId: null,
     }));
-    expect(publishDaemonRunFinishedEvent).not.toHaveBeenCalled();
   });
 
   it('finalizes reattached telemetry only after trace object files are restored', async () => {

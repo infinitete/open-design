@@ -34,30 +34,4 @@ describe('onboarding layout styles', () => {
     expect(backBlock).toMatch(/(?:^|[;\n])\s*justify-self:\s*start\s*;/);
     expect(backBlock).toMatch(/(?:^|[;\n])\s*align-self:\s*start\s*;/);
   });
-
-  it('lets AMR benefit chips wrap inside the featured card', () => {
-    const asideBlock = cssDeclarations('.onboarding-view__benefit-aside');
-    const benefitsBlock = cssDeclarations(
-      '.onboarding-view__benefit-aside .onboarding-view__benefits',
-    );
-
-    expect(asideBlock).toMatch(/(?:^|[;\n])\s*width:\s*100%\s*;/);
-    expect(asideBlock).toMatch(/(?:^|[;\n])\s*justify-self:\s*stretch\s*;/);
-    expect(benefitsBlock).toMatch(/(?:^|[;\n])\s*flex-wrap:\s*wrap\s*;/);
-    expect(benefitsBlock).not.toMatch(/(?:^|[;\n])\s*flex-wrap:\s*nowrap\s*;/);
-  });
-
-  it('centers intrinsic-width activation retry controls', () => {
-    const actionsBlock = cssDeclarations(
-      '.onboarding-cloud__activation .amr-login-activation__actions',
-    );
-    const openBlock = cssDeclarations(
-      '.onboarding-cloud__activation .amr-login-activation__open',
-    );
-    const dismissBlock = cssDeclarations('.onboarding-cloud__activation-dismiss');
-
-    expect(actionsBlock).toMatch(/(?:^|[;\n])\s*justify-content:\s*center\s*;/);
-    expect(openBlock).toMatch(/(?:^|[;\n])\s*flex:\s*0\s+0\s+auto\s*;/);
-    expect(dismissBlock).toMatch(/(?:^|[;\n])\s*flex:\s*0\s+0\s+auto\s*;/);
-  });
 });

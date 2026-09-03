@@ -72,17 +72,13 @@ describe('AgentIcon', () => {
     expect(markup).not.toContain('agent-icon-mono');
   });
 
-  it('renders AMR as the bundled color SVG instead of the fallback initial', () => {
-    const amrSvg = readFileSync(
-      new URL('../../public/agent-icons/amr.svg', import.meta.url),
-      'utf8',
-    );
+  it('renders the retired hosted runtime as the fallback pill, not a brand asset', () => {
+    // The retired runtime's icon mapping and bundled asset are gone; a
+    // historical agent id must degrade to the neutral initial-letter pill.
     const markup = renderToStaticMarkup(<AgentIcon id="amr" size={24} />);
 
-    expect(amrSvg).toMatch(/^<svg\b/);
-    expect(amrSvg).toContain('fill="#202020"');
-    expect(markup).toContain('src="/agent-icons/amr.svg"');
-    expect(markup).not.toContain('agent-icon-fallback');
+    expect(markup).toContain('agent-icon-fallback');
+    expect(markup).not.toContain('/agent-icons/amr.svg');
   });
 
   it('reuses the DeepSeek brand asset for the DeepSeek Harness runtime', () => {

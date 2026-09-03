@@ -92,15 +92,13 @@ const forcedAt = new Map<string, number>();
 // A broadcast identity-change event (sign-in success) is heard by every
 // mounted consumer of a hook in the SAME synchronous `dispatchEvent` pass —
 // e.g. `useWorkspaceContext()` is called from a dozen components that can all
-// be mounted at once, and AmrLoginPill alone can mount twice (the Settings
-// agent-card instance and the cloud sign-in callout instance both listen and
-// both react). Two calls to `forceCoalescedGet` for the same key inside this
-// window are the same burst, not two independent identity changes; the
-// second must join the first's fetch rather than evict it. Measured in a
-// real browser (not jsdom) the two reactions land within single-digit ms of
-// each other, but 250ms leaves generous headroom for a loaded machine
-// without meaningfully delaying a genuinely later, separate identity change
-// (still an order of magnitude under `DEFAULT_TTL_MS`).
+// be mounted at once and all react together. Two calls to `forceCoalescedGet`
+// for the same key inside this window are the same burst, not two independent
+// identity changes; the second must join the first's fetch rather than evict
+// it. Measured in a real browser (not jsdom) the two reactions land within
+// single-digit ms of each other, but 250ms leaves generous headroom for a
+// loaded machine without meaningfully delaying a genuinely later, separate
+// identity change (still an order of magnitude under `DEFAULT_TTL_MS`).
 const FORCE_BURST_MS = 250;
 
 /**

@@ -6,6 +6,21 @@ import type {
 import { EVENT_SCHEMA_VERSION } from '../src/analytics/public-params.js';
 import { buildRunFinishedV4Aliases } from '../src/analytics/run-schema-v4.js';
 
+// The retired hosted-runtime (AMR / vela CLI) OpenCode bridge fields must stay
+// off the run_finished contract. `false` here fails to typecheck the moment a
+// field named below is reintroduced.
+type HasRetiredHostedBridgeFields =
+  'amr_opencode_error_phase' extends keyof RunFinishedProps
+    ? true
+    : 'amr_opencode_last_event_type' extends keyof RunFinishedProps
+      ? true
+      : 'amr_opencode_last_tool_status' extends keyof RunFinishedProps
+        ? true
+        : 'amr_opencode_last_tool_kind' extends keyof RunFinishedProps
+          ? true
+          : false;
+const HAS_RETIRED_HOSTED_BRIDGE_FIELDS: HasRetiredHostedBridgeFields = false;
+
 function makeBaseRunFinishedProps(): RunFinishedProps {
   return {
     page_name: 'chat_panel',
@@ -148,15 +163,11 @@ describe('analytics run_finished contract', () => {
         approval_requested: true,
         stdin_backpressure: false,
         last_progress_age_ms: 610_000,
-        amr_opencode_error_phase: 'timeout',
-        amr_opencode_last_event_type: 'tool_call',
-        amr_opencode_last_tool_status: 'in_progress',
-        amr_opencode_last_tool_kind: 'write',
         artifact_write_seen: false,
         live_artifact_seen: false,
         retry_attempt_count: 1,
         retry_final_result: 'success',
-        agent_cli_version: 'vela 0.0.26',
+        agent_cli_version: 'claude 2.1.0',
         runtime_companion_name: 'opencode',
         runtime_companion_version: 'opencode 1.2.3',
         retry_original_failure_category: 'upstream_unavailable',
@@ -256,11 +267,12 @@ describe('analytics run_finished contract', () => {
     expect(payload.props.approval_requested).toBe(true);
     expect(payload.props.stdin_backpressure).toBe(false);
     expect(payload.props.last_progress_age_ms).toBe(610_000);
-    expect(payload.props.amr_opencode_error_phase).toBe('timeout');
-    expect(payload.props.amr_opencode_last_tool_status).toBe('in_progress');
     expect(payload.props.retry_attempt_count).toBe(1);
     expect(payload.props.retry_final_result).toBe('success');
-    expect(payload.props.agent_cli_version).toBe('vela 0.0.26');
+    expect(payload.props.agent_cli_version).toBe('claude 2.1.0');
+    expect(payload.props).not.toHaveProperty('amr_opencode_error_phase');
+    expect(payload.props).not.toHaveProperty('amr_opencode_last_tool_kind');
+    expect(HAS_RETIRED_HOSTED_BRIDGE_FIELDS).toBe(false);
     expect(payload.props.runtime_companion_version).toBe('opencode 1.2.3');
     expect(payload.props.retry_original_failure_detail).toBe('stream_disconnected');
     expect(payload.props.task_execution_id).toBe('task-1');

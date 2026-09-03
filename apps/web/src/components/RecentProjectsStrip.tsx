@@ -1391,7 +1391,7 @@ export function RecentProjectsStrip({
                 className="recent-projects__invite"
                 onClick={() => {
                   trackCollection('invite_teammates');
-                  if (inviteTarget.kind === 'vela') {
+                  if (inviteTarget.kind === 'console') {
                     window.open(inviteTarget.url, '_blank', 'noopener,noreferrer');
                   } else if (inviteTarget.kind === 'local') {
                     setInviteOpen(true);

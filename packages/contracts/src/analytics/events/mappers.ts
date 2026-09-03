@@ -237,8 +237,6 @@ export function agentIdToTracking(agentId: string | null | undefined): TrackingC
       return 'deepseek';
     case 'deepseek-harness':
       return 'deepseek_harness';
-    case 'amr':
-      return 'amr';
     default:
       return 'other';
   }
@@ -421,27 +419,18 @@ export interface DeriveConfigureGlobalsInput {
   // Whether a BYOK key/url has been saved (web client only — daemon
   // can leave this undefined).
   byokConfigured?: boolean;
-  // Whether the user has completed AMR (vela) sign-in. AMR ships with the
-  // app, so authorization — not installation — is its "configured" signal.
-  amrAuthorized?: boolean;
 }
 
 export function deriveConfigureGlobals(
   input: DeriveConfigureGlobalsInput,
 ): AnalyticsConfigureGlobals {
   const agents = input.agents ?? [];
-  // The AMR runtime is bundled with the app, so its agent row must not
-  // count as a user-configured local CLI: with it included every install
-  // reports 'local_cli' and the 'amr'/'none' buckets can never appear.
-  // AMR's configured signal is `amrAuthorized` (sign-in), not detection.
-  const cliAgents = agents.filter((a) => a.id !== 'amr');
-  const hasAvailableCli = cliAgents.some((a) => a.available === true);
+  const hasAvailableCli = agents.some((a) => a.available === true);
   const selectedAgent = input.agentId
     ? agents.find((a) => a.id === input.agentId)
     : undefined;
   const selectedAgentAvailable = selectedAgent?.available === true;
   const byokConfigured = input.byokConfigured === true;
-  const amrAuthorized = input.amrAuthorized === true;
 
   // 'api' mode means BYOK is the active execution path, so treat it as a
   // configured BYOK signal even when the caller cannot see the saved key
@@ -456,8 +445,6 @@ export function deriveConfigureGlobals(
     configureType = 'local_cli';
   } else if (byokSignal) {
     configureType = 'byok';
-  } else if (amrAuthorized) {
-    configureType = 'amr';
   } else {
     configureType = 'none';
   }
@@ -469,7 +456,7 @@ export function deriveConfigureGlobals(
       : 'unavailable';
   } else if (input.mode === 'api') {
     configureAvailability = byokConfigured ? 'available' : 'unavailable';
-  } else if (hasAvailableCli || byokConfigured || amrAuthorized) {
+  } else if (hasAvailableCli || byokConfigured) {
     configureAvailability = 'available';
   } else {
     configureAvailability = 'unknown';
@@ -477,31 +464,26 @@ export function deriveConfigureGlobals(
 
   // The single active runtime — NOT the configure cascade, so there is no
   // 'both'. The active execution path is steered by `mode` (the user's
-  // selected execution mode) first, then the selected agent: the bundled
-  // `amr` agent id means AMR cloud; otherwise local CLI when one is the
-  // selected/available runtime. BYOK only surfaces when `mode === 'api'` or a
-  // saved key is visible — the daemon never sees a key (mode is pinned to
-  // 'daemon' there), so daemon-side run events rely on the web client's
-  // run-request override to report 'byok'. Falls back through the same
-  // capability signals as configure_type for the ambient (no-mode) case.
+  // selected execution mode) first, then the selected agent: a local CLI is
+  // the runtime when one is selected/available. BYOK only surfaces when
+  // `mode === 'api'` or a saved key is visible — the daemon never sees a key
+  // (mode is pinned to 'daemon' there), so daemon-side run events rely on the
+  // web client's run-request override to report 'byok'. Falls back through
+  // the same capability signals as configure_type for the ambient (no-mode)
+  // case.
   let runtimeType: TrackingRuntimeType;
   if (input.mode === 'api') {
-    // `api` mode IS the active BYOK execution path. It must win over a
-    // remembered `agentId === 'amr'`: switching AMR → BYOK only flips
-    // `config.mode` and leaves `config.agentId` as 'amr' (see App.tsx mode
-    // switch), so checking agentId first would mislabel live BYOK runs as
-    // amr_cloud.
+    // `api` mode IS the active BYOK execution path, so it must win over a
+    // stale remembered agent id: switching execution modes only flips
+    // `config.mode` and leaves `config.agentId` as it was (see App.tsx mode
+    // switch), so checking agentId first would mislabel live BYOK runs.
     runtimeType = 'byok';
-  } else if (input.agentId === 'amr') {
-    runtimeType = 'amr_cloud';
   } else if (input.mode === 'daemon' && selectedAgentAvailable) {
     runtimeType = 'local_cli';
   } else if (hasAvailableCli) {
     runtimeType = 'local_cli';
   } else if (byokSignal) {
     runtimeType = 'byok';
-  } else if (amrAuthorized) {
-    runtimeType = 'amr_cloud';
   } else {
     runtimeType = 'none';
   }
@@ -514,11 +496,10 @@ export function deriveConfigureGlobals(
     // Independent per-path runnable flags (no cascade masking — see
     // AnalyticsConfigureGlobals). `cli_runnable` mirrors
     // `has_available_configure_cli`; `byok_runnable` uses the actually-saved
-    // key signal (not the `mode === 'api'` fallback, which can be true with no
-    // key yet); `amr_runnable` is sign-in.
+    // key signal (not the `mode === 'api'` fallback, which can be true with
+    // no key yet).
     cli_runnable: hasAvailableCli,
     byok_runnable: byokConfigured,
-    amr_runnable: amrAuthorized,
   };
 }
 

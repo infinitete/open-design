@@ -10,11 +10,9 @@
 //    user returns to home without having dismissed it;
 // 2. frequency control fails closed — an unreadable localStorage must not
 //    turn "活动期内出现一次" into "every mount";
-// 3. the paid 立即使用 CTA actually moves the workbench onto the campaign
-//    model (agent `amr`, model `deepseek-v4-flash`) instead of only opening
-//    the model picker (产品拍板 D5);
-// 4. the unpaid upgrade path carries the telemetry consent + device id the
-//    other two campaign touchpoints already forward.
+// 3. the paid 立即使用 CTA dismisses without selecting a retired runtime
+//    (the campaign's hosted model gateway is gone);
+// 4. the unpaid upgrade path opens the public pricing page.
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,47 +71,18 @@ describe('paid 立即使用 switches the workbench onto the campaign model', () 
     expect(screen.getByText('DS', { exact: true })).toBeVisible();
   });
 
-  it('applies agent amr + model deepseek-v4-flash and pulses the chip without opening the picker', () => {
-    vi.useFakeTimers();
-    const onUseCampaignModel = vi.fn();
-    // Stand in for the home composer's model-switcher chip.
-    const chip = document.createElement('button');
-    chip.setAttribute('data-testid', 'inline-model-switcher-chip');
-    const chipClick = vi.fn();
-    chip.addEventListener('click', chipClick);
-    document.body.appendChild(chip);
-    try {
-      render(
-        <DeepSeekV4FlashCampaign
-          audience="paid"
-          active
-          onUseCampaignModel={onUseCampaignModel}
-        />,
-      );
-      fireEvent.click(screen.getByRole('button', { name: 'Use now' }));
+  it('dismisses on use_now without selecting the retired hosted runtime', () => {
+    render(<DeepSeekV4FlashCampaign audience="paid" active />);
+    fireEvent.click(screen.getByRole('button', { name: 'Use now' }));
 
-      // 产品拍板 D5: the CTA performs the real switch, not a picker tour.
-      expect(onUseCampaignModel).toHaveBeenCalledWith(
-        'amr',
-        'deepseek-v4-pro',
-      );
-      // The analytics element stays `use_now`.
-      expect(trackSpy).toHaveBeenCalledWith(
-        'ui_click',
-        expect.objectContaining({ element: 'use_now' }),
-        undefined,
-      );
-
-      vi.advanceTimersByTime(1);
-      // Visual feedback survives as the highlight pulse alone — no
-      // chip.click(), so the model popover stays closed.
-      expect(chipClick).not.toHaveBeenCalled();
-      expect(chip.getAttribute('data-campaign-highlight')).toBe('true');
-      vi.advanceTimersByTime(1_600);
-      expect(chip.hasAttribute('data-campaign-highlight')).toBe(false);
-    } finally {
-      chip.remove();
-    }
+    // The hosted runtime is retired: the CTA must not select any agent. It
+    // only records the use_now click and closes.
+    expect(trackSpy).toHaveBeenCalledWith(
+      'ui_click',
+      expect.objectContaining({ element: 'use_now' }),
+      undefined,
+    );
+    expect(screen.queryByTestId(DIALOG)).toBeNull();
   });
 });
 
@@ -180,14 +149,7 @@ describe('unpaid DeepSeek path opens public Pricing', () => {
   it('opens the locale-neutral comparison page', () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);
-    render(
-      <DeepSeekV4FlashCampaign
-        audience="unpaid"
-        active
-        metricsConsent
-        installationId="install-abc123"
-      />,
-    );
+    render(<DeepSeekV4FlashCampaign audience="unpaid" active />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Upgrade and use' }));
 
@@ -200,14 +162,7 @@ describe('unpaid DeepSeek path opens public Pricing', () => {
   it('keeps the same target without metrics consent', () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);
-    render(
-      <DeepSeekV4FlashCampaign
-        audience="unpaid"
-        active
-        metricsConsent={false}
-        installationId="install-abc123"
-      />,
-    );
+    render(<DeepSeekV4FlashCampaign audience="unpaid" active />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Upgrade and use' }));
 

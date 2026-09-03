@@ -25,7 +25,6 @@ import {
   GENERIC_DAEMON_DISCONNECT_MESSAGE,
   listActiveChatRuns,
   listProjectRuns,
-  publishDaemonRunFinishedEvent,
   reattachDaemonRun,
   reportChatRunFeedback,
   streamViaDaemon,
@@ -335,13 +334,9 @@ type ProjectChatSendMeta = ChatSendMeta & {
    *  success (tracking spec C14/C15). Daemon mode only. */
   dsEnrichment?: boolean;
   /** Marks a send replayed from the queued-sends drain. Its payload already
-   *  lives in the queue item, so a pre-run block (e.g. the AMR balance gate)
-   *  must NOT re-queue it — only pause further drains. */
+   *  lives in the queue item, so a pre-run block must NOT re-queue it —
+   *  only pause further drains. */
   queueDrain?: boolean;
-  /** The OpenDesign Cloud balance gate already ran for this exact send at
-   *  the home submit (with any soft warning answered there); skip re-gating
-   *  so the user is never double-prompted for one task. */
-  amrGatePrechecked?: boolean;
   /** The caller owns a payload that must be consumed exactly once — the Home
    *  handoff's separately persisted prompt, an inline question form's single
    *  answer. Once the payload is durably parked in this view's queue, report
@@ -682,7 +677,7 @@ const DESIGN_SYSTEM_AUDIT_AUTO_REPAIR_ATTEMPTS = 2;
 // For a personal project that is a transient blip, but opening a TEAM-SHARED
 // project a member has not pulled yet only registers it locally after the collab
 // status resolves and the auto-pull completes — several seconds against a remote
-// collab backend (e.g. a packaged feature-env build round-tripping through vela).
+// collab backend (e.g. a packaged feature-env build round-trip).
 // The old ~1s window ran out mid-pull and surfaced a hard "conversations 404"
 // error on first open of a shared project. Retry on the 404 long enough to cover
 // that sync (~12s); a genuinely missing project is rare on this path (the user
@@ -1106,15 +1101,6 @@ function autoSendContextKey(projectId: string): string {
   return `od:auto-send-context:${projectId}`;
 }
 
-/** Exact workspace/member authority checked by the Home AMR preflight. */
-function autoSendAmrGateWitnessKey(projectId: string): string {
-  return `od:auto-send-amr-gate-witness:${projectId}`;
-}
-
-function legacyAutoSendAmrGateOkKey(projectId: string): string {
-  return `od:auto-send-amr-gate-ok:${projectId}`;
-}
-
 function designSystemAuditAutoRepairKey(projectId: string): string {
   return `od:design-system-audit-auto-repair:${projectId}`;
 }
@@ -1160,8 +1146,6 @@ function clearAutoSendSession(projectId: string): void {
     window.sessionStorage.removeItem(autoSendPromptKey(projectId));
     window.sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
     window.sessionStorage.removeItem(autoSendContextKey(projectId));
-    window.sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
-    window.sessionStorage.removeItem(legacyAutoSendAmrGateOkKey(projectId));
   } catch {
     /* ignore */
   }
@@ -1537,8 +1521,9 @@ function projectMediaVoiceSeed(
 // Carry the creation-time model pick into the conversation ONLY when it belongs
 // to the active BYOK provider. Guards against clobbering a user's Settings
 // default with a model from a different provider — e.g. a SenseAudio user whose
-// image project was created with the dialog's default `vela/gpt-image-2` keeps their
-// configured SenseAudio model instead of being forced to the registry default.
+// image project was created with the dialog's default hosted image model keeps
+// their configured SenseAudio model instead of being forced to the registry
+// default.
 // AIHubMix's live (`aihubmix-` prefixed) ids resolve via mediaModelProviderId
 // without waiting on the async catalogue, so the AIHubMix path still seeds.
 function byokModelSeedForProtocol(
@@ -2149,22 +2134,6 @@ export function ProjectView({
   const autoOpenedBrandDesignSystemRef = useRef<string | null>(null);
   const brandEmptyTranscriptRetriesRef = useRef<Map<string, number>>(new Map());
   const [chatSeed, setChatSeed] = useState<{ id: string; value: string } | null>(null);
-  // Hard block from the pre-run balance gate (empty wallet or signed out);
-  // non-null renders the AmrBalanceDialog. `conversationId` remembers whose
-  // queue to resume when the dialog resolves (sign-in done / recharge landed).
-  const amrBalanceGateBlock = null;
-  // Soft low-balance warning holding a pending send: the dialog resolves the
-  // promise the gate is awaiting ('proceed' continues the very same send).
-  const amrLowBalanceWarn = null;
-  // Conversations with a balance-gate check currently in flight. Sends that
-  // arrive during the check queue instead of racing a duplicate run through
-  // the not-yet-busy window the gate's await opens.
-  const amrGateInFlightConversationsRef = useRef<Set<string>>(new Set());
-  // Conversations whose queue auto-drain is paused because the balance gate
-  // blocked a send. Without the pause, every unrelated re-run of the drain
-  // effect would re-hit the wallet endpoint and re-pop the dialog. Lifted by
-  // the next send that passes the gate.
-  const amrGatePausedQueueConversationsRef = useRef<Set<string>>(new Set());
   const [autoAuditRepairSeed, setAutoAuditRepairSeed] =
     useState<{ id: string; value: string } | null>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(readSavedChatPanelWidth);
@@ -2256,7 +2225,7 @@ export function ProjectView({
   // A BYOK preflight can reject a send before any Run exists. Keep that
   // submission's task identity in memory so fixing Settings and resubmitting
   // the same draft completes the original task funnel instead of fabricating a
-  // second task. AMR hard gates persist the full send in the queue separately.
+  // second task. Hard gates persist the full send in the queue separately.
   const blockedRunTaskRef = useRef<{
     conversationId: string;
     requestKey: string;
@@ -4116,8 +4085,8 @@ export function ProjectView({
   );
 
   // `code` is the structured API error code (e.g. AGENT_AUTH_REQUIRED); it
-  // rides along on the error status event so AssistantMessage can render the
-  // hosted-AMR nudge for model/auth/quota failures on non-AMR agents.
+  // rides along on the error status event so AssistantMessage can render
+  // error-specific affordances.
   const appendAssistantErrorEvent = useCallback(
     (
       messageId: string,
@@ -5157,11 +5126,6 @@ export function ProjectView({
           reattachTextBuffersRef.current.delete(textBuffer);
         };
 
-        const shouldPublishRunFinishedEvent =
-          isActiveRunStatus(message.runStatus)
-          || isActiveRunStatus(status.status)
-          || spuriouslyFailedPending
-          || recoverableGenericDisconnectFailed;
         void reattachDaemonRun({
           agentId: message.agentId,
           runId: reattachRunId,
@@ -5171,7 +5135,6 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           initialLastEventId:
             needsFullReplay || taskRunAdvanced ? null : message.lastRunEventId ?? null,
-          publishRunFinishedEvent: shouldPublishRunFinishedEvent,
           onArtifactPaths: (paths) => {
             authoritativeReattachArtifactPaths = paths;
           },
@@ -5498,21 +5461,6 @@ export function ProjectView({
                     const producedArtifactToOpen = selectAutoOpenProducedArtifact(produced, autoOpenArtifactOptions);
                     if (producedArtifactToOpen) requestOpenFile(producedArtifactToOpen);
                     if (latestRunStatus?.status === 'succeeded') setError(null);
-                    if (
-                      shouldPublishRunFinishedEvent
-                      && latestRunStatus?.status === 'succeeded'
-                      && latestRunStatus.agentId === 'amr'
-                      && typeof latestRunStatus.artifactCount === 'number'
-                    ) {
-                      publishDaemonRunFinishedEvent({
-                        agentId: latestRunStatus.agentId,
-                        runId,
-                        projectId: project.id,
-                        conversationId: reattachConversationId,
-                        result: 'success',
-                        artifactCount: latestRunStatus.artifactCount,
-                      });
-                    }
                     // Unlike the recoverArtifacts sibling below, this row's
                     // endedAt was already stamped synchronously above (~4041)
                     // at disconnect time — `prev.endedAt` is never null here,
@@ -5593,20 +5541,6 @@ export function ProjectView({
                     // unrelated state change.
                     shouldRefreshConversationAfterCleanup = false;
                   } else if (latestRunStatus.status === 'succeeded') {
-                    if (
-                      shouldPublishRunFinishedEvent
-                      && latestRunStatus.agentId === 'amr'
-                      && typeof latestRunStatus.artifactCount === 'number'
-                    ) {
-                      publishDaemonRunFinishedEvent({
-                        agentId: latestRunStatus.agentId,
-                        runId,
-                        projectId: project.id,
-                        conversationId: reattachConversationId,
-                        result: 'success',
-                        artifactCount: latestRunStatus.artifactCount,
-                      });
-                    }
                     clearProjectTimeout(backoffTimer);
                     setError(null);
                     // If the resumed stream already replayed some content/events
@@ -6223,7 +6157,7 @@ export function ProjectView({
       // send-through half of the onboarding funnel. Fires once per project (the
       // guard is project-scoped so it survives ProjectView remounts), on the
       // first message of the conversation (not retries). Placed AFTER the
-      // queue-only / busy / AMR balance gates above: those can abort the send
+      // queue-only / busy / hard gates above: those can abort the send
       // without creating a run, so emitting earlier would over-count blocked
       // attempts and then suppress the real retry via the once-only guard. By
       // here the send is committed to creating a run.
@@ -7163,19 +7097,6 @@ export function ProjectView({
                 }
                 if (!latestRunStatus || isActiveRunStatus(latestRunStatus.status)) {
                 } else if (latestRunStatus.status === 'succeeded') {
-                  if (
-                    latestRunStatus.agentId === 'amr'
-                    && typeof latestRunStatus.artifactCount === 'number'
-                  ) {
-                    publishDaemonRunFinishedEvent({
-                      agentId: latestRunStatus.agentId,
-                      runId: runIdForGenericDisconnect,
-                      projectId: project.id,
-                      conversationId: runConversationId,
-                      result: 'success',
-                      artifactCount: latestRunStatus.artifactCount,
-                    });
-                  }
                   clearProjectTimeout(backoffTimer);
                   // Advance the outer endedAt so updateConversationLatestRun()
                   // below adopts this same authoritative terminal timestamp,
@@ -7375,8 +7296,6 @@ export function ProjectView({
           hasExistingArtifact,
           runtimeType: daemonByokOpenCode
             ? ('byok' as const)
-            : config.agentId === 'amr'
-              ? ('amr_cloud' as const)
               : ('local_cli' as const),
           taskExecutionId: taskAnalytics.taskExecutionId,
           initialRunId: taskAnalytics.initialRunId,
@@ -7591,7 +7510,7 @@ export function ProjectView({
         );
         // Session-dimension hints on the BYOK-OpenCode path too, so
         // run_created / run_finished carry the same session-global and
-        // project-scoped run sequence on every runtime (cli / amr / byok).
+        // project-scoped run sequence on every runtime (cli / byok).
         const byokSessionTurn = claimRunTurnIndex();
         const byokProjectTurn = claimProjectTurnIndex(project.id);
         const byokHasExistingArtifact = projectFilesRef.current.some(
@@ -7938,17 +7857,6 @@ export function ProjectView({
     if (startingQueuedChatSendIdRef.current) return;
     if (!activeConversationId) return;
     if (messagesConversationIdRef.current !== activeConversationId) return;
-    // Queue paused by the balance gate: don't re-drain (and re-pop the
-    // dialog) on unrelated state churn while AMR is still the agent. The
-    // manual "run now" path below bypasses this deliberately, and switching
-    // agents makes the pause irrelevant.
-    if (
-      config.mode === 'daemon' &&
-      config.agentId === 'amr' &&
-      amrGatePausedQueueConversationsRef.current.has(activeConversationId)
-    ) {
-      return;
-    }
     const next = queuedChatSendsRef.current.find(
       (item) => item.conversationId === activeConversationId,
     );

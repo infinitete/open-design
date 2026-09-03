@@ -14,7 +14,6 @@ import {
 } from '@open-design/contracts/analytics';
 
 const RUNTIME_TYPES: readonly TrackingRuntimeType[] = [
-  'amr_cloud',
   'byok',
   'local_cli',
   'none',

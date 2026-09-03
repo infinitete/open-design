@@ -1183,65 +1183,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.settings-cloud-signin-callout {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--brand, #87ea5c) 22%, var(--border-soft));
-  border-radius: 14px;
-  background: var(--brand-soft, #ebffde);
-}
-.settings-cloud-signin-callout strong {
-  display: block;
-  color: var(--text-strong);
-  font-size: 14px;
-  font-weight: 600;
-}
-.settings-cloud-signin-callout p {
-  margin: 4px 0 0;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.45;
-}
-/* Solid pill mirroring the community selected-tab treatment: black fill,
-   green ink (icon + label share currentColor). */
-.settings-cloud-signin-callout__button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  min-height: 34px;
-  padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-large, 8px);
-  background: var(--text-strong);
-  color: var(--brand, #87ea5c);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.settings-cloud-signin-callout__button:hover {
-  background: color-mix(in srgb, var(--text-strong) 88%, var(--brand, #87ea5c));
-}
-/* The pill wrapper (AmrLoginPill's .amr-account-control root) carries the
-   callout button's border + fill; the inner action <button> would otherwise
-   add the global button primitive's own border/fill as a second box around
-   the label. Flatten it so only the outer shell paints. */
-.settings-cloud-signin-callout__button .amr-account-control__action,
-.settings-cloud-signin-callout__button .amr-account-control__action:hover:not(:disabled) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-}
 .settings-language-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1616,9 +1557,8 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
   /* Borderless: the panel fill + grid gaps delineate cards (transparent 1px
      keeps geometry stable across states). */
   border: 1px solid transparent;
-  /* Corner radius matches the cloud sign-in callout above the list
-     (.settings-cloud-signin-callout, 14px) so the whole 本机 CLI column
-     reads as one card family. */
+  /* Corner radius (14px) keeps the whole 本机 CLI column reading as one
+     card family. */
   border-radius: 14px;
   cursor: pointer;
   text-align: left;
@@ -1630,95 +1570,6 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
   padding: 0;
   min-height: 72px;
   overflow: hidden;
-}
-
-/* Failed-run AMR nudge: when the chat error card's "Try OpenDesign AMR" link
-   opens Settings, the AMR card scrolls into view and pulses a couple of times.
-   The card's own box-shadow is not clipped by `overflow: hidden`, so the glow
-   reads fully even though inner content is clipped. */
-.agent-card--amr-highlight {
-  border-color: var(--accent);
-  animation: amr-card-pulse 1s cubic-bezier(0.23, 1, 0.32, 1) 2;
-}
-@keyframes amr-card-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-  }
-  35% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 34%, transparent);
-  }
-}
-
-/* Authorize-button coachmark: a fake cursor that fades + slides in from the
-   lower-right, landing with its tip on the AMR authorize button, inside a
-   pulsing ring. Anchored to the button (`.amr-auth-anchor`) so it always lines
-   up. `pointer-events: none` keeps the real button clickable; it dismisses the
-   moment the real pointer reaches the button (handled in JS). */
-.amr-auth-anchor {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  /* Account actions (Upgrade / console / sign-out) belong to the card's
-     header row — top-aligned with the agent logo + name + benefit badges —
-     instead of floating vertically centered mid-card. The top margin matches
-     the active card's select padding so the action pills line up with the
-     name row. */
-  align-self: flex-start;
-  margin: 13px 16px 0 8px;
-}
-.amr-coachmark {
-  position: absolute;
-  /* Horizontally centered on the button, sitting low — the hand's fingertip
-     (top of the glyph) then points up into the button. `margin-left` centers
-     the box at `left: 50%` so `transform` stays free for the entrance. */
-  left: 50%;
-  margin-left: -12px;
-  bottom: 7px;
-  width: 24px;
-  height: 24px;
-  pointer-events: none;
-  z-index: 4;
-  animation: amr-coachmark-in 460ms cubic-bezier(0.23, 1, 0.32, 1) both;
-}
-/* Fade + rise straight up into place (bottom → up). */
-@keyframes amr-coachmark-in {
-  0% {
-    opacity: 0;
-    transform: translateY(16px) scale(0.8);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-.amr-coachmark__ring {
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 2px solid var(--accent);
-  opacity: 0;
-  /* Start pulsing only after the cursor has settled in. */
-  animation: amr-coachmark-ring 1.5s cubic-bezier(0.23, 1, 0.32, 1) 460ms infinite;
-}
-@keyframes amr-coachmark-ring {
-  0% {
-    transform: scale(0.55);
-    opacity: 0;
-  }
-  30% {
-    opacity: 0.65;
-  }
-  100% {
-    transform: scale(1.25);
-    opacity: 0;
-  }
-}
-.amr-coachmark__cursor {
-  position: absolute;
-  inset: 0;
-  filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--text-muted) 45%, transparent));
 }
 .agent-card-main {
   display: flex;
@@ -1974,20 +1825,6 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
 .agent-card-title {
   min-width: 0;
 }
-.agent-card-name--amr {
-  align-items: center;
-  gap: 8px;
-  row-gap: 5px;
-  flex-wrap: wrap;
-  white-space: normal;
-  overflow: visible;
-}
-.agent-card-name.agent-card-name--amr .agent-card-title {
-  flex: 0 0 auto;
-  overflow: visible;
-  text-overflow: clip;
-  white-space: nowrap;
-}
 .agent-card-benefits {
   display: inline-flex;
   align-items: center;
@@ -2034,122 +1871,10 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
   line-height: 1.35;
 }
 .agent-card-meta .muted { color: var(--text-soft); font-style: italic; }
-.agent-card-amr-email {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agent-card-amr-email-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agent-card-amr-profile-badge {
-  flex: 0 0 auto;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: 999px;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.2;
-}
 .agent-card-plan-badge-slot {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-}
-/* Balance rides on the same account row as the email + plan/profile chips
-   (row 2 of the card), separated by a hairline instead of its own row. */
-.agent-card-amr-email .agent-card-amr-balance {
-  margin-left: 4px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border-soft);
-}
-.agent-card-amr-balance {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 1.35;
-}
-.agent-card-amr-balance-label {
-  color: var(--text-soft);
-  font-weight: 600;
-}
-.agent-card-amr-balance-value {
-  color: var(--text);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.agent-card-amr-wallet {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 2px 8px;
-  max-width: 100%;
-  margin-top: 5px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.25;
-}
-.agent-card-amr-wallet__label {
-  color: var(--text-soft);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.agent-card-amr-wallet__value {
-  min-width: 0;
-  color: var(--text);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-card-amr-wallet__meta {
-  grid-column: 1 / -1;
-  min-width: 0;
-  color: var(--text-soft);
-  font-size: 12px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-card-amr-wallet-refresh {
-  align-self: center;
-  flex: 0 0 32px;
-  width: 32px;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: var(--bg-panel);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background-color 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out);
-}
-.agent-card-amr-wallet-refresh:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
-  background: color-mix(in srgb, var(--accent-tint) 62%, var(--bg-panel));
-  color: var(--accent-strong);
-}
-.agent-card-amr-wallet-refresh:disabled {
-  cursor: default;
-  opacity: 0.62;
 }
 .agent-card-model-summary {
   display: flex;
@@ -2173,194 +1898,6 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-/* The auth pill is one cluster of header-row actions; the old full-height
-   divider column (border-left + stretch + centered) is gone — the actions sit
-   inline with the Upgrade CTA inside `.amr-auth-anchor`. */
-.agent-card-amr-auth {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-.agent-card-amr-auth--placeholder {
-  visibility: hidden;
-  pointer-events: none;
-}
-.agent-card-amr-auth .amr-account-control {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-width: 0;
-  gap: 6px;
-  padding: 0;
-}
-/* Upgrade is the card's primary account CTA: a solid accent pill sized like
-   the neighboring account-control actions so the header action cluster reads
-   as one row of coherent buttons. */
-.agent-card-amr-upgrade {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  /* 品牌主色 #00ff04 (opendesign spec), not the theme --green: the label and
-     its sparkle icon share currentColor on the ink fill. */
-  color: #00ff04;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 120ms var(--ease-out), transform 120ms var(--ease-out);
-}
-.agent-card-amr-upgrade:hover:not(:disabled) {
-  background: var(--accent-strong, var(--accent));
-  transform: translateY(-1px);
-}
-.agent-card-amr-auth .amr-account-control__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 150px;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-card-amr-auth .amr-account-control__status-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-card-amr-auth .amr-account-control__action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent-tint) 62%, var(--bg-panel));
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out), transform 120ms var(--ease-out);
-}
-.agent-card-amr-auth .amr-account-control__action--icon {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0;
-  border-color: color-mix(in srgb, var(--accent) 16%, var(--border-soft));
-  background: color-mix(in srgb, var(--bg-panel) 88%, var(--accent-tint) 12%);
-  color: var(--text-muted);
-}
-.agent-card-amr-auth .amr-account-control__action:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
-  background: color-mix(in srgb, var(--accent-tint) 76%, var(--bg-panel));
-  color: var(--accent-strong);
-  transform: translateY(-1px);
-}
-.agent-card-amr-auth .amr-account-control__action--icon:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: color-mix(in srgb, var(--bg-panel) 78%, var(--accent-tint) 22%);
-  color: var(--text);
-}
-.agent-card-amr-auth .amr-account-control__action:disabled {
-  cursor: default;
-  opacity: 0.62;
-}
-.agent-card-amr-auth .amr-account-control--error {
-  width: 100%;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  row-gap: 6px;
-  padding: 6px 12px;
-}
-.agent-card-amr-auth .amr-account-control__error {
-  flex: 1 1 100%;
-  max-width: 100%;
-  color: var(--danger-text, #991b1b);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-/* Device-authorization fallback shown while signing in to AMR. Surfaced from
-   vela login's stdout so the user can finish even when the browser did not
-   auto-open. Unscoped so it renders consistently in Settings, onboarding, and
-   the chat auth surfaces; takes a full row inside the wrapping flex pill. */
-/* The pill's base layout is a single non-wrapping flex row; let it wrap so the
-   full-width activation block drops onto its own line below the status. Scoped
-   by :has so only the signing-in-with-activation case is affected. */
-.amr-account-control--signing-in:has(.amr-login-activation) {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  row-gap: 6px;
-  padding-top: 8px;
-  padding-bottom: 8px;
-}
-.amr-login-activation {
-  flex: 1 1 100%;
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  border-radius: var(--radius-large, 8px);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-  text-align: left;
-}
-.amr-login-activation__hint {
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--text-muted, #6b7280);
-}
-.amr-login-activation__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.amr-login-activation__open {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font-size: 12px;
-  font-weight: 700;
-  text-decoration: none;
-  white-space: nowrap;
-}
-.amr-login-activation__open:hover {
-  background: var(--accent-strong, var(--accent));
-}
-.agent-card-amr-auth .amr-login-pill-badge {
-  flex: 0 0 auto;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: 999px;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.2;
 }
 .agent-model-row-head {
   font-size: 12px;
@@ -2711,23 +2248,6 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
 }
 .agent-card-config .hint,
 .agent-model-row .hint { margin: 0; font-size: 12px; }
-
-/* Model picker loading row — shown for AMR between sign-in and the moment
-   vela's live catalog arrives, so the dropdown appears immediately rather
-   than popping in seconds later. Mirrors the select's box metrics. */
-.agent-model-select-loading {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-  color: var(--text-muted);
-  font-size: 13px;
-}
 
 .model-select-searchable {
   position: relative;

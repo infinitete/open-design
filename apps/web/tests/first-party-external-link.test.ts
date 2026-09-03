@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { openFirstPartyExternalLinkFromClick } from '../src/first-party-external-link';
 
 describe('openFirstPartyExternalLinkFromClick', () => {
-  it('bridges the final URL after a bubbling AMR handler appends attribution parameters', () => {
+    it('bridges the final URL after a bubbling click handler appends attribution parameters', () => {
     const opened = vi.fn();
     const anchor = document.createElement('a');
     anchor.href = 'https://open-design.ai/console';

@@ -24,7 +24,6 @@ import {
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
 import type {
-  AmrModelsResponse,
   ChatSessionMode,
   CreateProjectExampleReference,
   RunContextSelection,
@@ -71,7 +70,6 @@ import {
   switchApiProtocolConfig,
   updateCurrentApiProtocolConfig,
   type SettingsSection,
-  type SettingsHighlight,
 } from './components/SettingsDialog';
 import { PrivacyConsentModal } from './components/PrivacyConsentModal';
 import {
@@ -88,9 +86,6 @@ import {
   replaceProjectWorkingDir,
 } from './providers/registry';
 import { openFirstPartyExternalLinkFromClick } from './first-party-external-link';
-import {
-  fetchAmrModels,
-} from './providers/daemon';
 import { CommunityView } from './components/CommunityView';
 import { seedHomeComposerPrompt } from './components/HomeView';
 import {
@@ -199,8 +194,6 @@ interface PendingProjectCreation {
 }
 
 const APP_CONFIG_CHANGED_EVENT = 'open-design:app-config-changed';
-const AMR_AGENT_ID = 'amr';
-const AMR_PROFILE_ENV_KEY = 'OPEN_DESIGN_AMR_PROFILE';
 const AGENT_FOCUS_REFRESH_THROTTLE_MS = 10_000;
 
 /**
@@ -250,11 +243,6 @@ function normalizeSavedComposioConfig(config: AppConfig['composio']): AppConfig[
   return { ...(config ?? {}) };
 }
 
-function amrProfileForConfig(config: AppConfig): string | null {
-  const profile = config.agentCliEnv?.[AMR_AGENT_ID]?.[AMR_PROFILE_ENV_KEY];
-  return typeof profile === 'string' && profile ? profile : null;
-}
-
 function mergeLinkedDirsIntoMetadata(
   metadata: ProjectMetadata | undefined,
   linkedDirs?: string[] | null,
@@ -266,15 +254,6 @@ function mergeLinkedDirsIntoMetadata(
     ...baseMetadata,
     linkedDirs: Array.from(new Set([...(baseMetadata.linkedDirs ?? []), ...nextDirs])),
   };
-}
-
-function sameAgentModelChoice(
-  left: AgentModelChoice | undefined,
-  right: AgentModelChoice | undefined,
-): boolean {
-  return (left?.model ?? null) === (right?.model ?? null)
-    && (left?.reasoning ?? null) === (right?.reasoning ?? null)
-    && (left?.serviceTier ?? null) === (right?.serviceTier ?? null);
 }
 
 export function mergeAgentModelChoice(
@@ -289,21 +268,6 @@ export function mergeAgentModelChoice(
     delete merged.serviceTier;
   }
   return merged;
-}
-
-function clearStaleAmrModelChoiceOnProfileChange(
-  previous: AppConfig,
-  next: AppConfig,
-): AppConfig {
-  if (amrProfileForConfig(previous) === amrProfileForConfig(next)) return next;
-
-  const previousChoice = previous.agentModels?.[AMR_AGENT_ID];
-  const nextChoice = next.agentModels?.[AMR_AGENT_ID];
-  if (!nextChoice || !sameAgentModelChoice(previousChoice, nextChoice)) return next;
-
-  const nextAgentModels = { ...(next.agentModels ?? {}) };
-  delete nextAgentModels[AMR_AGENT_ID];
-  return { ...next, agentModels: nextAgentModels };
 }
 
 type ProjectListRequest = {
@@ -388,24 +352,7 @@ export function resolveSettingsCloseConfig(
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
 }
 
-function mergeAmrModelsIntoAgents(
-  agents: AgentInfo[],
-  amrModels: AmrModelsResponse | null,
-): AgentInfo[] {
-  if (!amrModels || amrModels.models.length === 0) return agents;
-  return agents.map((agent) => {
-    if (agent.id !== 'amr') return agent;
-    const shouldPreferAgentModels =
-      amrModels.source === 'preset' &&
-      Array.isArray(agent.models) &&
-      agent.models.length > 0;
-    if (shouldPreferAgentModels) return agent;
-    return { ...agent, models: amrModels.models, modelsSource: 'live' };
-  });
-}
-
 const CANONICAL_AGENT_ORDER = [
-  'amr',
   'claude',
   'codex',
   'devin',
@@ -503,7 +450,8 @@ function AppInner() {
       event,
       (url) => { void openExternalUrl(url); },
     );
-    // React handlers append AMR attribution while the event bubbles; bridge the final URL afterwards.
+    // React handlers may rewrite the href while the event bubbles; bridge the
+    // final URL afterwards.
     document.addEventListener('click', onFirstPartyExternalLink);
     return () => document.removeEventListener('click', onFirstPartyExternalLink);
   }, []);
@@ -592,16 +540,12 @@ function AppInner() {
   const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
-  const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
   const [integrationInitialTab, setIntegrationInitialTab] = useState<IntegrationTab>('mcp');
   const [daemonLive, setDaemonLive] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const amrModelsRef = useRef<AmrModelsResponse | null>(null);
-  const amrPollGenerationRef = useRef(0);
   const agentStreamRequestSeqRef = useRef(0);
   const agentStreamAbortRef = useRef<AbortController | null>(null);
   const agentFocusRefreshLastRunRef = useRef(Date.now());
-  const [amrPollRestartToken, setAmrPollRestartToken] = useState(0);
   const [providerModelsCache, setProviderModelsCache] = useState<
     Record<string, ProviderModelOption[]>
   >({});
@@ -758,11 +702,6 @@ function AppInner() {
 
   const isCurrentAgentStreamRequest = useCallback((requestId: number) => {
     return agentStreamRequestSeqRef.current === requestId;
-  }, []);
-
-  const restartAmrPolling = useCallback(() => {
-    amrPollGenerationRef.current += 1;
-    setAmrPollRestartToken((current) => current + 1);
   }, []);
 
   // v2 schema removed the standalone `app_launch` event; the initial
@@ -949,7 +888,6 @@ function AppInner() {
       agentId: config.agentId,
       agents: agents.map((a) => ({ id: a.id, available: a.available })),
       byokConfigured,
-      amrAuthorized: false,
     });
     analytics.setConfigureGlobals(globals);
   }, [
@@ -1015,48 +953,6 @@ function AppInner() {
     });
   }, [activeProjectId, activeFileName]);
 
-  useEffect(() => {
-    if (!daemonLive) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const pollGeneration = amrPollGenerationRef.current + 1;
-    amrPollGenerationRef.current = pollGeneration;
-    const pollDelayMs = 1_000;
-    const maxPresetPolls = 10;
-    let presetPolls = 0;
-
-    const applyAmrModels = async () => {
-      const result = await fetchAmrModels();
-      if (
-        cancelled ||
-        amrPollGenerationRef.current !== pollGeneration ||
-        !result ||
-        !Array.isArray(result.models) ||
-        result.models.length === 0
-      ) {
-        return;
-      }
-      amrModelsRef.current = result;
-      setAgents((current) => mergeAmrModelsIntoAgents(current, result));
-      const shouldPollPreset =
-        result.source === 'preset' &&
-        !result.remoteError &&
-        presetPolls < maxPresetPolls;
-      if (shouldPollPreset) {
-        presetPolls += 1;
-        timer = window.setTimeout(() => {
-          void applyAmrModels();
-        }, pollDelayMs);
-      }
-    };
-
-    void applyAmrModels();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [amrPollRestartToken, daemonLive]);
-
   // Bootstrap — detect daemon, then fan out independent fetches so each
   // entry-view tab can render the moment its own data lands. Earlier this
   // was one Promise.all behind a global "Loading workspace…" placeholder,
@@ -1102,23 +998,13 @@ function AppInner() {
         signal: effectAgentStreamAbort?.signal,
         onAgent: (agent) => {
           if (cancelled || !isCurrentAgentStreamRequest(agentRequestId)) return;
-          setAgents((current) =>
-            mergeAmrModelsIntoAgents(
-              upsertAgent(current, agent),
-              amrModelsRef.current,
-            ),
-          );
+          setAgents((current) => upsertAgent(current, agent));
         },
       })
         .then((list) => {
           if (cancelled || !isCurrentAgentStreamRequest(agentRequestId)) return;
           reportAgentDetectDiagnostics(analytics.track, list);
-          setAgents(
-            mergeAmrModelsIntoAgents(
-              orderAgentsByRegistry(list),
-              amrModelsRef.current,
-            ),
-          );
+          setAgents(orderAgentsByRegistry(list));
         })
         .catch((err) => {
           if (
@@ -1219,10 +1105,7 @@ function AppInner() {
           daemonMediaProvidersLoaded,
         );
         const next = mergeDaemonMediaProviders(
-          clearStaleAmrModelChoiceOnProfileChange(
-            baseConfig,
-            mergeDaemonConfig(baseConfig, daemonConfig),
-          ),
+          mergeDaemonConfig(baseConfig, daemonConfig),
           daemonMediaProvidersLoaded,
         );
         const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
@@ -1321,13 +1204,13 @@ function AppInner() {
   // user's previous choice, so we only fill an empty slot.
   //
   // First-run onboarding is the one time we must NOT do this: the onboarding
-  // flow is the sole authority for the initial agent pick (AMR is the
-  // recommended default there), and AMR (vela) detection is asynchronous. If
-  // this fallback fires during onboarding while AMR is still being detected it
-  // snaps the slot to the registry-first *detected* agent (Claude) and
-  // persists it to the daemon, which then races and clobbers the user's AMR
-  // selection on the next launch. Gate on onboardingCompleted so this only
-  // backfills an empty slot for returning users.
+  // flow is the sole authority for the initial agent pick, and detection is
+  // asynchronous. If this fallback fires during onboarding while agents are
+  // still being detected it snaps the slot to the registry-first *detected*
+  // agent (Claude) and persists it to the daemon, which then races and
+  // clobbers the user's selection on the next launch. Gate on
+  // onboardingCompleted so this only backfills an empty slot for returning
+  // users.
   useEffect(() => {
     if (!daemonConfigLoaded || agentsLoading) return;
     if (config.onboardingCompleted !== true) return;
@@ -1647,12 +1530,11 @@ function AppInner() {
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
         const current = latestPersistedConfigRef.current;
-        const nextConfig = clearStaleAmrModelChoiceOnProfileChange(current, {
+        const nextConfig: AppConfig = {
           ...current,
           agentCliEnv: options.agentCliEnv ?? {},
-        });
+        };
         latestPersistedConfigRef.current = nextConfig;
-        amrModelsRef.current = null;
         saveConfig(nextConfig);
         setConfig(nextConfig);
         await syncConfigToDaemon(nextConfig);
@@ -1664,18 +1546,13 @@ function AppInner() {
           signal: agentStreamAbortRef.current?.signal,
           onAgent: (agent) => {
             if (!isCurrentAgentStreamRequest(agentRequestId)) return;
-            setAgents((current) =>
-              mergeAmrModelsIntoAgents(
-                upsertAgent(current, agent),
-                amrModelsRef.current,
-              ),
-            );
+            setAgents((current) => upsertAgent(current, agent));
           },
         });
         const ordered = orderAgentsByRegistry(next);
         reportAgentDetectDiagnostics(analytics.track, ordered);
         if (isCurrentAgentStreamRequest(agentRequestId)) {
-          setAgents(mergeAmrModelsIntoAgents(ordered, amrModelsRef.current));
+          setAgents(ordered);
           setAgentsLoading(false);
         }
         return ordered;
@@ -1717,22 +1594,16 @@ function AppInner() {
     const handleAppConfigChanged = () => {
       void fetchDaemonConfig().then((daemonConfig) => {
         const previous = latestPersistedConfigRef.current;
-        const next = clearStaleAmrModelChoiceOnProfileChange(
-          previous,
-          mergeDaemonConfig(previous, daemonConfig),
-        );
-        const amrProfileChanged = amrProfileForConfig(previous) !== amrProfileForConfig(next);
+        const next = mergeDaemonConfig(previous, daemonConfig);
         latestPersistedConfigRef.current = next;
         saveConfig(next);
         setConfig(next);
-        amrModelsRef.current = null;
-        restartAmrPolling();
         void refreshAgents();
       });
     };
     window.addEventListener(APP_CONFIG_CHANGED_EVENT, handleAppConfigChanged);
     return () => window.removeEventListener(APP_CONFIG_CHANGED_EVENT, handleAppConfigChanged);
-  }, [refreshAgents, restartAmrPolling]);
+  }, [refreshAgents]);
 
   const handleCreateProject = useCallback(
     async (
@@ -2713,7 +2584,6 @@ function AppInner() {
 
   const openSettings = useCallback((
     section: SettingsSection = 'execution',
-    opts?: { highlight?: SettingsHighlight },
   ) => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
       settingsReturnTargetRef.current = null;
@@ -2734,7 +2604,6 @@ function AppInner() {
         : null;
     setSettingsWelcome(false);
     setSettingsInitialSection(section);
-    setSettingsHighlight(opts?.highlight ?? null);
     navigate({ kind: 'home', view: 'settings' });
   }, []);
 
@@ -2854,7 +2723,6 @@ function AppInner() {
     }
     setSettingsOpen(false);
     settingsDraftConfigRef.current = null;
-    setSettingsHighlight(null);
     if (route.kind === 'home' && route.view === 'settings') {
       const returnTarget = settingsReturnTargetRef.current;
       settingsReturnTargetRef.current = null;
@@ -2873,7 +2741,6 @@ function AppInner() {
     setConfig(next);
     setSettingsOpen(false);
     settingsDraftConfigRef.current = null;
-    setSettingsHighlight(null);
     navigate({ kind: 'home', view: 'onboarding' });
   }, []);
 
@@ -2887,7 +2754,6 @@ function AppInner() {
       appVersionInfo={appVersionInfo}
       welcome={presentation === 'modal' ? settingsWelcome : false}
       initialSection={settingsInitialSection}
-      initialHighlight={settingsHighlight}
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}

@@ -7,7 +7,6 @@ import {
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { goPlanPricingUrl } from '../campaigns/go-plan';
-import { getResolvedDeviceId } from '../analytics/client';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackDeepSeekCampaignModalClick,
@@ -17,8 +16,6 @@ import { useI18n } from '../i18n';
 import { Icon } from './Icon';
 import { modelProviderIconSrc } from './modelProviderIcon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
-
-function amrHandoffDeviceId(..._a: unknown[]): string | null { return null; }
 
 interface Props {
   /**
@@ -34,22 +31,6 @@ interface Props {
    * explicit: the modal shows on #/home only.
    */
   active?: boolean;
-  /**
-   * Performs the REAL workbench switch for the paid 立即使用 CTA (产品拍板
-   * D5): agent to `amr`, model to the campaign model. EntryShell provides the
-   * same onAgentChange/onAgentModelChange pair the InlineModelSwitcher
-   * persists through.
-   */
-  onUseCampaignModel?: (agentId: string, modelId: string) => void;
-  /**
-   * Telemetry opt-in (config.telemetry.metrics). Gates the AMR analytics
-   * mirror of the recorded entry AND the od_device_id on the Pricing URL —
-   * the same treatment the workbench badge and the model-switcher upgrade
-   * already apply to this campaign's other touchpoints.
-   */
-  metricsConsent?: boolean;
-  /** config.installationId — the preferred consent-gated AMR join key. */
-  installationId?: string | null;
 }
 
 function CampaignProviderMark({
@@ -117,27 +98,9 @@ function markCampaignSeen(campaignId: string): void {
   }
 }
 
-/**
- * Visual confirmation of the switch `onUseCampaignModel` already performed:
- * pulse the composer's model chip. Deliberately no `chip.click()` — the model
- * is switched for real, so opening the picker would only ask the user to redo
- * a choice that has already been made.
- */
-function highlightModelSwitcher(): void {
-  const chip = document.querySelector<HTMLButtonElement>(
-    '[data-testid="inline-model-switcher-chip"]',
-  );
-  if (!chip) return;
-  chip.setAttribute('data-campaign-highlight', 'true');
-  window.setTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
-}
-
 export function DeepSeekV4FlashCampaign({
   audience,
   active = true,
-  onUseCampaignModel,
-  metricsConsent = false,
-  installationId = null,
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -236,17 +199,10 @@ export function DeepSeekV4FlashCampaign({
     trackModalClick(paid ? 'use_now' : 'upgrade');
     dismissModal();
     if (paid) {
-      // 产品拍板 D5: 立即使用 switches the workbench to the campaign model
-      // for real; the chip pulse is feedback for a switch that happened.
-      onUseCampaignModel?.('amr', campaign.modelId);
-      window.setTimeout(highlightModelSwitcher, 0);
+      // The campaign's hosted runtime is retired, so the paid CTA no longer
+      // selects an agent; it only confirms and dismisses.
       return;
     }
-    const deviceId = amrHandoffDeviceId({
-      metricsConsent,
-      resolvedDeviceId: getResolvedDeviceId(),
-      installationId,
-    });
     window.open(
       goPlanPricingUrl(locale),
       '_blank',

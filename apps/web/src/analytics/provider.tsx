@@ -62,8 +62,8 @@ interface AnalyticsContextValue {
   // App.tsx whenever the user's execution-mode config changes (mode
   // switch, agent select, BYOK save, CLI rescan).
   setConfigureGlobals: (next: AnalyticsConfigureGlobals) => void;
-  // Register / unregister the AMR account id as the `user_id` public
-  // param. Called from App.tsx whenever the AMR login status resolves;
+  // Register / unregister the signed-in account id as the `user_id` public
+  // param. Called from App.tsx whenever the signed-in identity resolves;
   // null on logout so later events drop the stale id.
   setUserId: (userId: string | null) => void;
   anonymousId: string;

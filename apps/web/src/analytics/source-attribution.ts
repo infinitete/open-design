@@ -1,4 +1,3 @@
-import type { AmrEntryAttribution } from '@open-design/contracts/analytics';
 import {
   readOnboardingProfile,
   type OnboardingProfile,

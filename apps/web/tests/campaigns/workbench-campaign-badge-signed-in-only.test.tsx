@@ -87,9 +87,11 @@ describe('workbench campaign badge is signed-in only', () => {
     expect(badgeSource).not.toMatch(/\n\s*loggedIn\?:/);
   });
 
-  it('passes the Vela login state from the entry shell mount point', () => {
+  it('mounts the badge signed-out from the entry shell mount point', () => {
+    // There is no cloud login surface anymore, so the shell mount point pins
+    // the signed-out state explicitly.
     expect(entryShellSource).toMatch(
-      /<WorkbenchCampaignBadge[\s\S]{0,400}?loggedIn=\{amrLoggedIn\}/,
+      /<WorkbenchCampaignBadge[\s\S]{0,400}?loggedIn=\{false\}/,
     );
   });
 });

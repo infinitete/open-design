@@ -165,18 +165,7 @@ afterEach(() => {
 
 beforeEach(() => {
   globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
-  globalThis.fetch = vi.fn(async (input) => {
-    const url = String(input);
-    if (url.endsWith('/api/integrations/vela/status')) {
-      return jsonResponse({
-        loggedIn: true,
-        profile: 'prod',
-        configPath: '/x',
-        user: { id: 'u', email: 'user@example.com' },
-      });
-    }
-    return jsonResponse({});
-  }) as typeof fetch;
+  globalThis.fetch = vi.fn(async () => jsonResponse({})) as typeof fetch;
 });
 
 describe('onboarding Local CLI chip alignment', () => {

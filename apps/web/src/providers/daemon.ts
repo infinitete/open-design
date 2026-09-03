@@ -22,7 +22,6 @@ import type {
   ChatSseEvent,
   ChatSseStartPayload,
   DaemonAgentPayload,
-  AmrModelsResponse,
   ByokChatProviderConfig,
   MediaExecutionPolicy,
   ResearchOptions,
@@ -365,8 +364,6 @@ export interface DaemonReattachOptions {
   onRunStatus?: (status: ChatRunStatus) => void;
   onArtifactPaths?: (paths: string[]) => void;
   onRunEventId?: (eventId: string) => void;
-  /** Publish a current-run success outcome to the app-level upgrade gate. */
-  publishRunFinishedEvent?: boolean;
   /** Called when reattach discovers a newer active Run in the same task. */
   onRunCreated?: (runId: string, strategyTask?: StrategyTaskProjectionV2) => void;
   /** Called once the daemon projects the logical strategy task as terminal
@@ -375,37 +372,6 @@ export interface DaemonReattachOptions {
 }
 
 export const RUNS_CHANGED_EVENT = 'open-design:runs-changed';
-export const DAEMON_RUN_FINISHED_EVENT = 'open-design:daemon-run-finished';
-
-export interface DaemonRunFinishedEventDetail {
-  agentId: string;
-  runId: string;
-  projectId: string;
-  conversationId: string;
-  result: 'success';
-  artifactCount: number;
-}
-
-export function publishDaemonRunFinishedEvent(
-  detail: DaemonRunFinishedEventDetail,
-): void {
-  if (
-    typeof window === 'undefined'
-    || detail.agentId !== 'amr'
-    || !detail.runId.trim()
-    || !detail.projectId.trim()
-    || !detail.conversationId.trim()
-    || detail.result !== 'success'
-    || !Number.isFinite(detail.artifactCount)
-    || detail.artifactCount <= 0
-  ) {
-    return;
-  }
-  window.dispatchEvent(new CustomEvent<DaemonRunFinishedEventDetail>(
-    DAEMON_RUN_FINISHED_EVENT,
-    { detail },
-  ));
-}
 
 export const GENERIC_DAEMON_DISCONNECT_MESSAGE =
   'daemon stream disconnected before run completed';
@@ -452,13 +418,11 @@ function daemonSseError(data: SseErrorPayload): Error {
 }
 
 function shouldSuppressLifecycleExitFallback(
-  agentId: string | undefined,
   exitCode: number | null,
   exitSignal: string | null,
   stderrTail: string,
 ): boolean {
   if (exitCode !== 130 || exitSignal) return false;
-  if (agentId === 'amr') return true;
   const normalizedStderr = stderrTail.toLowerCase();
   return (
     normalizedStderr.includes('opencode server listening') ||
@@ -466,7 +430,7 @@ function shouldSuppressLifecycleExitFallback(
   );
 }
 
-const AMR_OPENCODE_INCOMPLETE_MESSAGE =
+const OPENCODE_INCOMPLETE_MESSAGE =
   'OpenDesign started, but the run did not complete. Please retry or check the run details for the session stream error.';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -661,16 +625,15 @@ function formatLegacyOpenCodeSessionError(text: string): string | null {
   });
 }
 
-function isAmrOpenCodeExitFallback(agentId: string | undefined, stderr: string): boolean {
-  if (agentId === 'amr' || agentId === 'opencode') return true;
+function isOpenCodeExitFallback(agentId: string | undefined, stderr: string): boolean {
+  if (agentId === 'opencode') return true;
   const normalized = stderr.toLowerCase();
   return normalized.includes('opencode server listening') || normalized.includes('opencode session error:');
 }
 
-function isAmrOpenCodeBootstrapLine(line: string): boolean {
+function isOpenCodeBootstrapLine(line: string): boolean {
   const trimmed = line.trim();
   return (
-    /^AMR run id:\s*\S+/i.test(trimmed) ||
     /^Performing one time database migration/i.test(trimmed) ||
     /^sqlite-migration:done$/i.test(trimmed) ||
     /^Database migration complete\.?$/i.test(trimmed) ||
@@ -679,11 +642,11 @@ function isAmrOpenCodeBootstrapLine(line: string): boolean {
   );
 }
 
-function cleanAmrOpenCodeStderrFallback(agentId: string | undefined, stderr: string): string {
-  if (!isAmrOpenCodeExitFallback(agentId, stderr)) return stderr.trim();
+function cleanOpenCodeStderrFallback(agentId: string | undefined, stderr: string): string {
+  if (!isOpenCodeExitFallback(agentId, stderr)) return stderr.trim();
   return stderr
     .split(/\r?\n/)
-    .filter((line) => line.trim() && !isAmrOpenCodeBootstrapLine(line))
+    .filter((line) => line.trim() && !isOpenCodeBootstrapLine(line))
     .join('\n')
     .trim();
 }
@@ -813,7 +776,6 @@ export async function streamViaDaemon({
       onRunEventId,
       projectId,
       conversationId,
-      publishRunFinishedEvent: true,
       onRunCreated,
       onStrategyTaskSettled,
     });
@@ -883,16 +845,6 @@ export async function launchAntigravityOauth(): Promise<LaunchAntigravityOauthRe
       ok: false,
       error: err instanceof Error ? err.message : String(err),
     };
-  }
-}
-
-export async function fetchAmrModels(): Promise<AmrModelsResponse | null> {
-  try {
-    const resp = await fetch('/api/amr/models', { cache: 'no-store' });
-    if (!resp.ok) return null;
-    return (await resp.json()) as AmrModelsResponse;
-  } catch {
-    return null;
   }
 }
 
@@ -1003,7 +955,6 @@ async function consumeDaemonPhysicalRun({
   onRunEventId,
   projectId,
   conversationId,
-  publishRunFinishedEvent,
   onStrategyTaskSettled,
 }: DaemonReattachOptions): Promise<DaemonPhysicalRunResult | void> {
   let acc = '';
@@ -1033,10 +984,8 @@ async function consumeDaemonPhysicalRun({
   // frame — both mirror the same finalize-time classification.
   let endFailureCategory: ChatRunStatusResponse['failureCategory'] = null;
   let endFailureDetail: ChatRunStatusResponse['failureDetail'] = null;
-  let resolvedArtifactCount: number | undefined;
   const reportArtifactCount = (value: unknown) => {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return;
-    resolvedArtifactCount = value;
     handlers.onArtifactCount?.(value);
   };
   const reportArtifactPaths = (value: unknown) => {
@@ -1339,15 +1288,15 @@ async function consumeDaemonPhysicalRun({
         );
         return;
       }
-      if (shouldSuppressLifecycleExitFallback(agentId, exitCode, exitSignal, stderrBuf)) {
+      if (shouldSuppressLifecycleExitFallback(exitCode, exitSignal, stderrBuf)) {
         handlers.onDone(acc);
         return;
       }
-      const cleanedStderr = cleanAmrOpenCodeStderrFallback(agentId, stderrBuf);
+      const cleanedStderr = cleanOpenCodeStderrFallback(agentId, stderrBuf);
       const formattedOpenCodeError = formatLegacyOpenCodeSessionError(cleanedStderr);
       const tail = (formattedOpenCodeError ?? cleanedStderr).trim().slice(-400);
       const fallbackTail =
-        tail || (isAmrOpenCodeExitFallback(agentId, stderrBuf) ? AMR_OPENCODE_INCOMPLETE_MESSAGE : '');
+        tail || (isOpenCodeExitFallback(agentId, stderrBuf) ? OPENCODE_INCOMPLETE_MESSAGE : '');
       handlers.onError(
         markErrorRunFailure(
           markErrorResumable(
@@ -1358,25 +1307,6 @@ async function consumeDaemonPhysicalRun({
         ),
       );
       return;
-    }
-    if (
-      publishRunFinishedEvent
-      && agentId === 'amr'
-      && Boolean(projectId?.trim())
-      && Boolean(conversationId?.trim())
-      && serverDeclaredSuccess
-      && endStatus === 'succeeded'
-      && resolvedArtifactCount !== undefined
-      && resolvedArtifactCount > 0
-    ) {
-      publishDaemonRunFinishedEvent({
-        agentId,
-        runId,
-        projectId: projectId!,
-        conversationId: conversationId!,
-        result: 'success',
-        artifactCount: resolvedArtifactCount,
-      });
     }
     handlers.onDone(acc);
   } finally {

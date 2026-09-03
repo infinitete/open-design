@@ -107,7 +107,7 @@ type TranslateFn = (
 ) => string;
 
 // The host reports whether it accepted the answer into a real chat turn. A
-// `false` result means a pre-run guard (for example the AMR balance gate)
+// `false` result means a pre-run guard
 // prevented the send, so the inline form must remain editable.
 export type QuestionFormSubmitHandler = (
   text: string,

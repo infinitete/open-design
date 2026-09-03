@@ -15,7 +15,7 @@ import type { ArtifactOriginEntrySurface, ArtifactOriginStatus } from '../../api
 import type { AgentDiagnosticReason, AgentDiagnosticSeverity } from '../../api/registry.js';
 import type { TrackingDesignSystemEditSurface, TrackingDesignSystemKind, TrackingDesignSystemLengthBucket, TrackingDesignSystemOrigin, TrackingDesignSystemRunEntryFrom } from './design-systems.js';
 import type { TrackingSettingsPage } from './event-names.js';
-import type { TrackingAmrOpenCodeErrorPhase, TrackingAmrOpenCodeLastEventType, TrackingAmrOpenCodeLastToolKind, TrackingAmrOpenCodeLastToolStatus, TrackingArtifactKind, TrackingArtifactWriteSource, TrackingArtifactWriteStatus, TrackingByokPreflightBlockReason, TrackingByokProviderId, TrackingCliProviderId, TrackingDesignSystemSource, TrackingExecutionMode, TrackingExportFormat, TrackingExportResult, TrackingFeedbackAction, TrackingFeedbackProviderId, TrackingFeedbackRating, TrackingFeedbackRatingWithNone, TrackingFeedbackReasonCode, TrackingFidelity, TrackingFileSizeBucket, TrackingFileType, TrackingFirstModelEventType, TrackingHarness, TrackingLabsItemId, TrackingLabsOptOutReason, TrackingLabsSystemReason, TrackingLabsToggleSource, TrackingLangfuseDeliveryStatus, TrackingLangfuseDropReason, TrackingLangfuseReportResult, TrackingLangfuseReportSkipReason, TrackingProjectKind, TrackingProjectSource, TrackingPublishErrorCode, TrackingResult, TrackingRunCancelOrigin, TrackingRunCloseReason, TrackingRunDiagnosticSource, TrackingRunFailureCategory, TrackingRunFailureDetail, TrackingRunFailureStage, TrackingRunFailureUserAction, TrackingRunLifecyclePhase, TrackingRunPhaseTimingStatus, TrackingRunResult, TrackingRunRetryFinalResult, TrackingRunRetryStrategy, TrackingRunRetrySuppressedReason, TrackingRunTerminalTrigger, TrackingStderrLineCountBucket, TrackingTestResult, TrackingTokenCountSource } from './shared-enums.js';
+import type { TrackingArtifactKind, TrackingArtifactWriteSource, TrackingArtifactWriteStatus, TrackingByokPreflightBlockReason, TrackingByokProviderId, TrackingCliProviderId, TrackingDesignSystemSource, TrackingExecutionMode, TrackingExportFormat, TrackingExportResult, TrackingFeedbackAction, TrackingFeedbackProviderId, TrackingFeedbackRating, TrackingFeedbackRatingWithNone, TrackingFeedbackReasonCode, TrackingFidelity, TrackingFileSizeBucket, TrackingFileType, TrackingFirstModelEventType, TrackingHarness, TrackingLabsItemId, TrackingLabsOptOutReason, TrackingLabsSystemReason, TrackingLabsToggleSource, TrackingLangfuseDeliveryStatus, TrackingLangfuseDropReason, TrackingLangfuseReportResult, TrackingLangfuseReportSkipReason, TrackingProjectKind, TrackingProjectSource, TrackingPublishErrorCode, TrackingResult, TrackingRunCancelOrigin, TrackingRunCloseReason, TrackingRunDiagnosticSource, TrackingRunFailureCategory, TrackingRunFailureDetail, TrackingRunFailureStage, TrackingRunFailureUserAction, TrackingRunLifecyclePhase, TrackingRunPhaseTimingStatus, TrackingRunResult, TrackingRunRetryFinalResult, TrackingRunRetryStrategy, TrackingRunRetrySuppressedReason, TrackingRunTerminalTrigger, TrackingStderrLineCountBucket, TrackingTestResult, TrackingTokenCountSource } from './shared-enums.js';
 import type { ConversationForkAnalyticsContext, TrackingFileVersionSource, TrackingPluginImportSource, TrackingSessionMode, TrackingSettingsArea } from './ui-click.js';
 // ---- Result events -------------------------------------------------------
 
@@ -628,15 +628,6 @@ export interface RunFinishedProps extends Omit<RunCreatedProps, 'area'> {
   stdin_backpressure?: boolean;
   tool_result_sent?: boolean;
   last_progress_age_ms?: number;
-  // Vela's OpenCode bridge attaches this context to `error.data` when an AMR
-  // prompt fails. Keep only fixed enums in analytics: session/tool call ids,
-  // paths, titles, inputs, and outputs are deliberately not copied.
-  // Together these fields distinguish "tool still pending/running" from
-  // "tool completed, but the agent stream never reached done".
-  amr_opencode_error_phase?: TrackingAmrOpenCodeErrorPhase;
-  amr_opencode_last_event_type?: TrackingAmrOpenCodeLastEventType;
-  amr_opencode_last_tool_status?: TrackingAmrOpenCodeLastToolStatus;
-  amr_opencode_last_tool_kind?: TrackingAmrOpenCodeLastToolKind;
   attempt_index?: number;
   attempt_duration_ms?: number;
   attempt_time_to_first_token_ms?: number;
