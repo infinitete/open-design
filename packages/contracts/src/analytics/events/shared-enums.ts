@@ -225,13 +225,14 @@ export type TrackingRunFailureDetail =
   | 'missing_api_key'
   | 'invalid_api_key'
   | 'hard_quota'
-  // A rolling per-model usage window (vela's 5-hour `model_limit_exceeded`)
-  // that resets on its own at a known instant. Distinct from `hard_quota`:
+  // A rolling per-model usage window (the hosted gateway's 5-hour
+  // `model_limit_exceeded`) that resets on its own at a known instant.
+  // Distinct from `hard_quota`:
   // nothing was charged, nothing needs topping up, and the same request
   // succeeds once the window rolls over — so it stays retryable and must not
   // be counted as a quota exhaustion in reliability reporting.
   | 'model_window_limit'
-  // Vela membership policy concurrency is temporarily full. The upstream
+  // Hosted membership policy concurrency is temporarily full. The upstream
   // reset instant makes this waitable, but it is deliberately non-retryable
   // for automation so the daemon cannot create an immediate retry storm.
   | 'membership_concurrency_limit'

@@ -1,4 +1,4 @@
-/** Whether vela rejected the request because the membership's concurrency policy is full. */
+/** Whether the upstream hub rejected the request because the membership's concurrency policy is full. */
 export function isMembershipConcurrencyLimitFailure(
   text: string | null | undefined,
 ): boolean {
@@ -7,7 +7,7 @@ export function isMembershipConcurrencyLimitFailure(
     && /\bmembership concurrency limit exceeded\b/i.test(text);
 }
 
-/** The instant vela says a membership concurrency slot becomes available again. */
+/** The instant the upstream hub says a membership concurrency slot becomes available again. */
 export function readMembershipConcurrencyResetAt(
   text: string | null | undefined,
 ): string | null {

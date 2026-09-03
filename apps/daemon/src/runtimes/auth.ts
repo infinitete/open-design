@@ -274,7 +274,7 @@ export function classifyAgentAuthFailure(
 // other CLI agent (Claude Code, codex, …) used to collapse auth / quota /
 // upstream failures into the generic `AGENT_EXECUTION_FAILED`. This agent-
 // agnostic, text-based classifier recovers the specific class so the chat
-// shows an accurate reason — and so the hosted-AMR nudge can key off it.
+// shows an accurate reason — and so hosted-runtime nudges can key off it.
 export type AgentServiceFailureCode =
   | 'AGENT_AUTH_REQUIRED'
   | 'RATE_LIMITED'

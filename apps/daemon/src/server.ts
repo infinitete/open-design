@@ -601,6 +601,8 @@ import {
   readAppConfig,
   readAppConfigSync,
   readPluginEnvKnobs,
+  RETIRED_HOSTED_AGENT_ID,
+  RETIRED_WORKSPACE_CONTEXT_SOURCE,
   writeAppConfig,
 } from './app-config.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
@@ -796,7 +798,7 @@ const recordWorkspaceAuthorityInvalidation = () => {};
 const recordWorkspaceAuthorityRealtimeTransition = () => {};
 const recordWorkspaceAuthorityRevocationClear = () => {};
 const recordWorkspaceAuthoritySuppressedRequest = () => {};
-// [REMOVED: collab/vela stub functions - deleted collab modules]
+// [REMOVED: collab stub functions - deleted collab modules]
 const workspaceContextFromDirectoryItem = (_item: any, _env: any): any => null;
 const listWorkspaceDirectory = async () => ({ ok: false as const, items: [] as any[] });
 const contextToResourceHubPrincipal = (_context: any): any => null;
@@ -804,8 +806,6 @@ const teamResourceRequestScopeFromContext = (_context: any): any => null;
 const activeTeamWorkspaceIdentity = (_context: any): any => null;
 const WORKSPACE_DIRECTORY_EVENTS_CAPABILITY = 'workspace-events-v1' as const;
 const AUTHORITATIVE_PROJECT_PRESENCE_CAPABILITY = 'authoritative-project-presence-v1' as const;
-const COLLAB_VELA_FANOUT_CONCURRENCY = 4;
-const isVelaWorkspaceAuthorizationError = (_error: any): boolean => false;
 class WorkspaceBillingAccessRevokedError extends Error {
   constructor() { super('workspace billing access revoked'); }
 }
@@ -815,7 +815,6 @@ const resolveUserDesignSystemShareDirectory = (..._args: any[]): string => '';
 const impossibleTeamShareRows = (_rows: any, _types: any): any[] => [];
 const recoverPersistedTeamShareOwnership = (_share: any): any => null;
 const sharedProjectPullProfileEnabled = (_env: any): boolean => false;
-const resolveVelaWorkspaceHubEventsEndpoint = async (..._args: any[]): Promise<string | null> => null;
 const backgroundPullMaxEntriesFromEnv = (): number => Infinity;
 const backgroundPullMaxCumulativeEntriesFromEnv = (): number => Infinity;
 const inspectAuthorizedTeamProjectPull = async (..._args: any[]): Promise<any> => null;
@@ -860,7 +859,6 @@ const createEventRefreshCoordinator = (_opts?: any) => ({
 });
 const createTeamResourceShareService = (_opts: any) => ({}) as any;
 const createTeamResourceListCache = (_opts: any) => ({}) as any;
-const createVelaResourcePullBatcher = () => ({}) as any;
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import {
   assembleExample,
@@ -1398,7 +1396,7 @@ function accountBillingInvalidationToken(event: {
     revision = `at:${event.at}`;
   }
   if (!revision) return undefined;
-  // Current Vela producers emit a subscription mutation under both names.
+  // Current hub producers emit a subscription mutation under both names.
   // Wallet clocks are independent and therefore need a separate domain.
   const domain = event.type === 'wallet-balance-changed' ? 'wallet' : 'billing';
   return `${domain}:${revision}`;
@@ -1406,7 +1404,7 @@ function accountBillingInvalidationToken(event: {
 
 /**
  * Hub → daemon handling for the `workspace-context-changed` event (see
- * `startHubEventsSubscriber`'s `onEvent` below). Vela sends this same event
+ * `startHubEventsSubscriber`'s `onEvent` below). The hub sends this same event
  * both for directory changes and membership changes (e.g. removal from a
  * team). Besides forwarding the thin signal to the web, this kicks one
  * immediate background reconciliation cycle. Request mutations independently
@@ -1433,7 +1431,7 @@ export function handleHubWorkspaceContextChanged(
   return pollWorkspaceInvalidation().catch(() => undefined);
 }
 
-/** Terminal counterpart to workspace-context-changed. Vela has already
+/** Terminal counterpart to workspace-context-changed. The hub has already
  * re-derived the stream principal and is closing the connection, so local
  * directory and billing projections must be retired synchronously before any
  * reconciliation I/O starts. */
@@ -3178,8 +3176,8 @@ export async function startServer({
 
 
   // Team collaboration subsystem: presence + author-side publish scheduler.
-  // Product team workspaces publish and pull through the login-backed Vela CLI;
-  // non-Vela local modes retain the in-memory adapter for isolated development.
+  // Product team workspaces publish and pull through the login-backed hosted
+  // hub; local modes retain the in-memory adapter for isolated development.
   const describeCollabProject = (projectId: string) => {
     const project = getProject(db, projectId);
     if (!project) return null;
@@ -3195,8 +3193,10 @@ export async function startServer({
   // [REMOVED: active workspace selection store - deleted collab module]
   const activeWorkspace = { get: () => null as string | null, replaceIf: () => {} } as any;
   // [REMOVED: team mirror promotion recovery - deleted collab module]
-  const configuredAmrEnv = () =>
-    agentCliEnvForAgent(readAppConfigSync(RUNTIME_DATA_DIR).agentCliEnv, 'amr');
+  // Env overrides the retired hosted runtime stored in old configs; resolved
+  // for historical compatibility with pre-retirement workspace setups.
+  const configuredRetiredHostedEnv = () =>
+    agentCliEnvForAgent(readAppConfigSync(RUNTIME_DATA_DIR).agentCliEnv, RETIRED_HOSTED_AGENT_ID);
   // [REMOVED: workspace authority cache/broker - deleted collab module]
   const workspaceTypes = { learn: (_items: any[]) => {} } as any;
   const workspaceExactAuthorityCache = {
@@ -3226,7 +3226,7 @@ export async function startServer({
     req: any;
     requireTeam?: boolean;
   }, options: { fresh?: boolean; backgroundFresh?: boolean } = {}) => {
-    if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela') {
+    if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === RETIRED_WORKSPACE_CONTEXT_SOURCE) {
       let fetchDirectory = fetchFreshMutationWorkspaceDirectory;
       if (options.fresh === false) {
         fetchDirectory = fetchWorkspaceDirectory;
@@ -3236,7 +3236,7 @@ export async function startServer({
       return verifyWorkspaceRequestContext({
         ...input,
         fetchWorkspaceDirectory: fetchDirectory,
-        configuredEnv: configuredAmrEnv(),
+        configuredEnv: configuredRetiredHostedEnv(),
       });
     }
     // Local/dev has no signed membership directory. Its explicit request
@@ -3281,7 +3281,7 @@ export async function startServer({
         role: claimed.role,
         memberStatus: claimed.memberStatus,
         lifecycleState: claimed.lifecycleState,
-      }, configuredAmrEnv()),
+      }, configuredRetiredHostedEnv()),
     };
   };
   const verifyWorkspaceReadAuthority = (req: unknown) =>
@@ -3289,21 +3289,22 @@ export async function startServer({
   const verifyWorkspaceRequestAuthority = (req: unknown) =>
     verifyExplicitWorkspaceRequestContext({ req });
   const verifyPersonalProjectDeleteLeaseAuthority =
-    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela'
+    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === RETIRED_WORKSPACE_CONTEXT_SOURCE
       ? (req: unknown) => verifyWorkspaceRequestContext({
           req,
           // A miss is intentionally returned as unavailable. The project gate
           // then falls through to the existing fresh authority verifier.
           fetchWorkspaceDirectory: workspaceDirectoryAuthority.cached,
-          configuredEnv: configuredAmrEnv(),
+          configuredEnv: configuredRetiredHostedEnv(),
         })
       : undefined;
-  // Project-creation writes must be authorized by AMR in production, while
+  // Project-creation writes must be authorized by the hosted workspace
+  // authority in production, while
   // local/dev and explicitly anonymous clients keep their legacy behavior.
   // Keep this separate from read-side directory fetches so an unconfigured
   // daemon never turns ordinary local creation into a network-dependent path.
   const fetchProjectCreationWorkspaceDirectory =
-    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela'
+    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === RETIRED_WORKSPACE_CONTEXT_SOURCE
       ? fetchFreshMutationWorkspaceDirectory
       : undefined;
   const listWorkspaceDirectory = async () => {
@@ -3408,11 +3409,11 @@ export async function startServer({
   // catalog / member payload this daemon already has on disk is still current,
   // so a cold start (or a workspace not touched in a while) can skip the real
   // round-trip entirely. Snapshots live in the daemon database, which was
-  // [REMOVED: collab sync snapshots, vela CLI clients, workspace context provider - deleted collab modules]
+  // [REMOVED: collab sync snapshots, hosted-hub CLI clients, workspace context provider - deleted collab modules]
   const collabSyncSnapshots = null as any;
-  const velaCliCollabClient = null as any;
-  const velaCliTeamProjectCatalog = null as any;
-  const velaCliWorkspaceTeamProjectCatalog = null as any;
+  const hostedHubCollabClient = null as any;
+  const hostedHubTeamProjectCatalog = null as any;
+  const hostedHubWorkspaceTeamProjectCatalog = null as any;
   const workspaceTeamProjectCatalog = null as any;
   const workspaceContext = null as any;
   const workspaceExactContextCache = {
@@ -3928,7 +3929,7 @@ export async function startServer({
         role: 'member',
         memberStatus: 'active',
         lifecycleState: 'active',
-      }, configuredAmrEnv()),
+      }, configuredRetiredHostedEnv()),
     };
   };
   const resolveProjectCommentWorkspaceContext = (
@@ -4132,7 +4133,7 @@ export async function startServer({
     dirtyCommentProjects.add(projectId);
     // The upstream hub event has already proved that this project changed.
     // If the daemon's eager pull lost a transient race (for example a failed
-    // Vela CLI/TLS attempt), wake the open view once so its exact-scoped list
+    // hosted-hub CLI/TLS attempt), wake the open view once so its exact-scoped list
     // read can redeem the retained dirty mark immediately. That read awaits
     // its pull before serializing comments; a failed read deliberately does
     // not signal again, avoiding a retry storm while the 30s poll remains the
@@ -4725,7 +4726,7 @@ export async function startServer({
     readAppConfig,
     writeAppConfig,
     onAppConfigWritten: () => {
-      // AMR credentials may be overridden through Settings. Observe every
+      // Hosted-workspace credentials may be overridden through Settings. Observe every
       // completed write so even an A -> B -> A transition with no intervening
       // directory/status read fences exact authority from the old A session.
       refreshWorkspaceHubAccountIdentity();
@@ -4899,7 +4900,7 @@ export async function startServer({
     isProjectUnmaterializedPlaceholder: (projectId) =>
       projectIsUnmaterializedSharedPlaceholder(projectId),
     fetchWorkspaceDirectory,
-    configuredEnv: configuredAmrEnv,
+    configuredEnv: configuredRetiredHostedEnv,
     fetchProjectCreationWorkspaceDirectory,
     createWorkspaceOwnedDesignSystem: createWorkspaceOwnedDesignSystemForContext,
     pluginScope: {
@@ -5431,7 +5432,7 @@ export async function startServer({
     authorizeProjectToolRequest,
   });
 
-  // [REMOVED: registerVelaRoutes - deleted collab module]
+  // [REMOVED: hosted-hub routes - deleted collab module]
 
   const allowScopedPluginReplace = (
     scope: { workspaceId: string; workspaceMemberId: string } | null,

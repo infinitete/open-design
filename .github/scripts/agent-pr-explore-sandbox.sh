@@ -1326,7 +1326,7 @@ Your direct capabilities in this harness:
 
 When the positive path is gated on something missing in the sandbox, try in order:
 
-a. PR-provided fixtures: if the diff includes 'tests/fixtures/fake-X.mjs' (or similar), the PR author wrote that stub specifically so tests can run without the real binary. The fixture lives on the host filesystem after checkout. The the PR daemon almost certainly reads an env var to point at it (look for 'process.env.VELA_BIN' / 'process.env.FAKE_X_BIN' etc. in the diff). Container env is set ONCE at 'docker run' before this prompt starts -- you cannot change it mid-run. Emit §📎 Needs (e.g., "FAKE_X_BIN: prewire to the fixture path so the next run can test the positive path") so the maintainer (or harness on next iteration) can configure the run. Do NOT emit a concrete host path -- name the env var and its purpose only.
+a. PR-provided fixtures: if the diff includes 'tests/fixtures/fake-X.mjs' (or similar), the PR author wrote that stub specifically so tests can run without the real binary. The fixture lives on the host filesystem after checkout. The the PR daemon almost certainly reads an env var to point at it (look for 'process.env.STUB_BIN' / 'process.env.FAKE_X_BIN' etc. in the diff). Container env is set ONCE at 'docker run' before this prompt starts -- you cannot change it mid-run. Emit §📎 Needs (e.g., "FAKE_X_BIN: prewire to the fixture path so the next run can test the positive path") so the maintainer (or harness on next iteration) can configure the run. Do NOT emit a concrete host path -- name the env var and its purpose only.
 
 b. Build a host-side stub if it would unblock: with 'fs:write' you can create a script at any host path. But the running daemon will not pick it up unless its env points at it -- same env-at-startup constraint as (a). Signal in §📎 Needs (env/config wiring sub-type). Only escalate to §🔑 Needs if the stub itself is additionally blocked on a missing secret credential.
 
@@ -1356,7 +1356,7 @@ If after (a)-(d) the positive path is genuinely unreachable, THEN mark inconclus
 ## STEP 4 -- Login / multi-tab / OAuth flows
 
 - Use Playwright multi-page handling (context.expect_page or context.on 'page') to await popups.
-- Fill credentials from env vars (e.g. AMR_USER, AMR_PASS). NEVER hardcode, NEVER echo, NEVER include in the report, NEVER pass through page.evaluate output that lands in the trace.
+- Fill credentials from env vars (e.g. DEMO_USER, DEMO_PASS). NEVER hardcode, NEVER echo, NEVER include in the report, NEVER pass through page.evaluate output that lands in the trace.
 - After popup closes, wait for the main page to settle (token exchange / redirect / cookie set) before continuing.
 
 ## SECURITY (non-negotiable)
@@ -1396,7 +1396,7 @@ One short paragraph explaining the verdict in terms of the diff and observed beh
 Each bullet: status emoji + bold name + what was exercised + why it matters.
 Aim 4-7 for substantive PRs.
 Example:
-- ✅ **AMR runtime picker shows Vela row when fake-vela.mjs is wired**: launched app with VELA_BIN pointing at the the PR fake-vela fixture, opened /onboarding > Local agent, observed Vela row + login pill render, network captured GET /api/agents 200.
+- ✅ **Runtime picker shows the PR's new agent row when its fake CLI is wired**: launched app with STUB_BIN pointing at the PR fake-agent fixture, opened /onboarding > Local agent, observed the new row + login pill render, network captured GET /api/agents 200.
 
 ### 🔍 Concrete Evidence
 
@@ -1423,9 +1423,9 @@ If proper verification required a secret you did not have, list it here. The das
 - \`<SECRET_NAME>\`: <one-line purpose, what it would unblock>
 
 Examples:
-- \`VELA_RUNTIME_KEY\`: real OpenRouter key to verify backend response in positive AMR login (fake-vela.mjs unblocks UI only)
-- \`AMR_USER\`: real Vela account username to drive popup login
-- \`AMR_PASS\`: real Vela account password to drive popup login
+- \`DEMO_PROVIDER_KEY\`: real provider API key to verify backend response in a positive login flow (the fake CLI fixture unblocks UI only)
+- \`DEMO_USER\`: real account username to drive popup login
+- \`DEMO_PASS\`: real account password to drive popup login
 
 Rules:
 - DO NOT paste any existing secret value here. Just request by NAME + PURPOSE.
@@ -1443,12 +1443,12 @@ If proper verification required maintainer-provided context or run configuration
 - \`<ENV_VAR_NAME>\`: <one-line purpose -- what it would unblock; do NOT emit a concrete path>
 
 Examples:
-- \`amr-cloud-auth-spec.md\`: clarifies token exchange flow not in PR; would let me verify spec compliance
-- \`expected-vela-row.png\`: visual reference for the AMR runtime picker
+- \`cloud-auth-spec.md\`: clarifies token exchange flow not in PR; would let me verify spec compliance
+- \`expected-agent-row.png\`: visual reference for the runtime picker row added by the PR
 - \`seed-projects.json\`: project data for state X needed by case Y
 - \`<missing-source-file-from-truncated-diff>\`: when diff was truncated and probe list is incomplete
 - \`FAKE_X_BIN\`: prewire to the fixture path so the positive path can run on next iteration
-- \`VELA_BIN\`: point to fake-vela.mjs fixture; unblocks runtime picker and login pill rendering
+- \`STUB_BIN\`: point to the PR's fake-CLI fixture; unblocks runtime picker and login pill rendering
 
 Same rules as 🔑 Needs: only request if a specific case was blocked; reference the case in the purpose; no auto-action -- maintainer decides.
 

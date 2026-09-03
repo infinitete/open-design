@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
@@ -110,23 +110,15 @@ const residualAllowedExactPaths = new Set([
   "scripts/scaffold-html-ppt-skills.mjs",
   "scripts/sync-hyperframes-skill.mjs",
   "scripts/verify-media-models.mjs",
-  // AMR (vela) verifier: ad-hoc dev runner that imports the daemon's compiled
-  // `dist/acp.js` and drives a real `vela agent run` against a live model.
-  // Kept as .mjs so it can be invoked directly via Node without any transform.
-  "apps/daemon/scripts/verify-amr-real-vela.mjs",
-  // Fake `vela agent run --runtime opencode` ACP stdio stub used by the AMR
-  // integration tests. The Vitest test spawns it via `child_process.spawn`,
-  // which needs a directly-executable file (shebang + .mjs).
-  "apps/daemon/tests/fixtures/fake-vela.mjs",
   // Fake ACP agent CLI that answers `initialize` and then rejects
-  // `session/new`, used by the ACP handshake-rejection wiring tests. Same
-  // precedent as `fake-vela.mjs`: Vitest puts it on PATH and the daemon
-  // spawns it, so it must be directly executable (shebang + .mjs).
+  // `session/new`, used by the ACP handshake-rejection wiring tests. The
+  // Vitest test spawns it via `child_process.spawn`, which needs a
+  // directly-executable file (shebang + .mjs).
   "apps/daemon/tests/fixtures/fake-acp-handshake-cli.mjs",
   // Fake `kimi acp` ACP stdio stub used by the stdio-MCP wiring test. It
   // records the `session/new` params the daemon actually sends, and the test
   // spawns it through a PATH shim, so it must be directly executable by Node
-  // without a transform — same precedent as `fake-vela.mjs` above.
+  // without a transform.
   "apps/daemon/tests/fixtures/fake-kimi-acp-cli.mjs",
   "tools/dev/bin/tools-dev.mjs",
   "tools/dev/esbuild.config.mjs",
@@ -174,9 +166,8 @@ const residualAllowedPathPrefixes = [
   // be directly executable via Node so `child_process.spawn` from test
   // harnesses and PATH-overlay shells work without any transform step.
   // `mocks/scripts/` holds the maintainer-facing helpers (manifest math,
-  // fetch from R2) which are also pure-node single-file modules — same
-  // precedent as `apps/daemon/tests/fixtures/fake-vela.mjs` (an ACP
-  // stdio stub, allowlisted individually above). See `mocks/README.md`.
+  // fetch from R2) which are also pure-node single-file modules. See
+  // `mocks/README.md`.
   "mocks/lib/",
   "mocks/mock-agent.mjs",
   "mocks/scripts/",
@@ -265,6 +256,167 @@ async function checkResidualJavaScript(): Promise<boolean> {
   }
 
   console.log("Residual JavaScript check passed: project-owned code is TypeScript-only.");
+  return true;
+}
+
+export type RetiredVelaSourceEntry = { path: string; content: string };
+export type RetiredVelaViolation = { path: string; token: string };
+
+const retiredVelaAllowedExactPaths = new Set([
+  // Approved archived documents (release history only).
+  "CHANGELOG.md",
+  "RELEASE-NOTES-0.10.0.md",
+  "apps/landing-page/app/content/blog/open-design-0-13-0-stay-in-flow.md",
+  // Historical compatibility: normalizes the retired hosted runtime's
+  // `vela/` image/video model prefixes stored on pre-retirement rows.
+  "apps/daemon/src/db.ts",
+  // Historical compatibility: retired agent-id set plus the retired
+  // hosted-runtime env-var strip list keep stored configs inert.
+  "apps/daemon/src/app-config.ts",
+  // Historical compatibility: decodes AMR_* error codes stored on old runs.
+  "apps/daemon/src/run-failure-classification.ts",
+  // Historical compatibility: failure-detail union members still emitted by
+  // the classifier above when it decodes stored AMR_* run failures.
+  "packages/contracts/src/analytics/events/shared-enums.ts",
+  // Historical compatibility: still sweeps the retired hosted runtime's
+  // on-disk log home so diagnostics bundles surface pre-retirement logs.
+  "packages/diagnostics/src/agent-logs.ts",
+  // Hosts the retired-token regex this check enforces.
+  "scripts/guard.ts",
+]);
+
+export function findRetiredVelaViolations(
+  entries: readonly RetiredVelaSourceEntry[],
+): RetiredVelaViolation[] {
+  return entries.flatMap(({ path, content }) => {
+    if (path.startsWith("specs/change/") || retiredVelaAllowedExactPaths.has(path)) return [];
+    const match = /\bvela\b|vela_|vela-|\bamr\b|amr_|amr-/i.exec(content);
+    return match ? [{ path, token: match[0] }] : [];
+  });
+}
+
+const retiredVelaTextExtensions = new Set([
+  ".bash",
+  ".cjs",
+  ".cts",
+  ".js",
+  ".json",
+  ".mjs",
+  ".mts",
+  ".py",
+  ".sh",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".yaml",
+  ".yml",
+  ".md",
+]);
+const retiredVelaSkippedDirectoryNames = new Set([
+  ...residualSkippedDirectories,
+  "__pycache__",
+  "coverage",
+  "test-results",
+  "tests",
+]);
+
+function isRetiredVelaExcludedPath(repositoryPath: string): boolean {
+  return (
+    repositoryPath.startsWith("e2e/") ||
+    /(^|\/)tests\//.test(repositoryPath) ||
+    repositoryPath.endsWith(".test.ts") ||
+    repositoryPath.endsWith(".spec.ts")
+  );
+}
+
+function isRetiredVelaScannedPath(repositoryPath: string): boolean {
+  if (isRetiredVelaExcludedPath(repositoryPath)) return false;
+  const isWorkspaceSource =
+    /^apps\/[^/]+\/src\//.test(repositoryPath) ||
+    /^packages\/[^/]+\/src\//.test(repositoryPath) ||
+    /^shells\/[^/]+\/src\//.test(repositoryPath) ||
+    /^tools\/[^/]+\/src\//.test(repositoryPath) ||
+    /^tools\/[^/]+\/scripts\//.test(repositoryPath);
+  return (
+    isWorkspaceSource ||
+    repositoryPath.endsWith("package.json") ||
+    repositoryPath.startsWith("tools/release/scripts/") ||
+    repositoryPath.startsWith(".github/scripts/") ||
+    repositoryPath.startsWith(".github/workflows/")
+  );
+}
+
+async function collectRetiredVelaSourceEntries(directory: string): Promise<RetiredVelaSourceEntry[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const sourceEntries: RetiredVelaSourceEntry[] = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+
+    if (entry.isDirectory()) {
+      if (retiredVelaSkippedDirectoryNames.has(entry.name)) continue;
+      if (entry.name === ".next" || entry.name.startsWith(".next-")) continue;
+      if (isRetiredVelaExcludedPath(`${toRepositoryPath(fullPath)}/`)) continue;
+      sourceEntries.push(...(await collectRetiredVelaSourceEntries(fullPath)));
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+    if (!retiredVelaTextExtensions.has(path.extname(entry.name))) continue;
+    const repositoryPath = toRepositoryPath(fullPath);
+    if (!isRetiredVelaScannedPath(repositoryPath)) continue;
+
+    const content = await readFile(fullPath, "utf8");
+    sourceEntries.push({ path: repositoryPath, content });
+  }
+
+  return sourceEntries;
+}
+
+async function collectRetiredVelaScanRoot(relativeRoot: string): Promise<RetiredVelaSourceEntry[]> {
+  const absoluteRoot = path.join(repoRoot, relativeRoot);
+  const rootStat = await stat(absoluteRoot).catch(() => null);
+  if (rootStat == null) return [];
+  if (rootStat.isFile()) {
+    const content = await readFile(absoluteRoot, "utf8");
+    return [{ path: relativeRoot, content }];
+  }
+  return collectRetiredVelaSourceEntries(absoluteRoot);
+}
+
+async function checkRetiredVelaTokens(): Promise<boolean> {
+  // Active source trees (`apps/*/src`, `packages/*/src`, `shells/*/src`,
+  // `tools/*/src`, `tools/*/scripts` — which covers `tools/release/scripts`),
+  // package manifests, `.github` release scripts, and workflow files. Test
+  // trees and e2e/ are excluded.
+  const sourceEntries: RetiredVelaSourceEntry[] = [];
+  for (const scanRoot of [
+    "apps",
+    "packages",
+    "shells",
+    "tools",
+    ".github/scripts",
+    ".github/workflows",
+    "package.json",
+  ]) {
+    sourceEntries.push(...(await collectRetiredVelaScanRoot(scanRoot)));
+  }
+
+  const violations = findRetiredVelaViolations(sourceEntries);
+  if (violations.length > 0) {
+    console.error("Retired Vela/AMR integration tokens found in active source:");
+    for (const { path: violationPath, token } of violations) {
+      console.error(`- ${violationPath} (matched token: ${token})`);
+    }
+    console.error(
+      "Remove the retired integration. Load-bearing historical-compatibility literals may live only in the exact allowlisted files above findRetiredVelaViolations in scripts/guard.ts.",
+    );
+    return false;
+  }
+
+  console.log(
+    `Retired Vela/AMR check passed: no tokens across ${sourceEntries.length} scanned active files.`,
+  );
   return true;
 }
 
@@ -1492,6 +1644,7 @@ async function checkRunStartChokePoint(): Promise<boolean> {
 
 const checks: GuardCheck[] = [
   { name: "residual JavaScript", run: checkResidualJavaScript },
+  { name: "retired Vela/AMR tokens", run: checkRetiredVelaTokens },
   { name: "root package-manager lockfile", run: ({ repoRoot: root }) => checkRootPackageManagerLockfiles(root) },
   { name: "package dependency specs", run: checkPackageDependencySpecs },
   { name: "product neutrality", run: checkProductNeutrality },

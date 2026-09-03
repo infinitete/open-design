@@ -58,7 +58,7 @@ jobs:
                 area: 'entry/onboarding',
                 patterns: [
                   /^apps\/web\/src\/.*(Onboarding|Entry|Home|Starter|Hero)/i,
-                  /^e2e\/ui\/(amr-onboarding|entry-chrome-flows|entry-configuration-flows|critical-smoke)\.test\.ts$/,
+                  /^e2e\/ui\/(cloud-onboarding|entry-chrome-flows|entry-configuration-flows|critical-smoke)\.test\.ts$/,
                 ],
                 command: "pnpm -C e2e run test:ui:critical",
               },
@@ -82,7 +82,7 @@ jobs:
               {
                 area: 'settings/BYOK/connectors',
                 patterns: [
-                  /^apps\/web\/src\/.*(Settings|Byok|Connector|ModelField|Provider|LocalCli|Codex|AMR)/i,
+                  /^apps\/web\/src\/.*(Settings|Byok|Connector|ModelField|Provider|LocalCli|Codex)/i,
                   /^e2e\/ui\/settings-.*\.test\.ts$/,
                 ],
                 command: "pnpm -C e2e exec playwright test -c playwright.config.ts ui/settings-api-protocol.test.ts ui/settings-connectors-auth-happy-path.test.ts ui/settings-connectors-auth-recovery.test.ts --grep '\\[P0\\]|\\[P1\\]'",
@@ -92,9 +92,9 @@ jobs:
                 patterns: [
                   /^apps\/daemon\//,
                   /^packages\/.*runtime/i,
-                  /^e2e\/ui\/(real-daemon-run|amr-run-failure-recovery|amr-logout-requires-relogin|settings-local-cli-codex-fallback)\.test\.ts$/,
+                  /^e2e\/ui\/(real-daemon-run|settings-local-cli-codex-fallback)\.test\.ts$/,
                 ],
-                command: "pnpm -C e2e exec playwright test -c playwright.config.ts ui/real-daemon-run.test.ts ui/amr-run-failure-recovery.test.ts ui/settings-local-cli-codex-fallback.test.ts --grep '\\[P0\\]|\\[P1\\]'",
+                command: "pnpm -C e2e exec playwright test -c playwright.config.ts ui/real-daemon-run.test.ts ui/settings-local-cli-codex-fallback.test.ts --grep '\\[P0\\]|\\[P1\\]'",
               },
               {
                 area: 'design files/artifact preview',

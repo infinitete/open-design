@@ -1716,7 +1716,6 @@ process.stdin.on("end", () => {
       files: [
         "ui/app-design-files.test.ts",
         "ui/app-manual-edit.test.ts",
-        "ui/workspace-team-design-system-picker.test.ts",
       ],
     });
     expect(uiP0Groups["critical-extras"]).toEqual({
@@ -2649,8 +2648,6 @@ process.stdin.on("end", () => {
     expect(canary).toContain("ref: main");
     expect(canary).not.toContain("inputs.ref");
     expect(canary).toContain("runs-on: windows-latest");
-    expect(canary).toContain("OPEN_DESIGN_AMR_PROFILE: prod");
-    expect(canary).toContain("OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}");
     expect(canary).toContain("--namespace release-prerelease-canary-win");
     expect(canary).toContain('OD_PACKAGED_E2E_RELEASE_CHANNEL: prerelease');
     expect(canary).toContain('OD_PACKAGED_E2E_WIN_SMOKE_PROFILE: core');

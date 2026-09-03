@@ -8,16 +8,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // TEMPORARY local collab-cloud fixture. A self-contained, in-memory, infra-free
-// stand-in for the real cross-daemon collaboration hub (C-lane spec §D4, which
-// will live in the vela repo as `services/collab`). It lets teammates develop
+// stand-in for the real cross-daemon collaboration hub (C-lane spec §D4, a
+// hosted `services/collab` deployment). It lets teammates develop
 // the daemon's comment-sync + member-directory features locally without standing
-// up vela + postgres: point OD_COLLAB_CLOUD_URL at this fixture and two daemons
+// up the hub + postgres: point OD_COLLAB_CLOUD_URL at this fixture and two daemons
 // converge.
 //
 // It speaks the SAME wire contract the daemon client speaks (bearer auth,
 // team-scoped paths, append-only comment stream with a monotonic seq cursor,
 // member directory). The daemon runs its real client against this exactly as it
-// would against vela — no mock concessions.
+// would against the real hub — no mock concessions.
 //
 // SCOPE (§D4.1): the hub is (④) a comment relay and a light member directory. It
 // carries the whole comment lifecycle — a create/edit UPSERTs by comment id and
@@ -33,8 +33,8 @@ import { dirname } from "node:path";
 // data. Without a store path it stays purely in-memory (keeping tests isolated).
 // Persistence degrades: a read/write failure never blocks a relay request.
 //
-// DISPOSABLE: this whole file is deleted once vela `services/collab` is stood
-// up; the only migration is repointing OD_COLLAB_CLOUD_URL at the real service.
+// DISPOSABLE: this whole file is deleted once the hosted `services/collab` hub
+// is stood up; the only migration is repointing OD_COLLAB_CLOUD_URL at the real service.
 
 export type CollabCloudFixtureOptions = {
   host?: string;

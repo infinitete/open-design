@@ -32,7 +32,7 @@ export const uiP0Groups = {
       "ui/entry-chrome-flows.test.ts",
       "ui/entry-configuration-flows.test.ts",
       "ui/home-hero-rail.test.ts",
-      "ui/amr-onboarding.test.ts",
+      "ui/cloud-onboarding.test.ts",
       "ui/api-empty-response.test.ts",
       "ui/settings-api-protocol.test.ts",
       "ui/settings-connectors-auth-happy-path.test.ts",
@@ -67,8 +67,6 @@ export const uiP0Groups = {
     workers: 1,
     files: [
       "ui/real-daemon-run.test.ts",
-      "ui/amr-run-failure-recovery.test.ts",
-      "ui/amr-logout-requires-relogin.test.ts",
       "ui/settings-local-cli-codex-fallback.test.ts",
     ],
   },
@@ -90,14 +88,12 @@ export const visualCiMatrix = [
 ] as const satisfies readonly VisualCiMatrixEntry[];
 
 const uiP0CoverageFiles = [
-  "ui/amr-logout-requires-relogin.test.ts",
-  "ui/amr-onboarding.test.ts",
-  "ui/amr-run-failure-recovery.test.ts",
   "ui/api-empty-response.test.ts",
   "ui/app-design-files.test.ts",
   "ui/app-manual-edit.test.ts",
   "ui/app-restoration.test.ts",
   "ui/app.test.ts",
+  "ui/cloud-onboarding.test.ts",
   "ui/critical-smoke.test.ts",
   "ui/entry-chrome-flows.test.ts",
   "ui/entry-configuration-flows.test.ts",

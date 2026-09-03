@@ -1,5 +1,5 @@
 /**
- * Reading vela's rolling per-model usage window out of an upstream failure.
+ * Reading the hosted gateway's rolling per-model usage window out of an upstream failure.
  *
  * The hosted model gateway rejects a request that has exhausted its rolling
  * window with `model_limit_exceeded`, phrased for the API caller as:

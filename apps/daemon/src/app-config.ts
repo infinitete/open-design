@@ -180,7 +180,15 @@ const AGENT_MODEL_KEYS: ReadonlySet<string> = new Set([
   'reasoning',
   'serviceTier',
 ]);
-const RETIRED_AGENT_IDS: ReadonlySet<string> = new Set(['gemini', 'amr']);
+// Retired hosted-runtime identifiers. The literals stay load-bearing for
+// historical compatibility: stored rows/configs referencing the retired
+// runtime are normalized against these exact values, and the legacy
+// workspace-context source value is still honored where external setups
+// depend on it.
+export const RETIRED_HOSTED_AGENT_ID = 'amr';
+export const RETIRED_WORKSPACE_CONTEXT_SOURCE = 'vela';
+
+const RETIRED_AGENT_IDS: ReadonlySet<string> = new Set(['gemini', RETIRED_HOSTED_AGENT_ID]);
 
 const TELEMETRY_KEYS: ReadonlySet<string> = new Set([
   'metrics',

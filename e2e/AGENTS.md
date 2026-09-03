@@ -11,7 +11,7 @@ Coverage posture and intentional gaps: `docs/testing/e2e-coverage/status.md`.
 - `ui/*.test.ts`: flat Playwright files only. No subdirectories, TSX, Vitest, jsdom, or Testing Library under `ui/`.
 - `resources/`: flat declarative TS resources. `scripts/playwright.ts`: artifact cleanup only, must not wrap `playwright test`.
 - `lib/tools-dev/`: framework-neutral runtime lifecycle (namespaces, ports, `tools-dev --json`, start/stop). Must not import Vitest or Playwright.
-- `lib/playwright/suite.ts`: worker-scoped tools-dev fixture + `baseURL` + failure attachments. `lib/vitest/suite.ts`: same for Vitest (`createSmokeSuite(...).with.*` composes `toolsDev`, `env`, `pathEntry`, `amr` — never hand-roll save/restore or fixed ports in specs).
+- `lib/playwright/suite.ts`: worker-scoped tools-dev fixture + `baseURL` + failure attachments. `lib/vitest/suite.ts`: same for Vitest (`createSmokeSuite(...).with.*` composes `toolsDev`, `env`, `pathEntry` — never hand-roll save/restore or fixed ports in specs).
 - `lib/timeouts.ts`: `T.short/medium/long/xlong` (CI-scaled). Use instead of hardcoded milliseconds.
 - `lib/fake-agents.ts` (`createFakeAgentRuntimes` + `agentCliEnv`) and `lib/playwright/mock-factory.ts` (`applyStandardMocks`): the two approved agent-availability sources (below).
 

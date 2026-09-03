@@ -42,10 +42,10 @@ describe('availableVisibleAgentCount', () => {
     expect(availableVisibleAgentCount(agents)).toBe(1);
   });
 
-  it('never presents the retired hosted runtime as a selectable agent', () => {
-    // The daemon no longer reports the retired runtime; a stale row (e.g. a
-    // registry regression) must still never surface as a selectable CLI.
-    expect(availableVisibleAgentCount([agent({ id: 'amr', available: true })])).toBe(0);
+  it('counts a non-hidden id that appears in the list', () => {
+    // Retired runtime ids are filtered by the daemon before detection results
+    // reach the web, so this list only ever holds live CLI ids.
+    expect(availableVisibleAgentCount([agent({ id: 'kimi', available: true })])).toBe(1);
   });
 
   it('counts nothing when every agent is hidden or unavailable', () => {

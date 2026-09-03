@@ -22,11 +22,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OPEN_DESIGN_AMR_PROFILE: prod
-  OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}
-  OD_VELA_WEB_URL_FEATURE_TEST: ${{ secrets.VELA_WEB_URL_FEATURE_TEST }}
-  OD_VELA_WEB_URL_TEST: ${{ secrets.VELA_WEB_URL_TEST }}
-  OD_VELA_WEB_URL_PROD: ${{ secrets.VELA_WEB_URL_PROD }}
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
   POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
   POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
@@ -138,7 +133,6 @@ jobs:
             "--portable",
             "--app-version", "${{ steps.version.outputs.version }}",
             "--to", "all",
-            "--require-vela-cli",
             "--json"
           )
           $buildOutput = pnpm.cmd @buildArgs
@@ -166,7 +160,6 @@ jobs:
             --portable `
             --app-version "${{ steps.version.outputs.version }}" `
             --to all `
-            --require-vela-cli `
             --json
           if ($LASTEXITCODE -ne 0) {
             throw "Windows tools-pack uncached canary build exited with code $LASTEXITCODE"
