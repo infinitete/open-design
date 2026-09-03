@@ -2496,6 +2496,50 @@ setImmediate(() => process.exit(0));
     );
   });
 
+  // The connection-test surface must stay generic after the cloud provider
+  // retirement: both the CLI availability listing and the agent-mode test
+  // response keep working (non-empty agent list, successful smoke test) while
+  // their semantic fields (agent ids, names, test outcome copy) carry none of
+  // the retired provider's login/account/profile tokens. Path fields are
+  // excluded on purpose: a checkout named after the removal branch would
+  // otherwise false-positive on resolved binary paths.
+  it('keeps agent availability and test responses free of retired cloud-provider tokens', async () => {
+    const retiredTokenRe = /vela|amrlogin|amraccount|amrprofile|amr/i;
+    const agentsResp = await realFetch(`${baseUrl}/api/agents`);
+    expect(agentsResp.status).toBe(200);
+    const agentsBody = await agentsResp.json() as { agents?: Array<{ id?: string; name?: string }> };
+    expect(Array.isArray(agentsBody.agents)).toBe(true);
+    expect(agentsBody.agents?.length).toBeGreaterThan(0);
+    for (const agent of agentsBody.agents ?? []) {
+      expect(`${agent.id ?? ''} ${agent.name ?? ''}`).not.toMatch(retiredTokenRe);
+    }
+
+    await withFakeCodex(
+      `
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'ok' } }));
+setImmediate(() => process.exit(0));
+`,
+      async () => {
+        const res = await realFetch(`${baseUrl}/api/test/connection`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'agent', agentId: 'codex' }),
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json() as Record<string, unknown>;
+        expect(body).toMatchObject({ ok: true, kind: 'success' });
+        const semanticFields = JSON.stringify({
+          kind: body.kind,
+          agentName: body.agentName,
+          sample: body.sample,
+          detail: body.detail,
+          usedExecutableSource: body.usedExecutableSource,
+        });
+        expect(semanticFields).not.toMatch(retiredTokenRe);
+      },
+    );
+  });
+
   it('keeps service tier overrides when connection tests omit model but settings has one', async () => {
     if (!process.env.OD_DATA_DIR) {
       throw new Error('OD_DATA_DIR is required for service tier settings tests');

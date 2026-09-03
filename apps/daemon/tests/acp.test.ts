@@ -703,7 +703,7 @@ test('attachAcpSession preserves AMR assistant and model-step lifecycle diagnost
   assert.deepEqual(diagnostics[2], {
     type: 'diagnostic',
     name: 'model_step_lifecycle',
-    source: 'amr-opencode',
+    source: 'acp-session-update',
     elapsedMs: diagnostics[2]?.elapsedMs,
     phase: 'end',
     status: 'completed',
@@ -719,7 +719,7 @@ test('attachAcpSession preserves AMR assistant and model-step lifecycle diagnost
   assert.deepEqual(diagnostics[0], {
     type: 'diagnostic',
     name: 'assistant_message_lifecycle',
-    source: 'amr-opencode',
+    source: 'acp-session-update',
     elapsedMs: diagnostics[0]?.elapsedMs,
     phase: 'start',
     status: 'running',

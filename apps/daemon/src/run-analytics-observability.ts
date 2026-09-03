@@ -12,7 +12,6 @@ import {
   agentIdToTracking,
   byokProtocolToTracking,
 } from '@open-design/contracts/analytics';
-import type { VelaLoginStatus } from './integrations/vela.js';
 
 const RUNTIME_TYPES: readonly TrackingRuntimeType[] = [
   'amr_cloud',
@@ -22,12 +21,12 @@ const RUNTIME_TYPES: readonly TrackingRuntimeType[] = [
 ];
 
 // Resolve the `runtime_type` to stamp on daemon-emitted run_created /
-// run_finished. The daemon derives a best-effort value from the run's agent +
-// AMR sign-in, but it can never observe a saved BYOK key (those live only in
-// the web client), so a BYOK run looks like local_cli/amr_cloud server-side.
-// The web client passes the true runtime for the run it launched as a request
-// hint; a valid hint wins. Anything outside the closed runtime set (missing,
-// malformed) falls back to the daemon's own derivation.
+// run_finished. The daemon derives a best-effort value from the run's agent,
+// but it can never observe a saved BYOK key (those live only in the web
+// client), so a BYOK run looks like local_cli server-side. The web client
+// passes the true runtime for the run it launched as a request hint; a valid
+// hint wins. Anything outside the closed runtime set (missing, malformed)
+// falls back to the daemon's own derivation.
 export function runtimeTypeForRunAnalytics(args: {
   derived: TrackingRuntimeType;
   hint?: unknown;
@@ -56,21 +55,6 @@ function readByokProviderProtocol(provider: unknown): string | null {
   if (!provider || typeof provider !== 'object') return null;
   const protocol = (provider as { protocol?: unknown }).protocol;
   return typeof protocol === 'string' && protocol.trim() ? protocol.trim() : null;
-}
-
-// AMR account id stamp for daemon-emitted run events. Browser captures get
-// `user_id` from the PostHog super-property register (analytics/client.ts);
-// daemon-side run_created/run_finished must stamp it at capture time or the
-// highest-value generation events stay unjoinable against the AMR project's
-// `app_user_id`. Env-configured auth (VELA_RUNTIME_KEY/VELA_LINK_URL) is
-// authorized but carries no profile, so it yields no stamp — only
-// file-backed sign-in knows the account id.
-export function amrUserIdForRunAnalytics(
-  status: VelaLoginStatus | null,
-): Record<string, string> {
-  if (status?.loggedIn !== true) return {};
-  const id = status.user?.id?.trim() ?? '';
-  return id ? { user_id: id } : {};
 }
 
 export interface RunEventForAnalyticsObservability {
@@ -480,14 +464,15 @@ interface EffectiveInputTokens {
 //   - INCLUSIVE (OpenAI chat-completions, codex's rollout `last_token_usage`):
 //     input_tokens already contains the cache-read subset → effective = input,
 //     uncached = input - read.
-//   - ADDITIVE (Anthropic, and the Responses-API / ACP usage that the AMR/vela
-//     and pi STREAM emits): input_tokens is the UNCACHED remainder and the
-//     cache-read/creation tokens are reported separately on top → effective =
-//     input + read + creation, uncached = input.
+//   - ADDITIVE (Anthropic, and the Responses-API / ACP usage that the retired
+//     cloud runtime's and pi's STREAM emits): input_tokens is the UNCACHED
+//     remainder and the cache-read/creation tokens are reported separately on
+//     top → effective = input + read + creation, uncached = input.
 // Picking the wrong convention is not cosmetic: treating an additive payload as
 // inclusive makes the denominator far too small, so `cache_hit_ratio` /
-// `first_call_cache_hit_ratio` blow past 1.0 (observed ~78% of AMR and ~57% of
-// pi follow-up runs) and `uncached_input_tokens` collapses to 0.
+// `first_call_cache_hit_ratio` blow past 1.0 (observed on a large share of
+// follow-up runs on both additive runtimes) and `uncached_input_tokens`
+// collapses to 0.
 //
 // The discriminator is a hard arithmetic invariant, not a heuristic guess: a
 // cache-read subset can never exceed the total it is a subset of, so

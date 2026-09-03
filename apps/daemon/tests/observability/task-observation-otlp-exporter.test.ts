@@ -951,13 +951,11 @@ describe('task observation OTLP exporter', () => {
     });
   });
 
-  it('selects a Task-capable sink independently from Vela and exposes a versioned schema capability', () => {
+  it('selects a Task-capable sink independently of retired cloud-provider credentials and exposes a versioned schema capability', () => {
     const env = {
       LANGFUSE_PUBLIC_KEY: 'pk-fixture',
       LANGFUSE_SECRET_KEY: 'sk-fixture',
       LANGFUSE_BASE_URL: 'https://self-host.example.test',
-    };
-    const configuredVela = {
       VELA_CONTROL_KEY: 'ck-fixture',
       VELA_API_URL: 'https://vela.example.test',
     };
@@ -970,7 +968,6 @@ describe('task observation OTLP exporter', () => {
     expect(direct).toMatchObject({ kind: 'langfuse', baseUrl: 'https://self-host.example.test' });
     expect(readTaskObservationExporterConfig(direct, {
       ...env,
-      ...configuredVela,
       LANGFUSE_EXPORTER_MODE: 'otlp',
     })).toMatchObject({ mode: 'otlp', baseUrl: 'https://self-host.example.test' });
     expect(readTaskTelemetrySinkConfig({})).toBeNull();

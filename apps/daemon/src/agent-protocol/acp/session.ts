@@ -426,7 +426,7 @@ export function attachAcpSession({
     send('agent', {
       type: 'diagnostic',
       name,
-      source: 'amr-opencode',
+      source: 'acp-session-update',
       elapsedMs: Date.now() - runStartedAt,
       ...(stringField('phase') ? { phase: stringField('phase') } : {}),
       ...(stringField('status') ? { status: stringField('status') } : {}),

@@ -306,7 +306,7 @@ describe('buildStructuredMainRunObservationV1', () => {
       startedAtMs: 1_000,
       endedAtMs: 1_500,
       agentCliVersion: 'codex-cli 0.147.0',
-      runtimeCompanionName: 'vela',
+      runtimeCompanionName: 'companion-cli',
       runtimeCompanionVersion: '0.0.1-od-next-local',
       runtimeAdapterVersion: 'od-codex-json-events/v1',
     });
@@ -357,7 +357,7 @@ describe('buildStructuredMainRunObservationV1', () => {
     });
     expect(observation.attributes).toMatchObject({
       agentCliVersion: 'codex-cli 0.147.0',
-      runtimeCompanionName: 'vela',
+      runtimeCompanionName: 'companion-cli',
       runtimeCompanionVersion: '0.0.1-od-next-local',
       runtimeAdapterVersion: 'od-codex-json-events/v1',
     });

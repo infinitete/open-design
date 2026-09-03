@@ -492,7 +492,6 @@ import {
   decideSafeRunRetry,
 } from './run-retry-policy.js';
 import {
-  amrUserIdForRunAnalytics,
   scanRunEventsForUsageAnalytics,
 } from './run-analytics-observability.js';
 import {
@@ -4104,11 +4103,6 @@ export async function startServer({
     workspaceId: string,
     identityKey: string,
   ) => `${identityKey}\0${workspaceId}`;
-  const currentWorkspaceDirectoryIdentity = () =>
-    velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    );
   const syncWorkspaceDirectoryRealtimeHealth = (): void => {
     const currentIdentity = currentWorkspaceDirectoryIdentity();
     workspaceDirectoryAuthority.setRealtimeHealthy(
@@ -4215,7 +4209,7 @@ export async function startServer({
   console.info(
     '[telemetry] effective run sink',
     describeRunTelemetrySink(
-      readRunTelemetrySinkConfig(process.env, configuredAmrEnv()),
+      readRunTelemetrySinkConfig(process.env),
     ),
   );
   const design = {

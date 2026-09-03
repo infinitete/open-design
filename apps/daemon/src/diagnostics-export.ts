@@ -30,26 +30,21 @@ import { agentCliEnvForAgent, readAppConfig } from './app-config.js';
 import { spawnEnvForAgent } from './agents.js';
 import { collectBrowserUseDiscoveryFacts } from './browser/index.js';
 import { readRecentApiFailures } from './http/api-failure-journal.js';
-import { readVelaLoginStatus } from './integrations/vela.js';
 
 interface ResolvedDiagnosticsAgentEnvironment {
-  amrOpenCodeHome: string | null;
-  amrConfiguredEnv: Record<string, string>;
   claudeConfigDir: string | null;
   codexHome: string | null;
   openCodeXdgDataHome: string | null;
 }
 
 // Resolve agent diagnostics inputs through the same Settings → spawn-environment
-// helpers used by the daemon's process launcher. This keeps login status and log
-// discovery aligned with the environment that the daemon passes to each agent.
+// helpers used by the daemon's process launcher. This keeps log discovery
+// aligned with the environment that the daemon passes to each agent.
 // Returns empty values on failure so collectors can fall back to their defaults.
 async function resolveDiagnosticsAgentEnvironment(
   dataDir: string | null | undefined,
 ): Promise<ResolvedDiagnosticsAgentEnvironment> {
   const empty: ResolvedDiagnosticsAgentEnvironment = {
-    amrOpenCodeHome: null,
-    amrConfiguredEnv: {},
     claudeConfigDir: null,
     codexHome: null,
     openCodeXdgDataHome: null,
@@ -68,8 +63,6 @@ async function resolveDiagnosticsAgentEnvironment(
       return trimmed && trimmed.length > 0 ? trimmed : null;
     };
     return {
-      amrOpenCodeHome: clean(envFor('amr').OPENCODE_TEST_HOME),
-      amrConfiguredEnv: agentCliEnvForAgent(appConfig.agentCliEnv, 'amr'),
       claudeConfigDir: clean(envFor('claude').CLAUDE_CONFIG_DIR),
       codexHome: clean(envFor('codex').CODEX_HOME),
       // OpenCode resolves its data/log dir from XDG_DATA_HOME; sandbox mode
@@ -90,7 +83,7 @@ export interface DiagnosticsHandlerOptions {
   projectRoot: string;
   /** Directory containing per-run event logs at <runsDir>/<runId>/events.jsonl. */
   runsDir?: string | null;
-  /** OpenDesign data dir (OD_DATA_DIR), used to locate the AMR OpenCode home. */
+  /** OpenDesign data dir (OD_DATA_DIR), used to locate per-agent log homes. */
   dataDir?: string | null;
 }
 
@@ -238,7 +231,6 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
         ...(await buildAgentCliLogSources({
           homeDir: home,
           dataDir: options.dataDir ?? null,
-          amrOpenCodeHome: agentEnvironment.amrOpenCodeHome,
           claudeConfigDir: agentEnvironment.claudeConfigDir,
           codexHome: agentEnvironment.codexHome,
           xdgDataHome: agentEnvironment.openCodeXdgDataHome ?? process.env.XDG_DATA_HOME ?? null,
@@ -292,30 +284,11 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
           },
           'runtime-health.json': {
             daemon: { reachable: true },
-            amr: (() => {
-              try {
-                const status = readVelaLoginStatus(
-                  process.env,
-                  agentEnvironment.amrConfiguredEnv,
-                );
-                return {
-                  profile: status.profile,
-                  loggedIn: status.loggedIn,
-                  sessionState: status.sessionState,
-                  credentialRevision: status.credentialRevision,
-                  loginInFlight: status.loginInFlight,
-                };
-              } catch (error) {
-                return {
-                  error: error instanceof Error ? error.message : String(error),
-                };
-              }
-            })(),
             coverage: {
               runEventsPresent: runEventSources.length > 0,
               note: runEventSources.length > 0
                 ? 'Per-run events were included.'
-                : 'The failure may have happened before a run was created; inspect daemon logs and AMR session state.',
+                : 'The failure may have happened before a run was created; inspect daemon logs and run session state.',
             },
           },
         },

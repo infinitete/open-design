@@ -61,7 +61,7 @@ describe('chat run service shutdown', () => {
     runs.emit(run, 'agent', {
       type: 'diagnostic',
       name: 'assistant_message_lifecycle',
-      source: 'amr-opencode',
+      source: 'acp-session-update',
       phase: 'start',
       status: 'running',
       assistantMessageIndex: 1,
@@ -74,7 +74,7 @@ describe('chat run service shutdown', () => {
       runs.emit(run, 'agent', {
         type: 'diagnostic',
         name: 'model_step_lifecycle',
-        source: 'amr-opencode',
+        source: 'acp-session-update',
         phase: 'start',
         status: 'running',
         assistantMessageIndex: 1,
@@ -84,7 +84,7 @@ describe('chat run service shutdown', () => {
       runs.emit(run, 'agent', {
         type: 'diagnostic',
         name: 'model_step_lifecycle',
-        source: 'amr-opencode',
+        source: 'acp-session-update',
         phase: 'end',
         status: 'completed',
         assistantMessageIndex: 1,
@@ -102,7 +102,7 @@ describe('chat run service shutdown', () => {
     runs.emit(run, 'agent', {
       type: 'diagnostic',
       name: 'model_retry',
-      source: 'amr-opencode',
+      source: 'acp-session-update',
       attempt: 1,
       errorClass: 'rate_limited',
     });
@@ -110,7 +110,7 @@ describe('chat run service shutdown', () => {
     runs.emit(run, 'agent', {
       type: 'diagnostic',
       name: 'assistant_message_lifecycle',
-      source: 'amr-opencode',
+      source: 'acp-session-update',
       phase: 'end',
       status: 'completed',
       assistantMessageIndex: 1,

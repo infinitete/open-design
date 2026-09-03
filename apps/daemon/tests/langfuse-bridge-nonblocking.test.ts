@@ -85,20 +85,15 @@ describe('langfuse-bridge non-blocking behavior', () => {
     });
     readRunTelemetrySinkConfigMock.mockReset();
     readRunTelemetrySinkConfigMock.mockReturnValue({
-      kind: 'vela',
-      apiUrl: 'https://vela.example.test',
-      controlKey: 'ck_profile',
+      kind: 'langfuse',
+      baseUrl: 'https://us.cloud.langfuse.com',
+      authHeader: 'Basic Zm9vOmJhcg==',
       timeoutMs: 1_000,
       retries: 0,
     });
   });
 
-  it('resolves the completed-run sink once from the configured AMR env', async () => {
-    const configuredEnv = {
-      VELA_CONTROL_KEY: 'ck_profile',
-      VELA_API_URL: 'https://vela.example.test',
-    };
-    agentCliEnvForAgentMock.mockReturnValue(configuredEnv);
+  it('resolves the completed-run sink once from the daemon environment', async () => {
     listMessagesMock.mockReturnValue([]);
 
     await reportRunCompletedFromDaemon({
@@ -108,14 +103,13 @@ describe('langfuse-bridge non-blocking behavior', () => {
       fetchImpl: vi.fn() as any,
     });
 
-    expect(agentCliEnvForAgentMock).toHaveBeenCalledWith(undefined, 'amr');
-    expect(readRunTelemetrySinkConfigMock).toHaveBeenCalledWith(process.env, configuredEnv);
+    expect(readRunTelemetrySinkConfigMock).toHaveBeenCalledWith(process.env);
     expect(reportRunCompletedMock).toHaveBeenCalledWith(
       expect.any(Object),
       expect.objectContaining({
         config: expect.objectContaining({
-          kind: 'vela',
-          apiUrl: 'https://vela.example.test',
+          kind: 'langfuse',
+          baseUrl: 'https://us.cloud.langfuse.com',
         }),
       }),
     );

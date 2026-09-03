@@ -19,7 +19,6 @@ describe('CLI startup boundaries', () => {
     ['doctor', ['doctor', '--help']],
     ['config', ['config', 'get', 'apiProtocol', '--daemon-url', 'http://127.0.0.1:9']],
     ['diagnostics', ['diagnostics', 'export', '--daemon-url', 'http://127.0.0.1:9']],
-    ['amr', ['amr', 'status', '--daemon-url', 'http://127.0.0.1:9']],
   ])('initializes flag constants before dispatching od %s', async (_name, args) => {
     let output = '';
     try {

@@ -2027,23 +2027,17 @@ describe('task observation rollout', () => {
     }
   });
 
-  it('uses relay for Task hierarchy even when Vela is configured for single-Run', async () => {
+  it('uses relay for Task hierarchy even when retired cloud-provider credentials linger in the env', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response('', { status: 202 }));
     const env = {
       ...BASE_ENV,
       OD_NEXT_TASK_OBSERVABILITY_MODE: 'send',
-      OPEN_DESIGN_VELA_TELEMETRY: 'on',
-      OPEN_DESIGN_TELEMETRY_RELAY_URL: 'https://relay.example.test/private?key=secret',
-    };
-    const configuredEnv = {
       VELA_CONTROL_KEY: 'control-secret',
       VELA_API_URL: 'https://vela.example.test',
+      OPEN_DESIGN_TELEMETRY_RELAY_URL: 'https://relay.example.test/private?key=secret',
     };
     expect(readTaskTelemetrySinkConfig(env)).toMatchObject({ kind: 'relay' });
-    expect(readRunTelemetrySinkConfig(env, configuredEnv)).toMatchObject({
-      kind: 'vela',
-      apiUrl: 'https://vela.example.test',
-    });
+    expect(readRunTelemetrySinkConfig(env)).toMatchObject({ kind: 'relay' });
     const rollout = service({
       mode: 'send',
       fetchImpl,
@@ -2068,7 +2062,7 @@ describe('task observation rollout', () => {
       .toBeUndefined();
   });
 
-  it('never falls back through Vela when the selected Task relay rejects auth', async () => {
+  it('never falls back to another sink when the selected Task relay rejects auth', async () => {
     let requestCount = 0;
     const fetchImpl = vi.fn<typeof fetch>(async () => {
       requestCount += 1;
@@ -2079,7 +2073,8 @@ describe('task observation rollout', () => {
       mode: 'send',
       fetchImpl,
       env: {
-        OPEN_DESIGN_VELA_TELEMETRY: 'on',
+        VELA_CONTROL_KEY: 'control-secret',
+        VELA_API_URL: 'https://vela.example.test',
         OPEN_DESIGN_TELEMETRY_RELAY_URL: 'https://relay.example.test/ingest',
         OPEN_DESIGN_TELEMETRY_RETRIES: '9',
       },
@@ -2103,7 +2098,6 @@ describe('task observation rollout', () => {
       mode: 'send',
       fetchImpl,
       env: {
-        OPEN_DESIGN_VELA_TELEMETRY: 'on',
         OPEN_DESIGN_TELEMETRY_RELAY_URL: 'https://relay.example.test/ingest',
       },
     });

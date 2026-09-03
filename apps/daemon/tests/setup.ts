@@ -44,8 +44,6 @@ if (!globalState[TEST_DATA_DIR_SYMBOL]) {
 // process to use one isolated data directory before any test imports server.ts,
 // so tests can never read or overwrite the developer's real repo `.od` data.
 process.env.OD_DATA_DIR = globalState[TEST_DATA_DIR_SYMBOL];
-// Keep unit tests from reading a developer's stored Vela profile and routing
-process.env.OPEN_DESIGN_VELA_TELEMETRY ??= 'off';
 
 // Node 24 undici HttpProxyAgent throws TypeError: Invalid URL if proxy variables omit scheme.
 for (const key of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {

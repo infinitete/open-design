@@ -118,7 +118,7 @@ export function readTaskObservationExporterConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): TaskObservationExporterConfig | null {
   // Consume the already-selected Task sink. Do not resolve again here: doing
-  // so used to let Vela mask direct Langfuse after Task eligibility chose it.
+  // so could re-resolve a different sink after Task eligibility chose one.
   if (!sink || sink.kind !== 'langfuse') return null;
   return {
     authHeader: sink.authHeader,

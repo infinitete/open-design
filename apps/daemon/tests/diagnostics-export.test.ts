@@ -92,7 +92,12 @@ describe('diagnostics export handler — non-sidecar launch', () => {
     ).toEqual([]);
   });
 
-  it('reports the AMR session from the Settings-backed agent environment', async () => {
+  // The retired cloud provider's session state used to be mirrored into
+  // runtime-health.json from the Settings-backed agent environment. After the
+  // retirement the bundle must not resurrect it (and must never echo the
+  // credential) even when a legacy app-config.json still carries the old
+  // provider env block, while local daemon health stays visible.
+  it('omits retired cloud-provider session state from runtime health', async () => {
     const dataDir = join(tmpdir(), `od-diag-amr-settings-${randomUUID()}`);
     const runtimeKey = 'settings-only-runtime-key';
     try {
@@ -122,20 +127,15 @@ describe('diagnostics export handler — non-sidecar launch', () => {
       expect(res.capturedStatus).toBe(200);
       const zip = await JSZip.loadAsync(res.capturedPayload!);
       const runtimeHealthRaw = await zip.file('summary/runtime-health.json')!.async('string');
-      const runtimeHealth = JSON.parse(runtimeHealthRaw) as {
-        amr: {
-          profile?: string;
-          loggedIn?: boolean;
-          sessionState?: string;
-          credentialRevision?: string;
-        };
-      };
-      expect(runtimeHealth.amr).toMatchObject({
-        profile: 'local',
-        loggedIn: true,
-        sessionState: 'authenticated',
-        credentialRevision: expect.any(String),
-      });
+      const runtimeHealth = JSON.parse(runtimeHealthRaw) as Record<string, unknown>;
+      // Local diagnostics remain: the bundle still reports the daemon health
+      // and run-event coverage that do not depend on any cloud provider.
+      expect(runtimeHealth.daemon).toMatchObject({ reachable: true });
+      expect(runtimeHealth.coverage).toMatchObject({ runEventsPresent: false });
+      const serialized = JSON.stringify(runtimeHealth).toLowerCase();
+      for (const retiredToken of ['vela', 'amrlogin', 'amraccount', 'amrprofile', 'amr']) {
+        expect(serialized).not.toContain(retiredToken);
+      }
       expect(runtimeHealthRaw).not.toContain(runtimeKey);
     } finally {
       await rm(dataDir, { recursive: true, force: true });
