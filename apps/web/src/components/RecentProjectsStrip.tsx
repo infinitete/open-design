@@ -17,6 +17,7 @@ import {
   useState,
 } from 'react';
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
+import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 
 const MOVE_CONFIRM_SKIP_KEY = 'od.projects.moveConfirmSkip';
 import { useT } from '../i18n';
@@ -51,6 +52,8 @@ import {
   stableAnalyticsRequestErrorCode,
 } from '../analytics/workspace';
 import type { ProjectCollectionClickProps } from '@open-design/contracts/analytics';
+import { useOpenFolderImport } from './useOpenFolderImport';
+import { Toast } from './Toast';
 
 /** Which project space this strip renders. Drives the per-card 共享 badge
  *  (hidden in the all-shared team space) and the "{creator}创建" line: 'recent'
@@ -111,6 +114,8 @@ interface Props {
   onDelete?: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicate?: (id: string) => Promise<void> | void;
   onRename?: (id: string, name: string) => void;
+  onImportFolder?: (baseDir: string) => Promise<void> | void;
+  onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
   limit?: number;
   /** The one shared-state answer for a card: true → 共享 badge + "已在团队空间",
    *  and the card cannot be re-shared. Owned by the caller, because the SAME
@@ -341,6 +346,8 @@ export function RecentProjectsStrip({
   onDelete,
   onDuplicate,
   onRename,
+  onImportFolder,
+  onImportFolderResponse,
   limit,
   isSharedProject,
   onProjectShared,
@@ -356,6 +363,10 @@ export function RecentProjectsStrip({
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
+  const folderImport = useOpenFolderImport({
+    onImportFolder,
+    onImportFolderResponse,
+  });
   const analyticsPage = space === 'drafts' ? 'drafts' : space === 'team' ? 'all_projects' : 'home';
   const rowRef = useRef<HTMLDivElement | null>(null);
   // Real creator resolution (replaces the demo's mock 李娜/张伟 roster): the
@@ -1356,6 +1367,22 @@ export function RecentProjectsStrip({
             ) : null}
           </div>
           <div className="recent-projects__controls">
+            {folderImport.available ? (
+              <button
+                type="button"
+                className="recent-projects__select-toggle"
+                data-testid="home-import-folder"
+                disabled={folderImport.importing}
+                onClick={() => void folderImport.openFolder()}
+              >
+                <Icon name="folder" size={14} />
+                <span>
+                  {folderImport.importing
+                    ? t('newproj.openingFolder')
+                    : t('newproj.openFolder')}
+                </span>
+              </button>
+            ) : null}
             {space === 'team' &&
             canAccessInviteFlow &&
             inviteTarget.kind !== 'unavailable' ? (
@@ -2180,6 +2207,16 @@ export function RecentProjectsStrip({
             </button>
           </DialogFooter>
         </Dialog>
+      ) : null}
+      {folderImport.error ? (
+        <Toast
+          message={folderImport.error.message}
+          details={folderImport.error.details ?? null}
+          role="alert"
+          tone="error"
+          ttlMs={6000}
+          onDismiss={folderImport.clearError}
+        />
       ) : null}
     </section>
   );

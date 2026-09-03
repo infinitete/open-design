@@ -78,6 +78,7 @@ import {
   pushRecentLinkedDir,
 } from '../providers/registry';
 import { isOpenDesignHostAvailable, pickHostWorkingDir } from '@open-design/host';
+import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import type {
   DesignSystemSummary,
   Project,
@@ -135,6 +136,9 @@ import type { PluginUseAction } from './plugins-home/useActions';
 import { examplePresetSeedPrompt } from './plugins-home/presetSeedPrompt';
 import { localizePluginDescription } from './plugins-home/localization';
 import { RecentProjectsStrip } from './RecentProjectsStrip';
+import { useOpenFolderImport } from './useOpenFolderImport';
+import { Icon } from './Icon';
+import { Toast } from './Toast';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
 import { AnimatePresence } from 'motion/react';
@@ -301,6 +305,8 @@ interface Props {
   // through so the dispatcher can stay declarative.
   onOpenNewProject?: (tab: 'template') => void;
   onStartBlankProject?: () => Promise<void> | void;
+  onImportFolder?: (baseDir: string) => Promise<void> | void;
+  onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
   promptHandoff?: HomePromptHandoff | null;
   /** The one shared-state answer for the home strip's cards. Owned by EntryShell
    *  because the SAME answer partitions its 全部项目 / 草稿 grids — a home share
@@ -514,6 +520,8 @@ export function HomeView({
   onOpenMcp,
   onOpenNewProject,
   onStartBlankProject,
+  onImportFolder,
+  onImportFolderResponse,
   promptHandoff,
   isSharedProject,
   onProjectShared,
@@ -536,6 +544,10 @@ export function HomeView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
+  const folderImport = useOpenFolderImport({
+    onImportFolder,
+    onImportFolderResponse,
+  });
   const workspaceContextState = useWorkspaceContext();
   const { context: workspaceContext } = workspaceContextState;
   const pluginCatalogWorkspaceContext: null = null;
@@ -3207,6 +3219,28 @@ export function HomeView({
         recommendationSlot={artifactUpgradeSlot}
       />
 
+      {recentProjectsEmpty && folderImport.available ? (
+        <div
+          data-testid="home-empty-import-row"
+          style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}
+        >
+          <button
+            type="button"
+            className="designs-refresh-button"
+            data-testid="home-empty-import-folder"
+            disabled={folderImport.importing}
+            onClick={() => void folderImport.openFolder()}
+          >
+            <Icon name="folder" size={14} />
+            <span>
+              {folderImport.importing
+                ? t('newproj.openingFolder')
+                : t('newproj.openFolder')}
+            </span>
+          </button>
+        </div>
+      ) : null}
+
       {recentProjectsEmpty ? null : (
       <RecentProjectsStrip
         isActive={isActive}
@@ -3217,6 +3251,8 @@ export function HomeView({
         {...(onProjectShared ? { onProjectShared } : {})}
         {...(onProjectShareFailed ? { onProjectShareFailed } : {})}
         {...(onProjectUnshared ? { onProjectUnshared } : {})}
+        {...(onImportFolder ? { onImportFolder } : {})}
+        {...(onImportFolderResponse ? { onImportFolderResponse } : {})}
         projectOwnerMemberIds={homeProjectOwnerMemberIds as ReadonlyMap<string, string>}
         limit={1000}
         {...(projectsLoading !== undefined ? { loading: projectsLoading } : {})}
@@ -3379,6 +3415,16 @@ export function HomeView({
           />
         ) : null}
       </AnimatePresence>
+      {folderImport.error ? (
+        <Toast
+          message={folderImport.error.message}
+          details={folderImport.error.details ?? null}
+          role="alert"
+          tone="error"
+          ttlMs={6000}
+          onDismiss={folderImport.clearError}
+        />
+      ) : null}
       {pendingReplacement ? (
         <Dialog
           backdropClassName="home-hero-confirm__backdrop"

@@ -1109,6 +1109,8 @@ export function EntryShell({
                   openNewProject(tab);
                 }}
                 onStartBlankProject={startBlankProjectFromRail}
+                {...(onImportFolder ? { onImportFolder } : {})}
+                {...(onImportFolderResponse ? { onImportFolderResponse } : {})}
                 promptHandoff={homePromptHandoff}
                 onProjectShared={markProjectShared}
                 onProjectShareFailed={markProjectShareFailed}
@@ -1148,6 +1150,8 @@ export function EntryShell({
                     onNewProject={() => {
                       openNewProject();
                     }}
+                    {...(onImportFolder ? { onImportFolder } : {})}
+                    {...(onImportFolderResponse ? { onImportFolderResponse } : {})}
                   />
                 </div>
               )}

@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from "@open-design/components";
 import { projectKindFromMetadataToTracking } from "@open-design/contracts/analytics";
+import type { OpenDesignHostProjectImportSuccess } from "@open-design/host";
 import { useAnalytics } from "../analytics/provider";
 import {
   trackPageView,
@@ -26,6 +27,7 @@ import type {
 } from "../types";
 import { AnimatePresence } from "motion/react";
 import { Icon } from "./Icon";
+import { useOpenFolderImport } from "./useOpenFolderImport";
 import {
 	isDesignSystemProject,
 	isPublishedDesignSystemProject,
@@ -116,6 +118,8 @@ interface Props {
 	onDuplicate?: (id: string) => Promise<void> | void;
 	onRename?: (id: string, name: string) => void;
 	onNewProject?: () => void;
+	onImportFolder?: (baseDir: string) => Promise<void> | void;
+	onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
 	onRefresh?: () => Promise<void> | void;
 	isActive?: boolean;
 }
@@ -130,6 +134,8 @@ export function DesignsTab({
 	onDuplicate,
 	onRename,
 	onNewProject,
+	onImportFolder,
+	onImportFolderResponse,
 	onRefresh,
 	isActive = true,
 }: Props) {
@@ -137,6 +143,10 @@ export function DesignsTab({
 	const confirmTitleId = useId();
 	const t = useT();
 	const analytics = useAnalytics();
+	const folderImport = useOpenFolderImport({
+		onImportFolder,
+		onImportFolderResponse,
+	});
 		// P0 page_view page_name=projects — fire once when the tab mounts so
 	// `/projects` landings register even before the user clicks anything.
 	// ref-keyed to survive re-renders that flip parent state without
@@ -635,6 +645,22 @@ export function DesignsTab({
 							<span>{t("entry.navNewProject")}</span>
 						</button>
 					) : null}
+					{folderImport.available && projects.length > 0 ? (
+						<button
+							type="button"
+							className="designs-refresh-button"
+							data-testid="designs-import-folder"
+							disabled={folderImport.importing}
+							onClick={() => void folderImport.openFolder()}
+						>
+							<Icon name="folder" size={14} />
+							<span>
+								{folderImport.importing
+									? t("newproj.openingFolder")
+									: t("newproj.openFolder")}
+							</span>
+						</button>
+					) : null}
 					<div className="toolbar-search">
 						<span className="search-icon" aria-hidden>
 							<Icon name="search" size={14} />
@@ -786,6 +812,23 @@ export function DesignsTab({
 									}}
 								>
 									<span>{t("entry.navNewProject")}</span>
+								</button>
+							) : null}
+							{folderImport.available ? (
+								<button
+									type="button"
+									className="designs-refresh-button"
+									data-testid="designs-empty-import-folder"
+									disabled={folderImport.importing}
+									style={{ marginTop: 12 }}
+									onClick={() => void folderImport.openFolder()}
+								>
+									<Icon name="folder" size={14} />
+									<span>
+										{folderImport.importing
+											? t("newproj.openingFolder")
+											: t("newproj.openFolder")}
+									</span>
 								</button>
 							) : null}
 						</div>
@@ -1265,6 +1308,16 @@ export function DesignsTab({
 					/>
 				) : null}
 			</AnimatePresence>
+			{folderImport.error ? (
+				<Toast
+					message={folderImport.error.message}
+					details={folderImport.error.details ?? null}
+					role="alert"
+					tone="error"
+					ttlMs={6000}
+					onDismiss={folderImport.clearError}
+				/>
+			) : null}
 		</div>
 	);
 }
