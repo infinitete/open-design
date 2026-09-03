@@ -107,6 +107,7 @@ deploy/agent-bins/
 .slim/deepwork/
 
 # Local agent worktrees (must stay git-ignored so pnpm guard does not scan them)
+.worktrees/
 .slim/worktrees/
 .slim/worktrees.json
 
