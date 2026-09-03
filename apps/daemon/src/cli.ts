@@ -1245,10 +1245,6 @@ async function runMediaGenerate(rawArgs) {
     process.exit(2);
   }
   const images = repeatableFlagValues(rawArgs, 'image');
-  if (flags.model.startsWith('vela/') && images.length > 5) {
-    console.error(`Vela media accepts at most 5 --image values; received ${images.length}`);
-    process.exit(2);
-  }
 
   // Long-form media prompts (detailed image/video descriptions, program-
   // generated prompts) arrive via --prompt-file <path|-> (stdin) per the CLI
@@ -1656,13 +1652,8 @@ Common options:
   --prompt-file <path|->     Read the prompt from a file, or - for stdin (for long-form prompts).
   --output <filename>       File to write under the project. Auto-named if omitted.
   --aspect 1:1|16:9|9:16|4:3|3:4
-  --quality <tier>          OpenDesign Cloud images only: published quality tier
-                            (gpt-image-2 accepts low|medium|high). Omit to let the
-                            model's own default tier decide — tiers are priced
-                            differently, so this is a billing choice.
-  --resolution <res>        OpenDesign Cloud images only: published output resolution
-                            (e.g. 1K, 2K). Must name a resolution the model publishes
-                            for --aspect. Omit to use the model's default profile.
+  --quality <tier>          Requested image quality tier (e.g. low|medium|high).
+  --resolution <res>        Requested output resolution (e.g. 1K, 2K).
   --length <seconds>        Video length.
   --duration <seconds>      Audio duration.
   --prompt-influence <0-1>  ElevenLabs SFX prompt adherence. Higher values follow the prompt more closely.
@@ -1675,8 +1666,8 @@ Common options:
                             meta.json / index.html. Use \`media scaffold\` to
                             create it; the daemon renders it with its pinned
                             HyperFrames runtime.
-  --image <path>            Project-relative reference image; repeat up to 5
-                            times for Vela image editing or video references.
+  --image <path>            Project-relative reference image; repeatable for
+                            providers that accept multiple references.
                             The first video image is the first frame; the rest
                             are references. Existing providers still receive
                             the first image through the legacy single-image field.
@@ -6452,7 +6443,7 @@ Common options:
       // and routing to GET /api/workspaces/:id/projects; mirror that here.
       // BOTH the implicit signed-in path AND an explicit
       // --workspace/--workspace-member pair route to the workspace-scoped
-      // catalog. The signed-out / non-vela / no-directory cases fall back to
+      // catalog. The signed-out / no-directory cases fall back to
       // the original headerless catalog so `od project list` still returns
       // unbound projects there. Passing --workspace to /api/projects does
       // NOT scope it (#6679 repro), so the explicit path needs the same

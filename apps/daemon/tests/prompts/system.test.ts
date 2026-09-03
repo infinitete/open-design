@@ -246,14 +246,22 @@ describe('composeSystemPrompt', () => {
     expect(design).toContain('## Requirements Clarification Phase');
   });
 
-  it('pins Cloud nano-banana shorthand and forbids reading generated media bytes back into context', () => {
-    const prompt = composeSystemPrompt({
+  it('keeps image and video prompts free of retired managed-cloud routing instructions', () => {
+    const imagePrompt = composeSystemPrompt({
       skillMode: 'image',
-      metadata: { kind: 'image', imageModel: 'vela/nano-banana-2' } as any,
+      metadata: { kind: 'image', imageModel: 'gpt-image-2' } as any,
     });
+    expect(imagePrompt).not.toMatch(/vela/i);
+    expect(imagePrompt).not.toContain('nano-banana-2` mean');
+    expect(imagePrompt).toContain('## Media generation contract');
+    expect(imagePrompt).toContain('Do not call `Read` on the generated image');
 
-    expect(prompt).toContain('`nano-banana` and `nano-banana-2` mean');
-    expect(prompt).toContain('Do not call `Read` on the generated image');
+    const videoPrompt = composeSystemPrompt({
+      skillMode: 'video',
+      metadata: { kind: 'video', videoModel: 'doubao-seedance-2-0-260128' } as any,
+    });
+    expect(videoPrompt).not.toMatch(/vela/i);
+    expect(videoPrompt).toContain('## Media generation contract');
   });
 
   it('injects the html-in-canvas preflight for the hyperframes skill', () => {
@@ -401,19 +409,16 @@ describe('composeSystemPrompt', () => {
       expect(prompt).toContain('Do not output generated source code in a `<artifact type="text/html">...</artifact>` block.');
     });
 
-    it('uses Vela media defaults only for AMR and forbids direct Vela calls', () => {
+    it('injects no runtime-managed media defaults for any agent', () => {
       const amrPrompt = composeSystemPrompt({
         agentId: 'amr',
-        metadata: { kind: 'image', imageModel: 'vela/gpt-image-2' } as any,
+        metadata: { kind: 'image', imageModel: 'gpt-image-2' } as any,
       });
-      expect(amrPrompt).toContain('Image model: `vela/gpt-image-2`');
-      expect(amrPrompt).toContain(
-        'Video model: `vela/doubao-seedance-2-0-260128`',
-      );
-      expect(amrPrompt).toContain('### OpenDesign Cloud media defaults');
-      expect(amrPrompt).not.toContain('### Run-scoped BYOK media defaults');
-      expect(amrPrompt).toContain('Never invoke the `vela` CLI directly');
-      expect(amrPrompt).toContain('trusted Workspace attribution');
+      expect(amrPrompt).not.toContain('### OpenDesign Cloud media defaults');
+      expect(amrPrompt).not.toContain('managed media defaults');
+      expect(amrPrompt).not.toMatch(/vela/i);
+      expect(amrPrompt).not.toContain('Never invoke the `vela` CLI directly');
+      expect(amrPrompt).not.toContain('trusted Workspace attribution');
 
       const claudePrompt = composeSystemPrompt({ agentId: 'claude' });
       expect(claudePrompt).not.toContain('Image model: `vela/gpt-image-2`');
@@ -442,10 +447,7 @@ describe('composeSystemPrompt', () => {
       expect(prototypePrompt).toContain('reply exactly `图片已生成`');
       expect(prototypePrompt).toContain('MEDIA_DISPATCH_FAILED');
       expect(prototypePrompt).toContain('图片未生成：媒体生成调度失败，原因未分类');
-      expect(prototypePrompt).toContain('IMAGE_MODEL="vela/gpt-image-2"');
-      expect(prototypePrompt).not.toContain(
-        'For the best fal image model use `--model flux-pro-ultra`',
-      );
+      expect(prototypePrompt).toContain('IMAGE_MODEL="flux-pro-ultra"');
     });
 
     // The provider-error branch has to reach the prompt the DAEMON composes,
@@ -453,7 +455,7 @@ describe('composeSystemPrompt', () => {
     // as an outage hides the actionable code and message from the user.
     it('preserves structured provider errors in both prompts', () => {
       for (const metadata of [
-        { kind: 'image', imageModel: 'vela/gpt-image-2' },
+        { kind: 'image', imageModel: 'gpt-image-2' },
         { kind: 'prototype' },
       ]) {
         const prompt = composeSystemPrompt({
