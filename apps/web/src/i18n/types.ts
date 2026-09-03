@@ -258,7 +258,6 @@ export interface Dict {
   'settings.onboardingGateTooltipNoRuntime': string;
   'settings.onboardingGateTooltipLocal': string;
   'settings.onboardingGateTooltipByok': string;
-  'settings.onboardingRecommended': string;
   'settings.onboardingLocalTitle': string;
   'settings.onboardingLocalBody': string;
   'settings.onboardingLocalAction': string;
@@ -345,9 +344,6 @@ export interface Dict {
   'settings.modeDaemonOfflineMeta': string;
   'settings.modeDaemonInstalledMeta': string;
   'settings.modeApi': string;
-  'settings.cloudCalloutTitle': string;
-  'settings.cloudCalloutBody': string;
-  'settings.cloudCalloutButton': string;
   'settings.modeApiMeta': string;
   'settings.byokNoFileToolsNotice': string;
   'settings.byokDraftNotice': string;
@@ -1147,32 +1143,13 @@ export interface Dict {
   'entry.navBoard': string;
   'entry.navTeamSection': string;
   'entry.teamSlotNote': string;
-  'entry.cloudCalloutTitle': string;
   'entry.cloudRecovering': string;
-  'entry.authExpiredBody': string;
   'home.createFailed': string;
   'home.daemonRecovering': string;
   'home.bundledScenarioMissing': string;
-  'entry.cloudCalloutBody': string;
-  'entry.cloudCalloutDismissAria': string;
   'entry.workspaceLockedNote': string;
   'entry.workspaceLockedRecover': string;
   // Client message center
-  'messageCenter.openAria': string;
-  'messageCenter.unreadCount': string;
-  'messageCenter.title': string;
-  'messageCenter.subtitle': string;
-  'messageCenter.filterAll': string;
-  'messageCenter.filterUnread': string;
-  'messageCenter.filterRead': string;
-  'messageCenter.markAllRead': string;
-  'messageCenter.emptyAllTitle': string;
-  'messageCenter.emptyUnreadTitle': string;
-  'messageCenter.emptyReadTitle': string;
-  'messageCenter.emptyBody': string;
-  'messageCenter.close': string;
-  'messageCenter.desktopSettings': string;
-  'messageCenter.desktopSettingsHint': string;
   'goPlanSunset.closeAria': string;
   'goPlanSunset.title': string;
   'goPlanSunset.subtitle': string;
@@ -2697,7 +2674,6 @@ export interface Dict {
   'inlineSwitcher.missingApiKey': string;
   'inlineSwitcher.openFullSettings': string;
   'inlineSwitcher.customSuffix': string;
-  'inlineSwitcher.unlimitedBadge': string;
   'inlineSwitcher.modelLockedHint': string;
 
   // Project view / chat pane / composer
