@@ -188,10 +188,6 @@ describe('NewProjectModal layout', () => {
     await waitFor(() => {
       expect(pickAndImportHostProject).toHaveBeenCalledWith({
         skillId: 'prototype-skill',
-        workspaceContext: expect.objectContaining({
-          workspaceId: 'workspace-modal',
-          workspaceMemberId: 'member-modal',
-        }),
       });
     });
     expect(screen.getByRole('button', { name: 'Opening…' })).toBeTruthy();

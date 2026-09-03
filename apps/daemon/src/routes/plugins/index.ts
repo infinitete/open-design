@@ -25,7 +25,7 @@ type TeamResourceStateProvider = any;
 function enforceVerifiedWorkspaceResourceMutation(..._args: any[]): any { return {}; }
 function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return { ok: true, context: null }; }
 type VerifyWorkspaceRequestAuthority = any;
-function authorizeCreatedProjectWorkspace(..._args: any[]): any { return {}; }
+function authorizeCreatedProjectWorkspace(..._args: any[]): any { return { ok: true, context: null }; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
 function sendCreatedProjectWorkspaceError(..._args: any[]): any { return {}; }
 type WorkspaceDirectoryFetchResult = any;

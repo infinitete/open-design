@@ -48,8 +48,7 @@ import { reconcileLibrary, type ReconcileLibraryResult } from '../library-sync.j
 import { fetchExternalBrandAsset } from '../brands/safe-fetch.js';
 import { ensureProjectSubdir } from '../projects.js';
 
-// Collab types removed - define locally
-function authorizeCreatedProjectWorkspace(..._args: any[]): any { return {}; }
+function authorizeCreatedProjectWorkspace(..._args: any[]): any { return { ok: true, context: null }; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
 function sendCreatedProjectWorkspaceError(..._args: any[]): any { return {}; }
 type BoundWorkspaceResourceMutationGate = any;

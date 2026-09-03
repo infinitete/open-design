@@ -16,7 +16,7 @@ type AuthorizedProjectToolRequest = any;
 type AuthorizeProjectRequest = any;
 type AuthorizeProjectToolRequest = any;
 function workspaceResourceContextFromRequest(..._args: any[]): any { return null; }
-function authorizeCreatedProjectWorkspace(..._args: any[]): any { return {}; }
+function authorizeCreatedProjectWorkspace(..._args: any[]): any { return { ok: true, context: null }; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
 function sendCreatedProjectWorkspaceError(..._args: any[]): any { return {}; }
 type WorkspaceDirectoryFetchResult = any;
@@ -83,12 +83,12 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
   }
   const { importClaudeDesignZip, projectDir, detectEntryFile } = ctx.imports;
   const {
-    consumedImportNonces,
-    desktopAuthSecret,
-    isDesktopAuthGateActive,
-    pruneExpiredImportNonces,
-    verifyDesktopImportToken,
-  } = ctx.auth;
+    consumedImportNonces = new Map(),
+    desktopAuthSecret = () => null,
+    isDesktopAuthGateActive = () => false,
+    pruneExpiredImportNonces = () => {},
+    verifyDesktopImportToken = () => ({ ok: false, reason: 'unsupported' }),
+  } = (ctx.auth || {}) as any;
   const {
     getProject,
     getWorkspaceProject,

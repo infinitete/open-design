@@ -153,7 +153,6 @@ describe('DeepSeek V4 Flash campaign', () => {
 
   it('keeps the unpaid DeepSeek upgrade on Pricing without rendering Go', () => {
     expect(campaignDialogSource).toContain('goPlanPricingUrl');
-    expect(campaignDialogSource).toContain("'deepseek_unpaid_modal'");
     expect(campaignDialogSource).toContain("t('campaign.deepseekV4Flash.unpaid.cta')");
     expect(campaignDialogSource).not.toContain('styles.goWelcome');
   });

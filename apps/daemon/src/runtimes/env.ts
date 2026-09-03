@@ -305,7 +305,17 @@ function finalizeRuntimeEnv(
 ): NodeJS.ProcessEnv {
   const finalizedEnv = reapplySandboxRuntimeEnv(env, sandboxRuntime);
   applyWindowsUserCacheEnv(finalizedEnv);
+  sanitizeProxyEnv(finalizedEnv);
   return finalizedEnv;
+}
+
+function sanitizeProxyEnv(env: NodeJS.ProcessEnv): void {
+  for (const key of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+    const val = env[key];
+    if (typeof val === 'string' && val.trim() && !val.includes('://')) {
+      env[key] = `http://${val.trim()}`;
+    }
+  }
 }
 
 function stripKeysCaseInsensitive(

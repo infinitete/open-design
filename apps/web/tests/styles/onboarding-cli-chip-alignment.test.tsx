@@ -146,9 +146,6 @@ function renderOnboarding() {
 }
 
 async function openLocalCliStep() {
-  fireEvent.click(
-    await screen.findByRole('button', { name: /Continue \(signed in\)/i }),
-  );
   await waitFor(() => {
     expect(screen.getByRole('heading', { name: 'Choose your model source' })).toBeTruthy();
   });

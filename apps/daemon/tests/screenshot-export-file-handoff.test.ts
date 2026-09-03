@@ -11,6 +11,7 @@ import type {
   DesktopRenderSlidesInput,
   DesktopRenderSlidesResult,
 } from '@open-design/sidecar-proto';
+import { insertProject, openDatabase } from '../src/db.js';
 import { createProjectFileVersion } from '../src/project-file-versions.js';
 import { startServer } from '../src/server.js';
 
@@ -87,6 +88,14 @@ describe('screenshot export desktop renderer file handoff', () => {
     server = started.server;
 
     const dataDir = process.env.OD_DATA_DIR!;
+    const db = openDatabase(process.cwd(), { dataDir });
+    const now = Date.now();
+    insertProject(db, {
+      id: projectId,
+      name: 'Export Handoff Project',
+      createdAt: now,
+      updatedAt: now,
+    });
     // The daemon derives the scratch dir from the realpath-resolved data root
     // (RUNTIME_DATA_DIR_CANONICAL); on macOS OD_DATA_DIR may contain a symlink
     // (/var -> /private/var), so resolve it the same way for the prefix check.

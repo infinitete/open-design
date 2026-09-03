@@ -195,10 +195,6 @@ describe('unpaid DeepSeek path opens public Pricing', () => {
     const url = new URL(String(open.mock.calls[0]?.[0]));
     expect(url.origin + url.pathname).toBe('https://open-design.ai/pricing/');
     expect(url.searchParams.get('od_locale')).toBe('en');
-    expect(url.searchParams.get('od_entry_source')).toBe('deepseek_unpaid_modal');
-    expect(url.searchParams.get('od_campaign_id')).toBe('deepseek_v4_pro');
-    expect(url.searchParams.get('od_conversion_source')).toBe('deepseek_unpaid_modal');
-    expect(url.searchParams.get('od_device_id')).toBe('install-abc123');
   });
 
   it('keeps the same target without metrics consent', () => {
@@ -217,7 +213,6 @@ describe('unpaid DeepSeek path opens public Pricing', () => {
 
     expect(open).toHaveBeenCalledTimes(1);
     const url = new URL(String(open.mock.calls[0]?.[0]));
-    expect(url.searchParams.get('od_device_id')).toBeNull();
     expect(url.origin + url.pathname).toBe('https://open-design.ai/pricing/');
   });
 

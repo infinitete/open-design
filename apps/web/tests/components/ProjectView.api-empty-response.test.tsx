@@ -482,7 +482,6 @@ describe('ProjectView API empty response handling', () => {
         'conv-project-1',
         'comment-1',
         'failed',
-        null,
       );
     });
     await waitFor(() => {
@@ -1053,7 +1052,7 @@ describe('ProjectView API empty response handling', () => {
 
 async function sendTestPrompt() {
   await waitFor(() => {
-    expect(mockedListMessages).toHaveBeenCalledWith(project.id, 'conv-project-1', null);
+    expect(mockedListMessages).toHaveBeenCalledWith(project.id, 'conv-project-1');
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   await waitFor(() => expect(screen.getByRole('button', { name: 'send' })).toBeTruthy());

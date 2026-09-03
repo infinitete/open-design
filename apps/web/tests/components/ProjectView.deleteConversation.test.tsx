@@ -254,7 +254,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1', null);
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     expect(onProjectsRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -287,7 +287,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1', null);
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     expect(onProjectsRefresh).not.toHaveBeenCalled();
   });
 
@@ -318,6 +318,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-2'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-2']);
   });
@@ -336,7 +337,7 @@ describe('ProjectView conversation delete', () => {
     listActiveChatRuns.mockResolvedValue([]);
     reattachDaemonRun.mockResolvedValue(undefined);
     deleteConversation.mockResolvedValue(true);
-    createConversation.mockResolvedValue({ id: 'conv-fresh', title: 'Fresh conversation' });
+    createConversation.mockResolvedValue({ id: 'conv-fresh', title: 'Fresh Conversation' });
 
     renderProjectView(vi.fn());
 
@@ -351,7 +352,7 @@ describe('ProjectView conversation delete', () => {
       expect(createConversation).toHaveBeenCalledWith(
         'project-1',
         undefined,
-        { workspaceContext: null },
+        {},
       ),
     );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));

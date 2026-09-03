@@ -45,8 +45,15 @@ if (!globalState[TEST_DATA_DIR_SYMBOL]) {
 // so tests can never read or overwrite the developer's real repo `.od` data.
 process.env.OD_DATA_DIR = globalState[TEST_DATA_DIR_SYMBOL];
 // Keep unit tests from reading a developer's stored Vela profile and routing
-// Langfuse-shaped telemetry through the authenticated Vela sink by accident.
 process.env.OPEN_DESIGN_VELA_TELEMETRY ??= 'off';
+
+// Node 24 undici HttpProxyAgent throws TypeError: Invalid URL if proxy variables omit scheme.
+for (const key of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+  const val = process.env[key];
+  if (typeof val === 'string' && val.trim() && !val.includes('://')) {
+    process.env[key] = `http://${val.trim()}`;
+  }
+}
 
 // Publish/share endpoints shell out through OD_NODE_BIN + OD_BIN (dist/cli.js).
 // Build the CLI artifact once per vitest process so package tests do not depend

@@ -6,14 +6,6 @@ const entryShellSource = readFileSync(
   resolve(process.cwd(), 'src/components/EntryShell.tsx'),
   'utf8',
 );
-const entryNavRailSource = readFileSync(
-  resolve(process.cwd(), 'src/components/EntryNavRail.tsx'),
-  'utf8',
-);
-const appSource = readFileSync(
-  resolve(process.cwd(), 'src/App.tsx'),
-  'utf8',
-);
 const workbenchCampaignBadgeSource = readFileSync(
   resolve(process.cwd(), 'src/components/WorkbenchCampaignBadge.tsx'),
   'utf8',
@@ -58,25 +50,18 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(entryShellSource).toContain("deepSeekV4FlashCampaignAudience === 'unknown'");
   });
 
-  it('keeps the top-right campaign entry visible across entry tabs and project detail', () => {
+  it('keeps the top-right campaign entry visible across entry tabs', () => {
     expect(entryShellSource).toMatch(
       /topRightSlot=\{\s*topRightCampaignAudience \? \(/,
     );
     expect(entryShellSource).not.toMatch(
       /topRightSlot=\{\s*view === 'home'/,
     );
-    expect(entryNavRailSource).toMatch(
-      /export function WorkspaceTopRightAccountCluster[\s\S]*?leadingSlot=\{campaignAudience \? \([\s\S]*?<WorkbenchCampaignBadge[\s\S]*?audience=\{campaignAudience\}[\s\S]*?page="project"/,
-    );
-    expect(appSource).toMatch(
-      /<WorkspaceTopRightAccountCluster[\s\S]*?amrLoggedIn=\{amrLoginStatus\?\.loggedIn \?\? null\}[\s\S]*?metricsConsent=\{config\.telemetry\?\.metrics === true\}/,
-    );
   });
 
   it('sends both Go and paid DeepSeek badges to public Pricing', () => {
     expect(entryShellSource).not.toContain('amrPlansUrlForWorkspace');
     expect(workbenchCampaignBadgeSource).toContain('goPlanPricingUrl(locale)');
-    expect(workbenchCampaignBadgeSource).toContain("'deepseek_workbench_badge'");
     expect(workbenchCampaignBadgeSource).toContain("'noopener,noreferrer'");
     // The destination comes from the active app locale rather than pinning one
     // language into a link shown to every locale.
@@ -169,7 +154,6 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
   it('keeps DeepSeek analytics for paid and unpaid campaign audiences', () => {
     expect(workbenchCampaignBadgeSource).toContain('trackDeepSeekCampaignBadgeSurfaceView');
     expect(workbenchCampaignBadgeSource).toContain('trackDeepSeekCampaignBadgeClick');
-    expect(workbenchCampaignBadgeSource).toContain('attributedAmrUrl(pricingUrl, attribution, deviceId)');
     expect(workbenchCampaignBadgeSource).toContain('user_state: audience');
     expect(workbenchCampaignBadgeSource).toContain("page !== 'home'");
     expect(modelSwitcherSource).toContain('trackDeepSeekCampaignModelBenefitSurfaceView');

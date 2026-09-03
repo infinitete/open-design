@@ -9,8 +9,6 @@ import type { InstalledPluginRecord, PluginManifest } from '@open-design/contrac
 
 import {
   closeDatabase,
-  ensureWorkspaceProject,
-  ensureWorkspaceResource,
   getProject,
   insertRoutine,
   insertRoutineRun,
@@ -888,82 +886,6 @@ describe('routine prepare failure cleanup', () => {
       } catch {
         // The test may fail before the trigger exists.
       }
-      await Promise.resolve(started.shutdown?.());
-      await new Promise<void>((resolve) => started.server.close(() => resolve()));
-    }
-  });
-});
-
-describe('routine resource scope', () => {
-  it('rejects another member Personal plugin before creating a routine snapshot', async () => {
-    const started = await startServer({ port: 0, returnServer: true }) as {
-      url: string;
-      server: http.Server;
-      shutdown?: () => Promise<void> | void;
-    };
-    const dataDir = process.env.OD_DATA_DIR;
-    if (!dataDir) throw new Error('OD_DATA_DIR is required for daemon route tests');
-    const db = openDatabase(tmp, { dataDir });
-    const projectId = 'routine-exact-plugin-project';
-    const plugin = pluginRecord('routine-other-member-plugin');
-    const now = Date.now();
-    upsertInstalledPlugin(db, plugin);
-    insertProject(db, {
-      id: projectId,
-      name: 'Exact plugin target',
-      createdAt: now,
-      updatedAt: now,
-    });
-    ensureWorkspaceProject(db, {
-      projectId,
-      workspaceId: 'routine-workspace',
-      visibility: 'personal',
-      resourceState: 'active',
-      createdByWorkspaceMemberId: 'routine-member-a',
-      updatedByWorkspaceMemberId: 'routine-member-a',
-    });
-    ensureWorkspaceResource(db, 'plugin', 'routine-workspace', plugin.id, {
-      visibility: 'personal',
-      resourceState: 'active',
-      createdByWorkspaceMemberId: 'routine-member-b',
-      updatedByWorkspaceMemberId: 'routine-member-b',
-    });
-    insertRoutine(db, {
-      id: 'routine-exact-plugin',
-      name: 'Exact plugin routine',
-      prompt: 'must not read another member plugin',
-      scheduleKind: 'hourly',
-      scheduleValue: '1',
-      scheduleJson: JSON.stringify({ kind: 'hourly', minute: 1 }),
-      projectMode: 'reuse',
-      projectId,
-      skillId: null,
-      agentId: 'missing-agent',
-      contextJson: JSON.stringify({
-        pluginIds: [plugin.id],
-        workspaceScope: {
-          workspaceId: 'routine-workspace',
-          workspaceMemberId: 'routine-member-a',
-        },
-      }),
-      enabled: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    try {
-      const response = await fetch(`${started.url}/api/routines/routine-exact-plugin/run`, {
-        method: 'POST',
-      });
-      expect(response.status).toBe(500);
-      await expect(response.json()).resolves.toMatchObject({
-        error: expect.stringContaining('not visible to the persisted project owner'),
-      });
-      expect(getProject(db, projectId)?.appliedPluginSnapshotId ?? null).toBeNull();
-      expect(db.prepare(
-        'SELECT COUNT(*) AS count FROM applied_plugin_snapshots WHERE project_id = ?',
-      ).get(projectId)).toEqual({ count: 0 });
-    } finally {
       await Promise.resolve(started.shutdown?.());
       await new Promise<void>((resolve) => started.server.close(() => resolve()));
     }

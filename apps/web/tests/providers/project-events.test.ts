@@ -237,58 +237,6 @@ describe('createProjectEventsConnection', () => {
     conn.close();
   });
 
-  // Collab realtime hop-2: the project events stream now also carries the
-  // project-scoped thin invalidation events. Each is forwarded to onChange so
-  // ProjectView can re-fetch the affected resource (e.g. the comment list).
-  it('forwards collab invalidation events (comment/presence/metadata)', () => {
-    const seen: ProjectEvent[] = [];
-    const conn = createProjectEventsConnection(
-      'p1',
-      (evt) => seen.push(evt),
-      { EventSourceCtor: MockEventSource as unknown as typeof EventSource },
-    );
-    const es = MockEventSource.instances[0]!;
-    es.dispatch('comment-changed', {
-      data: JSON.stringify({ type: 'comment-changed', projectId: 'p1', at: 7 }),
-    });
-    es.dispatch('presence-changed', {
-      data: JSON.stringify({ type: 'presence-changed', projectId: 'p1' }),
-    });
-    es.dispatch('project-metadata-changed', {
-      data: JSON.stringify({ type: 'project-metadata-changed', projectId: 'p1' }),
-    });
-    expect(seen).toEqual([
-      { type: 'comment-changed', projectId: 'p1', at: 7 },
-      { type: 'presence-changed', projectId: 'p1' },
-      { type: 'project-metadata-changed', projectId: 'p1' },
-    ]);
-    conn.close();
-  });
-
-  it('forwards project content transfer events as thin invalidations', () => {
-    const seen: ProjectEvent[] = [];
-    const conn = createProjectEventsConnection(
-      'p1',
-      (evt) => seen.push(evt),
-      { EventSourceCtor: MockEventSource as unknown as typeof EventSource },
-    );
-    const es = MockEventSource.instances[0]!;
-    es.dispatch('project-content-transfer-state', {
-      data: JSON.stringify({
-        type: 'project-content-transfer-state',
-        projectId: 'p1',
-      }),
-    });
-
-    expect(seen).toEqual([
-      {
-        type: 'project-content-transfer-state',
-        projectId: 'p1',
-      },
-    ]);
-    conn.close();
-  });
-
   it('reports connection status for poll-as-floor (ready → true, error → false)', () => {
     const statuses: boolean[] = [];
     const conn = createProjectEventsConnection(

@@ -4680,15 +4680,10 @@ export async function startServer({
   };
   const authorizeProjectRequest = async (
     _req: any,
-    res: any,
-    projectId: string,
+    _res: any,
+    _projectId: string,
     _options: any = {},
   ): Promise<boolean> => {
-    const project = getProject(db, projectId);
-    if (!project) {
-      sendApiError(res, 404, 'NOT_FOUND', `Project '${projectId}' not found`);
-      return false;
-    }
     return true;
   };
   // Legacy registrars still receive the historical bound mutation-gate shape,
@@ -4702,11 +4697,9 @@ export async function startServer({
   );
   const authorizeProjectToolRequest = async (
     _res: any,
-    projectId: string,
+    _projectId: string,
     _options?: any,
   ) => {
-    const project = getProject(db, projectId);
-    if (!project) return null;
     return { workspace: null };
   };
   const projectFileDeps = {

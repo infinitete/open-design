@@ -52,7 +52,10 @@ function installFetchMock(endpoints: MockEndpoints) {
   });
 }
 
+import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+
 afterEach(() => {
+  resetCoalescedGet();
   vi.restoreAllMocks();
 });
 

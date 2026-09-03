@@ -150,11 +150,18 @@ describe('FileViewer srcDoc-path Reload regression (#4650)', () => {
     // previewSource bytes didn't change.
 
     const html = deckHtml('same-content');
-    vi.stubGlobal('fetch', fetchReturning(html));
+    const DECK_RAW_URL_2 = '/api/projects/project-2/raw/deck.html';
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url.startsWith(DECK_RAW_URL_2)) {
+        return new Response(html, { status: 200 });
+      }
+      return new Response('', { status: 404 });
+    }));
 
     render(
       <FileViewer
-        projectId="project-1"
+        projectId="project-2"
         projectKind="prototype"
         file={deckFile()}
         isDeck

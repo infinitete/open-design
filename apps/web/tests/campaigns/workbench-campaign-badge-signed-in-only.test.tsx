@@ -29,10 +29,6 @@ const entryShellSource = readFileSync(
   resolve(process.cwd(), 'src/components/EntryShell.tsx'),
   'utf8',
 );
-const entryNavRailSource = readFileSync(
-  resolve(process.cwd(), 'src/components/EntryNavRail.tsx'),
-  'utf8',
-);
 
 function renderBadge(loggedIn: boolean | null | undefined) {
   render(
@@ -91,13 +87,8 @@ describe('workbench campaign badge is signed-in only', () => {
     expect(badgeSource).not.toMatch(/\n\s*loggedIn\?:/);
   });
 
-  it('passes the Vela login state from both mount points', () => {
-    // Entry shell rail: home plus every entry tab (projects, design systems,
-    // plugins, community, members …). Workspace cluster: project detail.
+  it('passes the Vela login state from the entry shell mount point', () => {
     expect(entryShellSource).toMatch(
-      /<WorkbenchCampaignBadge[\s\S]{0,400}?loggedIn=\{amrLoggedIn\}/,
-    );
-    expect(entryNavRailSource).toMatch(
       /<WorkbenchCampaignBadge[\s\S]{0,400}?loggedIn=\{amrLoggedIn\}/,
     );
   });

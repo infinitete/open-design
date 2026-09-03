@@ -47,10 +47,7 @@ import { amrPlansUrlForProfile } from '../runtime/amr-guidance';
 import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 import type { EntryHomeView } from '../router';
-import type {
-  AccountMenuClickProps,
-  TrackingWorkspacePage,
-} from '@open-design/contracts/analytics';
+import type { TrackingWorkspacePage } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackAccountMenuClick,
@@ -60,7 +57,6 @@ import {
   entryViewToTracking,
   stableAnalyticsErrorCode,
 } from '../analytics/workspace';
-import { WorkbenchCampaignBadge } from './WorkbenchCampaignBadge';
 import { workspaceChromeAccountActionsHost } from './workspaceChromeActions';
 
 // ---- Single-machine build shims -------------------------------------------
@@ -117,9 +113,6 @@ const workspaceIdentityCacheKey = (_c?: unknown): string => 'local';
 const REPO_URL = 'https://github.com/nexu-io/open-design';
 const GITHUB_HELP_URL = `${REPO_URL}/issues/new`;
 const GITHUB_FEATURE_URL = `${REPO_URL}/pulls`;
-const DISCORD_URL = 'https://discord.gg/mHAjSMV6gz';
-const X_URL = 'https://x.com/OpenDesignHQ';
-const CONTACT_EMAIL_URL = 'mailto:support@open-design.ai';
 const externalLinkProps = { target: '_blank', rel: 'noreferrer noopener' } as const;
 
 // Last directory this shell successfully read. `coalescedGet` only collapses
@@ -618,71 +611,6 @@ export function WorkspaceTopRightAccountCluster(_props: {
 }
 
 
-/**
- * Community/contact links pinned to the bottom of the nav rail.
- *
- * The row's first slot is the Discord invite for every locale (the Chinese
- * Feishu group entry was retired so there is one community to point at). X
- * and mail are locale-independent. Analytics keeps reporting these
- * under `area: 'account_menu'` so the existing funnel stays comparable across
- * the move out of that menu.
- */
-function RailSocialRow({
-  page,
-  dimensions,
-}: {
-  page: TrackingWorkspacePage;
-  dimensions: ReturnType<typeof workspaceAnalyticsDimensions>;
-}) {
-  const { t } = useI18n();
-  const analytics = useAnalytics();
-  const communityLabel = t('entry.discordAria');
-
-  function track(element: AccountMenuClickProps['element']) {
-    trackAccountMenuClick(analytics.track, {
-      page_name: page,
-      area: 'account_menu',
-      element,
-      ...dimensions,
-    });
-  }
-
-  return (
-    <div className="entry-nav-rail__social" data-testid="entry-nav-rail-social">
-      <a
-        className="entry-nav-rail__social-btn"
-        href={DISCORD_URL}
-        {...externalLinkProps}
-        aria-label={communityLabel}
-        title={communityLabel}
-        data-testid="entry-nav-rail-discord"
-        onClick={() => track('discord')}
-      >
-        <Icon name="discord" size={15} />
-      </a>
-      <a
-        className="entry-nav-rail__social-btn"
-        href={X_URL}
-        {...externalLinkProps}
-        aria-label="@OpenDesignHQ"
-        title="@OpenDesignHQ"
-        onClick={() => track('twitter')}
-      >
-        <span className="entry-nav-rail__menu-x" aria-hidden>X</span>
-      </a>
-      <a
-        className="entry-nav-rail__social-btn"
-        href={CONTACT_EMAIL_URL}
-        aria-label={t('entry.mailAria')}
-        title={t('entry.mailAria')}
-        onClick={() => track('email')}
-      >
-        <Icon name="mail" size={15} />
-      </a>
-    </div>
-  );
-}
-
 export function EntryNavRail({
   view,
   onViewChange,
@@ -952,13 +880,9 @@ export function EntryNavRail({
           </>
         )}
       </div>
-      {/* The footer always has the social row to show now, so it no longer
-          collapses to nothing. The updater has one shared home in the
-          top-right cluster for both signed-in and signed-out shells. */}
-      <div className="entry-nav-rail__footer">
-        {footerNotice}
-        <RailSocialRow page={analyticsPage} dimensions={workspaceDimensions} />
-      </div>
+      {footerNotice ? (
+        <div className="entry-nav-rail__footer">{footerNotice}</div>
+      ) : null}
       </div>
 
       {/* Signed-out message-center panel + unread polling (the rail's bell
