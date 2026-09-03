@@ -180,7 +180,7 @@ const AGENT_MODEL_KEYS: ReadonlySet<string> = new Set([
   'reasoning',
   'serviceTier',
 ]);
-const RETIRED_AGENT_IDS: ReadonlySet<string> = new Set(['gemini']);
+const RETIRED_AGENT_IDS: ReadonlySet<string> = new Set(['gemini', 'amr']);
 
 const TELEMETRY_KEYS: ReadonlySet<string> = new Set([
   'metrics',
@@ -474,6 +474,20 @@ function normalizeAgentCliEnvPrefs(prefs: AppConfigPrefs): AppConfigPrefs {
   return next;
 }
 
+// Clone-on-write removal of retired agents from a per-agent preference map.
+// Returns the same reference when no retired entry is present, the mutated
+// clone while entries remain, and undefined once the map is empty so the
+// whole top-level preference drops instead of persisting an empty `{}`.
+function retireAgentEntryMap<T>(map: Record<string, T>): Record<string, T> | undefined {
+  let next = map;
+  for (const agentId of RETIRED_AGENT_IDS) {
+    if (!Object.prototype.hasOwnProperty.call(next, agentId)) continue;
+    if (next === map) next = { ...map };
+    delete next[agentId];
+  }
+  return next === map ? map : (Object.keys(next).length > 0 ? next : undefined);
+}
+
 function normalizeRetiredAgentPrefs(prefs: AppConfigPrefs): AppConfigPrefs {
   let changed = false;
   let next = prefs;
@@ -485,21 +499,41 @@ function normalizeRetiredAgentPrefs(prefs: AppConfigPrefs): AppConfigPrefs {
   }
 
   if (next.agentModels) {
-    let nextAgentModels = next.agentModels;
-    for (const agentId of RETIRED_AGENT_IDS) {
-      if (!Object.prototype.hasOwnProperty.call(nextAgentModels, agentId)) continue;
-      if (nextAgentModels === next.agentModels) nextAgentModels = { ...next.agentModels };
-      delete nextAgentModels[agentId];
-      changed = true;
-    }
-    const normalizedAgentModels = Object.keys(nextAgentModels).length > 0 ? nextAgentModels : undefined;
-    if (normalizedAgentModels !== next.agentModels) {
+    const normalized = retireAgentEntryMap(next.agentModels);
+    if (normalized !== next.agentModels) {
       next = next === prefs ? { ...next } : next;
-      if (normalizedAgentModels) {
-        next.agentModels = normalizedAgentModels;
+      if (normalized) {
+        next.agentModels = normalized;
       } else {
         delete next.agentModels;
       }
+      changed = true;
+    }
+  }
+
+  if (next.agentCliEnv) {
+    const normalized = retireAgentEntryMap(next.agentCliEnv);
+    if (normalized !== next.agentCliEnv) {
+      next = next === prefs ? { ...next } : next;
+      if (normalized) {
+        next.agentCliEnv = normalized;
+      } else {
+        delete next.agentCliEnv;
+      }
+      changed = true;
+    }
+  }
+
+  if (next.agentCliEnvIntent) {
+    const normalized = retireAgentEntryMap(next.agentCliEnvIntent);
+    if (normalized !== next.agentCliEnvIntent) {
+      next = next === prefs ? { ...next } : next;
+      if (normalized) {
+        next.agentCliEnvIntent = normalized;
+      } else {
+        delete next.agentCliEnvIntent;
+      }
+      changed = true;
     }
   }
 

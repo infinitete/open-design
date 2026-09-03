@@ -472,6 +472,44 @@ function migrate(db: SqliteDb): void {
   migrateStrategyTaskStore(db);
   migrateOdNextRolloutStore(db);
   migrateAmrTerminalReportOutbox(db);
+  retireVelaProjectMetadata(db);
+}
+
+// One-time retirement of persisted model selections from the retired cloud
+// provider: only the two reserved-prefixed model fields are dropped from
+// project metadata, so neighbouring user data (aspect ratio, length, flags)
+// and `updated_at` survive untouched. The JSON comparison makes an
+// already-retired database a no-op, so every startup after the first
+// writes nothing. Malformed historical metadata is skipped, never thrown on.
+function parseProjectMetadataObject(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function retireVelaProjectMetadata(db: SqliteDb): number {
+  const rows = db.prepare('SELECT id, metadata_json AS metadataJson FROM projects WHERE metadata_json IS NOT NULL').all() as DbRow[];
+  const update = db.prepare('UPDATE projects SET metadata_json = ?, updated_at = updated_at WHERE id = ?');
+  let changed = 0;
+  db.transaction(() => {
+    for (const row of rows) {
+      const metadata = parseProjectMetadataObject(row.metadataJson);
+      if (!metadata) continue;
+      const next = { ...metadata };
+      if (typeof next.imageModel === 'string' && next.imageModel.startsWith('vela/')) delete next.imageModel;
+      if (typeof next.videoModel === 'string' && next.videoModel.startsWith('vela/')) delete next.videoModel;
+      if (JSON.stringify(next) === JSON.stringify(metadata)) continue;
+      update.run(JSON.stringify(next), row.id);
+      changed += 1;
+    }
+  })();
+  return changed;
 }
 
 function migratePreviewCommentsSlideKey(db: SqliteDb): void {
