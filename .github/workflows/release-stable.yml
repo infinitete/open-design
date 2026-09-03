@@ -119,25 +119,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Workspace Team's four vela transports are gated in the packaged runtime on
-  # BOTH a known AMR profile and a non-empty vela web origin
-  # (workspaceTeamTransportEnv in apps/packaged/src/workspace-team.ts). Neither
-  # has a default in tools-pack, so a lane that omits them ships a client whose
-  # team features are silently dormant: the build succeeds, the app starts, and
-  # the gap only shows up in a user's hands.
-  #
-  # Unlike beta/prerelease these are production channels, so the profile is
-  # pinned rather than taken from an input — there is no legitimate stable or
-  # preview build aimed at the test backend. Naming prod explicitly is a no-op
-  # for AMR itself (apps/daemon/src/integrations/vela-profile.ts already
-  # defaults to prod); it exists to satisfy the first half of the gate. A fork
-  # or PR build without the secret leaves the origin empty, which keeps the
-  # transports dormant rather than half-enabled.
-  OPEN_DESIGN_AMR_PROFILE: prod
-  OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}
-  OD_VELA_WEB_URL_FEATURE_TEST: ${{ secrets.VELA_WEB_URL_FEATURE_TEST }}
-  OD_VELA_WEB_URL_TEST: ${{ secrets.VELA_WEB_URL_TEST }}
-  OD_VELA_WEB_URL_PROD: ${{ secrets.VELA_WEB_URL_PROD }}
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
   # PostHog product-analytics ingest. Defined as repository secret + var
   # so official builds ship with analytics enabled; PR builds and forks
@@ -404,7 +385,6 @@ jobs:
             --app-version "${{ needs.metadata.outputs.release_version }}"
             --mac-compression normal
             --to all
-            --require-vela-cli
             --json
             --signed
             --notarize
@@ -632,7 +612,6 @@ jobs:
             --app-version "${{ needs.metadata.outputs.release_version }}" \
             --mac-compression normal \
             --to all \
-            --require-vela-cli \
             --json \
             --signed \
             --notarize
@@ -768,8 +747,7 @@ jobs:
             "--portable",
             "--app-version", "${{ needs.metadata.outputs.release_version }}",
             "--to", "all",
-            "--require-vela-cli",
-            "--json"
+                        "--json"
           )
           "cache_failed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           try {
@@ -789,7 +767,6 @@ jobs:
               --portable `
               --app-version "${{ needs.metadata.outputs.release_version }}" `
               --to all `
-              --require-vela-cli `
               --json
             if ($LASTEXITCODE -ne 0) {
               throw "Windows tools-pack uncached fallback build exited with code $LASTEXITCODE"
@@ -822,7 +799,7 @@ jobs:
           $match = [regex]::Match("${{ needs.metadata.outputs.release_version }}", "^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$")
           if (-not $match.Success) { throw "full Windows stable smoke requires stable version x.y.z; got ${{ needs.metadata.outputs.release_version }}" }
           $updateVersion = "{0}.{1}.{2}" -f $match.Groups["major"].Value, $match.Groups["minor"].Value, ([int]$match.Groups["patch"].Value + 1)
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "${{ needs.metadata.outputs.win_namespace }}", "--app-version", $updateVersion, "--to", "nsis", "--require-vela-cli", "--json")
+          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "${{ needs.metadata.outputs.win_namespace }}", "--app-version", $updateVersion, "--to", "nsis", "--json")
           $updateOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
           $updateOutput | Set-Content -Path "${{ runner.temp }}\windows-tools-pack-update-build.json" -Encoding utf8

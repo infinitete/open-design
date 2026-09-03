@@ -28,8 +28,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ReportRoot,
   [Parameter(Mandatory = $true)]
-  [string]$OutputsPath,
-  [switch]$RequireVelaCli
+  [string]$OutputsPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -251,9 +250,6 @@ try {
   if ($SignMode -eq "on") {
     $buildArgs += "--signed"
   }
-  if ($RequireVelaCli) {
-    $buildArgs += "--require-vela-cli"
-  }
 
   Measure-Step "tools-pack win build" {
     $buildOutput = & $buildArgs[0] @($buildArgs | Select-Object -Skip 1)
@@ -293,9 +289,6 @@ try {
     )
     if ($SignMode -eq "on") {
       $updateArgs += "--signed"
-    }
-    if ($RequireVelaCli) {
-      $updateArgs += "--require-vela-cli"
     }
     Measure-Step "tools-pack win build update fixture" {
       $updateOutput = & $updateArgs[0] @($updateArgs | Select-Object -Skip 1)

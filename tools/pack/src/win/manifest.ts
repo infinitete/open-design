@@ -22,7 +22,6 @@ function createPackagedConfig(
   entrypoints: PackagedConfigEntrypoints = {},
 ): Record<string, unknown> {
   return {
-    ...(config.amrProfile == null ? {} : { amrProfile: config.amrProfile }),
     appVersion: packagedVersion,
     ...entrypoints,
     namespace: config.namespace,
@@ -30,8 +29,6 @@ function createPackagedConfig(
     ...(config.updateMetadataUrl == null ? {} : { updateMetadataUrl: config.updateMetadataUrl }),
     ...(config.posthogKey == null ? {} : { posthogKey: config.posthogKey }),
     ...(config.posthogHost == null ? {} : { posthogHost: config.posthogHost }),
-    ...(config.velaWebUrl == null ? {} : { velaWebUrl: config.velaWebUrl }),
-    ...(config.velaWebUrls == null ? {} : { velaWebUrls: config.velaWebUrls }),
     webOutputMode: config.webOutputMode,
     ...(config.portable ? {} : { namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot }),
   };

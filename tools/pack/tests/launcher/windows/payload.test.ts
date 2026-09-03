@@ -34,7 +34,6 @@ function makeWinConfig(root: string, namespace: string, appVersion: string): Too
     removeLogs: false,
     removeProductUserData: false,
     removeSidecars: false,
-    requireVelaCli: false,
     roots: {
       cacheRoot: join(root, ".tmp", "tools-pack", "cache"),
       output: {

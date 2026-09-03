@@ -4,23 +4,11 @@ import { dirname, join } from "node:path";
 import { hashJson, hashPath, ToolPackCache } from "../cache/index.js";
 import type { ToolPackConfig } from "../config/index.js";
 import { copyBundledResourceTrees, packBundledDshRuntime, winResources } from "../resources/index.js";
-import {
-  copyOptionalVelaCliBinary,
-  resolveOptionalVelaCliBinary,
-  resolveOptionalVelaCliOpenCodeCompanionTree,
-} from "../vela-cli.js";
 import type { WinPaths, ResourceTreeCacheMetadata } from "./types.js";
 
-const RESOURCE_TREE_CACHE_SCHEMA_VERSION = 8;
+const RESOURCE_TREE_CACHE_SCHEMA_VERSION = 9;
 
 async function createResourceTreeCacheKey(config: ToolPackConfig, workspaceBuildKey: string): Promise<string> {
-  const velaCliBin = await resolveOptionalVelaCliBinary({
-    requireBundled: config.requireVelaCli,
-  });
-  const velaOpenCodeCompanion =
-    velaCliBin == null
-      ? null
-      : await resolveOptionalVelaCliOpenCodeCompanionTree(velaCliBin);
   return hashJson({
     assetsFrames: await hashPath(join(config.workspaceRoot, "assets", "frames")),
     craft: await hashPath(join(config.workspaceRoot, "craft")),
@@ -35,11 +23,6 @@ async function createResourceTreeCacheKey(config: ToolPackConfig, workspaceBuild
     skills: await hashPath(join(config.workspaceRoot, "skills")),
     sevenZipDll: await hashPath(winResources.sevenZipDll),
     sevenZipExe: await hashPath(winResources.sevenZipExe),
-    requireVelaCli: config.requireVelaCli,
-    velaCliBin: velaCliBin ? await hashPath(velaCliBin) : null,
-    velaOpenCodeCompanion: velaOpenCodeCompanion
-      ? await hashPath(velaOpenCodeCompanion)
-      : null,
     workspaceBuildKey,
   });
 }
@@ -78,11 +61,6 @@ export async function prepareResourceTree(
       await mkdir(join(resourceRoot, "bin"), { recursive: true });
       await cp(winResources.sevenZipExe, join(resourceRoot, "bin", "7z.exe"));
       await cp(winResources.sevenZipDll, join(resourceRoot, "bin", "7z.dll"));
-      await copyOptionalVelaCliBinary({
-        platform: "win",
-        requireBundled: config.requireVelaCli,
-        resourceRoot,
-      });
       return { resourceName: "open-design" };
     },
   };

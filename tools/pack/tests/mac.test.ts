@@ -5,7 +5,7 @@ import process from "node:process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ToolPackConfig } from "@/config/index.js";
+import { resolveToolPackConfig, type ToolPackConfig } from "@/config/index.js";
 import {
   copyMacPrebundleRuntimeDependencies,
   copyResourceTree,
@@ -13,6 +13,7 @@ import {
   renderMacPackagedConfig,
   validateMacNativeRebuildOutput,
 } from "@/mac/app.js";
+import macAppSource from "@/mac/app.ts?raw";
 import macBuilderSource from "@/mac/builder.ts?raw";
 import { runElectronBuilder } from "@/mac/builder.js";
 import { resolveSeededAppConfigPaths, seedPackagedAppConfig, writeLaunchPackagedConfig } from "@/mac/index.js";
@@ -41,7 +42,6 @@ function makeConfig(root: string, overrides: Partial<ToolPackConfig> = {}): Tool
     removeLogs: false,
     removeProductUserData: false,
     removeSidecars: false,
-    requireVelaCli: false,
     roots: {
       output: {
         appBuilderRoot: join(root, ".tmp", "tools-pack", "out", "mac", "namespaces", "local-test", "builder"),
@@ -206,6 +206,60 @@ describe("copyResourceTree", () => {
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it("omits the Vela binary and its companion tree from mac resources even when the env override points at one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    const previousVelaBin = process.env.OPEN_DESIGN_VELA_CLI_BIN;
+    try {
+      const config = makeConfig(root);
+      const paths = resolveMacPaths(config);
+      for (const name of [
+        "skills",
+        "design-templates",
+        "design-systems",
+        "craft",
+        "plugins/_official",
+        "plugins/registry",
+        "assets/frames",
+        "prompt-templates",
+        "data/plugin-previews",
+      ]) {
+        await mkdir(join(root, name), { recursive: true });
+      }
+      const dshRuntimeRoot = join(root, "packages", "dsh-runtime");
+      await mkdir(join(dshRuntimeRoot, "dist", "types"), { recursive: true });
+      await writeFile(
+        join(dshRuntimeRoot, "package.json"),
+        `${JSON.stringify({
+          name: "@open-design/dsh-runtime",
+          version: "0.1.0",
+          files: ["dist"],
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      await writeFile(join(dshRuntimeRoot, "dist", "index.js"), "export {};\n", "utf8");
+      await writeFile(join(dshRuntimeRoot, "dist", "types", "index.d.ts"), "export {};\n", "utf8");
+
+      // A host binary plus its companion tree, exactly what the retired
+      // optional copy used to bundle into resources/open-design/bin.
+      const source = join(root, "source", "vela");
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, "#!/bin/sh\nexit 0\n", "utf8");
+      const companion = join(dirname(source), "libexec", "opencode", "opencode");
+      await mkdir(dirname(companion), { recursive: true });
+      await writeFile(companion, "#!/bin/sh\nexit 0\n", "utf8");
+      process.env.OPEN_DESIGN_VELA_CLI_BIN = source;
+
+      await copyResourceTree(config, paths);
+
+      expect(await pathExists(join(paths.resourceRoot, "bin", "vela"))).toBe(false);
+      expect(await pathExists(join(paths.resourceRoot, "bin", "libexec", "opencode", "opencode"))).toBe(false);
+    } finally {
+      if (previousVelaBin == null) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
+      else process.env.OPEN_DESIGN_VELA_CLI_BIN = previousVelaBin;
+      await rm(root, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("copyMacPrebundleRuntimeDependencies", () => {
@@ -294,17 +348,17 @@ describe("renderMacPackagedConfig", () => {
     }
   });
 
-  // The vela web origin is the workspace-team console link the daemon derives
-  // its settings / members / dashboard URLs from. It arrives from a CI secret
-  // rather than the source tree, so packaging has to carry it into the bundle
-  // (same chain as posthogKey) or the feature stays dark in the packaged app.
-  it("bakes the injected vela web origin for a workspace-team build", async () => {
+  it("bakes no retired AMR profile or web-origin keys into the packaged mac config", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    const savedAmrProfile = process.env.OPEN_DESIGN_AMR_PROFILE;
+    const savedVelaWebUrl = process.env.OD_VELA_WEB_URL;
     try {
-      const config = makeConfig(root, {
-        amrProfile: "feature-test",
-        velaWebUrl: "https://vela.example.invalid",
-      });
+      // Values the old baker read from the environment must be inert now: the
+      // resolver no longer produces them, so even a leftover CI env export
+      // cannot shape the packaged config.
+      process.env.OPEN_DESIGN_AMR_PROFILE = "feature-test";
+      process.env.OD_VELA_WEB_URL = "https://vela.example.invalid";
+      const config = resolveToolPackConfig("mac", { namespace: "local-test", dir: root });
 
       const packagedConfig = JSON.parse(
         renderMacPackagedConfig({
@@ -314,26 +368,28 @@ describe("renderMacPackagedConfig", () => {
         }),
       ) as Record<string, unknown>;
 
-      expect(packagedConfig.velaWebUrl).toBe("https://vela.example.invalid");
+      expect(packagedConfig).not.toHaveProperty("amrProfile");
+      expect(packagedConfig).not.toHaveProperty("velaWebUrl");
+      expect(packagedConfig).not.toHaveProperty("velaWebUrls");
     } finally {
+      if (savedAmrProfile == null) delete process.env.OPEN_DESIGN_AMR_PROFILE;
+      else process.env.OPEN_DESIGN_AMR_PROFILE = savedAmrProfile;
+      if (savedVelaWebUrl == null) delete process.env.OD_VELA_WEB_URL;
+      else process.env.OD_VELA_WEB_URL = savedVelaWebUrl;
       await rm(root, { force: true, recursive: true });
     }
   });
 
-  it("omits the vela web origin when the build was given none", async () => {
-    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
-    try {
-      const packagedConfig = JSON.parse(
-        renderMacPackagedConfig({
-          appVersion: "1.2.3",
-          config: makeConfig(root),
-          usePrebundledStandaloneWeb: true,
-        }),
-      ) as Record<string, unknown>;
-
-      expect(packagedConfig).not.toHaveProperty("velaWebUrl");
-    } finally {
-      await rm(root, { force: true, recursive: true });
+  it("keeps the mac packer free of retired Vela packaging tokens", () => {
+    for (const token of [
+      "--require-vela-cli",
+      "OPEN_DESIGN_VELA_CLI_BIN",
+      "@powerformer/vela-cli",
+      "open-design/bin/vela",
+      "amrProfile",
+      "velaWebUrl",
+    ]) {
+      expect(macAppSource, token).not.toContain(token);
     }
   });
 });

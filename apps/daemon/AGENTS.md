@@ -16,7 +16,6 @@ The daemon is not a shared library for the web app. Do not import daemon private
 - `src/http/` owns shared HTTP helpers, error/result adapters, origin checks, and mounting utilities. `src/services/` owns Express-free reusable services.
 - `src/runtimes/` owns agent runtime definitions (`defs/`), spawning, parser integration, executable discovery, and env shaping. `src/prompts/` owns daemon-side prompt construction; mirrored BYOK/API wording lives in `packages/contracts/src/prompts/`.
 - `src/plugins/`, `src/connectors/`, `src/registry/`, `src/research/`, `src/media-adapters/`, `src/live-artifacts/`, `src/storage/`, `src/critique/`, `src/media/`, `src/artifacts/` own their domains. Prefer adding code inside the existing domain folder before creating a new top-level folder.
-- Vela invocations go through `src/integrations/vela-command.ts` (shared binary resolver + env). Do not add a second content-addressed drive implementation or direct hub HTTP client.
 - `tests/` contains daemon tests, roughly parallel to `src/`.
 
 ## Top-Level `src/` Hygiene

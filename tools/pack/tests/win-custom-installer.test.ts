@@ -27,7 +27,6 @@ function createConfig(root: string, portable: boolean): ToolPackConfig {
     removeLogs: false,
     removeProductUserData: false,
     removeSidecars: false,
-    requireVelaCli: false,
     roots: {
       cacheRoot: join(root, "cache"),
       output: {

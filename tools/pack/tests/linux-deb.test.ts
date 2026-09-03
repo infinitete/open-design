@@ -51,7 +51,6 @@ function makeDebTestConfig(appBuilderRoot: string): ToolPackConfig {
     removeLogs: false,
     removeProductUserData: false,
     removeSidecars: false,
-    requireVelaCli: false,
     roots: {
       output: {
         appBuilderRoot,

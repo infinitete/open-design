@@ -26,6 +26,7 @@ vi.mock("@open-design/sidecar", async (importOriginal) => {
 });
 
 import type { ToolPackConfig } from "@/config/index.js";
+import linuxSource from "@/linux.ts?raw";
 import {
   buildDockerArgs,
   cleanupPackedLinuxNamespace,
@@ -67,7 +68,6 @@ function makeConfig(): ToolPackConfig {
     removeLogs: false,
     removeProductUserData: false,
     removeSidecars: false,
-    requireVelaCli: false,
     roots: {
       output: {
         appBuilderRoot: "/work/.tmp/tools-pack/out/linux/namespaces/default/builder",
@@ -151,33 +151,37 @@ describe("buildDockerArgs", () => {
     expect(args).toContain("OPEN_DESIGN_TELEMETRY_RELAY_URL=https://telemetry.open-design.ai/api/langfuse");
   });
 
-  it("passes the AMR profile into containerized builds when configured", () => {
-    const args = buildDockerArgs(
-      {
-        ...makeConfig(),
-        amrProfile: "test",
-      },
-      { uid: 1000, gid: 1000 },
-    );
-    expect(args).toContain("OPEN_DESIGN_AMR_PROFILE=test");
-  });
-
-  it("bind-mounts the host Vela binary directory and rewrites the env path into the container", () => {
-    const previous = process.env.OPEN_DESIGN_VELA_CLI_BIN;
+  it("forwards no retired AMR/Vela build inputs into containerized builds", () => {
+    // Even with every retired env var present in the host environment, the
+    // container argv must carry no profile, web-origin, or platform-binary
+    // input: nothing inside the container reads them any more.
+    const previousAmrProfile = process.env.OPEN_DESIGN_AMR_PROFILE;
+    const previousVelaWebUrl = process.env.OD_VELA_WEB_URL;
+    const previousVelaBin = process.env.OPEN_DESIGN_VELA_CLI_BIN;
+    process.env.OPEN_DESIGN_AMR_PROFILE = "test";
+    process.env.OD_VELA_WEB_URL = "https://vela.example.invalid";
     process.env.OPEN_DESIGN_VELA_CLI_BIN = "/host/bin/vela";
     try {
       const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
-      // The container only mounts /project, /tools-pack, and cache/home by
-      // default — a host-path env value like `/host/bin/vela` would resolve
-      // to a non-existent path inside. The directory must be bind-mounted
-      // and the env rewritten to the container-side path so the resource
-      // copier can actually read the binary.
-      expect(args).toContain("/host/bin:/opt/vela-cli:ro");
-      expect(args).toContain("OPEN_DESIGN_VELA_CLI_BIN=/opt/vela-cli/vela");
-      expect(args).not.toContain("OPEN_DESIGN_VELA_CLI_BIN=/host/bin/vela");
+      const retiredTokens = [
+        "OPEN_DESIGN_AMR_PROFILE",
+        "OD_VELA_WEB_URL",
+        "OPEN_DESIGN_VELA_CLI_BIN",
+        "/opt/vela-cli",
+        "--require-vela-cli",
+      ];
+      for (const token of retiredTokens) {
+        expect(args.some((arg) => arg.includes(token)), token).toBe(false);
+      }
+      // The host binary's directory must not leak in as a mount either.
+      expect(args).not.toContain("/host/bin:/opt/vela-cli:ro");
     } finally {
-      if (previous === undefined) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
-      else process.env.OPEN_DESIGN_VELA_CLI_BIN = previous;
+      if (previousAmrProfile === undefined) delete process.env.OPEN_DESIGN_AMR_PROFILE;
+      else process.env.OPEN_DESIGN_AMR_PROFILE = previousAmrProfile;
+      if (previousVelaWebUrl === undefined) delete process.env.OD_VELA_WEB_URL;
+      else process.env.OD_VELA_WEB_URL = previousVelaWebUrl;
+      if (previousVelaBin === undefined) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
+      else process.env.OPEN_DESIGN_VELA_CLI_BIN = previousVelaBin;
     }
   });
 
@@ -279,12 +283,6 @@ describe("buildDockerArgs", () => {
     expect(last).toMatch(/--portable/);
   });
 
-  it("forwards --require-vela-cli to the inner containerized build when strict packaging is requested", () => {
-    const args = buildDockerArgs({ ...makeConfig(), requireVelaCli: true }, { uid: 1000, gid: 1000 });
-    const last = args[args.length - 1];
-    expect(last).toMatch(/--require-vela-cli/);
-  });
-
   it("omits --require-vela-cli from containerized builds by default", () => {
     const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
     const last = args[args.length - 1];
@@ -321,6 +319,25 @@ describe("buildDockerArgs", () => {
       (arg, i) => arg === "-e" && args[i + 1] === "OD_TOOLS_PACK_PNPM_BIN=/tmp/pnpm",
     );
     expect(envFlagIndex).toBeGreaterThan(-1);
+  });
+});
+
+describe("linux packaged config and resource plan", () => {
+  it("keeps the AppImage/deb/headless packer free of retired Vela packaging tokens", () => {
+    // open-design-config.json for every Linux lane is rendered inline in
+    // linux.ts (writeAssembledApp); the containerized argv and resource copier
+    // live in the same module. One source assertion therefore covers the
+    // AppImage, deb, headless, and containerized configs at once.
+    for (const token of [
+      "--require-vela-cli",
+      "OPEN_DESIGN_VELA_CLI_BIN",
+      "@powerformer/vela-cli",
+      "open-design/bin/vela",
+      "amrProfile",
+      "velaWebUrl",
+    ]) {
+      expect(linuxSource, token).not.toContain(token);
+    }
   });
 });
 

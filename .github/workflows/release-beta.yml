@@ -55,11 +55,6 @@ on:
         required: false
         type: string
         default: ""
-      amr_profile:
-        description: "Optional AMR profile baked into the build (e.g. feature-test to point the packaged app at that profile's AMR backend and enable the workspace-team transport). Empty leaves the default (prod)."
-        required: false
-        type: string
-        default: ""
       mac_arm64_sign_mode:
         description: "macOS arm64 signing mode."
         required: true
@@ -215,10 +210,6 @@ on:
         required: false
         type: string
         default: ""
-      amr_profile:
-        required: false
-        type: string
-        default: ""
       mac_arm64_sign_mode:
         required: false
         type: string
@@ -327,27 +318,6 @@ env:
   POSTHOG_HOST: ${{ inputs.publish && vars.POSTHOG_HOST || '' }}
   POSTHOG_CLI_API_KEY: ${{ inputs.publish && secrets.POSTHOG_CLI_API_KEY || '' }}
   POSTHOG_CLI_PROJECT_ID: ${{ inputs.publish && vars.POSTHOG_CLI_PROJECT_ID || '' }}
-  # Vela web console origin for the AMR profile this build targets. Held in a
-  # per-profile repository secret instead of the source tree: the non-prod AMR
-  # environments are internal deployments and this repository is public, so
-  # neither the workflow nor the product code may name their hostnames.
-  #
-  # tools-pack bakes it into open-design-config.json and the packaged runtime
-  # forwards it to the daemon as OD_VELA_WEB_URL, which is the second half of the
-  # workspace-team gate (the first being the AMR profile allowlist). A profile
-  # whose selected secret is not configured therefore ships with workspace-team
-  # dormant rather than pointed at an unknown backend. An empty profile defaults
-  # to prod and receives the prod origin, matching resolveAmrProfile.
-  #
-  # OD_VELA_WEB_URL preserves the build's startup profile. The three explicit
-  # values are also baked into the package as a profile map, so the hidden
-  # runtime environment switcher can move data AND console links together.
-  # Secrets read here: VELA_WEB_URL_FEATURE_TEST, VELA_WEB_URL_TEST,
-  # VELA_WEB_URL_PROD.
-  OD_VELA_WEB_URL: ${{ inputs.amr_profile == 'feature-test' && secrets.VELA_WEB_URL_FEATURE_TEST || inputs.amr_profile == 'test' && secrets.VELA_WEB_URL_TEST || (inputs.amr_profile == 'prod' || inputs.amr_profile == '') && secrets.VELA_WEB_URL_PROD || '' }}
-  OD_VELA_WEB_URL_FEATURE_TEST: ${{ secrets.VELA_WEB_URL_FEATURE_TEST }}
-  OD_VELA_WEB_URL_TEST: ${{ secrets.VELA_WEB_URL_TEST }}
-  OD_VELA_WEB_URL_PROD: ${{ secrets.VELA_WEB_URL_PROD }}
   RELEASE_BRANCH: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
   RELEASE_REPOSITORY: ${{ github.repository }}
   RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -545,13 +515,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Bake the AMR profile (tools-pack reads OPEN_DESIGN_AMR_PROFILE) so a
-          # feature-test dispatch produces a packaged app that targets that
-          # profile's AMR backend and enables the workspace-team transport. The
-          # matching console origin arrives via the workflow-level
-          # OD_VELA_WEB_URL. Empty = default (prod) — the normal beta pipeline is
-          # unaffected.
-          OPEN_DESIGN_AMR_PROFILE: ${{ inputs.amr_profile }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-build/mac_arm64"
@@ -567,7 +530,6 @@ jobs:
             --mac-compression normal
             --to "${{ inputs.mac_arm64_target }}"
             --json
-            --require-vela-cli
           )
           case "${{ inputs.mac_arm64_sign_mode }}" in
             no) ;;
@@ -589,7 +551,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          OPEN_DESIGN_AMR_PROFILE: ${{ inputs.amr_profile }}
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/tools-pack-cache"
@@ -606,7 +567,6 @@ jobs:
             --mac-compression normal
             --to "${{ inputs.mac_arm64_target }}"
             --json
-            --require-vela-cli
           )
           case "${{ inputs.mac_arm64_sign_mode }}" in
             no) ;;
@@ -698,7 +658,6 @@ jobs:
             --app-version "$update_version" \
             --mac-compression normal \
             --to dmg \
-            --require-vela-cli \
             --json)"
           printf '%s\n' "$update_output" > "$update_build_json_path"
           {
@@ -926,7 +885,6 @@ jobs:
             --mac-compression normal
             --to "${{ inputs.mac_x64_target }}"
             --json
-            --require-vela-cli
           )
           case "${{ inputs.mac_x64_sign_mode }}" in
             no) ;;
@@ -960,7 +918,6 @@ jobs:
             --mac-compression normal
             --to "${{ inputs.mac_x64_target }}"
             --json
-            --require-vela-cli
           )
           case "${{ inputs.mac_x64_sign_mode }}" in
             no) ;;
@@ -1187,19 +1144,11 @@ jobs:
           OD_BETA_WINDOWS_SIGN_CERT_SHA1: ${{ steps.sign_probe.outputs.thumbprint }}
           OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}
           OD_PACKAGED_E2E_WIN_UPDATE_VERSION: ${{ inputs.win_x64_update_target_version }}
-          # Bake the AMR profile (tools-pack reads OPEN_DESIGN_AMR_PROFILE) so a
-          # feature-test dispatch produces a packaged app that targets that
-          # profile's AMR backend and enables the workspace-team transport. Empty
-          # = default (prod) — the normal beta pipeline is unaffected. Mirrors the
-          # mac_arm64 build step above; this was missing here, so every win_x64
-          # dogfood build silently fell back to prod and could not sign in to a
-          # feature-test AMR environment.
-          OPEN_DESIGN_AMR_PROFILE: ${{ inputs.amr_profile }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "${{ runner.temp }}\release-build\win_x64" | Out-Null
           pnpm.cmd exec tools-pack win cleanup --dir "${{ runner.temp }}\tools-pack" --namespace release-beta-win --json
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\tools-pack", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--portable", "--app-version", "${{ needs.metadata.outputs.beta_version }}", "--to", "${{ inputs.win_x64_target }}", "--require-vela-cli", "--json")
+          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\tools-pack", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--portable", "--app-version", "${{ needs.metadata.outputs.beta_version }}", "--to", "${{ inputs.win_x64_target }}", "--json")
           if ("${{ inputs.win_x64_sign_mode }}" -eq "on") { $buildArgs += "--signed" }
           $buildOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win build failed with exit code $LASTEXITCODE" }
@@ -1212,13 +1161,12 @@ jobs:
         if: ${{ steps.win_tools_pack_build.outcome == 'failure' }}
         shell: pwsh
         env:
-          OPEN_DESIGN_AMR_PROFILE: ${{ inputs.amr_profile }}
         run: |
           $ErrorActionPreference = "Stop"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "${{ runner.temp }}\tools-pack-cache"
           New-Item -ItemType Directory -Force -Path "${{ runner.temp }}\release-build\win_x64" | Out-Null
           pnpm.cmd exec tools-pack win cleanup --dir "${{ runner.temp }}\tools-pack" --namespace release-beta-win --json
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\tools-pack", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--portable", "--app-version", "${{ needs.metadata.outputs.beta_version }}", "--to", "${{ inputs.win_x64_target }}", "--require-vela-cli", "--json")
+          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\tools-pack", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--portable", "--app-version", "${{ needs.metadata.outputs.beta_version }}", "--to", "${{ inputs.win_x64_target }}", "--json")
           if ("${{ inputs.win_x64_sign_mode }}" -eq "on") { $buildArgs += "--signed" }
           $buildOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win fallback build failed with exit code $LASTEXITCODE" }
@@ -1285,7 +1233,7 @@ jobs:
           $match = [regex]::Match("${{ needs.metadata.outputs.beta_version }}", "^(?<base>\d+\.\d+\.\d+)-beta\.(?<number>\d+)$")
           if (-not $match.Success) { throw "full Windows smoke requires a counted beta version; got ${{ needs.metadata.outputs.beta_version }}" }
           $updateVersion = "{0}-beta.{1}" -f $match.Groups["base"].Value, ([int]$match.Groups["number"].Value + 1)
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--app-version", $updateVersion, "--to", "nsis", "--require-vela-cli", "--json")
+          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--app-version", $updateVersion, "--to", "nsis", "--json")
           if ("${{ inputs.win_x64_sign_mode }}" -eq "on") { $buildArgs += "--signed" }
           $updateOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
