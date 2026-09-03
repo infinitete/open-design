@@ -12,7 +12,7 @@ import {
 // contract). The cloud web app accepts the invite, then opens
 // `opendesign://workspace/invite/continue?...&nonce=...` to wake this client. We
 // register the scheme and route the deeplink to the daemon, which consumes the
-// one-time continuation on B with the signed-in vela session; the client then
+// one-time continuation on B with the signed-in cloud session; the client then
 // focuses and the web re-reads the context to switch into the team workspace.
 //
 // The same scheme also carries `opendesign://workspace/open` — the cloud

@@ -222,7 +222,6 @@ export async function runPackagedHeadless(
     startSidecars: async () =>
       await startPackagedSidecars(runtime, paths, {
         appVersion: activeConfig.appVersion,
-        amrProfile: activeConfig.amrProfile,
         daemonCliEntry: activeConfig.daemonCliEntry,
         daemonSidecarEntry: activeConfig.daemonSidecarEntry,
         electronNodeCommand: launcherRuntime.electronNodeCommand,
@@ -232,8 +231,6 @@ export async function runPackagedHeadless(
         telemetryRelayUrl: activeConfig.telemetryRelayUrl,
         posthogKey: activeConfig.posthogKey,
         posthogHost: activeConfig.posthogHost,
-        velaWebUrl: activeConfig.velaWebUrl,
-        velaWebUrls: activeConfig.velaWebUrls,
         // PR #974 round-5 (lefarcen P2): headless packaged mode uses the signed
         // Electron entry as a lifecycle owner, but creates no BrowserWindow and
         // exposes no privileged shell.openPath surface.

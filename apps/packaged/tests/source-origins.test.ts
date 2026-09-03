@@ -3,7 +3,7 @@
  *
  * `apps/packaged` ships inside a public repository, so any origin literal in
  * its source is published. Backend environments that are not themselves public
- * (an internal vela deployment, a staging gateway) therefore have to be
+ * (an internal deployment, a staging gateway) therefore have to be
  * injected at packaging time — `tools/pack` reads them from CI secrets, bakes
  * them into `open-design-config.json`, and `sidecars.ts` forwards them into the
  * daemon spawn env, exactly as it already does for `POSTHOG_KEY`.

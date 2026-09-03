@@ -46,7 +46,7 @@ function parseInviteDeeplink(url: string): ParsedInviteDeeplink | null {
  * True for `opendesign://workspace/open[?...]` — the cloud device-activation
  * page fires this after a client-originated sign-in completes in the browser,
  * to hand the user back to the desktop app. It carries no payload on purpose:
- * the login itself lands through the daemon's `vela login` polling, so handling
+ * the login itself lands through the daemon's own session polling, so handling
  * this deeplink only brings the client back to the foreground.
  */
 export function isWorkspaceOpenDeeplink(url: string): boolean {

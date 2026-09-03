@@ -617,27 +617,27 @@ SqliteError: database disk image is malformed
 // for opted-out users, while every other path this module sends is scrubbed.
 describe('errno triplet privacy', () => {
   it('reduces a path-bearing POSIX syscall to the operation token', () => {
-    const err = Object.assign(new Error('spawn /Users/alice/tools/vela ENOENT'), {
+    const err = Object.assign(new Error('spawn /Users/alice/tools/agent-cli ENOENT'), {
       code: 'ENOENT',
       errno: -2,
-      syscall: 'spawn /Users/alice/tools/vela',
+      syscall: 'spawn /Users/alice/tools/agent-cli',
     });
     expect(readErrnoFields(err).syscall).toBe('spawn');
   });
 
   it('reduces a path-bearing Windows syscall to the operation token', () => {
     const err = Object.assign(new Error('spawn UNKNOWN'), {
-      syscall: 'spawn C:\\Users\\Alice Smith\\AppData\\Open Design\\vela.exe',
+      syscall: 'spawn C:\\Users\\Alice Smith\\AppData\\Open Design\\agent-cli.exe',
     });
     expect(readErrnoFields(err).syscall).toBe('spawn');
   });
 
   it('emits no username anywhere in the payload for a path-bearing spawn failure', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('ok'));
-    const err = Object.assign(new Error('spawn /Users/alice/tools/vela ENOENT'), {
+    const err = Object.assign(new Error('spawn /Users/alice/tools/agent-cli ENOENT'), {
       code: 'ENOENT',
       errno: -2,
-      syscall: 'spawn /Users/alice/tools/vela',
+      syscall: 'spawn /Users/alice/tools/agent-cli',
     });
     await reportStartupFailure(
       {
@@ -660,8 +660,8 @@ describe('errno triplet privacy', () => {
     // The pre-normalization check compared the raw `syscall` to 'spawn', so a
     // spawn error carrying a path fell through to `unknown` — the exact bucket
     // this PR exists to drain.
-    const err = Object.assign(new Error('spawn /Users/alice/tools/vela ENOENT'), {
-      syscall: 'spawn /Users/alice/tools/vela',
+    const err = Object.assign(new Error('spawn /Users/alice/tools/agent-cli ENOENT'), {
+      syscall: 'spawn /Users/alice/tools/agent-cli',
     });
     expect(classifyStartupFailure(err, false).failureKind).toBe('spawn-failed');
   });

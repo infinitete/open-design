@@ -246,7 +246,6 @@ async function main(): Promise<void> {
 
   const sidecars = await startPackagedSidecars(runtime, paths, {
     appVersion: activeConfig.appVersion,
-    amrProfile: activeConfig.amrProfile,
     daemonCliEntry: activeConfig.daemonCliEntry,
     daemonSidecarEntry: activeConfig.daemonSidecarEntry,
     electronNodeCommand: launcherRuntime.electronNodeCommand,
@@ -256,8 +255,6 @@ async function main(): Promise<void> {
     telemetryRelayUrl: activeConfig.telemetryRelayUrl,
     posthogKey: activeConfig.posthogKey,
     posthogHost: activeConfig.posthogHost,
-    velaWebUrl: activeConfig.velaWebUrl,
-    velaWebUrls: activeConfig.velaWebUrls,
     // PR #974 round-5 (lefarcen P2): the Electron entry runs desktop
     // main alongside the daemon, so the import-folder gate must be
     // pinned ON from request 0. See `apps/packaged/src/headless-runtime.ts`
