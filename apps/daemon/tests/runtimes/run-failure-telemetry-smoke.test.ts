@@ -348,12 +348,7 @@ describe('run failure telemetry smoke', () => {
     // not a hand-built input) must land it in the correct category instead of
     // the opaque execution_failed bucket. Generous inactivity timeout so the
     // 100ms exit always wins the race (this test is not about timeouts).
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-reclassify-bin-'));
-    await writeFakeClaude(
-      binDir,
-      'amr-balance',
-      '预扣费额度失败, 用户[141283]剩余额度: 💰0.040000, 需要预扣费额度: 💰0.060000 (request id: Babc)',
-    );
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-reclassify-bin-'));
     await writeFakeClaude(binDir, 'amr-ratelimit', '429 您的账户已达到速率限制，请您控制请求频率');
     await writeFakeClaude(binDir, 'amr-model', 'API Error: 400 model deepseek-v4-pro-202606 not in allowed list');
     await writeFakeClaude(
@@ -402,7 +397,6 @@ describe('run failure telemetry smoke', () => {
     });
 
     const cases = [
-      { bin: 'amr-balance', category: 'insufficient_balance', detail: 'amr_insufficient_balance' },
       { bin: 'amr-ratelimit', category: 'rate_limit', detail: 'rate_limit_429' },
       { bin: 'amr-model', category: 'model_unavailable', detail: 'model_not_found' },
       { bin: 'env-node-path', category: 'process_exit', detail: 'cli_not_installed' },

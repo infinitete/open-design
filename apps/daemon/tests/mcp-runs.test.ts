@@ -306,38 +306,6 @@ describe('public MCP discovery + generation tools', () => {
     expect(parsed.previewUrl).toBeUndefined();
   });
 
-  it('get_run returns a recharge link and same-request resume instructions', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.endsWith('/api/mcp/install-info')) {
-        return new Response(JSON.stringify({ webBaseUrl: null }), { status: 200 });
-      }
-      return new Response(JSON.stringify({
-        id: 'run-wallet',
-        status: 'failed',
-        projectId: 'project-1',
-        clientRequestId: 'brief-42-cloud',
-        agentId: 'amr',
-        errorCode: 'AMR_INSUFFICIENT_BALANCE',
-        failureAction: 'recharge',
-      }), { status: 200 });
-    });
-    vi.stubGlobal('fetch', withDirectory(fetchMock));
-
-    const result = await handleMcpToolCall(
-      'http://127.0.0.1:17456',
-      'get_run',
-      { runId: 'run-wallet' },
-    );
-    const parsed = JSON.parse(firstText(result));
-    expect(parsed).toMatchObject({
-      status: 'failed',
-      failureAction: 'recharge',
-      rechargeUrl: 'https://open-design.ai/amr/dashboard?source=open_design',
-    });
-    expect(parsed.hint).toContain('same requestId');
-    expect(parsed.hint).toContain('resume:true');
-  });
-
   // When a run is mid-flight, the outer agent has no in-band signal
   // that OD is making progress — which led real Codex clients to cancel
   // after a few polls and substitute their own output. Surfacing

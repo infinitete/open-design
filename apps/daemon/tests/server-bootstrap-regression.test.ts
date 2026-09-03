@@ -48,15 +48,6 @@ describe('server route inventory', () => {
       'POST /api/automation-proposals/:id/apply',
       'POST /api/automation-proposals/:id/reject',
     ];
-    const velaRouteKeys = [
-      'GET /api/amr/models',
-      'GET /api/integrations/vela/status',
-      'ALL /api/integrations/vela/api-proxy/*splat',
-      'POST /api/integrations/vela/login',
-      'POST /api/integrations/vela/login/cancel',
-      'POST /api/integrations/vela/analytics-entry',
-      'POST /api/integrations/vela/logout',
-    ];
     const genuiRouteKeys = [
       'GET /api/runs/:runId/genui',
       'GET /api/projects/:projectId/genui',
@@ -248,7 +239,6 @@ describe('server route inventory', () => {
     ]));
 
     expect(routeKeys.filter((key) => automationRouteKeys.includes(key))).toEqual(automationRouteKeys);
-    expect(routeKeys.filter((key) => velaRouteKeys.includes(key))).toEqual(velaRouteKeys);
     expect(routeKeys.filter((key) => genuiRouteKeys.includes(key))).toEqual(genuiRouteKeys);
     expect(routeKeys.filter((key) => runRouteKeys.includes(key))).toEqual(runRouteKeys);
     expect(routeKeys.filter((key) => pluginEventRouteKeys.includes(key))).toEqual(pluginEventRouteKeys);
@@ -316,7 +306,6 @@ describe('bootstrap route regressions', () => {
     const [
       automationList,
       automationMissing,
-      velaProxyUnknownPath,
       genuiRunList,
       genuiRunSurfaceMissing,
       devloopIterations,
@@ -324,7 +313,6 @@ describe('bootstrap route regressions', () => {
     ] = await Promise.all([
       fetch(`${baseUrl}/api/automation-source-packets`),
       fetch(`${baseUrl}/api/automation-source-packets/missing-packet`),
-      fetch(`${baseUrl}/api/integrations/vela/api-proxy/not-api-v1`),
       fetch(`${baseUrl}/api/runs/missing-run/genui`),
       fetch(`${baseUrl}/api/runs/missing-run/genui/missing-surface`),
       fetch(`${baseUrl}/api/runs/missing-run/devloop-iterations`),
@@ -340,9 +328,6 @@ describe('bootstrap route regressions', () => {
 
     expect(automationMissing.status).toBe(404);
     expect(await automationMissing.json()).toEqual({ error: 'automation source packet not found' });
-
-    expect(velaProxyUnknownPath.status).toBe(404);
-    expect(await velaProxyUnknownPath.json()).toEqual({ error: 'unknown_amr_api_proxy_path' });
 
     expect(genuiRunList.status).toBe(404);
     expect(await genuiRunList.json()).toEqual({ error: 'run not found' });

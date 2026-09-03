@@ -56,7 +56,6 @@ import {
   updateProject,
   upsertMessage,
 } from '../db.js';
-import { readVelaLoginStatus } from '../integrations/vela.js';
 import {
   ensureDetectedRuntimeCapabilities,
   ensureDetectedRuntimeVersions,
@@ -189,11 +188,6 @@ import {
   deriveActivationMilestones,
   runAskedUserQuestion,
 } from '../runtimes/run-artifacts.js';
-import {
-  accountScopedRunWorkspaceScopeForProject,
-  pinRunWorkspaceScopeForProject,
-  type RunWorkspaceScope,
-} from '../runtimes/project-amr-trace-env.js';
 import {
   runArtifactCountForRun,
   runDesignSystemCreatedForRun,
@@ -360,7 +354,6 @@ interface RunCreateMeta extends InternalRunCreateInput, JsonRecord {
   message?: string;
   currentPrompt?: string;
   projectMetadata?: ProjectMetadata;
-  workspaceScope?: RunWorkspaceScope | null;
   odNextTaskInputSnapshot?: OdNextTaskInputSnapshotDescriptor | null;
 }
 
@@ -705,9 +698,6 @@ export interface RegisterRunRoutesDeps {
       input: Record<string, unknown>,
     ) => (WorkspaceResourceAccessInput & { workspaceId?: string | null }) | null | undefined;
   };
-  amrWorkspaceScope?: {
-    isSignedIn: () => boolean | Promise<boolean>;
-  };
 }
 
 const AGUI_NATIVE_EVENT_KINDS: ReadonlySet<OdNativeEvent['kind']> = new Set([
@@ -772,7 +762,9 @@ function withoutSensitiveRunInput(body: JsonRecord): JsonRecord {
   delete sanitized.byokProfileId;
   delete sanitized.apiKey;
   delete sanitized.rechargeResumeCapability;
-  // Workspace scope is a server-issued authorization fact, not a request option.
+  // `workspaceScope` was a server-issued authorization fact tied to the retired
+  // cloud runtime; no caller may set it now, and a forged copy must not reach
+  // persistence.
   delete sanitized.workspaceScope;
   delete sanitized.odNextTaskInputSnapshot;
   return sanitized;
@@ -1299,102 +1291,44 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
   }
 
   /**
-   * Pin a run to its persisted project binding. The sole adoption branch is a
-   * signed-in AMR request for a truly unbound historical project: an explicitly
-   * Personal local attribution becomes the persisted creator witness. Vela
-   * remains the final membership and billing authority when the run reaches
-   * the cloud; local run creation never probes the Workspace directory.
+   * Validate that a run may start against this project's persisted binding.
+   * A shared Team project is a single-writer resource: starting an agent can
+   * write project files and conversation state, so the caller must separately
+   * prove project-owner mutation standing. Explicitly scoped requests must
+   * name the same Workspace the project is bound to. Unbound projects keep
+   * the legacy local path; local run creation never probes the Workspace
+   * directory.
    */
-  async function prepareRunWorkspaceScope(
+  async function authorizeRunWorkspaceBinding(
     req: ApiRequest,
     res: ApiResponse,
     projectId: string,
-    agentId: unknown,
     authorizedBoundMutation = false,
-  ): Promise<
-    | { ok: true; workspaceScope: RunWorkspaceScope | null }
-    | { ok: false }
-  > {
-    if (!ctx.projectStore) return { ok: true, workspaceScope: null };
+  ): Promise<boolean> {
+    if (!ctx.projectStore) return true;
     const binding = ctx.projectStore.getWorkspaceProjectByProjectId(db, projectId);
+    if (!binding) return true;
+    // A shared Team project is a single-writer resource. Starting an agent can
+    // write project files and conversation state, so the caller must separately
+    // prove project-owner mutation standing. Explicitly scoped Personal
+    // requests use the same exact creator gate before plugin/snapshot
+    // resolution; only headerless local Personal callers keep legacy access.
+    if (
+      binding.visibility === 'team'
+      && !authorizedBoundMutation
+      && ctx.authorizeProjectRequest
+      && !await ctx.authorizeProjectRequest(
+        req,
+        res,
+        projectId,
+        { mode: 'write', capability: 'writeFiles' },
+      )
+    ) {
+      return false;
+    }
+    // On the Personal lane a headerless local caller remains valid.
     const requestContext = workspaceResourceContextFromRequest(req);
-    if (binding) {
-      // A shared Team project is a single-writer resource. Billing still uses
-      // the persisted Workspace binding below, but starting an agent can write
-      // project files and conversation state, so the caller must separately
-      // prove project-owner mutation standing. Explicitly scoped Personal
-      // requests use the same exact creator gate before plugin/snapshot
-      // resolution; only headerless local Personal callers keep legacy access.
-      if (
-        binding.visibility === 'team'
-        && !authorizedBoundMutation
-        && ctx.authorizeProjectRequest
-        && !await ctx.authorizeProjectRequest(
-          req,
-          res,
-          projectId,
-          { mode: 'write', capability: 'writeFiles' },
-        )
-      ) {
-        return { ok: false };
-      }
-      // Run billing scope is the persisted project binding. On the Personal
-      // lane a headerless local caller remains valid; Vela/AMR receives the
-      // signed-in account plus this exact binding and makes the membership/
-      // balance decision.
-      const workspaceScope = pinRunWorkspaceScopeForProject(db, projectId);
-      if (!workspaceScope || workspaceScope.workspaceId !== binding.workspaceId) {
-        sendApiError(
-          res,
-          409,
-          'AMR_WORKSPACE_SCOPE_CONFLICT',
-          'the project Workspace binding changed before the run could be pinned',
-        );
-        return { ok: false };
-      }
-      if (requestContext === null) return { ok: true, workspaceScope };
-      if (requestContext === 'missing') {
-        sendApiError(
-          res,
-          400,
-          'WORKSPACE_CONTEXT_INCOMPLETE',
-          'both workspace and member identity are required',
-        );
-        return { ok: false };
-      }
-      if (requestContext.workspaceId !== binding.workspaceId) {
-        sendApiError(
-          res,
-          403,
-          'WORKSPACE_PROJECT_PERMISSION_DENIED',
-          'run workspace does not match the persisted project workspace',
-        );
-        return { ok: false };
-      }
-      return { ok: true, workspaceScope };
-    }
-
-    // This migration guard is deliberately AMR-only. Local CLIs, BYOK
-    // providers, and every other runtime retain the legacy unbound path and do
-    // not even probe AMR login or Workspace authority.
-    if (agentId !== 'amr' || !ctx.amrWorkspaceScope) {
-      return { ok: true, workspaceScope: null };
-    }
-    if (!await ctx.amrWorkspaceScope.isSignedIn()) {
-      return { ok: true, workspaceScope: null };
-    }
-
-    if (requestContext === null) {
-      // A headerless, genuinely unbound project is the local/account-scoped
-      // compatibility lane. Home may create it before Workspace discovery
-      // settles, after already running the account balance gate; requiring a
-      // later identity here would turn that accepted first prompt into a 409.
-      // Explicitly bound projects still pin their persisted Workspace above.
-      return {
-        ok: true,
-        workspaceScope: accountScopedRunWorkspaceScopeForProject(projectId),
-      };
-    }
+    if (requestContext === null) return true;
     if (requestContext === 'missing') {
       sendApiError(
         res,
@@ -1402,80 +1336,18 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         'WORKSPACE_CONTEXT_INCOMPLETE',
         'both workspace and member identity are required',
       );
-      return { ok: false };
+      return false;
     }
-
-    if (requestContext.workspaceTypeAsserted === 'team') {
+    if (requestContext.workspaceId !== binding.workspaceId) {
       sendApiError(
         res,
-        409,
-        'AMR_PERSONAL_WORKSPACE_REQUIRED',
-        'historical projects can only be adopted into a Personal Workspace',
+        403,
+        'WORKSPACE_PROJECT_PERMISSION_DENIED',
+        'run workspace does not match the persisted project workspace',
       );
-      return { ok: false };
+      return false;
     }
-    if (requestContext.workspaceTypeAsserted !== 'personal') {
-      return {
-        ok: true,
-        workspaceScope: accountScopedRunWorkspaceScopeForProject(projectId),
-      };
-    }
-    const ensureWorkspaceProject = ctx.projectStore.ensureWorkspaceProject;
-    if (!ensureWorkspaceProject) {
-      sendApiError(
-        res,
-        409,
-        'AMR_WORKSPACE_SCOPE_REQUIRED',
-        'the project must be migrated into a Personal Workspace before running AMR Cloud',
-      );
-      return { ok: false };
-    }
-
-    const project = toProjectRecord(getProject(db, projectId));
-    if (!project) {
-      sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
-      return { ok: false };
-    }
-    const { getWorkspaceProjectByProjectId } = ctx.projectStore;
-    const bindPersonal = db.transaction(() => {
-      const existing = getWorkspaceProjectByProjectId(db, projectId);
-      if (existing) return existing;
-      ensureWorkspaceProject(db, {
-        projectId,
-        workspaceId: requestContext.workspaceId,
-        visibility: 'personal',
-        resourceState: 'active',
-        createdByWorkspaceMemberId: requestContext.workspaceMemberId,
-        updatedByWorkspaceMemberId: requestContext.workspaceMemberId,
-        syncState: 'local_only',
-        resourceHubResourceId: null,
-        cloudTombstonedAt: null,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      });
-      return getWorkspaceProjectByProjectId(db, projectId);
-    });
-    const adopted = bindPersonal();
-    if (adopted?.workspaceId !== requestContext.workspaceId) {
-      sendApiError(
-        res,
-        409,
-        'AMR_WORKSPACE_SCOPE_CONFLICT',
-        'the project was bound to another Workspace before AMR could start',
-      );
-      return { ok: false };
-    }
-    const workspaceScope = pinRunWorkspaceScopeForProject(db, projectId);
-    if (!workspaceScope || workspaceScope.workspaceId !== requestContext.workspaceId) {
-      sendApiError(
-        res,
-        409,
-        'AMR_WORKSPACE_SCOPE_CONFLICT',
-        'the project Workspace binding changed before the run could be pinned',
-      );
-      return { ok: false };
-    }
-    return { ok: true, workspaceScope };
+    return true;
   }
 
   async function authorizeRunProject(
@@ -1635,18 +1507,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[runs] agent id fallback failed', err);
       }
     }
-    let preparedWorkspaceScope: RunWorkspaceScope | null = null;
-    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
-      const prepared = await prepareRunWorkspaceScope(
+    if (
+      typeof requestBody.projectId === 'string'
+      && requestBody.projectId
+      && !await authorizeRunWorkspaceBinding(
         req,
         res,
         requestBody.projectId,
-        effectiveAgentId,
         authorizedBoundMutation,
-      );
-      if (!prepared.ok) return;
-      preparedWorkspaceScope = prepared.workspaceScope;
-    }
+      )
+    ) return;
     let resolvedSnapshot: SuccessfulRunSnapshotResolution | null = null;
     let strategyRolloutDecision: OdNextRolloutDecision | null = null;
     let rolloutCapabilitySnapshot: ReturnType<
@@ -2108,9 +1978,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       mediaExecution: mediaExecution.policy,
       toolBundle: toolBundle.bundle,
       ...(effectiveAgentId ? { agentId: effectiveAgentId } : {}),
-      // Always replace any untrusted request field, including with null for an
-      // unbound project.
-      workspaceScope: preparedWorkspaceScope,
       ...(strategyRolloutDecision ? { strategyRolloutDecision } : {}),
       ...(strategyRolloutDecision?.effectiveMode === 'active' && rolloutCapabilitySnapshot
         ? { runtimeCapabilitySnapshot: rolloutCapabilitySnapshot }
@@ -2802,16 +2669,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
               },
             }
           : {}),
-        resume: {
-          requested: requestBody.resume === true,
-          canResume: (candidate) =>
-            candidate.status === 'failed'
-            && candidate.agentId === 'amr'
-            && (
-              candidate.failureAction === 'recharge'
-              || candidate.errorCode === 'AMR_INSUFFICIENT_BALANCE'
-            ),
-        },
       });
     } catch (error) {
       removeOdNextTaskInputSnapshotBestEffort(
@@ -2827,16 +2684,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         preparedRun = internalRuns.prepare({
           meta,
           ...(runUserSeed ? { beforeClaimCommit: () => seedRunUserMessage() } : {}),
-          resume: {
-            requested: requestBody.resume === true,
-            canResume: (candidate) =>
-              candidate.status === 'failed'
-              && candidate.agentId === 'amr'
-              && (
-                candidate.failureAction === 'recharge'
-                || candidate.errorCode === 'AMR_INSUFFICIENT_BALANCE'
-              ),
-          },
         });
       } else {
       if (error instanceof OdNextTaskInputSnapshotError) {
@@ -3084,26 +2931,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
   app.get('/api/runs', async (req: ApiRequest, res: ApiResponse) => {
     const { projectId, conversationId, status } = req.query;
     const runs = design.runs.list({ projectId, conversationId, status });
-    let visibleRuns = runs;
+    const visibleRuns = runs;
     if (typeof projectId === 'string' && projectId) {
       const binding =
         ctx.projectStore?.getWorkspaceProjectByProjectId(db, projectId);
       if (binding) {
         const requestContext = workspaceResourceContextFromRequest(req);
-        if (requestContext === null) {
-          // Headerless local CLI/MCP callers may list only the runs whose
-          // persisted runtime is known not to use AMR's Workspace billing
-          // plane. Filtering the whole set avoids both insertion-order bugs:
-          // an AMR first row cannot block local runs, and a non-AMR first row
-          // cannot accidentally reveal AMR or unknown-runtime runs.
-          visibleRuns = runs.filter(
-            (run) =>
-              typeof run.agentId === 'string'
-              && run.agentId.length > 0
-              && run.agentId !== 'amr',
-          );
-        } else if (
-          ctx.authorizeProjectRequest
+        if (
+          requestContext !== null
+          && ctx.authorizeProjectRequest
           && !await ctx.authorizeProjectRequest(
             req,
             res,
@@ -3551,7 +3387,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       mediaExecution: mediaExecution.policy,
       toolBundle: toolBundle.bundle,
       ...(chatProject?.metadata ? { projectMetadata: chatProject.metadata } : {}),
-      workspaceScope: null,
     };
     if (clarificationContinuation) {
       applyClarificationContinuationMeta(meta, clarificationContinuation);
@@ -3624,18 +3459,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         );
       }
     }
-    if (typeof meta.projectId === 'string' && meta.projectId) {
-      const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(
-          req,
-          res,
-          meta.projectId,
-          meta.agentId,
-          authorizedBoundMutation,
-        );
-      if (!preparedWorkspaceScope.ok) return;
-      meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
-    }
+    if (
+      typeof meta.projectId === 'string'
+      && meta.projectId
+      && !await authorizeRunWorkspaceBinding(
+        req,
+        res,
+        meta.projectId,
+        authorizedBoundMutation,
+      )
+    ) return;
     const chatPluginId = clarificationTask?.strategyId
       ?? (typeof requestBody.pluginId === 'string' ? requestBody.pluginId : null);
     if (

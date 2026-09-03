@@ -14,7 +14,6 @@ import type {
   ProjectTabsState,
 } from '@open-design/contracts';
 import { eventsEndedWithUnfinishedWork } from '@open-design/contracts';
-import { migrateAmrTerminalReportOutbox } from './storage/amr-terminal-report-outbox.js';
 import { migrateCritique } from './critique/persistence.js';
 import { migrateMediaTasks } from './media/tasks.js';
 import { migrateLibrary } from './library-store.js';
@@ -471,7 +470,6 @@ function migrate(db: SqliteDb): void {
   migrateProjectScenarioBindings(db);
   migrateStrategyTaskStore(db);
   migrateOdNextRolloutStore(db);
-  migrateAmrTerminalReportOutbox(db);
   retireVelaProjectMetadata(db);
 }
 

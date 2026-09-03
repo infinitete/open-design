@@ -473,7 +473,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         ? existing?.conversationId ?? req.params.cid
         : req.params.cid;
       // Local row + durable relay intent commit atomically. Network delivery is
-      // still asynchronous, so a Vela outage never delays this transaction.
+      // still asynchronous, so a cloud relay outage never delays this transaction.
       const comment = db.transaction(() => {
         const saved = upsertPreviewComment(db, req.params.id, targetConversationId, body, {
           pinPendingCloudConfirm: syncEnabled,

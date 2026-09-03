@@ -406,7 +406,7 @@ export async function listDesignSystems(
  * find what was just written (a real regression this fix must not introduce).
  *
  * `scope` present but empty (`null`/`''`) is a DIFFERENT case: a caller that
- * DID ask to be scoped — `GET /api/design-systems` with no verified vela
+ * DID ask to be scoped — `GET /api/design-systems` with no verified workspace
  * session — but has no workspace identity to offer. Spec 04 §10: that must
  * hide a CLAIMED system, not show it, or "no scope" quietly becomes "trust
  * everything". With a positive scope, no `owner` means QUARANTINED: absence of

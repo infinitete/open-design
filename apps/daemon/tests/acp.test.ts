@@ -211,58 +211,6 @@ test('attachAcpSession keeps legacy session/set_model when no model config optio
   assert.equal(requests.some((entry) => entry.method === 'session/set_config_option'), false);
 });
 
-test('attachAcpSession stops an AMR turn when session/set_model rejects the selected model', () => {
-  const child = new FakeAcpChild();
-  const writes: string[] = [];
-  const events: Array<{ event: string; payload: unknown }> = [];
-  child.stdin.on('data', (chunk) => writes.push(String(chunk)));
-
-  const session = attachAcpSession({
-    child: child as never,
-    prompt: 'hello',
-    cwd: '/tmp/od-project',
-    model: 'claude-opus-5',
-    mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
-    send: (event, payload) => events.push({ event, payload }),
-  });
-
-  try {
-    writeAcpResult(child, 1, {});
-    writeAcpResult(child, 2, {
-      sessionId: 'session-1',
-      models: { currentModelId: null },
-    });
-    writeAcpError(child, 3, {
-      code: -32602,
-      message: 'session/set_model modelId is not available',
-    });
-
-    const requests = parseRpcWrites(writes);
-    assert.equal(requests.some((entry) => entry.method === 'session/set_model'), true);
-    assert.equal(requests.some((entry) => entry.method === 'session/prompt'), false);
-    assert.deepEqual(agentModelStatuses(events), []);
-    assert.equal(session.hasFatalError(), true);
-    assert.equal(session.completedSuccessfully(), false);
-    assert.deepEqual(events.filter((entry) => entry.event === 'error'), [
-      {
-        event: 'error',
-        payload: {
-          message: 'json-rpc id 3: session/set_model modelId is not available',
-          error: {
-            code: 'AMR_MODEL_UNAVAILABLE',
-            message: 'json-rpc id 3: session/set_model modelId is not available',
-            retryable: false,
-            details: { kind: 'amr_model', action: 'choose_model' },
-          },
-        },
-      },
-    ]);
-  } finally {
-    session.abort();
-  }
-});
-
 test('attachAcpSession preserves default-model recovery for other ACP agents', () => {
   const child = new FakeAcpChild();
   const writes: string[] = [];
@@ -782,180 +730,6 @@ test('attachAcpSession preserves AMR assistant and model-step lifecycle diagnost
     assistantMessageIndex: 1,
     startedAtMs: 1_700_000_000_000,
   });
-});
-
-test('attachAcpSession consumes negotiated Vela child evidence only on the AMR path', () => {
-  const child = new FakeAcpChild();
-  const events: Array<{ event: string; payload: unknown }> = [];
-
-  attachAcpSession({
-    child: child as never,
-    prompt: 'delegate research',
-    cwd: '/tmp/od-project',
-    model: null,
-    mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
-    send: (event, payload) => events.push({ event, payload }),
-  });
-
-  writeAcpResult(child, 1, {
-    protocolVersion: 1,
-    agentInfo: { name: 'Vela OpenCode', version: '0.0.0' },
-    agentCapabilities: {
-      extensions: {
-        'vela.opencode.child_agent_lifecycle': { schemaVersion: 1 },
-      },
-    },
-  });
-  writeAcpResult(child, 2, { sessionId: 'session-1' });
-  writeVelaAcpUpdate(child, {
-    sessionUpdate: 'child_agent_lifecycle',
-    extension: 'vela.opencode.child_agent_lifecycle',
-    schemaVersion: 1,
-    evidenceId: 'evidence-start',
-    phase: 'start',
-    status: 'running',
-    childSessionId: 'child-1',
-    parentSessionId: 'root-1',
-    toolCallId: 'task-1',
-    startedAtMs: 100,
-    timingEvidence: 'source_timestamp',
-    lifecycleCompleteness: 'complete',
-    sourceEvidence: ['root_task_metadata', 'session.created'],
-    prompt: {
-      availability: 'hash_only',
-      sha256: 'a'.repeat(64),
-      bytes: 4,
-    },
-    usage: {
-      availability: 'unavailable',
-      completeness: 'unavailable',
-    },
-  });
-  writeVelaAcpUpdate(child, {
-    sessionUpdate: 'child_agent_lifecycle',
-    extension: 'vela.opencode.child_agent_lifecycle',
-    schemaVersion: 1,
-    evidenceId: 'evidence-1',
-    phase: 'end',
-    status: 'completed',
-    childSessionId: 'child-1',
-    parentSessionId: 'root-1',
-    toolCallId: 'task-1',
-    startedAtMs: 100,
-    endedAtMs: 200,
-    timingEvidence: 'source_timestamp',
-    lifecycleCompleteness: 'complete',
-    sourceEvidence: [
-      'root_task_metadata',
-      'session.created',
-      'child_session_status',
-      'unknown-secret-source',
-    ],
-    prompt: {
-      availability: 'hash_only',
-      sha256: 'a'.repeat(64),
-      bytes: 4,
-      text: 'Summarize the public fixture.',
-    },
-    usage: {
-      availability: 'available',
-      completeness: 'complete',
-      source: 'child_step_finish',
-      inputTokens: 2,
-      outputTokens: 1,
-      totalTokens: 3,
-      authorization: 'Bearer do-not-forward',
-    },
-    privateLog: '/Users/alice/private.log',
-  });
-  writeAcpUpdate(child, {
-    sessionUpdate: 'agent_message_chunk',
-    content: { text: 'Research complete.' },
-  });
-  writeAcpResult(child, 3, { usage: { inputTokens: 5, outputTokens: 2 } });
-
-  const diagnostics = events
-    .filter((entry) => entry.event === 'agent')
-    .map((entry) => entry.payload as Record<string, unknown>)
-    .filter((payload) => payload.type === 'diagnostic');
-  expect(diagnostics.find((payload) => payload.name === 'vela_opencode_child_evidence_capability'))
-    .toMatchObject({
-      supported: true,
-      schemaVersion: 1,
-      candidatePublished: false,
-      candidateCommit: 'c833b74e82e31c89414b7eaf01edabab1e2d0b06',
-    });
-  expect(diagnostics.find((payload) => (
-    payload.name === 'vela_opencode_child_agent_lifecycle' && payload.state === 'completed'
-  )))
-    .toMatchObject({
-      state: 'completed',
-      rootSessionId: 'root-1',
-      childSessionId: 'child-1',
-      toolCallId: 'task-1',
-      evidenceLevel: 'L2',
-      l3Eligible: false,
-      usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
-    });
-  const serialized = JSON.stringify(events);
-  expect(serialized).toContain('Summarize the public fixture.');
-  expect(serialized).not.toContain('Bearer do-not-forward');
-  expect(serialized).not.toContain('/Users/alice/private.log');
-  expect(events).toContainEqual(expect.objectContaining({
-    event: 'agent',
-    payload: expect.objectContaining({
-      type: 'usage',
-      usage: { input_tokens: 5, output_tokens: 2 },
-    }),
-  }));
-});
-
-test('attachAcpSession keeps old AMR child evidence unknown without changing root usage', () => {
-  const child = new FakeAcpChild();
-  const events: Array<{ event: string; payload: unknown }> = [];
-
-  attachAcpSession({
-    child: child as never,
-    prompt: 'ordinary turn',
-    cwd: '/tmp/od-project',
-    model: null,
-    mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
-    send: (event, payload) => events.push({ event, payload }),
-  });
-  writeAcpResult(child, 1, { protocolVersion: 1 });
-  writeAcpResult(child, 2, { sessionId: 'session-1' });
-  writeVelaAcpUpdate(child, {
-    sessionUpdate: 'child_agent_lifecycle',
-    extension: 'vela.opencode.child_agent_lifecycle',
-    schemaVersion: 1,
-    malicious: 'must-not-fall-through',
-  });
-  writeAcpUpdate(child, {
-    sessionUpdate: 'agent_message_chunk',
-    content: { text: 'Ordinary answer.' },
-  });
-  writeAcpResult(child, 3, { usage: { inputTokens: 8, outputTokens: 3 } });
-
-  const diagnostics = events
-    .filter((entry) => entry.event === 'agent')
-    .map((entry) => entry.payload as Record<string, unknown>)
-    .filter((payload) => payload.type === 'diagnostic');
-  expect(diagnostics).toContainEqual(expect.objectContaining({
-    name: 'vela_opencode_child_evidence_rejected',
-    reason: 'capability_not_negotiated',
-  }));
-  expect(diagnostics.some((payload) => payload.name === 'vela_opencode_child_agent_lifecycle'))
-    .toBe(false);
-  expect(JSON.stringify(events)).not.toContain('must-not-fall-through');
-  expect(events).toContainEqual(expect.objectContaining({
-    event: 'agent',
-    payload: expect.objectContaining({
-      type: 'usage',
-      usage: { input_tokens: 8, output_tokens: 3 },
-    }),
-  }));
 });
 
 test('attachAcpSession does not enable the Vela extension for generic ACP agents', () => {
@@ -3025,7 +2799,6 @@ test('attachAcpSession does not fail a tool-only AMR turn that emits no assistan
     cwd: '/tmp/od-project',
     model: null,
     mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
     send: (event, payload) => events.push({ event, payload }),
   });
 
@@ -3054,7 +2827,6 @@ test('successful session/prompt with open concrete tool flushes clean (not no-ou
     cwd: '/tmp/od-project',
     model: null,
     mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
     send: (event, payload) => events.push({ event, payload }),
   });
 
@@ -3097,35 +2869,6 @@ test('successful session/prompt with open concrete tool flushes clean (not no-ou
   );
   assert.ok(toolResult, 'open concrete tool must be clean-flushed as tool_result');
   assert.equal((toolResult.payload as { isError?: boolean }).isError, false);
-});
-
-test('attachAcpSession still fails an AMR turn that produces no text and no tool calls', () => {
-  const child = new FakeAcpChild();
-  const events: Array<{ event: string; payload: unknown }> = [];
-  const onPromptComplete = vi.fn();
-
-  attachAcpSession({
-    child: child as never,
-    prompt: 'do something',
-    cwd: '/tmp/od-project',
-    model: null,
-    mcpServers: [],
-    modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE',
-    onPromptComplete,
-    send: (event, payload) => events.push({ event, payload }),
-  });
-
-  writeAcpResult(child, 1, {});
-  writeAcpResult(child, 2, { sessionId: 'session-1' });
-  writeAcpResult(child, 3, {}); // empty turn: no updates at all
-
-  const errorEvents = events.filter((entry) => entry.event === 'error');
-  assert.equal(errorEvents.length, 1, 'a genuinely empty turn must still fail');
-  assert.match(
-    (errorEvents[0]?.payload as { message?: string }).message ?? '',
-    /without producing any assistant text/,
-  );
-  assert.equal(onPromptComplete.mock.calls.length, 0);
 });
 
 test('attachAcpSession reports clean empty completion exactly once without usage', () => {

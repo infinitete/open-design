@@ -1,49 +1,11 @@
 /** @module agent-protocol/acp/updates
  * ACP session-update classification helpers: status normalisation,
- * artifact-write detection, AMR retry/stderr failure promotion, and raw
- * event-shape diagnostics. Depends on acp/types, acp/json, and the vela-errors
- * integration; consumed exclusively by acp/session.ts.
+ * artifact-write detection, and raw event-shape diagnostics. Depends on
+ * acp/types and acp/json; consumed exclusively by acp/session.ts.
  */
 import { createHash } from 'node:crypto';
 import type { JsonObject } from './types.js';
-import { asObject, acpValueKind, objectKeys, extractAcpUpdateText } from './json.js';
-// vela-errors removed
-function classifyAmrAccountFailure(_text: string): any { return null; }
-function amrAccountFailureDetails(_code: string): any { return null; }
-
-/**
- * Produces a shallow diagnostic snapshot of an ACP update object for the
- * `acp_raw_event_shape` diagnostic event. Captures key presence, value kinds,
- * and content structure without serialising the full update, so the payload
- * stays bounded in size. Emitted only for AMR sessions where unknown shapes
- * may require debugging.
- *
- * @param update - A parsed ACP `session/update` params object.
- * @returns A flat diagnostic object suitable for inclusion in an agent event payload.
- */
-export function acpRawEventShape(update: JsonObject) {
-  const content = update.content;
-  const rawInput = update.rawInput;
-  const locations = update.locations;
-  return {
-    sessionUpdate: typeof update.sessionUpdate === 'string' ? update.sessionUpdate : null,
-    keys: objectKeys(update),
-    contentKind: acpValueKind(content),
-    contentKeys: objectKeys(content),
-    hasText: Boolean(extractAcpUpdateText(update)),
-    hasTopLevelText: typeof update.text === 'string' && update.text.length > 0,
-    hasTopLevelDelta: typeof update.delta === 'string' && update.delta.length > 0,
-    hasTopLevelMessage: update.message !== undefined,
-    hasToolCallId: acpToolCallId(update) !== null,
-    hasRawInput: rawInput !== undefined,
-    rawInputKind: acpValueKind(rawInput),
-    rawInputKeys: objectKeys(rawInput),
-    locationsKind: acpValueKind(locations),
-    locationsCount: Array.isArray(locations) ? locations.length : undefined,
-    status: typeof update.status === 'string' ? update.status : undefined,
-    titlePresent: typeof update.title === 'string' && update.title.length > 0,
-  };
-}
+import { asObject, extractAcpUpdateText } from './json.js';
 /**
  * Normalises the `status` field of an ACP update to a lowercase,
  * whitespace-and-punctuation-stripped token. Returns `''` when the field
@@ -80,108 +42,6 @@ export function isAcpTerminalFailureStatus(update: JsonObject): boolean {
  */
 export function isAcpTerminalToolStatus(update: JsonObject): boolean {
   return isAcpCompletedStatus(update) || isAcpTerminalFailureStatus(update);
-}
-/**
- * Returns `true` when the update's status is `'retry'`. Signals that the AMR
- * agent wants to restart the request; the session promoter maps this to a
- * structured error payload via `promotedAmrRetryStatusPayload`.
- */
-export function isAcpRetryStatus(update: JsonObject): boolean {
-  return acpUpdateStatus(update) === 'retry';
-}
-/**
- * Recursively collects all text-bearing leaf values from an ACP update
- * (strings, numbers, booleans) up to 4 levels deep. Used to produce a flat
- * text corpus for `classifyAmrAccountFailure` pattern matching without
- * requiring knowledge of a specific agent's response shape.
- *
- * @param value - Any value from a parsed ACP session update.
- * @param depth - Current recursion depth (max 4); callers omit this.
- * @returns A flat array of trimmed non-empty string representations.
- */
-export function acpUpdateDiagnosticText(value: unknown, depth = 0): string[] {
-  if (depth > 4) return [];
-  if (typeof value === 'string') return value.trim() ? [value] : [];
-  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => acpUpdateDiagnosticText(item, depth + 1));
-  }
-  const obj = asObject(value);
-  if (!obj) return [];
-  const parts: string[] = [];
-  for (const key of [
-    'type',
-    'status',
-    'code',
-    'message',
-    'detail',
-    'details',
-    'error',
-    'recovery',
-    'pauseReason',
-    'content',
-    'text',
-    'rawInput',
-  ]) {
-    if (key in obj) {
-      parts.push(...acpUpdateDiagnosticText(obj[key], depth + 1));
-    }
-  }
-  return parts;
-}
-/**
- * Promotes an AMR `retry` status update into a structured OpenDesign error
- * payload when the update's diagnostic text matches a known AMR account failure
- * pattern (e.g. quota exceeded, auth failure). Returns `null` when the update
- * is not a retry or does not match a known pattern.
- *
- * @param update - A parsed ACP `session/update` params object.
- * @returns A structured error payload with `message` and `error`, or `null`.
- */
-export function promotedAmrRetryStatusPayload(update: JsonObject) {
-  if (!isAcpRetryStatus(update)) return null;
-  const diagnosticText = acpUpdateDiagnosticText(update).join('\n');
-  const failure = classifyAmrAccountFailure(diagnosticText);
-  if (!failure) return null;
-  return {
-    message: failure.message,
-    error: {
-      code: failure.code,
-      message: failure.message,
-      retryable: false,
-      details: {
-        ...amrAccountFailureDetails(failure),
-        promoted_by: 'open_design_acp_retry_status',
-      },
-    },
-  };
-}
-/**
- * Scans a rolling tail of AMR stderr output for known retry/session-failure
- * signals and promotes a match to a structured OpenDesign error payload.
- * Returns `null` when the chunk does not contain the expected markers or does
- * not match a known failure pattern.
- *
- * @param chunk - A tail slice of accumulated stderr bytes from the AMR subprocess.
- * @returns A structured error payload, or `null` when not applicable.
- */
-export function promotedAmrStderrPayload(chunk: string) {
-  if (!/opencode_event_stream_failure|session\.status/i.test(chunk)) return null;
-  if (!/\bretry\b/i.test(chunk)) return null;
-  const failure = classifyAmrAccountFailure(chunk);
-  if (!failure) return null;
-  return {
-    message: failure.message,
-    error: {
-      code: failure.code,
-      message: failure.message,
-      retryable: false,
-      details: {
-        ...amrAccountFailureDetails(failure),
-        promoted_by: 'open_design_acp_stderr_retry_status',
-      },
-    },
-  };
 }
 /**
  * Extracts and trims the `toolCallId` string from an ACP update, or returns
@@ -258,7 +118,7 @@ export function isAcpArtifactWriteLabel(update: JsonObject): boolean {
 
 /**
  * Returns `true` when the tool is pure think/reason activity and must not
- * count as a concrete tool event for AMR no-output detection (and is omitted
+ * count as a concrete tool event (and is omitted
  * from the tool_use/tool_result transcript).
  */
 export function isAcpThinkOnlyTool(update: JsonObject): boolean {

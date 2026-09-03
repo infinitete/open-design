@@ -60,26 +60,4 @@ describe('runtime version provenance', () => {
     await expect(ensureDetectedRuntimeVersions('claude', { CLAUDE_BIN: spawned }))
       .resolves.toEqual({ invocable: true });
   });
-
-  it.runIf(process.platform !== 'win32')(
-    'records the Vela CLI and its OpenCode companion as separate versions',
-    async () => {
-      const vela = executable('vela', 'vela 0.0.26');
-      const opencode = executable('opencode', 'opencode 1.2.3');
-
-      await detectAgents({
-        amr: {
-          VELA_BIN: vela,
-          VELA_OPENCODE_BIN: opencode,
-        },
-      });
-
-      expect(getDetectedRuntimeVersions('amr')).toEqual({
-        invocable: true,
-        agentCliVersion: 'vela 0.0.26',
-        runtimeCompanionName: 'opencode',
-        runtimeCompanionVersion: 'opencode 1.2.3',
-      });
-    },
-  );
 });

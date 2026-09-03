@@ -3,7 +3,6 @@ import { execAgentFile } from './invocation.js';
 import { AGENT_DEFS } from './registry.js';
 import {
   DEFAULT_MODEL_OPTION,
-  getRememberedLiveModels,
   mergeFallbackModelMetadata,
   rememberLiveModels,
 } from './models.js';
@@ -15,9 +14,7 @@ import { installMetaForAgent } from './metadata.js';
 import {
   forgetUnusableExecutables,
   rememberUnusableExecutable,
-  resolveAmrOpenCodeExecutable,
 } from './executables.js';
-import { resolveAmrProfile } from '../integrations/vela.js';
 import {
   buildAuthDiagnostic,
   buildCompatibilityDiagnostic,
@@ -177,21 +174,6 @@ function configuredEnvForAgent(
 ): Record<string, string> {
   const configAgentId = agentId === 'byok-opencode' ? 'opencode' : agentId;
   return configuredEnvByAgent?.[configAgentId] ?? {};
-}
-
-function amrModelScopeFromEnv(env: NodeJS.ProcessEnv): string {
-  return resolveAmrProfile(env);
-}
-
-function withRememberedAmrModels(
-  def: RuntimeAgentDef,
-  env: NodeJS.ProcessEnv,
-  modelResult: FetchedRuntimeModels,
-): FetchedRuntimeModels {
-  if (def.id !== 'amr' || modelResult.models.length > 0) return modelResult;
-  const rememberedModels = getRememberedLiveModels(def.id, amrModelScopeFromEnv(env));
-  if (rememberedModels.length === 0) return modelResult;
-  return { models: rememberedModels, source: 'live' };
 }
 
 async function fetchModels(
@@ -367,24 +349,6 @@ function versionIsSupported(policy: RuntimeVersionPolicy, version: string): bool
   return policy.supportedVersionPattern?.test(version) ?? false;
 }
 
-async function probeAmrOpenCodeVersion(
-  def: RuntimeAgentDef,
-  env: NodeJS.ProcessEnv,
-): Promise<string | null> {
-  if (def.id !== 'amr') return null;
-  const companion = resolveAmrOpenCodeExecutable(env);
-  if (!companion) return null;
-  try {
-    const { stdout } = await execAgentFile(companion, ['--version'], {
-      env,
-      timeout: def.versionProbeTimeoutMs ?? 3000,
-    });
-    return String(stdout).trim().split('\n')[0] || null;
-  } catch {
-    return null;
-  }
-}
-
 type RuntimeVersionProbeContext = {
   launchPath: string;
   probeEnv: NodeJS.ProcessEnv;
@@ -410,9 +374,6 @@ function runtimeVersionProbeContext(
     ),
     launch,
   );
-  const companionPath = def.id === 'amr'
-    ? resolveAmrOpenCodeExecutable(probeEnv)
-    : null;
   return {
     launchPath: launch.launchPath,
     probeEnv,
@@ -420,7 +381,6 @@ function runtimeVersionProbeContext(
       agentId: def.id,
       selectedPath: launch.selectedPath,
       launchPath: launch.launchPath,
-      companionPath,
     })).digest('hex'),
   };
 }
@@ -429,20 +389,11 @@ async function probeRuntimeVersionsOnly(
   def: RuntimeAgentDef,
   context: RuntimeVersionProbeContext,
 ): Promise<DetectedRuntimeVersions | null> {
-  const [outcome, amrOpenCodeVersion] = await Promise.all([
-    probeVersionAtPath(def, context.launchPath, context.probeEnv),
-    probeAmrOpenCodeVersion(def, context.probeEnv),
-  ]);
+  const outcome = await probeVersionAtPath(def, context.launchPath, context.probeEnv);
   if (outcome.kind !== 'spawned') return null;
   const versions: DetectedRuntimeVersions = {
     invocable: true,
     ...(outcome.version ? { agentCliVersion: outcome.version } : {}),
-    ...(amrOpenCodeVersion
-      ? {
-          runtimeCompanionName: 'opencode',
-          runtimeCompanionVersion: amrOpenCodeVersion,
-        }
-      : {}),
   };
   detectedRuntimeVersions.set(def.id, versions);
   detectedRuntimeVersionScopes.set(def.id, context.scope);
@@ -659,13 +610,11 @@ async function probe(
   // so a single agent's detection wall is max(help, models, auth) ≈ 5s rather
   // than the sum ≈ 15s. `--help` capabilities are cached on `agentCapabilities`
   // for buildArgs to consult.
-  const [caps, modelResult, auth, amrOpenCodeVersion] = await Promise.all([
+  const [caps, modelResult, auth] = await Promise.all([
     probeCapabilities(def, launch.launchPath, probeEnv),
     fetchModels(def, launch.launchPath, probeEnv),
     probeAgentAuthStatus(def, launch.launchPath, probeEnv),
-    probeAmrOpenCodeVersion(def, probeEnv),
   ]);
-  const surfacedModelResult = withRememberedAmrModels(def, probeEnv, modelResult);
   if (caps) {
     agentCapabilities.set(def.id, caps);
   }
@@ -673,12 +622,6 @@ async function probe(
   const runtimeVersions: DetectedRuntimeVersions = {
     invocable: true,
     ...(outcome.version ? { agentCliVersion: outcome.version } : {}),
-    ...(amrOpenCodeVersion
-      ? {
-          runtimeCompanionName: 'opencode',
-          runtimeCompanionVersion: amrOpenCodeVersion,
-        }
-      : {}),
     ...(runtimeCompanionVersion
       ? {
           runtimeCompanionName: def.id === 'deepseek-harness'
@@ -697,8 +640,8 @@ async function probe(
   }
   return {
     ...stripFns(def),
-    models: surfacedModelResult.models,
-    modelsSource: surfacedModelResult.source,
+    models: modelResult.models,
+    modelsSource: modelResult.source,
     available: true,
     path: launch.selectedPath,
     version: outcome.version,
@@ -770,20 +713,8 @@ export async function detectAgent(
   }
 }
 
-function rememberDetectedLiveModels(
-  def: RuntimeAgentDef,
-  configuredEnv: Record<string, string>,
-  agent: DetectedAgent,
-): void {
-  if (def.id === 'amr' && agent.models.length === 0) return;
-  const scope = def.id === 'amr'
-    ? amrModelScopeFromEnv({
-        ...process.env,
-        ...(def.env || {}),
-        ...configuredEnv,
-      })
-    : null;
-  rememberLiveModels(agent.id, agent.models, scope);
+function rememberDetectedLiveModels(agent: DetectedAgent): void {
+  rememberLiveModels(agent.id, agent.models);
 }
 
 export async function detectAgents(
@@ -795,10 +726,8 @@ export async function detectAgents(
   // Refresh the validation cache from whatever we just surfaced to the UI
   // so /api/chat can accept any model the user could have just picked,
   // including ones that only showed up after a CLI re-auth.
-  for (const [index, agent] of results.entries()) {
-    const def = AGENT_DEFS[index];
-    if (!def) continue;
-    rememberDetectedLiveModels(def, configuredEnvForAgent(configuredEnvByAgent, def.id), agent);
+  for (const agent of results) {
+    rememberDetectedLiveModels(agent);
   }
   return results;
 }
@@ -814,7 +743,7 @@ export async function* detectAgentsStream(
 ): AsyncGenerator<DetectedAgent> {
   const tagged = AGENT_DEFS.map((def, index) =>
     detectAgent(def, configuredEnvForAgent(configuredEnvByAgent, def.id)).then((agent) => {
-      rememberDetectedLiveModels(def, configuredEnvForAgent(configuredEnvByAgent, def.id), agent);
+      rememberDetectedLiveModels(agent);
       return { index, agent };
     }),
   );

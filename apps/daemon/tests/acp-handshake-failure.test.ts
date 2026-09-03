@@ -270,9 +270,8 @@ describe('handshake failures that name their own remedy', () => {
   const AUTH_REQUIRED = 'json-rpc id 2: Authentication required';
   const UNAUTHORIZED = 'json-rpc id 1: HTTP 401 Unauthorized';
   const RATE_LIMITED = 'json-rpc id 2: rate limit exceeded';
-  const NO_BALANCE = 'json-rpc id 2: insufficient balance';
   const UPSTREAM_DOWN = 'json-rpc id 2: HTTP 503 Service Unavailable';
-  const REMEDIED = [AUTH_REQUIRED, UNAUTHORIZED, RATE_LIMITED, NO_BALANCE, UPSTREAM_DOWN];
+  const REMEDIED = [AUTH_REQUIRED, UNAUTHORIZED, RATE_LIMITED, UPSTREAM_DOWN];
 
   it.each(REMEDIED)('is still recognised as handshake-stage: %s', (raw) => {
     // The id question and the cause question are separate. These all happened
@@ -325,9 +324,6 @@ describe('handshake failures that name their own remedy', () => {
     });
     expect(classify('AGENT_EXECUTION_FAILED', RATE_LIMITED)).toMatchObject({
       failure_category: 'rate_limit',
-    });
-    expect(classify('AGENT_EXECUTION_FAILED', NO_BALANCE)).toMatchObject({
-      failure_category: 'insufficient_balance',
     });
     expect(classify('AGENT_EXECUTION_FAILED', UPSTREAM_DOWN)).toMatchObject({
       failure_category: 'upstream_unavailable',

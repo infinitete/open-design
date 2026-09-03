@@ -305,7 +305,7 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
   isProjectUnmaterializedPlaceholder?: (projectId: string) => boolean;
   /** Membership directory used by Workspace account and cloud boundaries. */
   fetchWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
-  /** Current settings-backed AMR environment for synthesized project contexts. */
+  /** Current settings-backed cloud CLI environment for synthesized project contexts. */
   configuredEnv?: () => Record<string, string>;
   /** @deprecated Creation is local; retained for compatible route composition. */
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
@@ -2570,8 +2570,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
    * A catalog entry may be visible before this daemon has either the project
    * row or its files. Exact-owner mutations that require local state first
    * pull that content: unshare must preserve a Personal copy, while rename
-   * must update the real project row before refreshing Vela metadata. The pull
-   * path performs its own fresh exact-scope authority/catalog checks and
+   * must update the real project row before refreshing cloud metadata. The
+   * pull path performs its own fresh exact-scope authority/catalog checks and
    * commits content + rows atomically.
    */
   async function materializeCatalogOnlyOwnerProject(
@@ -3301,9 +3301,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         (view === 'team' || view === 'recent' || visibility === 'team' || (view === 'all' && visibility === 'all'));
       // Only a team workspace has a remote team-project catalog. A personal
       // workspace must never merge the caller's team projects into its list —
-      // the Vela CLI team-projects lister is scoped to the active team, not the
-      // queried workspace, so without this guard team projects leak into (and
-      // duplicate within) a personal workspace's project list.
+      // the cloud CLI team-projects lister is scoped to the active team, not
+      // the queried workspace, so without this guard team projects leak into
+      // (and duplicate within) a personal workspace's project list.
       const needsRemoteTeamProjects = queryCanIncludeTeam && ctx.workspaceType === 'team';
       const remoteMerge = needsRemoteTeamProjects
         ? await listRemoteTeamProjectSummaries(rows, ctx)
@@ -3459,12 +3459,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   /**
    * True when a team-share request was refused because the hub catalog
    * already registers this project under a DIFFERENT member's ownership
-   * (vela's `team_project_owner_conflict`, re-thrown through the CLI
-   * transport). The literal is the hub API's stable error token, so matching
-   * it keeps this mapping independent of how the CLI frames its stderr text.
-   * The conflict is permanent until the registered owner unshares the
-   * project, so it must not collapse into the generic BAD_REQUEST bucket the
-   * web renders as "try again later".
+   * (the hub's `team_project_owner_conflict` token, re-thrown through the
+   * CLI transport). The literal is the hub API's stable error token, so
+   * matching it keeps this mapping independent of how the CLI frames its
+   * stderr text. The conflict is permanent until the registered owner
+   * unshares the project, so it must not collapse into the generic
+   * BAD_REQUEST bucket the web renders as "try again later".
    */
   function isTeamProjectOwnerConflictError(error: unknown): boolean {
     return /team_project_owner_conflict/i.test(String(error));
@@ -4871,10 +4871,11 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         && typeof patch.name === 'string'
         && patch.name.trim().length > 0
       ) {
-        // A Team owner can open this project from Vela's catalog on a second
-        // device before the local daemon has pulled either its SQLite row or
-        // its files. The catalog summary correctly advertises `canRename`, so
-        // materialize that exact Team project before applying the rename.
+        // A Team owner can open this project from the cloud catalog on a
+        // second device before the local daemon has pulled either its SQLite
+        // row or its files. The catalog summary correctly advertises
+        // `canRename`, so materialize that exact Team project before applying
+        // the rename.
         //
         // Never infer scope from active/default Workspace state: only a
         // complete request assertion that passes the fresh authority verifier

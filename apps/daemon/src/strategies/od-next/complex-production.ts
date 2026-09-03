@@ -163,7 +163,7 @@ export function evaluateOdNextComplexChildEvidence(input: {
   // Ownership rides on Claude's `--agents` / structured `subagent_type`
   // transport, so `attributes.buildPackageId` is a best-effort attribute that
   // most runtimes simply cannot produce. Demanding it from all of them refused
-  // every complex run on Codex, native OpenCode and AMR at the completion turn,
+  // every complex run on Codex and native OpenCode at the completion turn,
   // after a full production Run had already been spent — and the blocked
   // verdict then latched OD Next off for the whole daemon.
   //

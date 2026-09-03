@@ -14,7 +14,6 @@ const RUNTIME_PROJECT_ROOT = path.resolve(
 );
 
 const AGENT_BIN_ENV_KEYS = new Map<string, string>([
-  ['amr', 'VELA_BIN'],
   ['aider', 'AIDER_BIN'],
   ['claude', 'CLAUDE_BIN'],
   ['codebuddy', 'CODEBUDDY_BIN'],
@@ -201,28 +200,9 @@ function configuredExecutableOverride(
   return executableFilePath(configuredEnv?.[envKey] ?? process.env[envKey]);
 }
 
-export function resolveAmrOpenCodeExecutable(
+export function resolveBundledOpenCodeExecutable(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const configured = executableFilePath(env.VELA_OPENCODE_BIN);
-  if (configured) return configured;
-  // A selected Vela release is a two-part runtime: the CLI binary and the
-  // exact OpenCode companion shipped beside it. Prefer that companion before
-  // looking at the host PATH. Otherwise a Settings/VELA_BIN override can run
-  // against an unrelated wrapper or incompatible global OpenCode even though
-  // the selected Vela package already contains its known-good runtime.
-  const selectedVela = executableFilePath(env.VELA_BIN);
-  if (selectedVela) {
-    const selectedCompanion = executableFilePath(
-      path.join(
-        path.dirname(selectedVela),
-        'libexec',
-        'opencode',
-        process.platform === 'win32' ? 'opencode.exe' : 'opencode',
-      ),
-    );
-    if (selectedCompanion) return selectedCompanion;
-  }
   // In packaged builds prefer the bundled companion under
   // `OD_RESOURCE_ROOT/bin/libexec/opencode/opencode` so a stale global
   // `opencode` on the user's PATH can't override the known-good build that
@@ -231,7 +211,7 @@ export function resolveAmrOpenCodeExecutable(
     env.OD_RESOURCE_ROOT ?? process.env.OD_RESOURCE_ROOT
   )?.trim();
   if (resourceRoot) {
-    const bundledDir = packagedVelaOpenCodeCompanionTree(resourceRoot);
+    const bundledDir = packagedOpenCodeCompanionTree(resourceRoot);
     if (bundledDir) {
       const bundled = executableFilePath(
         path.join(
@@ -245,13 +225,14 @@ export function resolveAmrOpenCodeExecutable(
   return resolveOnPath('opencode-cli') ?? resolveOnPath('opencode');
 }
 
-// `tools/pack/tests/resources.test.ts` ships the AMR OpenCode companion as a
+// `tools/pack` ships the bundled OpenCode companion as a
 // `<resourceRoot>/bin/libexec/opencode/opencode` *executable file*, not just
 // the directory. Treating any directory there as a valid companion produces a
-// false-positive availability path: `detectAgents()` would surface AMR as
-// available even though the first real run can't launch (`vela` would spawn
-// a missing/non-executable inner binary). Verify the inner executable too.
-function packagedVelaOpenCodeCompanionTree(resourceRoot: string): string | null {
+// false-positive availability path: detection would surface the BYOK OpenCode
+// runtime as available even though the first real run can't launch (it would
+// spawn a missing/non-executable inner binary). Verify the inner executable
+// too.
+function packagedOpenCodeCompanionTree(resourceRoot: string): string | null {
   const candidate = path.join(resourceRoot, 'bin', 'libexec', 'opencode');
   const exe = path.join(
     candidate,
@@ -276,33 +257,9 @@ function packagedBuiltInExecutable(
   configuredEnv: Record<string, string> = {},
 ): string | null {
   if (def.id === 'byok-opencode') {
-    return resolveAmrOpenCodeExecutable({ ...process.env, ...configuredEnv });
+    return resolveBundledOpenCodeExecutable({ ...process.env, ...configuredEnv });
   }
-  if (def.id !== 'amr') return null;
-  const resourceRoot = process.env.OD_RESOURCE_ROOT?.trim();
-  if (!resourceRoot) return null;
-  if (
-    !resolveAmrOpenCodeExecutable({ ...process.env, ...configuredEnv }) &&
-    !packagedVelaOpenCodeCompanionTree(resourceRoot)
-  ) {
-    return null;
-  }
-  const candidate = path.join(
-    resourceRoot,
-    'bin',
-    process.platform === 'win32' ? 'vela.exe' : 'vela',
-  );
-  try {
-    if (!statSync(candidate).isFile()) return null;
-    if (process.platform === 'win32') {
-      if (!looksExecutableOnWindows(candidate)) return null;
-    } else {
-      accessSync(candidate, constants.X_OK);
-    }
-    return candidate;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 // The official OpenAI Codex desktop app (bundle id `com.openai.codex`) ships

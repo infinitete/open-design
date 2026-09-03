@@ -186,8 +186,8 @@ export function resolveModelForServiceTier(
   return modelId ?? null;
 }
 
-// Some adapters reject the synthetic `'default'` model id (e.g. AMR / vela,
-// which requires an explicit `session/set_model` before `session/prompt`).
+// Some adapters reject the synthetic `'default'` model id (e.g. ACP runtimes
+// that require an explicit `session/set_model` before `session/prompt`).
 // Those defs declare it by omitting DEFAULT_MODEL_OPTION from
 // `fallbackModels` entirely. When the chat run produces a null or 'default'
 // model for one of those adapters, prefer the first model from the live list
@@ -202,7 +202,7 @@ export function resolveModelForAgent(
 ): string | null {
   if (resolved && resolved !== 'default') return resolved;
   if (resolved === 'default') return resolved;
-  // Daemon-process env override (e.g. VELA_DEFAULT_MODEL for AMR). Lets an
+  // Daemon-process env override (see `defaultModelEnvVar` on the def). Lets an
   // operator pin a different fallback id without a code change when the
   // hardcoded default goes away upstream.
   if (def.defaultModelEnvVar) {

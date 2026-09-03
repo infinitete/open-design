@@ -21,7 +21,6 @@ import {
   DEFAULT_STAGE_TIMEOUT_MS,
   ACP_ARTIFACT_ECHO_START_RE,
   ACP_RAW_EVENT_SHAPE_DIAGNOSTIC_LIMIT,
-  AMR_STDERR_RETRY_TAIL_LIMIT,
   ACP_STDERR_DIAGNOSTIC_TAIL_LIMIT,
 } from './constants.js';
 import { errorMessage, asObject, extractAcpUpdateText, extractAcpStatusDetail } from './json.js';
@@ -38,7 +37,6 @@ import {
   choosePermissionOutcome,
 } from './rpc.js';
 import {
-  acpRawEventShape,
   isAcpTerminalFailureStatus,
   acpToolCallId,
   isAcpArtifactWriteLabel,
@@ -52,8 +50,6 @@ import {
   acpToolResultContent,
   acpSafeToolResultContent,
   acpTelemetryToolCallId,
-  promotedAmrRetryStatusPayload,
-  promotedAmrStderrPayload,
 } from './updates.js';
 import {
   findModelConfigOption,
@@ -62,7 +58,6 @@ import {
 } from './models.js';
 import { buildAcpSessionNewParams, buildPromptBlocks, type AcpMcpServerInput } from './session-params.js';
 import { withholdStdioMcpServersForBuild } from './stdio-mcp.js';
-import { createVelaChildEvidenceConsumer } from '../../runtimes/vela-child-evidence.js';
 
 const NON_DISPLAYABLE_ACP_SESSION_UPDATES = new Set([
   'usage_update',
@@ -114,7 +109,6 @@ export interface AttachAcpSessionOptions {
   clientVersion?: string;
   stageTimeoutMs?: number;
   executionProfile?: ExecutionProfile;
-  modelUnavailableErrorCode?: 'AMR_MODEL_UNAVAILABLE';
   // Some ACP adapters expose an explicit `turn_end` session update as their
   // terminal turn signal instead of returning the pending session/prompt RPC.
   // Keep this opt-in so standard ACP adapters still require the response.
@@ -182,7 +176,6 @@ export function attachAcpSession({
   clientVersion = 'runtime-adapter',
   stageTimeoutMs = DEFAULT_STAGE_TIMEOUT_MS,
   executionProfile = 'filesystem',
-  modelUnavailableErrorCode,
   completePromptOnTurnEnd = false,
   resumeSessionId,
   onCliReady,
@@ -203,22 +196,16 @@ export function attachAcpSession({
   let setModelRequestId: JsonRpcId | null = null;
   let sessionId: string | null = null;
   // The durable upstream session handle reported by the agent on session/new or
-  // session/load (vela's `openCodeSessionId`). The caller stores it per
+  // session/load (the agent's `openCodeSessionId`). The caller stores it per
   // conversation to resume next turn. Distinct from `sessionId`, which is the
-  // ACP wrapper id ("vela-opencode-1").
+  // ACP wrapper id.
   let durableSessionId: string | null = null;
   let activeModel: string | null = null;
   let modelConfigId: string | null = null;
   let emittedThinkingStart = false;
   let emittedFirstTokenStatus = false;
-  let emittedTextChunk = false;
-  let emittedVisibleTextChunk = false;
-  let emittedToolCall = false;
-  let emittedConcreteToolEvent = false;
   let emittedTextBuffer = '';
-  let rawAcpShapeDiagnosticCount = 0;
   let artifactSuppressionDiagnosticCount = 0;
-  let velaChildRejectionDiagnosticCount = 0;
   let acpStderrTail = '';
   let currentStage = 'initialize';
   let finished = false;
@@ -244,27 +231,11 @@ export function attachAcpSession({
     openedBlocks: 0,
     closedBlocks: 0,
   };
-  // The AMR discriminator is deliberately required here. A generic ACP agent
-  // advertising a same-named extension must not silently expand the daemon's
-  // accepted protocol surface.
-  const velaChildEvidenceConsumer = modelUnavailableErrorCode
-    ? createVelaChildEvidenceConsumer({
-        onFact: (fact) => {
-          send('agent', {
-            type: 'diagnostic',
-            name: 'vela_opencode_child_agent_lifecycle',
-            source: 'amr-opencode',
-            elapsedMs: Date.now() - runStartedAt,
-            ...fact,
-          });
-        },
-      })
-    : null;
   const acpArtifactWriteToolCallIds = new Set<string>();
   // Per toolCallId: accumulate name/input/path/result across partial ACP frames
   // and emit exactly one tool_use + one tool_result at terminal status (or on
   // prompt flush for still-open tools). Think-only tools are tracked but never
-  // transcribed and never flip emittedConcreteToolEvent. Entries stay after
+  // transcribed. Entries stay after
   // emit so a repeated terminal frame cannot re-create + re-emit.
   type AcpToolNameSource = 'kind' | 'other';
   type AcpToolRunState = {
@@ -302,8 +273,8 @@ export function attachAcpSession({
   ) => {
     if (st.emitted) return;
     st.emitted = true;
-    // Think/reason frames are activity noise for AMR no-output detection and
-    // must not appear as concrete tool_use/tool_result events.
+    // Think/reason frames are activity noise rather than concrete output and
+    // must not appear as tool_use/tool_result events.
     if (st.thinkOnly) return;
     // A host flush is the daemon writing the tool's ending for it, not the agent
     // reporting one. Same payload either way — only the provenance differs, and
@@ -332,8 +303,6 @@ export function attachAcpSession({
       content: acpSafeToolResultContent(st.name, st.resultContent),
       isError,
     }, meta);
-    // Concrete only on terminal tool_result for a real (non-think) tool.
-    emittedConcreteToolEvent = true;
   };
 
   // Flush tools that never received a terminal `tool_call_update`. Clean
@@ -372,27 +341,6 @@ export function attachAcpSession({
     stageTimer = null;
   };
 
-  const amrModelUnavailablePayload = (message: string) => ({
-    message,
-    error: {
-      code: 'AMR_MODEL_UNAVAILABLE',
-      message,
-      retryable: false,
-      details: { kind: 'amr_model', action: 'choose_model' },
-    },
-  });
-
-  const isModelUnavailableError = (message: string) => {
-    const value = message.toLowerCase();
-    return (
-      value.includes('model not found') ||
-      value.includes('providermodelnotfounderror') ||
-      value.includes('unknown model') ||
-      value.includes('invalid model') ||
-      value.includes('modelid is not available')
-    );
-  };
-
   const failWithPayload = (payload: unknown) => {
     if (finished) return;
     // Emit pending tools as errored before terminal state so deferred
@@ -414,7 +362,7 @@ export function attachAcpSession({
 
   const fail = (
     message: string,
-    options: { forceModelUnavailable?: boolean; details?: unknown; retryable?: boolean } = {},
+    options: { details?: unknown; retryable?: boolean } = {},
   ) => {
     if (finished) return;
     // Emit pending tools as errored before terminal state so deferred
@@ -430,24 +378,19 @@ export function attachAcpSession({
     } catch {
       // Fall back to direct-child termination below.
     }
-    const useModelUnavailable =
-      modelUnavailableErrorCode &&
-      (options.forceModelUnavailable || isModelUnavailableError(message));
     send(
       'error',
-      useModelUnavailable
-        ? amrModelUnavailablePayload(message)
-        : options.details === undefined && options.retryable === undefined
-          ? { message }
-          : {
+      options.details === undefined && options.retryable === undefined
+        ? { message }
+        : {
+            message,
+            error: {
+              code: 'AGENT_EXECUTION_FAILED',
               message,
-              error: {
-                code: 'AGENT_EXECUTION_FAILED',
-                message,
-                retryable: options.retryable ?? false,
-                ...(options.details === undefined ? {} : { details: options.details }),
-              },
+              retryable: options.retryable ?? false,
+              ...(options.details === undefined ? {} : { details: options.details }),
             },
+          },
     );
     if (!terminalOwnedByCaller && !child.killed) child.kill('SIGTERM');
   };
@@ -460,19 +403,6 @@ export function attachAcpSession({
     } catch (err) {
       fail(`stdin write failed: ${errorMessage(err)}`);
     }
-  };
-
-  const emitAcpRawShapeDiagnostic = (update: JsonObject) => {
-    if (!modelUnavailableErrorCode) return;
-    if (rawAcpShapeDiagnosticCount >= ACP_RAW_EVENT_SHAPE_DIAGNOSTIC_LIMIT) return;
-    rawAcpShapeDiagnosticCount += 1;
-    send('agent', {
-      type: 'diagnostic',
-      name: 'acp_raw_event_shape',
-      source: 'acp-json-rpc',
-      elapsedMs: Date.now() - runStartedAt,
-      shape: acpRawEventShape(update),
-    });
   };
 
   const emitAcpExecutionObservability = (update: JsonObject): boolean => {
@@ -555,7 +485,6 @@ export function attachAcpSession({
 
   const emitVisibleTextDelta = (delta: string) => {
     if (!delta) return;
-    emittedVisibleTextChunk = true;
     if (!emittedFirstTokenStatus) {
       emittedFirstTokenStatus = true;
       send('agent', {
@@ -776,22 +705,15 @@ export function attachAcpSession({
       // After response completion, any late-arriving errors from the agent
       // (pipe-broken, cleanup race conditions, etc.) are safe to ignore.
       if (finished) return;
-      // JSON-RPC error handling:
-      // -32603 unexpected-id errors are cleanup noise. Expected-id model
-      // selection failures are recoverable for agents with an implicit
-      // default. AMR/Vela requires an explicit selection before prompt, so a
-      // rejected model must stay terminal instead of creating a secondary
-      // `session/set_model must be called before session/prompt` failure.
+      // JSON-RPC error handling: -32603 unexpected-id errors are cleanup
+      // noise. Expected-id model selection failures are recoverable for
+      // agents with an implicit default.
       if (
         obj.id === setModelRequestId &&
         modelSelectionErrorIsRecoverable(error?.code) &&
         promptRequestId === null
       ) {
-        if (modelUnavailableErrorCode) {
-          fail(rpcErr, { details: rpcErrorData(obj), retryable: false });
-        } else {
-          recoverFromModelSelectionError();
-        }
+        recoverFromModelSelectionError();
         return;
       }
       if (error?.code === -32603 && obj.id !== expectedId) {
@@ -816,37 +738,6 @@ export function attachAcpSession({
     }
     const update = asObject(params?.update);
     if (obj.method === 'session/update' && update) {
-      if (modelUnavailableErrorCode) {
-        const promotedPayload = promotedAmrRetryStatusPayload(update);
-        if (promotedPayload) {
-          failWithPayload(promotedPayload);
-          return;
-        }
-      }
-      const velaChildResult = velaChildEvidenceConsumer?.observe({
-        expectedAcpSessionId: sessionId,
-        envelopeAcpSessionId: params?.sessionId,
-        update,
-      });
-      if (velaChildResult?.handled) {
-        if (
-          velaChildResult.reason &&
-          velaChildRejectionDiagnosticCount < ACP_RAW_EVENT_SHAPE_DIAGNOSTIC_LIMIT
-        ) {
-          velaChildRejectionDiagnosticCount += 1;
-          send('agent', {
-            type: 'diagnostic',
-            name: 'vela_opencode_child_evidence_rejected',
-            source: 'amr-opencode',
-            elapsedMs: Date.now() - runStartedAt,
-            reason: velaChildResult.reason,
-          });
-        }
-        // Accepted facts are emitted by onFact. Rejected child frames must not
-        // fall through to generic status/raw diagnostics, which could copy
-        // unallowlisted producer fields.
-        return;
-      }
       if (emitAcpExecutionObservability(update)) {
         return;
       }
@@ -864,7 +755,6 @@ export function attachAcpSession({
           ...(detail ? { detail } : {}),
           elapsedMs: Date.now() - runStartedAt,
         });
-        emitAcpRawShapeDiagnostic(update);
       }
       if (
         completePromptOnTurnEnd &&
@@ -875,7 +765,6 @@ export function attachAcpSession({
         return;
       }
       if (update.sessionUpdate === 'agent_thought_chunk') {
-        emitAcpRawShapeDiagnostic(update);
         const text = extractAcpUpdateText(update);
         if (text) {
           if (!emittedThinkingStart) {
@@ -887,7 +776,6 @@ export function attachAcpSession({
         return;
       }
       if (update.sessionUpdate === 'agent_message_chunk') {
-        emitAcpRawShapeDiagnostic(update);
         const text = extractAcpUpdateText(update);
         if (text) {
           const isCumulativeSnapshot = text.startsWith(emittedTextBuffer);
@@ -895,7 +783,6 @@ export function attachAcpSession({
             ? text.slice(emittedTextBuffer.length)
             : text;
           if (delta.length > 0) {
-            emittedTextChunk = true;
             emittedTextBuffer += delta;
             const wasSuppressingToolCall = toolCallTextSuppressor.isSuppressing();
             const toolCallStrippedDelta = toolCallTextSuppressor.strip(delta);
@@ -961,10 +848,6 @@ export function attachAcpSession({
         update.sessionUpdate === 'tool_call' ||
         update.sessionUpdate === 'tool_call_update'
       ) {
-        // The turn did real work (a tool call / file edit), which is valid output even
-        // when the model emits no closing assistant text. Track it so the prompt-complete
-        // handler does not misreport such a turn as "no output / model unavailable".
-        emittedToolCall = true;
         const toolCallId = acpToolCallId(update);
         if (toolCallId && isAcpArtifactWriteLabel(update)) {
           acpArtifactWriteToolCallIds.add(toolCallId);
@@ -1053,16 +936,6 @@ export function attachAcpSession({
       return;
     }
     if (expectedId === 1) {
-      const negotiation = velaChildEvidenceConsumer?.negotiate(result);
-      if (negotiation?.advertised) {
-        send('agent', {
-          type: 'diagnostic',
-          name: 'vela_opencode_child_evidence_capability',
-          source: 'amr-opencode',
-          elapsedMs: Date.now() - runStartedAt,
-          ...negotiation,
-        });
-      }
       expectedId = nextId;
       if (resumeSessionId) {
         // Resume the prior upstream session instead of creating a fresh one.
@@ -1145,39 +1018,10 @@ export function attachAcpSession({
       return;
     }
     if (promptRequestId !== null && obj.id === promptRequestId) {
-      // Flush still-open tools before AMR no-output classification. A successful
-      // session/prompt may omit a terminal tool_call_update; clean-closing those
-      // pending non-think tools flips emittedConcreteToolEvent so we take
-      // finishCleanPrompt instead of acp_no_visible_output (which would re-flush
-      // them as isError via fail()). Think-only open tools do not flip the flag.
+      // Flush still-open tools: a successful session/prompt may omit a
+      // terminal tool_call_update, so clean-close any pending non-think
+      // tools here rather than losing their transcript pair.
       flushOpenAcpTools();
-      const usage = formatUsage(result.usage);
-      if (!emittedVisibleTextChunk && !emittedConcreteToolEvent && modelUnavailableErrorCode) {
-        const outputTokens = usage?.output_tokens;
-        const hadCompletionTokens = typeof outputTokens === 'number' && outputTokens > 0;
-        // Emit usage before fail so analytics still sees provider tokens.
-        emitUsageIfPresent(result.usage);
-        if (hadCompletionTokens || emittedToolCall || emittedTextChunk) {
-          fail(
-            'ACP session completed after reporting model activity, but did not produce visible assistant text, concrete tool results, or artifacts.',
-            {
-              retryable: true,
-              details: {
-                kind: 'acp_no_visible_output',
-                output_tokens: outputTokens,
-                raw_tool_update_seen: emittedToolCall,
-                text_chunk_seen: emittedTextChunk,
-              },
-            },
-          );
-        } else {
-          fail(
-            'ACP session completed without producing any assistant text. Refresh the AMR model list, choose a supported model, and retry this run.',
-            { forceModelUnavailable: true },
-          );
-        }
-        return;
-      }
       finishCleanPrompt(result.usage);
       return;
     }
@@ -1193,11 +1037,8 @@ export function attachAcpSession({
   child.stderr?.on('data', (chunk: string) => {
     if (finished) return;
     acpStderrTail = `${acpStderrTail}${String(chunk)}`.slice(
-      -AMR_STDERR_RETRY_TAIL_LIMIT,
+      -ACP_STDERR_DIAGNOSTIC_TAIL_LIMIT,
     );
-    if (!modelUnavailableErrorCode) return;
-    const promotedPayload = promotedAmrStderrPayload(acpStderrTail);
-    if (promotedPayload) failWithPayload(promotedPayload);
   });
   child.on('close', (code, signal) => {
     clearStageTimer();
@@ -1247,23 +1088,10 @@ export function attachAcpSession({
     hasFatalError() {
       return fatal;
     },
-    /**
-     * Child-evidence coverage for this ACP run, or `undefined` when the agent
-     * is not the AMR-discriminated runtime and therefore has no child-evidence
-     * consumer. The daemon publishes this as the `child_evidence_coverage_v1`
-     * diagnostic at child close; without it every AMR task aggregates as
-     * `child_lifecycle_unavailable_not_zero`, which cannot distinguish a run
-     * that had no Child agents from a run nobody was observing.
-     */
-    childEvidenceCoverage() {
-      return velaChildEvidenceConsumer?.childEvidenceCoverage({
-        sessionComplete: promptCompletedCleanly(),
-      });
-    },
     // The durable upstream session handle to persist for resume, or null when
     // none was reported (older agents, or a handshake that never established a
     // session). Mirrors pi-rpc's getLastSessionPath().
-    /** Returns the durable upstream session id (e.g. vela's `openCodeSessionId`) to persist for next-turn resume, or `null` when the agent did not report one. */
+    /** Returns the durable upstream session id (the agent's `openCodeSessionId`) to persist for next-turn resume, or `null` when the agent did not report one. */
     getDurableSessionId() {
       return durableSessionId;
     },
@@ -1278,8 +1106,8 @@ export function attachAcpSession({
     /**
      * Aborts an in-progress ACP session. Sends `session/cancel` when a session
      * id has already been established, then always closes stdin so the agent
-     * receives EOF and can tear down its own runtime (e.g. vela's private
-     * OpenCode server). Idempotent — subsequent calls are no-ops.
+     * receives EOF and can tear down its own runtime (e.g. a private OpenCode
+     * server). Idempotent — subsequent calls are no-ops.
      */
     abort() {
       if (aborted || finished) return;
@@ -1304,7 +1132,7 @@ export function attachAcpSession({
         }
       }
       // Always close stdin so the agent receives EOF and shuts down its own
-      // runtime — the vela ACP bridge tears down its private OpenCode server on
+      // runtime — an ACP bridge that owns a private server tears it down on
       // EOF — instead of lingering (and leaking that server) until the caller's
       // SIGTERM fallback fires. This also covers aborts during ACP startup,
       // before session/new returns. Mirrors the clean-completion path above.

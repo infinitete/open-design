@@ -123,11 +123,6 @@ describe('daemon startup route smoke', () => {
         path: '/api/agents',
         assert: (body) => expect(body).toHaveProperty('agents'),
       },
-      {
-        path: '/api/amr/models',
-        statuses: [200, 500],
-        assert: (body) => expect(body).toEqual(expect.any(Object)),
-      },
     ];
 
     await Promise.all(routeChecks.map(async (check) => {

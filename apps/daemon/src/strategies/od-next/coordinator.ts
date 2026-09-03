@@ -523,7 +523,7 @@ export function odNextTurnMayInferProductionCompletion(
     // IS the canonical deliverable. A complex plan additionally owes verified
     // native Child lifecycle — the thing that makes it complex — which no
     // deliverable check can stand in for. Inferring completion there certified
-    // Children nobody observed: an AMR complex Run whose Vela build ships no
+    // Children nobody observed: a complex Run whose agent build ships no
     // child-lifecycle producer reported `knownChildCount: 0` and still landed
     // `completed`, walking straight past `evaluateOdNextComplexChildEvidence`.
     // A complex turn that declares nothing keeps blocking.

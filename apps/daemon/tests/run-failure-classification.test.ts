@@ -1,28 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/integrations/vela-errors.js', () => ({
-  classifyAmrAccountFailure(text: string) {
-    const value = String(text || '').toLowerCase();
-    // Mirror the real detector's signals exercised by these tests, including
-    // the Chinese vela pre-charge text (see integrations/vela-errors.test.ts).
-    if (
-      value.includes('insufficient balance') ||
-      value.includes('预扣费额度失败') ||
-      value.includes('余额不足') ||
-      value.includes('额度不足')
-    ) {
-      return { code: 'AMR_INSUFFICIENT_BALANCE' as const };
-    }
-    if (value.includes('authentication required') || value.includes('not authenticated') || value.includes('unauthorized')) {
-      return { code: 'AMR_AUTH_REQUIRED' as const };
-    }
-    if (value.includes('tier_model_not_entitled') || value.includes('tier_request_kind_not_entitled')) {
-      return { code: 'AMR_TIER_UPGRADE_REQUIRED' as const };
-    }
-    return null;
-  },
-}));
-
 vi.mock('../src/runtimes/auth.js', () => ({
   classifyAgentServiceFailure(text: string) {
     const value = String(text || '').toLowerCase();
@@ -1576,24 +1553,7 @@ describe('execution_failed close-reason refinement', () => {
     });
   });
 
-  it('classifies an AMR membership concurrency limit before fatal close promotion', () => {
-    const message =
-      '[code=tier_limit_exceeded] membership concurrency limit exceeded: 3/2 resets 2026-08-25T10:42:00Z';
-    expect(
-      classifyForAgent('amr', 'AGENT_EXECUTION_FAILED', message, [
-        errorEvent('AGENT_EXECUTION_FAILED', message, true),
-        runtimeCloseEvent('fatal_rpc_error'),
-      ]),
-    ).toMatchObject({
-      failure_category: 'rate_limit',
-      failure_detail: 'membership_concurrency_limit',
-      failure_stage: 'session_init',
-      retryable: false,
-      user_action: 'none',
-    });
-  });
-
-  it('keeps a non-AMR membership concurrency envelope retryable', () => {
+  it('keeps a membership concurrency envelope retryable', () => {
     const message =
       '[code=tier_limit_exceeded] membership concurrency limit exceeded: 3/2 resets 2026-08-25T10:42:00Z';
     expect(
@@ -1648,36 +1608,11 @@ describe('execution_failed close-reason refinement', () => {
 // text, so the English-only detectors miss them. Real production texts were
 // sampled from Langfuse (#3408 P1). Each must land in its true product-view
 // category instead of the engineering-view opaque bucket.
-describe('classifyRunFailure — AMR/vela reclassification out of execution_failed', () => {
-  it('classifies a vela Chinese pre-charge (insufficient balance) failure as insufficient_balance', () => {
-    const result = classify(
-      'AGENT_EXECUTION_FAILED',
-      '预扣费额度失败, 用户[141283]剩余额度: 💰0.040000, 需要预扣费额度: 💰0.060000 (request id: B202606220543379765673248268d9d6vVKaiRPCMA)',
-    );
-    expect(result?.failure_category).toBe('insufficient_balance');
-    expect(result?.failure_detail).toBe('amr_insufficient_balance');
-    expect(result?.user_action).toBe('recharge');
-  });
-
+describe('classifyRunFailure — reclassification out of execution_failed', () => {
   it('classifies structured AMR tier entitlement failures as upgrade-required analytics', () => {
     const result = classify(
       'AMR_TIER_UPGRADE_REQUIRED',
       'AMR tier upgrade required',
-    );
-
-    expect(result).toMatchObject({
-      failure_category: 'entitlement_required',
-      failure_detail: 'amr_tier_upgrade_required',
-      failure_stage: 'session_init',
-      retryable: false,
-      user_action: 'upgrade',
-    });
-  });
-
-  it('classifies raw AMR tier entitlement texts as upgrade-required analytics', () => {
-    const result = classify(
-      'AGENT_EXECUTION_FAILED',
-      'HTTP 403 [code=tier_model_not_entitled] model access denied for current tier',
     );
 
     expect(result).toMatchObject({

@@ -31,10 +31,10 @@ export function normalizePersistedAutomationWorkspaceScope(
  *
  * This is intentionally not an authorization check. The local membership
  * directory is UI/collaboration state and can be stale or temporarily
- * unavailable; it must never select a different wallet. At AMR spawn time the
+ * unavailable; it must never select a different wallet. At run spawn time the
  * daemon sends this persisted Workspace id together with the signed-in account
- * credentials, and the Vela backend remains the final membership, permission,
- * and billing authority.
+ * credentials, and the authenticated backend remains the final membership,
+ * permission, and billing authority.
  */
 export function bindProjectToPersistedAutomationWorkspace(
   ensureWorkspaceProject: (input: {

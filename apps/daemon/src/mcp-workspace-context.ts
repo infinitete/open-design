@@ -21,9 +21,9 @@ export interface WorkspaceDirectoryResponse {
  * `GET /api/workspace/directory` and sends the resulting `x-od-workspace-*`
  * headers on every project/run call.
  *
- * Selection mirrors the daemon's own `selectDefaultCandidate`
- * (collab/vela-workspace-context.ts): active memberships only, then the
- * personal workspace, then the first remaining candidate.
+ * Selection mirrors the daemon's own `selectDefaultCandidate` selection rule:
+ * active memberships only, then the personal workspace, then the first
+ * remaining candidate.
  */
 
 export interface McpWorkspaceContext {
@@ -42,7 +42,7 @@ const DIRECTORY_TIMEOUT_MS = 8_000;
 
 /**
  * Pick the best default membership out of an already-fetched directory list.
- * Verbatim port of `selectDefaultCandidate` in vela-workspace-context.ts so the
+ * Verbatim port of the daemon's own `selectDefaultCandidate` rule so the
  * bridge and the UI pick the same workspace for a multi-workspace user.
  */
 export function selectDefaultMcpCandidate(
@@ -70,7 +70,7 @@ const lastFailureAt = new Map<string, number>();
 
 /**
  * Resolve the signed-in workspace to scope MCP project/run calls, or null for a
- * headerless fallback (non-vela, signed-out, or a directory outage). Results are
+ * headerless fallback (local mode, signed-out, or a directory outage). Results are
  * cached per base URL for MCP_WORKSPACE_CONTEXT_TTL_MS; failures suppress
  * re-fetch for MCP_WORKSPACE_FAILURE_COOLDOWN_MS. `force` bypasses both.
  */
@@ -103,7 +103,7 @@ export async function resolveMcpWorkspaceContext(
     const data = (await resp.json()) as WorkspaceDirectoryResponse;
     const selected = selectDefaultMcpCandidate(data.items);
     if (!selected) {
-      // 200 with empty items — non-vela (dev provider) or no live membership.
+      // 200 with empty items — local mode (dev provider) or no live membership.
       recordFailure(baseUrl);
       return null;
     }

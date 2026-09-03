@@ -20,7 +20,6 @@ function sha256(value: string): string {
 
 function handleKindForAgent(agentId: string | null): NativeSessionHandleKind {
   if (agentId === 'codex') return 'cli-thread-id';
-  if (agentId === 'amr') return 'acp-session-handle';
   if (agentId === 'pi') return 'session-file-path';
   if (agentId) return 'opaque-id';
   return 'unknown';

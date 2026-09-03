@@ -46,7 +46,7 @@ const DEFAULT_TASK_TYPES: readonly OdNextRolloutTaskType[] = [
   'marketing',
   'hyperframes',
 ];
-const DEFAULT_AGENTS = ['codex', 'claude', 'opencode', 'amr'] as const;
+const DEFAULT_AGENTS = ['codex', 'claude', 'opencode'] as const;
 
 function bool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;

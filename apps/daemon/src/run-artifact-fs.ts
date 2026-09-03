@@ -1,7 +1,7 @@
 // Agent-agnostic artifact counter. Instead of reconstructing file writes from
 // each agent's tool-call stream (which only `claude_code` reports in a shape
 // `run-artifacts.ts#countNewArtifacts` recognizes — see the audit that found
-// codex / opencode / gemini / cursor / amr / … all report artifact_count: 0),
+// codex / opencode / gemini / cursor / … all report artifact_count: 0),
 // this snapshots the project's artifact files before the run and diffs against
 // a snapshot taken at run end. Whatever runtime the agent used, a real file
 // write or edit shows up as a created or modified path.

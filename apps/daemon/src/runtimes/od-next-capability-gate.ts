@@ -44,12 +44,6 @@ export const OD_NEXT_RUNTIME_PATH_DESCRIPTORS = [
     agentId: 'opencode',
     runtimeAdapterVersion: 'od-opencode-json-events/v1',
   },
-  {
-    runtimePath: 'vela-opencode',
-    agentId: 'amr',
-    runtimeAdapterVersion: 'od-vela-opencode-acp/v1',
-    requiredRuntimeCompanionName: 'opencode',
-  },
 ] as const satisfies readonly OdNextRuntimePathDescriptor[];
 
 const ALL_REQUIRED_CASES = [
@@ -136,63 +130,18 @@ export const CLAUDE_2_1_233_BEST_EFFORT_MANIFEST =
     cases: ALL_REQUIRED_CASES,
   });
 
-/**
- * Provider-backed local replay for the Vela candidate paired with native
- * OpenCode 1.18.18. All seven paths pass.
- *
- * Vela drives the same native OpenCode runtime this registry already admits
- * under `native-opencode`; its Child mechanism is that runtime's, reached over
- * the ACP extension rather than the CLI stream. Holding the tuple out of the
- * registry therefore did not withhold an unproven capability — it refused
- * complex execution to an agent whose evidence paths all pass, on the separate
- * grounds that the build is not yet immutable. Admit it, and re-pin
- * `agentCliVersion` here once Vela publishes a build that reports a stable
- * producer version — this field records which CLI the fixture was captured
- * against, and nothing gates on it.
- *
- * Child evidence is reached by ACP capability negotiation, not by sniffing that
- * version: a Vela without the `vela.opencode.child_agent_lifecycle` producer
- * simply never advertises it, so a complex task blocks on honestly missing
- * evidence, and one that does advertise it works the moment it is installed.
- * That is why admitting the tuple cannot make an older Vela claim Children it
- * never reported, and why no version pin has to be walked back when the
- * producer ships.
- */
-export const VELA_OPENCODE_LOCAL_BEST_EFFORT_MANIFEST =
-  RuntimeCapabilityFixtureManifestV1Schema.parse({
-    schema: OD_NEXT_RUNTIME_FIXTURE_MANIFEST_V1_SCHEMA,
-    fixtureVersion: 'vela-opencode-0.0.1-local-opencode-1.18.18-seven-path/v1',
-    runtimePath: 'vela-opencode',
-    agentId: 'amr',
-    agentCliVersion: '0.0.1-od-next-local',
-    runtimeAdapterVersion: 'od-vela-opencode-acp/v1',
-    runtimeCompanionName: 'opencode',
-    runtimeCompanionVersion: '1.18.18',
-    provenance: {
-      kind: 'sanitized_real',
-      recordingDigest:
-        'sha256:6fe49f1e0946b2220052b2239494786879c03c972b5be12dee30a7973872f6aa',
-      anonymizationVersion: 'od-runtime-evidence/v1',
-      evidenceReview: 'open_design_best_effort',
-    },
-    containsSensitiveContent: false,
-    cases: ALL_REQUIRED_CASES,
-  });
-
 export const OD_NEXT_RUNTIME_CAPABILITY_FIXTURE_MANIFESTS:
   readonly RuntimeCapabilityFixtureManifestV1[] = [
     CODEX_0_147_0_BEST_EFFORT_MANIFEST,
     CLAUDE_2_1_233_BEST_EFFORT_MANIFEST,
     OPENCODE_1_18_18_BEST_EFFORT_MANIFEST,
-    VELA_OPENCODE_LOCAL_BEST_EFFORT_MANIFEST,
-  ];
+];
 
 export const OD_NEXT_RUNTIME_CAPABILITY_REGISTRY:
   readonly RuntimeCapabilityRegistryEntryV1[] = [
     CODEX_0_147_0_BEST_EFFORT_MANIFEST,
     CLAUDE_2_1_233_BEST_EFFORT_MANIFEST,
     OPENCODE_1_18_18_BEST_EFFORT_MANIFEST,
-    VELA_OPENCODE_LOCAL_BEST_EFFORT_MANIFEST,
   ].map((manifest) => RuntimeCapabilityRegistryEntryV1Schema.parse({
     runtimePath: manifest.runtimePath,
     agentId: manifest.agentId,

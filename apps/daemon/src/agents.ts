@@ -13,8 +13,6 @@ export {
 export { applyAgentLaunchEnv, resolveAgentLaunch } from './runtimes/launch.js';
 export { resolveAgentBin } from './runtimes/resolution.js';
 export {
-  openDesignAmrRunAttempt,
-  openDesignAmrTraceEnv,
   spawnEnvForAgent,
 } from './runtimes/env.js';
 export { buildLiveArtifactsMcpServersForAgent } from './runtimes/mcp.js';

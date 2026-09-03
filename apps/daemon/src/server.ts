@@ -123,7 +123,6 @@ import {
   resolveSafePromptImagePaths,
   resolveOdNextRequestUserPrompt,
   excludeAcpImagePathsAlreadyDeliveredAsResources,
-  selectPromptImagePaths,
 } from './runtimes/chat-prompt-inputs.js';
 import {
   writePromptAndEndStdin,
@@ -183,7 +182,6 @@ export {
   resolveSafeProjectAttachments,
   resolveSafePromptImagePaths,
   excludeAcpImagePathsAlreadyDeliveredAsResources,
-  selectPromptImagePaths,
 } from './runtimes/chat-prompt-inputs.js';
 export {
   applyClaudeStreamJsonRunBookkeeping,
@@ -228,18 +226,12 @@ import {
   isKnownModel,
   isKnownReasoningEffort,
   isKnownServiceTier,
-  openDesignAmrRunAttempt,
-  openDesignAmrTraceEnv,
   applyAgentLaunchEnv,
   resolveAgentLaunch,
   sanitizeCustomModel,
   spawnEnvForAgent,
 } from './agents.js';
 import {
-  getRememberedLiveModels,
-  preferFreshLiveModels,
-  rememberLiveModels,
-  resolveDefaultModelFromOptions,
   resolveModelForAgent,
   resolveModelForServiceTier,
 } from './runtimes/models.js';
@@ -257,15 +249,7 @@ import {
   persistPlainStreamArtifactList,
   plainStdoutFromRunEvents,
 } from './runtimes/plain-stream.js';
-import {
-  resolveAmrProfile,
-} from './integrations/vela.js';
 import { isAbortedOperationError } from './integrations/aborted-error.js';
-import { amrModelLoadingCache } from './runtimes/amr-model-cache.js';
-import {
-  fetchVelaPresetModels,
-  fetchVelaRemoteModelsWithRetry,
-} from './runtimes/defs/amr.js';
 import { migrateLegacyDataDirSync } from './migration/index.js';
 import { normalizeDaemonBindHost } from './daemon-startup.js';
 import { readCurrentAppVersionInfo } from './app-version.js';
@@ -403,7 +387,6 @@ import { runAutoExtractionCleanup } from './memory-cleanup.js';
 import { attachAcpSession } from './agent-protocol/index.js';
 import { attachPiRpcSession } from './agent-protocol/index.js';
 import { attachDshProfileSession } from './agent-protocol/index.js';
-import { stageAmrImagePaths } from './media/amr-image-staging.js';
 import { ingestRoutineConnectorEvolution } from './automation-routine-evolution.js';
 import { createClaudeStreamHandler } from './runtimes/claude-stream.js';
 import { createAgentTitleMarkerStripper } from './title-marker.js';
@@ -450,19 +433,12 @@ import {
   normalizeDeepSeekHarnessFailure,
 } from './runtimes/auth.js';
 import { readOpenCodeServiceFailure } from './runtimes/opencode-log.js';
-import { createAgentStderrVisibilityFilter } from './amr-stderr-filter.js';
 import { createQoderStreamHandler } from './runtimes/qoder-stream.js';
 import { subscribe as subscribeFileEvents } from './project-watchers.js';
 import { importFigmaFromBytes } from './figma/figma-import.js';
 import { renderDesignSystemPreview } from './design-systems/preview.js';
 import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
-import {
-  createAmrTerminalReportDeliveryService,
-  createAmrTerminalReportFinalizer,
-  createAmrTerminalReportOutboxStore,
-  type AmrTerminalReportDeliveryService,
-} from './storage/amr-terminal-report-outbox.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
 import {
   createRunAnalyticsLifecycle,
@@ -816,11 +792,6 @@ import { registerSocialShareRoutes } from './routes/social-share.js';
 import { registerOpenDesignPublicMetadataRoutes } from './routes/open-design-public-metadata.js';
 import { registerWhatsNewRoutes } from './routes/whats-new.js';
 import { registerMemoryRoutes } from './routes/memory.js';
-import {
-  AmrWorkspaceScopeRequiredError,
-  openDesignAmrTraceEnvForRun,
-  pinRunWorkspaceScopeForProject,
-} from './runtimes/project-amr-trace-env.js';
 const recordWorkspaceAuthorityDecision = () => {};
 const recordWorkspaceAuthorityInvalidation = () => {};
 const recordWorkspaceAuthorityRealtimeTransition = () => {};
@@ -904,7 +875,6 @@ import {
   bindProjectToPersistedAutomationWorkspace,
   normalizePersistedAutomationWorkspaceScope,
 } from './automations/workspace-scope.js';
-import { resolveAmrModelProbe } from './runtimes/amr-model-probe.js';
 import { createPluginInstallationHelpers, normalizeProjectPluginFolderPath, resolveProjectChildDirectory } from './services/plugin-installation.js';
 import { createPluginShareTaskStore } from './services/plugin-share-tasks.js';
 import { getRouteRegistrationInventory, installRouteRegistrationGuard } from './route-registration-guard.js';
@@ -2347,7 +2317,7 @@ function rewriteKnownAgentStreamError(agentId, message, failureText = '') {
   if (
     /bufio\.scanner:\s*token too long/i.test(combined) &&
     /opencode/i.test(combined) &&
-    (agentId === 'opencode' || agentId === 'mimo' || agentId === 'amr' || /json-rpc id \d+/i.test(combined))
+    (agentId === 'opencode' || agentId === 'mimo' || /json-rpc id \d+/i.test(combined))
   ) {
     return 'The run failed due to an unknown upstream streaming error. Please retry.';
   }
@@ -2374,25 +2344,6 @@ function rewriteKnownAgentStreamError(agentId, message, failureText = '') {
  */
 function agentFailureIdentity(def) {
   return { agentName: def?.name ?? null };
-}
-
-function createAmrModelUnavailablePayload(model, init = {}) {
-  const modelText = typeof model === 'string' && model.trim()
-    ? `"${model.trim()}"`
-    : 'the selected model';
-  return createSseErrorPayload(
-    'AMR_MODEL_UNAVAILABLE',
-    `AMR model ${modelText} is not available from Vela. Refresh the AMR model list, choose a supported model, and retry this run.`,
-    {
-      retryable: false,
-      details: {
-        kind: 'amr_model',
-        action: 'choose_model',
-        ...(typeof model === 'string' && model.trim() ? { model: model.trim() } : {}),
-        ...init,
-      },
-    },
-  );
 }
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -2669,15 +2620,6 @@ export interface StartServerOptions {
    * boundary; HTTP bodies, assistant prose, and raw stdout are never inputs.
    */
   odNextComplexProductionResolver?: OdNextComplexProductionResolver | null;
-}
-
-export function startAmrTerminalReportDeliveryAfterBind(
-  delivery: Pick<AmrTerminalReportDeliveryService, 'start'>,
-  boundPort: number | null,
-): boolean {
-  if (!Number.isInteger(boundPort) || Number(boundPort) <= 0) return false;
-  delivery.start();
-  return true;
 }
 
 export interface StartServerResult {
@@ -3010,11 +2952,6 @@ export async function startServer({
     next();
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
-  const amrTerminalReportOutbox = createAmrTerminalReportOutboxStore(db);
-  const amrTerminalReportDelivery = createAmrTerminalReportDeliveryService({
-    store: amrTerminalReportOutbox,
-    env: { ...process.env, OD_DATA_DIR: RUNTIME_DATA_DIR },
-  });
   const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
   if (commentAnchorRepair.created > 0) {
     console.warn(
@@ -4294,7 +4231,6 @@ export async function startServer({
         if (!run.sideEffectLedger) run.sideEffectLedger = createRunSideEffectLedger();
         foldEventIntoRunSideEffectLedger(run.sideEffectLedger, record);
       },
-      onTerminal: createAmrTerminalReportFinalizer(amrTerminalReportOutbox),
       beforeFinish: (run, status) => {
         if (status !== 'failed' && status !== 'canceled') return;
         try {
@@ -4352,7 +4288,6 @@ export async function startServer({
     appVersionInfo: telemetry.getCachedAppVersion(),
     db,
     reportLangfuse: reportRunCompletedFromDaemon,
-    finalizeTerminalLocally: createAmrTerminalReportFinalizer(amrTerminalReportOutbox),
     taskObservationModeForRun: (runId) => taskObservationRollout.modeForRun(runId),
     taskObservationRepresentationForRun: (runId) =>
       taskObservationRollout.representationForRun(runId),
@@ -4516,25 +4451,10 @@ export async function startServer({
 
   app.get('/api/health', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
-    const {
-      pending,
-      delivered,
-      unsupported,
-      terminalFailed,
-      oldestPendingAgeMs,
-    } = amrTerminalReportOutbox.diagnostics();
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       ok: true,
       version: versionInfo.version,
-      amrTerminalReporter: {
-        status: 'active',
-        pending,
-        delivered,
-        unsupported,
-        terminalFailed,
-        oldestPendingAgeMs,
-      },
     });
   });
 
@@ -4632,13 +4552,6 @@ export async function startServer({
     requireLocalDaemonRequest,
     composio: composioConnectorProvider,
   });
-
-  // Detailed terminal-report activity is local diagnostics, not public health.
-  app.get(
-    '/api/diagnostics/amr-terminal-reports',
-    requireLocalDaemonRequest,
-    (_req, res) => res.json(amrTerminalReportOutbox.diagnostics()),
-  );
 
   // Gate the diagnostics export behind requireLocalDaemonRequest so it stays
   // unreachable when daemon binds to a non-loopback address (Tailscale,
@@ -7177,17 +7090,6 @@ export async function startServer({
       cleanupOdNextRunInputProjection();
       return design.runs.fail(run, code, message);
     };
-    // Freeze the billing address once, before the first asynchronous setup
-    // step. HTTP-created runs already carry the scope captured by the request
-    // authorization transaction. Internal runs pin here. Retries reuse the
-    // existing property and therefore never consult a later project rebind.
-    if (!Object.prototype.hasOwnProperty.call(run, 'workspaceScope')) {
-      run.workspaceScope =
-        typeof projectId === 'string' && projectId
-          ? pinRunWorkspaceScopeForProject(db, projectId)
-          : null;
-      design.runs.persistState(run);
-    }
     // Stash the original user prompt + per-turn config so the
     // langfuse-bridge report path can include them without reaching back
     // into chatBody across the createChatRunService boundary. Each field
@@ -7398,10 +7300,6 @@ export async function startServer({
       );
     }
     const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? safeImages;
-    const amrStagedImages =
-      def.id === 'amr' && !odNextTaskInputSnapshot
-        ? await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR)
-        : transportSourceImages;
 
     // Project-scoped attachments: project-relative paths inside cwd. Each
     // is run through the same path-traversal guard the file CRUD endpoints
@@ -7955,13 +7853,6 @@ export async function startServer({
     } catch {
       configuredAgentEnv = {};
     }
-    const requestedLiveModelScope = def.id === 'amr'
-      ? resolveAmrProfile({
-          ...process.env,
-          ...(def.env || {}),
-          ...configuredAgentEnv,
-        })
-      : null;
     const configuredModel =
       typeof appConfigForRun?.agentModels?.[def.id]?.model === 'string'
         ? appConfigForRun.agentModels[def.id].model
@@ -7969,32 +7860,25 @@ export async function startServer({
     let safeModel = resolveModelForAgent(
       def,
       typeof requestedRuntimeModel === 'string'
-        ? isKnownModel(def, requestedRuntimeModel, requestedLiveModelScope)
+        ? isKnownModel(def, requestedRuntimeModel)
           ? requestedRuntimeModel
           : sanitizeCustomModel(requestedRuntimeModel)
         : configuredModel,
       process.env,
-      requestedLiveModelScope,
-    );
-    const hasDefaultModelEnvOverride = Boolean(
-      def.defaultModelEnvVar &&
-      typeof process.env[def.defaultModelEnvVar] === 'string' &&
-      process.env[def.defaultModelEnvVar]?.trim(),
     );
     const safeReasoning =
       typeof reasoning === 'string' &&
-      isKnownReasoningEffort(def, safeModel, reasoning, requestedLiveModelScope)
+      isKnownReasoningEffort(def, safeModel, reasoning)
         ? reasoning
         : null;
     safeModel = resolveModelForServiceTier(
       def,
       safeModel,
       typeof serviceTier === 'string' ? serviceTier : null,
-      requestedLiveModelScope,
     );
     const safeServiceTier =
       typeof serviceTier === 'string' &&
-      isKnownServiceTier(def, safeModel, serviceTier, requestedLiveModelScope)
+      isKnownServiceTier(def, safeModel, serviceTier)
         ? serviceTier
         : null;
     const agentOptions = {
@@ -8004,43 +7888,6 @@ export async function startServer({
     };
     const agentLaunch = resolveAgentLaunch(def, configuredAgentEnv);
     const resolvedBin = agentLaunch.selectedPath;
-    if (def.id === 'amr' && resolvedBin && agentLaunch.launchPath) {
-      // Concretize omitted/default AMR model requests to the live catalog
-      // default before the resume guard. The AMR preflight below applies the
-      // same rewrite before spawn; keeping this earlier copy aligned prevents
-      // stored concrete session models from comparing against raw `default`.
-      try {
-        const resumeProbe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
-        const resumeCatalog = await amrModelLoadingCache.get(resumeProbe.cacheKey, {
-          fetchPreset: () => fetchVelaPresetModels(resumeProbe.launchPath, resumeProbe.env),
-          fetchRemote: () => fetchVelaRemoteModelsWithRetry(resumeProbe.launchPath, resumeProbe.env),
-        });
-        const resumeLiveModels = preferFreshLiveModels(
-          resumeCatalog.models ?? [],
-          getRememberedLiveModels(def.id, requestedLiveModelScope),
-        );
-        const resumeModelIds = new Set(resumeLiveModels.map((c) => c?.id).filter(Boolean));
-        const askedForDefault =
-          typeof model !== 'string' || !model.trim() || model.trim().toLowerCase() === 'default';
-        const defaultRunModel = resolveDefaultModelFromOptions(resumeLiveModels);
-        if (
-          !safeModel ||
-          safeModel === 'default' ||
-          (
-            askedForDefault &&
-            !hasDefaultModelEnvOverride &&
-            defaultRunModel &&
-            (!resumeModelIds.has(safeModel) || safeModel !== defaultRunModel)
-          )
-        ) {
-          safeModel = defaultRunModel ?? safeModel ?? null;
-          agentOptions.model = safeModel;
-        }
-      } catch {
-        // Degrade silently: keep the requested value. The preflight below records
-        // the probe failure and applies the identical fallback.
-      }
-    }
     const resolvedAgentResumeCtx =
       agentSupportsSessionResume && run.conversationId
         ? resolveAgentResumeContext(db, {
@@ -8206,11 +8053,7 @@ export async function startServer({
       ? OD_NEXT_BUNDLE_ECHO_GUARD_V2
       : ECHO_GUARD;
     const includeStableForPayload = isOdNextRequestStage || includeStableInstructions;
-    const promptImagePaths = selectPromptImagePaths(
-      def.id,
-      transportSourceImages,
-      amrStagedImages,
-    );
+    const promptImagePaths = transportSourceImages;
     const acpPromptImagePaths = odNextTaskInputSnapshot
       ? excludeAcpImagePathsAlreadyDeliveredAsResources(
           promptImagePaths,
@@ -8352,7 +8195,7 @@ export async function startServer({
     }
     lifecycle.mark('prompt_build_end');
     lifecycle.mark('launch_preflight_start');
-    // (model resolution + AMR concretization hoisted above the resume guard)
+    // (model resolution hoisted above the resume guard)
     const executionProfile = executionProfileFromStreamFormat(def.streamFormat);
     // Accumulates the agent's visible text this run so the close handler can
     // tell whether the turn ended on a clarifying question form. The
@@ -9172,146 +9015,6 @@ export async function startServer({
       ).catch(() => null);
     }
 
-    // agentLaunch / resolvedBin are resolved above the resume guard (hoisted).
-    // Hoisted above the AMR catalog preflight: the empty-catalog branch
-    // below calls `sendAmrAccountFailure(...)` to surface AMR_AUTH_REQUIRED
-    // for signed-out users, and a `const` declared later in the same outer
-    // function scope would hit a TDZ ReferenceError before initialization.
-    const sendAmrAccountFailure = (failure) => {
-      send('error', createSseErrorPayload(
-        failure.code,
-        failure.message,
-        {
-          retryable: false,
-          details: amrAccountFailureDetails(failure),
-        },
-      ));
-    };
-
-    if (def.id === 'amr' && resolvedBin && agentLaunch.launchPath) {
-      const launchPath = agentLaunch.launchPath ?? resolvedBin;
-      const modelProbeEnv = launchPath
-        ? applyAgentLaunchEnv(
-            spawnEnvForAgent(
-              def.id,
-              {
-                ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
-                ...(def.env || {}),
-              },
-              configuredAgentEnv,
-              undefined,
-              { resolvedBin: agentLaunch.selectedPath },
-            ),
-            agentLaunch,
-          )
-        : null;
-      const amrModelScope = resolveAmrProfile(modelProbeEnv ?? process.env);
-      // Resolve the AMR model catalog through the SAME shared cache the UI's
-      // `/api/amr/models` endpoint serves (AmrModelLoadingCache): a cached
-      // authoritative `vela model list` when it is hot, otherwise the offline
-      // `vela model preset` seed while a remote refresh runs in the background.
-      //
-      // Why not a fresh `vela model list` per run: that authoritative call
-      // needs network reachability to the AMR gateway AND `$HOME` (the offline
-      // `preset`/`--version` calls need neither), takes up to ~10s, and only
-      // retries a narrow set of network errors. Running it blocking on every
-      // turn turned any transient gateway/timeout/HOME hiccup into a hard
-      // "AMR model … is not available from Vela" — even for a logged-in user
-      // who already picked a real model the picker surfaced from the preset
-      // seed. Under CorpLink/飞连 the call routinely exceeded the timeout, so
-      // AMR became unusable in packaged nightlies. Reusing the cache keeps that
-      // blocking probe off the per-run hot path and degrades to preset instead
-      // of fail-closing; vela's own `session/set_model` remains the final gate.
-      let liveModels = [];
-      try {
-        const probe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
-        const catalog = await amrModelLoadingCache.get(probe.cacheKey, {
-          fetchPreset: () => fetchVelaPresetModels(probe.launchPath, probe.env),
-          fetchRemote: () => fetchVelaRemoteModelsWithRetry(probe.launchPath, probe.env),
-        });
-        liveModels = catalog.models ?? [];
-      } catch (error) {
-        // Do not swallow silently: a probe failure here is exactly what made
-        // the packaged AMR breakage undiagnosable (the old `catch {}` left no
-        // trace in any log or diagnostics bundle). Record it and degrade to the
-        // remembered catalog below.
-        console.warn('[amr] model catalog preflight probe failed', error);
-        liveModels = [];
-      }
-      const rememberedLiveModels = getRememberedLiveModels(def.id, amrModelScope);
-      if (liveModels.length > 0) {
-        rememberLiveModels(def.id, liveModels, amrModelScope);
-      }
-      liveModels = preferFreshLiveModels(liveModels, rememberedLiveModels);
-      const liveModelIds = new Set(
-        liveModels.map((candidate) => candidate?.id).filter(Boolean),
-      );
-      // A request that came in as 'default'/empty is normally pre-resolved to a
-      // concrete id via the agent-wide cached model order; if it still is not,
-      // adopt the catalog's enabled default so the spawn layer always has a
-      // usable real id.
-      const userAskedForDefault =
-        typeof model !== 'string' ||
-        !model.trim() ||
-        model.trim().toLowerCase() === 'default';
-      const defaultRunModel = resolveDefaultModelFromOptions(liveModels);
-      if (
-        !safeModel ||
-        safeModel === 'default' ||
-        (
-          userAskedForDefault &&
-          !hasDefaultModelEnvOverride &&
-          defaultRunModel &&
-          (!liveModelIds.has(safeModel) || safeModel !== defaultRunModel)
-        )
-      ) {
-        safeModel = defaultRunModel ?? (safeModel === 'default' ? null : safeModel ?? null);
-        agentOptions.model = safeModel;
-      }
-      if (liveModelIds.size === 0) {
-        // The catalog is genuinely empty: even the offline preset seed could
-        // not be read, which almost always means the user is signed out (`vela`
-        // catalog calls 401) or the CLI is unrunnable. Prefer the relogin
-        // affordance over a misleading "choose a model".
-        if (def.id === 'amr') {
-          const loginStatus = readVelaLoginStatus(
-            modelProbeEnv ?? process.env,
-            configuredAgentEnv,
-          );
-          if (!loginStatus.loggedIn) {
-            sendAmrAccountFailure({
-              code: 'AMR_AUTH_REQUIRED',
-              message:
-                'AMR sign-in is required. Sign in to AMR Cloud again, then retry this run.',
-              action: 'relogin',
-            });
-            return finishStrategyAwarePhysicalRun('failed', 1, null);
-          }
-        }
-        // Logged in but no catalog at all AND no resolvable model: only now is
-        // there nothing safe to forward, so surface the model error.
-        if (!safeModel) {
-          send('error', createAmrModelUnavailablePayload(safeModel, {
-            reason: 'model_catalog_unavailable',
-          }));
-          return finishStrategyAwarePhysicalRun('failed', 1, null);
-        }
-        // Otherwise fall through with the user's selected model and let vela's
-        // `session/set_model` be the authoritative gate.
-      } else if (!safeModel) {
-        // Catalog known but we could not resolve any model id to forward.
-        send('error', createAmrModelUnavailablePayload(
-          typeof model === 'string' && model.trim() ? model : safeModel,
-          { availableModels: [...liveModelIds] },
-        ));
-        return finishStrategyAwarePhysicalRun('failed', 1, null);
-      }
-      // NOTE: when the selected model is absent from the (possibly preset-only
-      // or stale) catalog we intentionally do NOT fail-close. The cached/preset
-      // catalog can lag the live one, and a logged-in user picked a concrete
-      // id; vela rejects a truly unsupported model at `session/set_model` with
-      // a precise error, which beats a pre-emptive block on a flaky metadata read.
-    }
 
     // Plain-streaming adapters that own a "continue most recent
     // conversation" CLI flag (today: only `agy -c`) read this signal
@@ -9662,9 +9365,7 @@ export async function startServer({
 
     // `runStartTimeMs` is consumed by the run-end artifact-manifest
     // reconciler (#2893 / #3110) to skip artifacts whose mtime predates
-    // this run. The original main-side hunk also re-declared `const send`
-    // here; on this branch `send` was hoisted into the AMR preflight
-    // earlier, so we keep only the new `runStartTimeMs` declaration.
+    // this run.
     const runStartTimeMs = Date.now();
     const firstOutputTimeoutMs =
       resolveChatRunFirstOutputTimeoutMs(def.firstOutputTimeoutMs);
@@ -9921,7 +9622,7 @@ export async function startServer({
      * the bridge's own flushed bookkeeping. Letting any of it re-stamp the
      * clock is what makes a run that sat silent for the whole timeout window
      * report an age of a few hundred milliseconds, which is exactly the reading
-     * that sent the 2026-07-28 AMR incident's triage after the wrong window.
+     * that sent the 2026-07-28 retired-runtime incident's triage after the wrong window.
      *
      * Scoped to the attempt, not the run: a retry (or the resume-failed reseed)
      * builds a fresh `startChatRun` closure, so the next attempt starts with an
@@ -10044,20 +9745,6 @@ export async function startServer({
       undefined,
       { resolvedBin: agentLaunch.selectedPath },
     );
-    if (def.id === 'amr') {
-      const loginStatus = readVelaLoginStatus(agentSpawnEnv, configuredAgentSpawnEnv);
-      if (!loginStatus.loggedIn) {
-        cleanupPromptFile();
-        revokeToolToken('child_exit');
-        unregisterChatAgentEventSink();
-        sendAmrAccountFailure({
-          code: 'AMR_AUTH_REQUIRED',
-          message: 'AMR sign-in is required. Sign in to AMR Cloud again, then retry this run.',
-          action: 'relogin',
-        });
-        return finishStrategyAwarePhysicalRun('failed', 1, null);
-      }
-    }
     const odMediaEnv = createOpenDesignToolEnv({
       daemonUrl,
       projectDir: cwd,
@@ -10097,18 +9784,9 @@ export async function startServer({
     let jsonEventStreamHandler: ReturnType<typeof createJsonEventStreamHandler> | null = null;
     let agentStdoutTail = '';
     let agentStderrTail = '';
-    const agentStderrFilter = createAgentStderrVisibilityFilter(agentId);
-    const emitVisibleAgentStderr = (chunk: unknown) => {
-      const visibleChunk = agentStderrFilter.write(chunk);
-      if (!visibleChunk) return;
-      agentStderrTail = `${agentStderrTail}${visibleChunk}`.slice(-2000);
-      send('stderr', { chunk: visibleChunk });
-    };
-    const flushVisibleAgentStderr = () => {
-      const visibleChunk = agentStderrFilter.flush();
-      if (!visibleChunk) return;
-      agentStderrTail = `${agentStderrTail}${visibleChunk}`.slice(-2000);
-      send('stderr', { chunk: visibleChunk });
+    const emitAgentStderr = (chunk: unknown) => {
+      agentStderrTail = `${agentStderrTail}${chunk}`.slice(-2000);
+      send('stderr', { chunk });
     };
     try {
       // Prompt delivery via stdin is now the universal default. This bypasses
@@ -10124,60 +9802,6 @@ export async function startServer({
         ...(mmdRouteLaunchEnv || {}),
         ...odMediaEnv,
         ...(byokOpenCodeProvider ? byokOpenCodeProvider.env : {}),
-        ...await openDesignAmrTraceEnvForRun({
-          agentId: def.id,
-          runId: run.id,
-          conversationId: run.conversationId,
-          runAttempt: openDesignAmrRunAttempt({
-            retryAttemptCount: run.retryAttemptCount,
-            manualResumeAttemptCount: run.manualResumeAttemptCount,
-          }),
-          // Vela's workspace-credit isolation reads this env together with the
-          // signed-in account identity. The run pins the project's exact
-          // Workspace before its first asynchronous setup step; Vela/AMR
-          // remains the authority for membership, balance, and billing
-          // eligibility. Team and Personal bindings are both sent explicitly.
-          // An unbound project is refused before process spawn. Later project
-          // rebinds and ambient/current selection never participate.
-          projectId,
-          workspaceScope: run.workspaceScope,
-          externalPluginAnalytics: run.externalPluginAnalytics ?? null,
-        }, {
-          // Report persisted-binding vs truly-unbound selection to the daemon
-          // log and telemetry. Ids and the branch name only —
-          // never member rows or credentials.
-          onWorkspaceScopeOutcome: (outcome) => {
-            console.log(
-              `[od] amr workspace scope ${outcome.kind}`
-                + ` project=${outcome.projectId}`
-                + ` workspace=${outcome.workspaceId ?? 'none'}`
-                + ` run=${run.id}`,
-            );
-            const context = run.analyticsContext ?? null;
-            if (!context || !design?.analytics?.capture) return;
-            design.analytics.capture({
-              eventName: 'amr_workspace_scope_resolved',
-              context,
-              // `design.getAppVersion` is the only app-version accessor this
-              // scope can see; the identically-named helper inside
-              // `createFinalizedMessageTelemetryReporter` is a different
-              // function's local and resolving it here threw a ReferenceError
-              // out of the spawn path, failing 100% of AMR runs. That helper's
-              // own last resort is this same accessor, so the value is
-              // unchanged.
-              appVersion: design.getAppVersion?.() ?? 'unknown',
-              properties: {
-                page_name: 'chat_panel',
-                area: 'chat_panel',
-                project_id: outcome.projectId,
-                conversation_id: run.conversationId ?? null,
-                run_id: run.id,
-                workspace_scope_outcome: outcome.kind,
-                workspace_id: outcome.workspaceId,
-              },
-            });
-          },
-        }),
         // OpenCode external-MCP injection (issue #2142). Layered AFTER
         // spawnEnvForAgent / odMediaEnv / configuredAgentEnv so the
         // daemon-built MCP config wins over a stale value the user
@@ -10307,12 +9931,8 @@ export async function startServer({
       revokeToolToken('child_exit');
       unregisterChatAgentEventSink();
       send('error', createSseErrorPayload(
-        err instanceof AmrWorkspaceScopeRequiredError
-          ? err.code
-          : 'AGENT_EXECUTION_FAILED',
-        err instanceof AmrWorkspaceScopeRequiredError
-          ? err.message
-          : `spawn failed: ${err.message}`,
+        'AGENT_EXECUTION_FAILED',
+        `spawn failed: ${err.message}`,
       ));
       finishStrategyAwarePhysicalRun('failed', 1, null);
       return;
@@ -10516,10 +10136,9 @@ export async function startServer({
         // is owned solely by the orchestrator's awaited result below.
         child.stderr.on('data', (chunk) => {
           noteAgentActivity();
-          emitVisibleAgentStderr(chunk);
+          emitAgentStderr(chunk);
         });
         child.on('error', (err) => {
-          flushVisibleAgentStderr();
           send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', err.message));
         });
 
@@ -10529,8 +10148,7 @@ export async function startServer({
         // apart from a clean ship and may misclassify failures.
         const childExitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
           child.once('close', (code, signal) => {
-            flushVisibleAgentStderr();
-            resolve({ code, signal });
+              resolve({ code, signal });
           });
         });
         try {
@@ -10569,7 +10187,6 @@ export async function startServer({
             finishStrategyAwarePhysicalRun('failed', 1, null);
           }
         } catch (err) {
-          flushVisibleAgentStderr();
           send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', err instanceof Error ? err.message : String(err)));
           finishStrategyAwarePhysicalRun('failed', 1, null);
         } finally {
@@ -10866,7 +10483,6 @@ export async function startServer({
         // a run failure races the cancel route and can make it return failed.
         if (run.cancelRequested) return;
         if (agentStreamError) return;
-        flushVisibleAgentStderr();
         const failureText = [
           String(ev.message || 'Agent stream error'),
           typeof ev.raw === 'string' ? ev.raw : '',
@@ -11021,7 +10637,6 @@ export async function startServer({
             });
             return;
           }
-          flushVisibleAgentStderr();
           const message = String((ev as any).message || 'Claude Code stream error');
           const failureText = [
             message,
@@ -11216,8 +10831,7 @@ export async function startServer({
           } else if (channel === 'error') {
             if (run.cancelRequested) return;
             if (agentStreamError) return;
-            flushVisibleAgentStderr();
-            agentStreamError = String(payload?.message || 'Pi session error');
+              agentStreamError = String(payload?.message || 'Pi session error');
             agentStreamErrorObservedBeforeCancellation = true;
             acpFatalErrorObservedBeforeCancellation = true;
             run.runtimeFailureObservedBeforeCancellation = true;
@@ -11259,7 +10873,6 @@ export async function startServer({
         stdioMcpRemovedInVersion: def.acpStdioMcpRemovedInVersion ?? null,
         executionProfile,
         completePromptOnTurnEnd: def.acpTurnEndCompletesPrompt === true,
-        ...(def.id === 'amr' ? { modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE' } : {}),
         // Resume the prior upstream session (drives `session/load`) when the
         // resume-identity guard says it is safe; otherwise a fresh session/new.
         ...(def.resumesSessionViaAcpLoad === true && agentResumePromptPolicy.resumeSessionId
@@ -11308,21 +10921,6 @@ export async function startServer({
           // progress. Freeze here so the recorded age keeps describing the
           // silence rather than our own teardown.
           if (event === 'error') retireAttemptOnAcpVerdict();
-          if (event === 'error') flushVisibleAgentStderr();
-          if (def.id === 'amr' && event === 'error') {
-            const failure = classifyAmrAccountFailureSignal({
-              details: data?.error?.details,
-              message: data?.message,
-              errorMessage: data?.error?.message,
-              errorCode: data?.error?.code,
-              stdoutTail: agentStdoutTail,
-              stderrTail: agentStderrTail,
-            });
-            if (failure) {
-              sendAmrAccountFailure(failure);
-              return;
-            }
-          }
           // Hold back the `resume_failed` error so the same-turn reseed stays
           // transparent. When this run is resuming an upstream session via
           // `session/load` and the agent reports that session is gone, the ACP
@@ -11384,19 +10982,6 @@ export async function startServer({
           send(event, data);
         },
         ...(acpStageTimeoutMs !== undefined ? { stageTimeoutMs: acpStageTimeoutMs } : {}),
-      });
-      // Publish AMR/vela child-evidence coverage at child close. Without it the
-      // ACP runtime emits no `child_evidence_coverage_v1` at all and every AMR
-      // task aggregates as `child_lifecycle_unavailable_not_zero`, which cannot
-      // tell "this run had no Child agents" from "nobody was observing".
-      //
-      // Registration order is load-bearing: `attachAcpSession` installs its own
-      // close handler above, so the session has already settled
-      // finished/fatal/aborted by the time this one reads it and the coverage
-      // reflects how the turn actually ended. A non-AMR ACP agent has no vela
-      // consumer and yields undefined, which the publisher already ignores.
-      child.on('close', () => {
-        publishRuntimeChildEvidenceCoverage(acpSession?.childEvidenceCoverage?.());
       });
     } else if (def.streamFormat === 'dsh-profile-jsonl') {
       trackingSubstantiveOutput = true;
@@ -11531,7 +11116,7 @@ export async function startServer({
     run.acpSession = acpSession;
     child.stderr.on('data', (chunk) => {
       noteAgentActivity();
-      emitVisibleAgentStderr(chunk);
+      emitAgentStderr(chunk);
     });
 
     // A retry reuses the same run object but replaces run.child. Treat that
@@ -11569,7 +11154,6 @@ export async function startServer({
       clearInactivityWatchdog();
       clearFirstOutputWatchdog();
       cleanupPromptFile();
-      flushVisibleAgentStderr();
       revokeToolToken('child_exit');
       if (!attemptStillOwnsRun()) return;
       unregisterChatAgentEventSink();
@@ -11584,7 +11168,6 @@ export async function startServer({
       clearInactivityWatchdog();
       clearFirstOutputWatchdog();
       clearForcedChildShutdown();
-      flushVisibleAgentStderr();
       if (!attemptStillOwnsRun() || watchdogRetryRestarted) {
         // Finalization and event-sink / run-handle ownership (keyed by the
         // shared runId) now belong to another retry generation, so this
@@ -11701,9 +11284,9 @@ export async function startServer({
 
       // Resume-target-missing recovery runs BEFORE the generic fatal/stream-error
       // short-circuits. The signal arrives differently per adapter: codex reports
-      // "no rollout found for thread id" as a stream `error` event, while AMR/vela
-      // reports a structured `resume_failed` JSON-RPC error that the ACP bridge
-      // turns into a FATAL. Either would otherwise be swallowed by the
+      // "no rollout found for thread id" as a stream `error` event, while an
+      // ACP session/load adapter reports a structured `resume_failed` JSON-RPC
+      // error that the ACP bridge turns into a FATAL. Either would otherwise be swallowed by the
       // `fatal_rpc_error` / `stream_error` paths below and leave the dead session
       // id stored — so every later turn would retry the same broken resume (#4275
       // class). Clearing the stale handle here lets the next turn start fresh +
@@ -11786,16 +11369,6 @@ export async function startServer({
         code !== 0 &&
         !run.cancelRequested
       ) {
-        if (def.id === 'amr') {
-          const amrFailure = classifyAmrAccountFailureSignal({
-            stdoutTail: agentStdoutTail,
-            stderrTail: agentStderrTail,
-          });
-          if (amrFailure) {
-            sendAmrAccountFailure(amrFailure);
-            return finishWithRetryDecision('failed', code ?? 1, signal ?? null);
-          }
-        }
         const authFailure = classifyAgentAuthFailure(
           agentId,
           `${agentStderrTail}\n${agentStdoutTail}`,
@@ -12203,7 +11776,7 @@ export async function startServer({
           publishNativeSessionRecoveryMetadata();
         }
       }
-      // ACP session/load adapters (AMR/vela) report a durable upstream handle
+      // ACP session/load adapters report a durable upstream handle
       // from the ACP session; persist it (under the resume-identity guard) so
       // the next turn resumes via session/load. A missing handle clears the row
       // (so a fresh session is opened next turn), mirroring the capture-style
@@ -12863,17 +12436,6 @@ export async function startServer({
       getWorkspaceProjectByProjectId,
       ensureWorkspaceProject,
     },
-    amrWorkspaceScope: {
-      isSignedIn: async () => {
-        const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch(
-          () => ({}),
-        );
-        return readVelaLoginStatus(
-          process.env,
-          agentCliEnvForAgent(appConfig.agentCliEnv, 'amr'),
-        ).loggedIn;
-      },
-    },
     authorizeProjectRequest,
   });
 
@@ -13388,7 +12950,6 @@ export async function startServer({
     };
     const cleanupDaemonBackgroundWork = () => {
       clearTerminalTelemetryFallbackTimers();
-      amrTerminalReportDelivery.stop();
       telemetry.disposeFatalHandlers();
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
@@ -13404,7 +12965,6 @@ export async function startServer({
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
-      amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();
       await design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() });
       await terminalService.shutdownActive();
@@ -13455,7 +13015,6 @@ export async function startServer({
           return;
         }
         resolvedPort = boundPort;
-        startAmrTerminalReportDeliveryAfterBind(amrTerminalReportDelivery, boundPort);
         // When binding to all interfaces report localhost for local callers;
         // when binding to a specific address (e.g. a Tailscale IP) report that
         // address so remote callers and the sidecar use the correct URL.

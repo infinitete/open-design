@@ -33,10 +33,8 @@ export const ACP_ARTIFACT_ECHO_START_RE = new RegExp(
   String.raw`^\s*(?:${ACP_ARTIFACT_OPEN_PATTERN}|${ACP_GENERATED_FILE_PREFIX_PATTERN}${ACP_ARTIFACT_OPEN_PATTERN})`,
   'i',
 );
-/** Maximum number of `acp_raw_event_shape` and `acp_artifact_text_suppression` diagnostic events emitted per session to avoid flooding the event stream. */
+/** Maximum number of `acp_artifact_text_suppression` diagnostic events emitted per session to avoid flooding the event stream. */
 export const ACP_RAW_EVENT_SHAPE_DIAGNOSTIC_LIMIT = 8;
-/** Maximum number of bytes retained from stderr to detect AMR retry/failure signals; older bytes are discarded to bound memory use. */
-export const AMR_STDERR_RETRY_TAIL_LIMIT = 16_000;
 /** Maximum number of redacted stderr characters attached to an ACP child-exit diagnostic. */
 export const ACP_STDERR_DIAGNOSTIC_TAIL_LIMIT = 4_000;
 /** Normalised token IDs that identify a model-selection config option in an ACP `session/new` response's `configOptions` array. */

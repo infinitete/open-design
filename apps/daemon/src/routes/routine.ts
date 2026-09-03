@@ -518,7 +518,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
       if (!existing) return res.status(404).json({ error: 'routine not found' });
       // Execution is not a local membership decision. The routine/project
       // already persists its exact Workspace billing address; start the run
-      // with that address and let the authenticated Vela backend make the
+      // with that address and let the authenticated cloud backend make the
       // final membership, permission, and billing decision. Re-reading the
       // daemon directory here made a transient outage either block the run or
       // tempt callers to drop Team scope and charge Personal instead.
