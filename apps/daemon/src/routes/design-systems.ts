@@ -31,7 +31,7 @@ function headerValue(req: any, name: string): string | undefined {
   return typeof val === 'string' ? val : undefined;
 }
 function requestWithWorkspaceNavigationScope(req: any): any { return req; }
-function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return { ok: true, context: null }; }
 type VerifyWorkspaceRequestAuthority = any;
 type WorkspaceResourceAccessInput = any;
 import type { Project, ProjectFile } from '@open-design/contracts';

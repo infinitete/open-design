@@ -1,9 +1,7 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
-import type {
-  WorkspaceCollabContext,
-  WorkspaceDirectoryItem,
-} from '@open-design/contracts';
+type WorkspaceCollabContext = Record<string, any>;
+type WorkspaceDirectoryItem = Record<string, any>;
 import { ensureRailOpen } from './rail.js';
 import { T } from '@/timeouts';
 

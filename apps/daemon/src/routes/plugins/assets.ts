@@ -4,7 +4,7 @@ import path from 'node:path';
 
 // Collab types removed - define locally
 type WorkspaceCollabContext = { workspaceId?: string | null; workspaceMemberId?: string | null } | null;
-function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return { ok: true, context: null }; }
 type VerifyWorkspaceRequestAuthority = any;
 
 export interface RegisterPluginAssetRoutesDeps {

@@ -3,10 +3,8 @@ import { ensureRailOpen, openNewProjectModal } from '@/playwright/rail';
 import { settingsSurface } from '@/playwright/amr';
 import { expectStableCount } from '@/playwright/assertions';
 import { openHomeTemplateMenu } from '@/playwright/home-hero';
-import type {
-  WorkspaceCollabContext,
-  WorkspaceDirectoryItem,
-} from '@open-design/contracts';
+type WorkspaceCollabContext = Record<string, any>;
+type WorkspaceDirectoryItem = Record<string, any>;
 import type { Page, Request } from '@playwright/test';
 import {
   applyStandardMocks,

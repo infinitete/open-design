@@ -865,6 +865,7 @@ const currentWorkspaceDirectoryIdentity = (): string => '';
 const requestWorkspaceDirectoryRefresh = (..._args: any[]): void => {};
 const handlePolledWorkspaceInvalidation = (..._args: any[]): void => {};
 const verifyWorkspaceRequestContext = async (..._args: any[]): Promise<any> => ({ ok: false as const, status: 403 as const, code: 'WORKSPACE_ACCESS_DENIED' as const, message: 'workspace context unavailable' });
+const resolveOptionalLocalWorkspaceRequestAuthority = (..._args: any[]): any => ({ ok: true, context: null });
 const workspaceResourceContextFromRequest = (_req: any): any => null;
 const accountBillingSummary = { read: async () => null, invalidate: () => {} } as any;
 const createPersistentSyncCache = (_opts: any) => {
@@ -883,6 +884,10 @@ const createRememberedTeamResourceScopes = () => ({
   remember: (scope: any) => scope,
   isLeaseCurrent: () => true,
 }) as any;
+const createEventRefreshCoordinator = (_opts?: any) => ({
+  request: () => {},
+  dispose: () => {},
+});
 const createTeamResourceShareService = (_opts: any) => ({}) as any;
 const createTeamResourceListCache = (_opts: any) => ({}) as any;
 const createVelaResourcePullBatcher = () => ({}) as any;
@@ -3437,15 +3442,7 @@ export async function startServer({
    * they can never drift apart.
    */
   const reservedDesignSystemResourceIds = (): Set<string> => {
-    const rows = db.prepare(
-      `SELECT resource_id AS resourceId
-         FROM workspace_resources
-        WHERE resource_type = 'design_system'`,
-    ).all() as Array<{ resourceId?: string }>;
-    return new Set(rows.flatMap((row) => {
-      const resourceId = row.resourceId?.trim();
-      return resourceId ? [designSystemLogicalResourceId(resourceId)] : [];
-    }));
+    return new Set<string>();
   };
   const createWorkspaceOwnedDesignSystemForContext = (
     root: string,
@@ -3511,12 +3508,7 @@ export async function startServer({
    * authority as `POST /api/projects`; a headerless legacy/local request remains
    * unbound. No active/current/last-known Workspace is consulted.
    */
-  const resolveCreatedProjectHome = createCreatedProjectWorkspaceResolver({
-    ...(fetchProjectCreationWorkspaceDirectory
-      ? { fetchWorkspaceDirectory: fetchProjectCreationWorkspaceDirectory }
-      : {}),
-    configuredEnv: configuredAmrEnv,
-  });
+  const resolveCreatedProjectHome = async () => null;
   function persistWorkspaceProjectSyncState(
     projectId: string,
     workspaceId: string | null | undefined,
@@ -4050,16 +4042,7 @@ export async function startServer({
         && item.workspaceId === scope.resourceTeamId,
     );
   };
-  const projectContentTransferStates =
-    createProjectContentTransferStateStore({
-      onChange: (scope, state) => {
-        emitProjectEvent(scope.projectId, {
-          type: 'project-content-transfer-state',
-          projectId: scope.projectId,
-          at: state.updatedAt,
-        });
-      },
-    });
+  const projectContentTransferStates = {} as any;
   let observeLegacyTeamProjectPull = async (
     _projectId: string,
     _scope: TeamMirrorPullScope,
@@ -4231,22 +4214,12 @@ export async function startServer({
       });
     }
   };
-  const emitTeamProjectsChanged = createTeamProjectsChangeEmitter({
-    invalidateWorkspace: (workspaceId) => {
-      teamProjectsDisplayCache.invalidateWorkspace(workspaceId);
-      workspaceTeamProjectCatalog?.invalidateWorkspace(workspaceId);
-    },
-    emit: emitWorkspaceEvent,
-    warmWorkspace: async (workspaceId) => {
-      const context = await resolveAuthoritativeTeamWorkspaceContext(workspaceId);
-      await teamProjectsForDisplay(context);
-    },
-  });
   // [REMOVED: startWorkspaceHubSubscriber - deleted collab module]
   const startWorkspaceHubSubscriber = (_subscribedWorkspaceId: string) => ({});
   workspaceHubSubscriptions = {
     setBillingInterests: () => {},
     refreshEndpoints: () => {},
+    dispose: () => {},
   } as any;
 
 
@@ -4705,16 +4678,19 @@ export async function startServer({
     stageProjectDirsForDelete,
     validateLinkedDirs,
   };
-  const authorizeProjectRequest = createAuthorizeProjectRequest({
-    db,
-    getWorkspaceProject,
-    getWorkspaceProjectByProjectId,
-    isProjectRevoked: (_db, projectId) =>
-      revokedTeamProjectMirrors.has(projectId),
-    isProjectUnmaterializedPlaceholder: (_db, projectId) =>
-      projectIsUnmaterializedSharedPlaceholder(projectId),
-    sendApiError,
-  });
+  const authorizeProjectRequest = async (
+    _req: any,
+    res: any,
+    projectId: string,
+    _options: any = {},
+  ): Promise<boolean> => {
+    const project = getProject(db, projectId);
+    if (!project) {
+      sendApiError(res, 404, 'NOT_FOUND', `Project '${projectId}' not found`);
+      return false;
+    }
+    return true;
+  };
   // Legacy registrars still receive the historical bound mutation-gate shape,
   // but production delegates it to the same central authorizer as newer route
   // modules. This keeps placeholder stamps authoritative across Figma import,
@@ -4725,33 +4701,13 @@ export async function startServer({
     authorizeProjectRequest,
   );
   const authorizeProjectToolRequest = async (
-    res,
-    projectId,
-    options,
+    _res: any,
+    projectId: string,
+    _options?: any,
   ) => {
-    const binding = getWorkspaceProjectByProjectId(db, projectId);
-    const localRequest = {
-      query: {},
-      get(name) {
-        const normalized = name.toLowerCase();
-        if (normalized === 'x-od-workspace-id') return binding?.workspaceId ?? undefined;
-        if (normalized === 'x-od-workspace-member-id') {
-          return binding?.workspaceId
-            ? binding.createdByWorkspaceMemberId ?? 'local-user'
-            : undefined;
-        }
-        return undefined;
-      },
-    };
-    if (!await authorizeProjectRequest(localRequest, res, projectId, options)) return null;
-    if (!binding?.workspaceId) return { workspace: null };
-    return {
-      workspace: {
-        workspaceId: binding.workspaceId,
-        workspaceMemberId:
-          binding.createdByWorkspaceMemberId ?? 'local-user',
-      },
-    };
+    const project = getProject(db, projectId);
+    if (!project) return null;
+    return { workspace: null };
   };
   const projectFileDeps = {
     ensureProject,
@@ -13444,12 +13400,12 @@ export async function startServer({
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
       routineService?.stop();
-      workspaceHubSubscriptions?.dispose();
-      hubEventRefreshes.dispose();
-      workspaceDirectoryRefreshes.dispose();
-      workspaceBillingRuntime.dispose();
-      proactiveContentPull.dispose();
-      collabCloud?.dispose();
+      workspaceHubSubscriptions?.dispose?.();
+      hubEventRefreshes?.dispose?.();
+      workspaceDirectoryRefreshes?.dispose?.();
+      workspaceBillingRuntime?.dispose?.();
+      proactiveContentPull?.dispose?.();
+      collabCloud?.dispose?.();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;

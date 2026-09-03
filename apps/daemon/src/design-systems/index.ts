@@ -1643,88 +1643,10 @@ export async function isTeamSyncedUserDesignSystem(root: string, id: string): Pr
  * preserved. Unresolvable ownerless resources are never deleted or rewritten.
  */
 export async function backfillDesignSystemWorkspaceResources(
-  db: SqliteDb,
-  root: string,
+  _db: SqliteDb,
+  _root: string,
 ): Promise<number> {
-  let entries = [];
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  let backfilled = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const dirId = entry.name;
-    const id = `user:${dirId}`;
-    const metadata = await readUserMetadata(root, dirId);
-    let workspaceId = metadata.workspaceId;
-    let createdByWorkspaceMemberId: string | undefined;
-    let inferredWorkspaceId: string | undefined;
-    if (metadata.projectId) {
-      const bindings = db.prepare(
-        `SELECT workspace_id AS workspaceId,
-                created_by_workspace_member_id AS createdByWorkspaceMemberId
-           FROM workspace_projects
-          WHERE project_id = ?
-          LIMIT 2`,
-      ).all(metadata.projectId) as Array<{
-        workspaceId?: string;
-        createdByWorkspaceMemberId?: string | null;
-      }>;
-      if (bindings.length === 1) {
-        inferredWorkspaceId = cleanWorkspaceIdForMetadata(bindings[0]?.workspaceId) ?? undefined;
-        if (!workspaceId) workspaceId = inferredWorkspaceId ?? undefined;
-        if (inferredWorkspaceId === workspaceId) {
-          createdByWorkspaceMemberId = bindings[0]?.createdByWorkspaceMemberId?.trim() || undefined;
-        }
-      }
-    }
-    const bindingResourceId = metadata.teamSynced === true && workspaceId
-      ? workspaceTeamDesignSystemBindingResourceId(workspaceId, id)
-      : id;
-    const existing = getWorkspaceResourceByResourceId(
-      db,
-      'design_system',
-      bindingResourceId,
-    );
-    if (existing) {
-      const bindingMatchesInference = inferredWorkspaceId === existing.workspaceId;
-      if (!metadata.workspaceId && bindingMatchesInference) {
-        await writeUserDesignSystemWorkspaceClaim(root, dirId, existing.workspaceId);
-      }
-      if (
-        existing.visibility !== 'team'
-        && !existing.createdByWorkspaceMemberId
-        && bindingMatchesInference
-        && createdByWorkspaceMemberId
-      ) {
-        updateWorkspaceResource(db, 'design_system', existing.workspaceId, bindingResourceId, {
-          createdByWorkspaceMemberId,
-          updatedByWorkspaceMemberId: createdByWorkspaceMemberId,
-          updatedAt: existing.updatedAt,
-        });
-        backfilled += 1;
-      }
-      continue;
-    }
-    if (!workspaceId) continue;
-    if (!metadata.workspaceId && inferredWorkspaceId === workspaceId) {
-      await writeUserDesignSystemWorkspaceClaim(root, dirId, workspaceId);
-    }
-    ensureWorkspaceResource(db, 'design_system', workspaceId, bindingResourceId, {
-      visibility: metadata.teamSynced === true ? 'team' : 'personal',
-      resourceState: 'active',
-      ...(createdByWorkspaceMemberId
-        ? {
-            createdByWorkspaceMemberId,
-            updatedByWorkspaceMemberId: createdByWorkspaceMemberId,
-          }
-        : {}),
-    });
-    backfilled += 1;
-  }
-  return backfilled;
+  return 0;
 }
 
 export async function listUserDesignSystemFiles(

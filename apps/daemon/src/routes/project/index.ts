@@ -142,7 +142,7 @@ function createAuthorizeProjectRequest(..._args: any[]): any { return null; }
 function enforceLocalProjectDataPlaneRequest(..._args: any[]): any { return {}; }
 type AuthorizeProjectRequest = any;
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
-function createCreatedProjectWorkspaceResolver(..._args: any[]): any { return null; }
+function createCreatedProjectWorkspaceResolver(..._args: any[]): any { return async () => null; }
 class CreatedProjectWorkspaceResolutionError extends Error {
   status: number;
   code: string;

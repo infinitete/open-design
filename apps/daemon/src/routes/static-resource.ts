@@ -39,7 +39,7 @@ import {
 
 // Collab workspace-resource-mutation removed - stub functions
 function enforceVerifiedWorkspaceResourceMutation(..._args: any[]): any { return {}; }
-function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return { ok: true, context: null }; }
 type VerifyWorkspaceRequestAuthority = any;
 type WorkspaceResourceAccessInput = any;
 import {
@@ -424,18 +424,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   };
   const reservedDesignSystemResourceIds = (): Set<string> => {
-    const ids = new Set<string>();
-    const bindings = db.prepare(
-      `SELECT resource_id AS resourceId
-         FROM workspace_resources
-        WHERE resource_type = 'design_system'`,
-    ).all() as Array<{ resourceId?: string }>;
-    for (const binding of bindings) {
-      const resourceId = binding.resourceId?.trim();
-      if (!resourceId) continue;
-      ids.add(designSystemLogicalResourceId(resourceId));
-    }
-    return ids;
+    return new Set<string>();
   };
   const reservedDesignSystemDirIds = (systems: Array<{ id: string }>): string[] => {
     const ids = new Set(designSystemDirIdsFromCatalog(systems));

@@ -558,53 +558,58 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
   };
 
   app.put('/api/projects/:id/conversations/:cid/messages/:mid', async (req, res) => {
-    if (!await authorizeProjectRequest(
-      req,
-      res,
-      req.params.id,
-      { mode: 'write', capability: 'writeFiles' },
-    )) return;
-    const conv = getRoutableConversation(req.params.id, req.params.cid);
-    if (!conv) {
-      return res.status(404).json({ error: 'conversation not found' });
+    try {
+      if (!await authorizeProjectRequest(
+        req,
+        res,
+        req.params.id,
+        { mode: 'write', capability: 'writeFiles' },
+      )) return;
+      const conv = getRoutableConversation(req.params.id, req.params.cid);
+      if (!conv) {
+        return res.status(404).json({ error: 'conversation not found' });
+      }
+      const m = req.body || {};
+      if (m.id && m.id !== req.params.mid) {
+        return res.status(400).json({ error: 'id mismatch' });
+      }
+      // Scope the stored lookup to the conversation authorized by the route. If a
+      // message with this id exists in ANOTHER conversation, reject rather than
+      // rewrite the wrong row through this endpoint (looper review on #6418).
+      const existing = getMessage(db, req.params.mid, req.params.cid);
+      if (existing === null && getMessage(db, req.params.mid) !== null) {
+        return res.status(404).json({ error: 'message not found' });
+      }
+      // A create-only write claims the row exactly once. The client asking for
+      // it owns a payload whose identity is decided before the send (an inline
+      // question form's answer belongs to one occurrence), and it cannot make
+      // "read, then write" atomic against a second tab. Refusing the overwrite
+      // here — the one place the check and the write are the same operation —
+      // keeps the first accepted answer authoritative, and returning the stored
+      // row tells the loser what actually ran instead of leaving it showing an
+      // answer no run ever saw.
+      if (m.createOnly === true && existing !== null) {
+        return res.json({ message: existing });
+      }
+      const normalizedMessage = Array.isArray(m.events)
+        ? { ...m, events: compactAdjacentMessageAgentEvents(m.events) }
+        : m;
+      const saved = upsertMessage(db, req.params.cid, {
+        ...mergeMessageWriteForDaemonBacked(existing, normalizedMessage),
+        id: req.params.mid,
+      });
+      // Bump the parent project's updatedAt so the project list re-orders.
+      updateProject(db, req.params.id, {});
+      ctx.telemetry?.reportFinalizedMessage(saved, m, {
+        analyticsContext: readAnalyticsContext(req),
+        projectId: req.params.id,
+        conversationId: req.params.cid,
+      });
+      res.json({ message: saved });
+    } catch (err) {
+      console.error('[PUT message error]', err);
+      res.status(500).json({ error: String(err) });
     }
-    const m = req.body || {};
-    if (m.id && m.id !== req.params.mid) {
-      return res.status(400).json({ error: 'id mismatch' });
-    }
-    // Scope the stored lookup to the conversation authorized by the route. If a
-    // message with this id exists in ANOTHER conversation, reject rather than
-    // rewrite the wrong row through this endpoint (looper review on #6418).
-    const existing = getMessage(db, req.params.mid, req.params.cid);
-    if (existing === null && getMessage(db, req.params.mid) !== null) {
-      return res.status(404).json({ error: 'message not found' });
-    }
-    // A create-only write claims the row exactly once. The client asking for
-    // it owns a payload whose identity is decided before the send (an inline
-    // question form's answer belongs to one occurrence), and it cannot make
-    // "read, then write" atomic against a second tab. Refusing the overwrite
-    // here — the one place the check and the write are the same operation —
-    // keeps the first accepted answer authoritative, and returning the stored
-    // row tells the loser what actually ran instead of leaving it showing an
-    // answer no run ever saw.
-    if (m.createOnly === true && existing !== null) {
-      return res.json({ message: existing });
-    }
-    const normalizedMessage = Array.isArray(m.events)
-      ? { ...m, events: compactAdjacentMessageAgentEvents(m.events) }
-      : m;
-    const saved = upsertMessage(db, req.params.cid, {
-      ...mergeMessageWriteForDaemonBacked(existing, normalizedMessage),
-      id: req.params.mid,
-    });
-    // Bump the parent project's updatedAt so the project list re-orders.
-    updateProject(db, req.params.id, {});
-    ctx.telemetry?.reportFinalizedMessage(saved, m, {
-      analyticsContext: readAnalyticsContext(req),
-      projectId: req.params.id,
-      conversationId: req.params.cid,
-    });
-    res.json({ message: saved });
   });
 
   registerProjectCommentRoutes(app, ctx);

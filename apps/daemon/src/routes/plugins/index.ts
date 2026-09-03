@@ -23,7 +23,7 @@ class TeamResourceCopyForbiddenError extends Error {
 function enforceTeamResourceCopyAllowed(..._args: any[]): any { return {}; }
 type TeamResourceStateProvider = any;
 function enforceVerifiedWorkspaceResourceMutation(..._args: any[]): any { return {}; }
-function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return null; }
+function resolveOptionalLocalWorkspaceRequestAuthority(..._args: any[]): any { return { ok: true, context: null }; }
 type VerifyWorkspaceRequestAuthority = any;
 function authorizeCreatedProjectWorkspace(..._args: any[]): any { return {}; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
