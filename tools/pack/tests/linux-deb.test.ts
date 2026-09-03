@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ToolPackConfig } from "@/config/index.js";
-import { DEB_PACKAGE_NAME, findBuiltDeb, linuxBuilderTargetsFor, renderDebAfterInstallScript, renderDebAfterRemoveScript, resolveLinuxLifecycleMode, resolveLinuxPaths } from "@/linux.js";
+import { DEB_PACKAGE_NAME, debDesktopEntry, findBuiltDeb, linuxBuilderTargetsFor, renderDebAfterInstallScript, renderDebAfterRemoveScript, resolveLinuxLifecycleMode, resolveLinuxPaths } from "@/linux.js";
 import {
   composeDebInstallCommand,
   composeDebUninstallCommand,
@@ -394,6 +394,17 @@ describe("renderDebAfterInstallScript", () => {
     expect(script).toContain("ln -sf '/opt/Open Design/Open Design' '/usr/bin/open-design'");
   });
 
+  it("renames the space-containing hicolor icon to the space-free package name", () => {
+    // electron-builder installs the icon as "Open Design.png" (derived from
+    // executableName); gtk-update-icon-cache cannot cache icon names containing
+    // spaces and fails with "The generated cache was invalid".
+    expect(script).toContain('mv -f "$size_dir/Open Design.png" "$size_dir/open-design.png"');
+  });
+
+  it("refreshes the hicolor icon cache after the icon rename", () => {
+    expect(script).toContain("gtk-update-icon-cache -f -t /usr/share/icons/hicolor");
+  });
+
   it("keeps the default template's essential behaviors", () => {
     expect(script).toContain("chmod 4755 '/opt/Open Design/chrome-sandbox'");
     expect(script).toContain("update-mime-database /usr/share/mime");
@@ -407,5 +418,15 @@ describe("renderDebAfterRemoveScript", () => {
   it("never invokes update-alternatives and removes the CLI symlink", () => {
     expect(script).not.toMatch(/^\s*update-alternatives\b/m);
     expect(script).toContain("rm -f '/usr/bin/open-design'");
+  });
+
+  it("removes the renamed space-free hicolor icons", () => {
+    expect(script).toContain("rm -f /usr/share/icons/hicolor/*/apps/open-design.png");
+  });
+});
+
+describe("debDesktopEntry", () => {
+  it("points the desktop entry Icon at the space-free dpkg package name", () => {
+    expect(debDesktopEntry()).toEqual({ entry: { Icon: "open-design" } });
   });
 });

@@ -663,6 +663,22 @@ export function renderDebAfterInstallScript(): string {
 
 ln -sf '${executable}' '${symlink}'
 
+# electron-builder installs the hicolor icon as "<productName>.png"
+# ("${PRODUCT_NAME}.png", derived from executableName). gtk-update-icon-cache
+# cannot represent icon names containing spaces and fails with "The generated
+# cache was invalid", which leaves the desktop entry without its icon. Rename
+# the icon to the space-free dpkg package name — matching the Icon= override
+# from debDesktopEntry — and refresh the cache.
+for size_dir in /usr/share/icons/hicolor/*/apps; do
+    if [ -f "$size_dir/${PRODUCT_NAME}.png" ]; then
+        mv -f "$size_dir/${PRODUCT_NAME}.png" "$size_dir/${DEB_PACKAGE_NAME}.png"
+    fi
+done
+
+if hash gtk-update-icon-cache 2>/dev/null; then
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+fi
+
 # Use SUID chrome-sandbox only on systems without working user namespaces:
 if ! { [[ -L /proc/self/ns/user ]] && unshare --user true; }; then
     chmod 4755 '${optRoot}/chrome-sandbox' || true
@@ -705,6 +721,10 @@ export function renderDebAfterRemoveScript(): string {
 # Space-safe after-remove counterpart to the custom after-install script.
 rm -f '${symlink}'
 
+# Counterpart to the after-install icon rename: dpkg only knows about the
+# original space-containing icon path, so the renamed files are ours to remove.
+rm -f /usr/share/icons/hicolor/*/apps/${DEB_PACKAGE_NAME}.png
+
 APPARMOR_PROFILE_DEST='/etc/apparmor.d/${PRODUCT_NAME}'
 
 if [ -f "$APPARMOR_PROFILE_DEST" ]; then
@@ -720,6 +740,15 @@ async function writeLinuxAppImageAppRun(paths: LinuxPaths): Promise<void> {
 }
 
 // --- Step 5: writeLinuxBuilderConfig helper ---
+
+// electron-builder derives the deb desktop entry's Icon from executableName
+// ("Open Design"). gtk-update-icon-cache cannot cache icon names containing
+// spaces, so the desktop icon would stay generic; the after-install script
+// renames the installed icon to the space-free dpkg package name, and this
+// override points the desktop entry at that same name.
+export function debDesktopEntry(): { entry: { Icon: string } } {
+  return { entry: { Icon: DEB_PACKAGE_NAME } };
+}
 
 async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
   const targets = linuxBuilderTargetsFor(config.to);
@@ -777,7 +806,7 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
       maintainer: "Open Design Contributors",
     },
     ...(targets.includes("deb")
-      ? { deb: { compression: "gz", packageName: DEB_PACKAGE_NAME, afterInstall: paths.debAfterInstallPath, afterRemove: paths.debAfterRemovePath } }
+      ? { deb: { compression: "gz", packageName: DEB_PACKAGE_NAME, afterInstall: paths.debAfterInstallPath, afterRemove: paths.debAfterRemovePath, desktop: debDesktopEntry() } }
       : {}),
     // Keep the AppImage launch fallback explicit. Our top-level AppRun wrapper
     // clears ELECTRON_RUN_AS_NODE before these Chromium flags reach Electron,
