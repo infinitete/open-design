@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Button, VisuallyHidden } from '@open-design/components';
 import { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
+import type { AgentNetworkTestPolicy } from '@open-design/contracts';
 import {
   agentIdToTracking,
   byokProtocolToTracking,
@@ -31,6 +32,7 @@ import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n';
 import type { Locale } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { AgentIcon } from './AgentIcon';
+import { AgentNetworkProxySection } from './AgentNetworkProxySection';
 import { AgentDiagnosticRow } from './AgentDiagnosticRow';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
 import { installDeepSeekHarnessCompanion } from '../providers/agent-companion';
@@ -1390,6 +1392,7 @@ export function SettingsDialog({
   onPersist,
   onSilentUpdatePreferenceChange,
   onPersistComposioKey,
+  onPersistAgentNetwork,
   composioConfigLoading = false,
   onClose,
   onResetOnboarding,
@@ -1573,6 +1576,8 @@ export function SettingsDialog({
   const providerModelsAbortRef = useRef<AbortController | null>(null);
   const pendingAgentInstallRescanRef = useRef(false);
   const agentTestRevisionRef = useRef(0);
+  const agentNetworkTestDraftRef = useRef<Record<string, AgentNetworkTestPolicy>>({});
+  const [agentNetworkDraftRevision, setAgentNetworkDraftRevision] = useState(0);
   const providerTestRevisionRef = useRef(0);
   const providerModelsRevisionRef = useRef(0);
   const providerTestFirstResetRef = useRef(true);
@@ -1593,6 +1598,14 @@ export function SettingsDialog({
   // provider preset. The account-model auto-switch must never overwrite a
   // deliberate choice, even when that choice equals the provider preset id.
   const apiModelUserSelectedRef = useRef(false);
+
+  const handleAgentNetworkDraftChange = useCallback((
+    agentId: string,
+    policy: AgentNetworkTestPolicy,
+  ) => {
+    agentNetworkTestDraftRef.current[agentId] = policy;
+    setAgentNetworkDraftRevision((revision) => revision + 1);
+  }, []);
   const [apiModelCustomEditing, setApiModelCustomEditing] = useState(false);
   const [agentCustomModelIds, setAgentCustomModelIds] = useState<
     ReadonlySet<string>
@@ -1786,7 +1799,9 @@ export function SettingsDialog({
     cfg.agentId,
     agentChoiceForTest?.model,
     agentChoiceForTest?.reasoning,
+    agentChoiceForTest?.serviceTier,
     cfg.agentCliEnv,
+    agentNetworkDraftRevision,
   ]);
   // Rescan notices are list-level feedback for a one-shot action and
   // shouldn't linger in the content stream. After 6s, fade them out so
@@ -2114,6 +2129,9 @@ export function SettingsDialog({
           reasoning: choice.reasoning || undefined,
           serviceTier: choice.serviceTier || undefined,
           agentCliEnv: cfg.agentCliEnv ?? {},
+          ...(agentNetworkTestDraftRef.current[selected.id]
+            ? { agentNetwork: agentNetworkTestDraftRef.current[selected.id] }
+            : {}),
         },
         controller.signal,
       );
@@ -2807,6 +2825,22 @@ export function SettingsDialog({
   const [autosaveCommitTick, setAutosaveCommitTick] = useState(0);
   const [autosaveRetryTick, setAutosaveRetryTick] = useState(0);
   autosaveLatestRef.current = cfg;
+
+  const handlePersistAgentNetwork = useCallback(async (
+    next: AgentNetworkUpdatePrefs,
+  ): Promise<AgentNetworkConfig> => {
+    if (!onPersistAgentNetwork) {
+      throw new Error(t('settings.agentNetwork.saveFailure'));
+    }
+    const accepted = await onPersistAgentNetwork(next);
+    suppressNextAutosaveRef.current = true;
+    autosaveLastSavedRef.current = {
+      ...autosaveLastSavedRef.current,
+      agentNetwork: accepted,
+    };
+    setCfg((current) => ({ ...current, agentNetwork: accepted }));
+    return accepted;
+  }, [onPersistAgentNetwork, t]);
 
   // App owns the config transition and persistence. Settings only supplies
   // its latest draft with the explicit reset intent. Cancel a queued autosave
@@ -4547,9 +4581,23 @@ export function SettingsDialog({
                 );
               })()}
               {(() => {
+                const selected = agents.find(
+                  (agent) => agent.id === cfg.agentId && agent.available,
+                );
+                if (!selected) return null;
+                return (
+                  <AgentNetworkProxySection
+                    agentId={selected.id}
+                    savedPrefs={cfg.agentNetwork ?? {}}
+                    onDraftChange={handleAgentNetworkDraftChange}
+                    onSave={handlePersistAgentNetwork}
+                  />
+                );
+              })()}
+              {(() => {
                 /*
-                  Per-agent CLI environment overrides — proxy URLs, custom
-                  config dirs, and a binary path override. The previous
+                  Per-agent CLI environment overrides — provider endpoints,
+                  custom config dirs, and a binary path override. The previous
                   layout listed every supported agent's variables in one
                   long always-expanded block; for users on Claude Code
                   the Codex fields were just visual filler (and vice
@@ -4557,7 +4605,7 @@ export function SettingsDialog({
                   on every open even though nine in ten users never
                   touch it. Now: filtered to the *currently selected*
                   agent only, and folded into a collapsed disclosure
-                  that opens to "Advanced: proxy & custom paths" — power
+                  that opens to "Advanced: endpoints & custom paths" — power
                   users who route through LiteLLM or installed the
                   binary out-of-PATH still have one click access; new
                   users no longer wonder "are these fields I forgot to
