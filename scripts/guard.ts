@@ -54,6 +54,7 @@ const residualSkippedDirectories = new Set([
   ".task",
   ".tmp",
   ".vite",
+  ".worktrees",
   "dist",
   "node_modules",
   "out",
