@@ -1836,8 +1836,6 @@ export async function runMcpStdio(options: RunMcpOptions): Promise<void> {
         '    user action and reuse the exact same value after a timeout/lost',
         '    response. Do not call',
         '    start_run again while get_run reports the original run in flight.',
-        '    after the user confirms top-up, call the exact original start_run',
-        '    once with the same requestId and resume:true.',
         '    OpenDesign spawns its own agent to do the work.',
         ' - get_run(runId) polls until status is succeeded/failed/canceled;',
         '    on success it returns a previewUrl you can open in a browser',

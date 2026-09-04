@@ -142,7 +142,7 @@ definitions currently group by transport as follows:
 | `json-event-stream` | `codex`, `cursor-agent`, `opencode`, `mimo`, `byok-opencode` |
 | `copilot-stream-json` | `copilot` |
 | `qoder-stream-json` | `qoder` |
-| `acp-json-rpc` | `amr` (Vela), `devin`, `hermes`, `kimi`, `kiro`, `kilo`, `reasonix`, `trae-cli`, `vibe` |
+| `acp-json-rpc` | `devin`, `hermes`, `kimi`, `kiro`, `kilo`, `reasonix`, `trae-cli`, `vibe` |
 | `pi-rpc` | `pi` |
 | `dsh-profile-jsonl` | `deepseek-harness` |
 | `plain` | `aider`, `antigravity`, `atomcode`, `deepseek`, `grok-build`, `qwen` |
@@ -569,7 +569,7 @@ apps/daemon/src/
 ├── copilot-stream.ts       # streamFormat="copilot-stream-json" — the one stream parser that sits flat at src/
 ├── agent-protocol/         # JSON-RPC transports, dispatched via agent-protocol/index.ts (attachAcpSession / attachPiRpcSession)
 │   ├── index.ts            # barrel: attachAcpSession / attachPiRpcSession / mapPiRpcEvent
-│   ├── acp/                # streamFormat="acp-json-rpc": shared transport for AMR, Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI, and Vibe
+│   ├── acp/                # streamFormat="acp-json-rpc": shared transport for Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI, and Vibe
 │   ├── pi-rpc/             # streamFormat="pi-rpc": pi's JSON-RPC-over-stdio transport
 │   └── core/               # shared JSON-line stream helpers
 └── server.ts               # spawn pipeline + stream dispatch: routes def.streamFormat/eventParser to a parser

@@ -106,8 +106,8 @@ export const myAgentDef = {
 } satisfies RuntimeAgentDef;
 ```
 
-Current examples include AMR, Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI,
-and Vibe runtime definitions under `apps/daemon/src/runtimes/defs/`.
+Current examples include Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI, and
+Vibe runtime definitions under `apps/daemon/src/runtimes/defs/`.
 
 ## Fact sources
 
