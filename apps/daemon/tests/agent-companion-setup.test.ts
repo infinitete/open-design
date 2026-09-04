@@ -8,6 +8,7 @@ import {
   AgentCompanionSetupError,
   installDeepSeekHarnessCompanion,
 } from '../src/agent-companion-setup.js';
+import { writeAppConfig } from '../src/app-config.js';
 
 const roots: string[] = [];
 const originalDshBin = process.env.DSH_BIN;
@@ -39,6 +40,8 @@ async function fixture(options: { existingProfile?: boolean; validHash?: boolean
   const bundleRoot = path.join(resourceRoot, 'agent-runtimes', 'deepseek-harness');
   const tarball = path.join(bundleRoot, 'open-design-dsh-runtime-0.1.0.tgz');
   const stateFile = path.join(root, 'plugin-add-count.txt');
+  const networkProbeCountFile = path.join(root, 'network-probe-count.txt');
+  const installerNetworkFile = path.join(root, 'installer-network.txt');
   await mkdir(bundleRoot, { recursive: true });
   await mkdir(runtimeDataDir, { recursive: true });
   await mkdir(dshHome, { recursive: true });
@@ -65,9 +68,21 @@ const args = process.argv.slice(2);
 const home = process.env.DSH_HOME;
 const profileRoot = path.join(home, 'profiles', 'open-design');
 const marker = path.join(profileRoot, '.installed');
+const expectedProxy = 'http://companion-proxy.test:8080';
+const networkProbeCountFile = ${JSON.stringify(networkProbeCountFile)};
+const installerNetworkFile = ${JSON.stringify(installerNetworkFile)};
+async function requireProbeNetworkPolicy() {
+  if (process.env.OD_DSH_SETUP_FAKE_MODE !== 'network-policy') return;
+  if (process.env.HTTP_PROXY !== expectedProxy || process.env.HTTPS_PROXY !== expectedProxy) process.exit(10);
+  let count = 0;
+  try { count = Number(await readFile(networkProbeCountFile, 'utf8')); } catch {}
+  await writeFile(networkProbeCountFile, String(count + 1), 'utf8');
+}
 if (args[0] === '--version') {
+  await requireProbeNetworkPolicy();
   process.stdout.write('0.1.0-rc.6\\n');
 } else if (args.includes('--probe')) {
+  await requireProbeNetworkPolicy();
   try {
     await readFile(marker);
     process.stdout.write(JSON.stringify({v:1,type:'probe',runtime:'open-design',protocol_version:1,plugin_version:'0.1.0',capabilities:{session_resume:true,session_cancel:true,structured_events:true}}) + '\\n');
@@ -76,6 +91,10 @@ if (args[0] === '--version') {
   }
 } else if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === 'open-design' && args[3] === 'add') {
   if (process.env.OD_DSH_SETUP_FAKE_MODE === 'install-fail') process.exit(7);
+  if (process.env.OD_DSH_SETUP_FAKE_MODE === 'network-policy') {
+    if (process.env.HTTP_PROXY === expectedProxy || process.env.HTTPS_PROXY === expectedProxy) process.exit(11);
+    await writeFile(installerNetworkFile, 'neutral', 'utf8');
+  }
   if (process.env.OD_DSH_SETUP_FAKE_MODE === 'require-profile-bundle') {
     const [directory, filename, extra] = args[4].split('/');
     const digest = filename?.endsWith('.tgz') ? filename.slice(0, -4) : '';
@@ -110,6 +129,8 @@ if (args[0] === '--version') {
     options: { projectRoot: root, resourceRoot, runtimeDataDir },
     profileRoot: path.join(dshHome, 'profiles', 'open-design'),
     stateFile,
+    networkProbeCountFile,
+    installerNetworkFile,
   };
 }
 
@@ -135,6 +156,28 @@ describe('DeepSeek Harness companion setup', () => {
       action: 'repaired',
       ok: true,
     });
+  });
+
+  it('applies saved custom proxy policy to setup probes but not the local installer child', async () => {
+    const test = await fixture();
+    process.env.OD_DSH_SETUP_FAKE_MODE = 'network-policy';
+    await writeAppConfig(test.options.runtimeDataDir, {
+      agentNetwork: {
+        'deepseek-harness': {
+          mode: 'custom',
+          proxyUrl: 'http://companion-proxy.test:8080',
+        },
+      },
+    });
+
+    await expect(installDeepSeekHarnessCompanion(test.options)).resolves.toMatchObject({
+      action: 'installed',
+      ok: true,
+    });
+    // The empty-profile preflight runs only --version. After installation the
+    // second detection runs --version plus the now-enabled compatibility probe.
+    await expect(readFile(test.networkProbeCountFile, 'utf8')).resolves.toBe('3');
+    await expect(readFile(test.installerNetworkFile, 'utf8')).resolves.toBe('neutral');
   });
 
   it('rejects a corrupt bundled package before invoking dsh', async () => {

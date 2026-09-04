@@ -11,6 +11,7 @@ import type {
 } from '@open-design/contracts';
 
 import { agentCliEnvForAgent, readAppConfig } from './app-config.js';
+import { agentNetworkPolicyForAgent } from './storage/agent-network-config.js';
 import { detectAgent } from './runtimes/detection.js';
 import { spawnEnvForAgent } from './runtimes/env.js';
 import { execAgentFile } from './runtimes/invocation.js';
@@ -207,7 +208,8 @@ async function installDeepSeekHarnessCompanionOnce(options: {
   }
   const appConfig = await readAppConfig(options.runtimeDataDir);
   const configuredEnv = agentCliEnvForAgent(appConfig.agentCliEnv, DSH_AGENT_ID);
-  const before = await detectAgent(def, configuredEnv);
+  const networkPolicy = agentNetworkPolicyForAgent(appConfig.agentNetwork, DSH_AGENT_ID);
+  const before = await detectAgent(def, configuredEnv, networkPolicy);
   const { bytes, manifest } = await resolveVerifiedBundle(options);
   if (before.available) {
     return { action: 'already-compatible', agent: before, ok: true, packageVersion: manifest.version };
@@ -244,7 +246,7 @@ async function installDeepSeekHarnessCompanionOnce(options: {
     );
   }
 
-  const after = await detectAgent(def, configuredEnv);
+  const after = await detectAgent(def, configuredEnv, networkPolicy);
   if (!after.available) {
     throw new AgentCompanionSetupError(
       'COMPANION_STILL_INCOMPATIBLE',
