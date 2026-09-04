@@ -56,6 +56,10 @@ configuration model must keep those concepts separate.
    They are not stored in a project, browser `localStorage`, diagnostics,
    analytics, or logs, and are never returned in plaintext by a read API or
    CLI command.
+8. The Network Proxy area has an explicit Save proxy settings action. Its
+   mode, endpoint, bypass, and credential fields remain a local draft until
+   that action succeeds. Other Settings fields keep their existing debounced
+   autosave behavior.
 
 ## Configuration Contract
 
@@ -246,13 +250,19 @@ field is untouched and `passwordConfigured` is true, the daemon uses the saved
 password for the test. A test never persists the draft. A successful test does
 not imply that Settings was saved.
 
-Saving uses the existing app-config endpoint. A rejected save leaves the
-dialog open with its draft and displays an actionable error. The app-wide
-configuration is updated only from the daemon's accepted response, preventing
-the UI from claiming a policy is active after a failed write.
+The whole Network Proxy area is excluded from Settings' general debounced
+autosave snapshot. It provides an explicit Save proxy settings action that
+sends the selected CLI's complete draft through the existing app-config
+endpoint. A rejected save leaves the dialog open with its draft and displays
+an actionable error. The persisted app-wide configuration is updated only
+from the daemon's accepted public response, preventing the UI from claiming a
+policy is active after a failed write. Switching CLI preserves each independent
+draft for the lifetime of the open Settings surface; closing Settings discards
+unsaved proxy drafts and must not silently save them.
 
-Proxy passwords are component-local draft state. They are omitted by the
-web config serializer and never written to browser `localStorage`.
+All proxy fields live in component-local draft state until the explicit save.
+Proxy passwords are always omitted by the web config serializer and never
+written to browser `localStorage`.
 
 ## `od` CLI Surface
 
@@ -386,7 +396,9 @@ resolve the current policy at the start of the new operation.
 ### Web and CLI
 
 - Web component tests cover per-CLI draft isolation, mode transitions, saved
-  password keep/replace/clear behavior, validation, and save rejection.
+  password keep/replace/clear behavior, draft retention while switching CLIs,
+  discard on close, exclusion from general Settings autosave, validation, and
+  save rejection.
 - CLI tests cover get/set/test/unset, merge behavior, password file/stdin,
   noninteractive errors, exit codes, and human/JSON redaction.
 - A Playwright test configures different policies for two CLIs in Models &
@@ -412,7 +424,10 @@ runtime executables and existing replay mocks; do not spend provider budget.
    diagnostics.
 7. Settings and `od config proxy` operate through the same daemon contracts and
    report rejected saves/tests accurately.
-8. Required repository gates pass: `pnpm guard`, `pnpm typecheck`, focused
+8. Editing or testing a Network Proxy draft does not persist it; only the
+   explicit Save proxy settings action does. Other Settings fields retain
+   their existing autosave behavior.
+9. Required repository gates pass: `pnpm guard`, `pnpm typecheck`, focused
    package/app tests, and the scoped Playwright suite.
 
 ## Out of Scope
