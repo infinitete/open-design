@@ -18,6 +18,7 @@ describe('CLI startup boundaries', () => {
   it.each([
     ['doctor', ['doctor', '--help']],
     ['config', ['config', 'get', 'apiProtocol', '--daemon-url', 'http://127.0.0.1:9']],
+    ['config proxy', ['config', 'proxy', 'get', 'codex', '--daemon-url', 'http://127.0.0.1:9']],
     ['diagnostics', ['diagnostics', 'export', '--daemon-url', 'http://127.0.0.1:9']],
   ])('initializes flag constants before dispatching od %s', async (_name, args) => {
     let output = '';

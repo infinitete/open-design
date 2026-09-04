@@ -1,0 +1,320 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve as pathResolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DAEMON_ROOT = pathResolve(__dirname, '..');
+const REPO_ROOT = pathResolve(__dirname, '../../..');
+const CLI_SRC = pathResolve(__dirname, '../src/cli.ts');
+const TSX_CLI = pathResolve(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs');
+
+interface CapturedRequest {
+  method: string;
+  url: string;
+  body: string;
+}
+
+interface StubServer {
+  baseUrl: string;
+  requests: CapturedRequest[];
+  setResponder(fn: (request: CapturedRequest) => { status: number; body: unknown }): void;
+  close(): Promise<void>;
+}
+
+async function startStubServer(): Promise<StubServer> {
+  const requests: CapturedRequest[] = [];
+  let responder: (request: CapturedRequest) => { status: number; body: unknown } = (_request) => ({
+    status: 200,
+    body: { config: { agentNetwork: {} } },
+  });
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      const captured = {
+        method: request.method ?? '',
+        url: request.url ?? '',
+        body,
+      };
+      requests.push(captured);
+      const result = responder(captured);
+      response.statusCode = result.status;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(result.body));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('stub server has no address');
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    setResponder(fn) { responder = fn; },
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
+  };
+}
+
+async function runCli(
+  args: string[],
+  options: { stdin?: string } = {},
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return await new Promise((resolve) => {
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    const child = execFile(
+      process.execPath,
+      [TSX_CLI, CLI_SRC, ...args],
+      { cwd: DAEMON_ROOT, env, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: stdout ?? '',
+          stderr: stderr ?? '',
+          code: error ? (error as { code?: number | null }).code ?? 1 : 0,
+        });
+      },
+    );
+    if (options.stdin !== undefined) child.stdin?.write(options.stdin);
+    child.stdin?.end();
+  });
+}
+
+describe('od config proxy CLI', () => {
+  let stub: StubServer;
+  let tempDir: string;
+
+  beforeAll(async () => {
+    stub = await startStubServer();
+    tempDir = await mkdtemp(join(tmpdir(), 'od-config-proxy-'));
+  });
+
+  afterAll(async () => {
+    await stub.close();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    stub.requests.length = 0;
+    stub.setResponder((request) => request.method === 'GET'
+      ? {
+          status: 200,
+          body: {
+            config: {
+              agentNetwork: {
+                claude: { mode: 'direct' },
+                codex: {
+                  mode: 'custom',
+                  proxyUrl: 'http://old.test:8080',
+                  username: 'alice',
+                  passwordConfigured: true,
+                },
+              },
+            },
+          },
+        }
+      : request.url === '/api/test/connection'
+        ? { status: 200, body: { ok: true, kind: 'success', latencyMs: 12, agentName: 'Codex' } }
+        : {
+            status: 200,
+            body: {
+              config: {
+                agentNetwork: Object.fromEntries(Object.entries(
+                  (JSON.parse(request.body) as { agentNetwork: Record<string, Record<string, unknown>> })
+                    .agentNetwork,
+                ).map(([agentId, policy]) => [agentId, policy.mode === 'custom'
+                  ? {
+                      ...policy,
+                      passwordConfigured: typeof policy.password === 'string'
+                        || agentId === 'codex',
+                      password: undefined,
+                    }
+                  : policy])),
+              },
+            },
+          });
+  });
+
+  it('gets one public policy and reports inherit for an absent entry', async () => {
+    const custom = await runCli([
+      'config', 'proxy', 'get', 'codex', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(custom.code).toBe(0);
+    expect(JSON.parse(custom.stdout)).toEqual({
+      mode: 'custom',
+      proxyUrl: 'http://old.test:8080',
+      username: 'alice',
+      passwordConfigured: true,
+    });
+
+    const inherited = await runCli([
+      'config', 'proxy', 'get', 'gemini', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(inherited.code).toBe(0);
+    expect(JSON.parse(inherited.stdout)).toEqual({ mode: 'inherit' });
+  });
+
+  it('prints only public policy fields if a daemon response contains a credential', async () => {
+    stub.setResponder(() => ({
+      status: 200,
+      body: {
+        config: {
+          agentNetwork: {
+            codex: {
+              mode: 'custom',
+              proxyUrl: 'http://proxy.test:8080',
+              username: 'alice',
+              password: 'daemon-response-secret',
+              passwordConfigured: true,
+            },
+          },
+        },
+      },
+    }));
+    const result = await runCli([
+      'config', 'proxy', 'get', 'codex', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('daemon-response-secret');
+    expect(JSON.parse(result.stdout)).toEqual({
+      mode: 'custom',
+      proxyUrl: 'http://proxy.test:8080',
+      username: 'alice',
+      passwordConfigured: true,
+    });
+  });
+
+  it('sets an authenticated custom policy without printing the password', async () => {
+    const passwordFile = join(tempDir, 'proxy-password.txt');
+    await writeFile(passwordFile, 'proxy-password-value\n');
+    const result = await runCli([
+      'config', 'proxy', 'set', 'codex',
+      '--mode', 'custom',
+      '--url', 'http://proxy.test:8080',
+      '--username', 'alice',
+      '--password-file', passwordFile,
+      '--json',
+      '--daemon-url', stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('proxy-password-value');
+    expect(stub.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      'GET /api/app-config',
+      'PUT /api/app-config',
+    ]);
+    expect(JSON.parse(stub.requests.at(-1)!.body)).toEqual({
+      agentNetwork: {
+        claude: { mode: 'direct' },
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.test:8080',
+          username: 'alice',
+          password: 'proxy-password-value',
+        },
+      },
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      mode: 'custom',
+      proxyUrl: 'http://proxy.test:8080',
+      username: 'alice',
+      passwordConfigured: true,
+    });
+  });
+
+  it('reads a password from stdin once and preserves the saved public fields', async () => {
+    const result = await runCli([
+      'config', 'proxy', 'set', 'codex',
+      '--mode', 'custom', '--password-file', '-',
+      '--json', '--daemon-url', stub.baseUrl,
+    ], { stdin: 'stdin-secret\r\n' });
+
+    expect(result.code).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('stdin-secret');
+    const update = JSON.parse(stub.requests.at(-1)!.body);
+    expect(update.agentNetwork.codex).toEqual({
+      mode: 'custom',
+      proxyUrl: 'http://old.test:8080',
+      username: 'alice',
+      password: 'stdin-secret',
+    });
+  });
+
+  it.each([
+    ['unset', ['unset', 'codex']],
+    ['inherit', ['set', 'codex', '--mode', 'inherit']],
+  ])('%s removes the selected entry while preserving the rest of the map', async (_name, command) => {
+    const result = await runCli([
+      'config', 'proxy', ...command, '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(stub.requests.at(-1)!.body)).toEqual({
+      agentNetwork: { claude: { mode: 'direct' } },
+    });
+    expect(JSON.parse(result.stdout)).toEqual({ mode: 'inherit' });
+  });
+
+  it('tests the saved daemon policy without fetching or persisting config', async () => {
+    const result = await runCli([
+      'config', 'proxy', 'test', 'codex', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, kind: 'success' });
+    expect(stub.requests).toEqual([{
+      method: 'POST',
+      url: '/api/test/connection',
+      body: JSON.stringify({ mode: 'agent', agentId: 'codex' }),
+    }]);
+  });
+
+  it('maps structured HTTP errors through the established exit contract', async () => {
+    stub.setResponder(() => ({
+      status: 400,
+      body: { error: { code: 'missing-input', message: 'agent policy rejected' } },
+    }));
+    const result = await runCli([
+      'config', 'proxy', 'get', 'codex', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(result.code).toBe(67);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      error: { code: 'missing-input', message: 'agent policy rejected' },
+    });
+  });
+
+  it.each([
+    ['missing CLI ID', ['get']],
+    ['unknown flag', ['get', 'codex', '--bogus']],
+    ['raw password flag', ['set', 'codex', '--mode', 'custom', '--password', 'secret']],
+    ['missing custom URL', ['set', 'new-cli', '--mode', 'custom']],
+    ['conflicting password actions', [
+      'set', 'codex', '--mode', 'custom', '--password-file', '-', '--clear-password',
+    ]],
+  ])('exits 2 without HTTP or secret output for %s', async (_name, command) => {
+    const result = await runCli([
+      'config', 'proxy', ...command, '--daemon-url', stub.baseUrl,
+    ], { stdin: 'usage-secret\n' });
+    expect(result.code).toBe(2);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('usage-secret');
+    if (_name === 'missing custom URL') {
+      expect(stub.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        'GET /api/app-config',
+      ]);
+    } else {
+      expect(stub.requests).toHaveLength(0);
+    }
+  });
+
+  it('documents the proxy command group in config help', async () => {
+    const result = await runCli(['config', '--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('od config proxy get <cli-id>');
+    expect(result.stdout).toContain('--password-file <path|->');
+    expect(result.stdout).not.toContain('--password <');
+  });
+});

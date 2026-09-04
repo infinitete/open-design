@@ -28,6 +28,10 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
+import {
+  mergeAgentNetworkCliUpdate,
+  parseAgentNetworkProxyCommand,
+} from './runtimes/agent-network-cli.js';
 
 const argv = process.argv.slice(2);
 
@@ -224,8 +228,11 @@ const LIBRARY_ASSET_STRING_FLAGS = new Set([
 const LIBRARY_ASSET_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const DIAGNOSTICS_STRING_FLAGS = new Set(['daemon-url', 'output']);
 const DIAGNOSTICS_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
-const CONFIG_STRING_FLAGS = new Set(['daemon-url', 'value', 'value-json']);
-const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+const CONFIG_STRING_FLAGS = new Set([
+  'daemon-url', 'value', 'value-json',
+  'mode', 'url', 'no-proxy', 'username', 'password-file',
+]);
+const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'clear-password']);
 
 /** Stub — workspace member headers are no longer used in single-player mode. */
 function workspaceHeadersFromExplicitFlags(_flags?: Record<string, unknown>, _required = false): Record<string, string> {
@@ -9568,6 +9575,19 @@ async function runConfig(args) {
                                        Set a key to a JSON value.
   od config unset <key>               Remove a top-level key.
 
+Proxy policies:
+  od config proxy get <cli-id> [--json]
+  od config proxy set <cli-id> --mode <inherit|direct|custom> [options] [--json]
+  od config proxy test <cli-id> [--json]
+  od config proxy unset <cli-id> [--json]
+
+Custom proxy options:
+  --url <url>                  Proxy URL (required for a new custom policy).
+  --no-proxy <hosts>           Hosts that bypass the proxy.
+  --username <username>        Proxy username.
+  --password-file <path|->     Read the proxy password from a file or stdin.
+  --clear-password             Remove the saved proxy password.
+
 Common options:
   --daemon-url <url>   OpenDesign daemon HTTP base.
   --json               Emit raw JSON.`);
@@ -9575,7 +9595,13 @@ Common options:
   }
   const sub = args[0];
   const rest = args.slice(1);
-  const flags = parseFlags(rest, { string: CONFIG_STRING_FLAGS, boolean: CONFIG_BOOLEAN_FLAGS });
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: CONFIG_STRING_FLAGS, boolean: CONFIG_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
   const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
 
   const fetchConfig = async () => {
@@ -9593,6 +9619,23 @@ Common options:
     if (!resp.ok) return structuredHttpFailure(resp);
     return (await resp.json())?.config ?? next;
   };
+
+  if (sub === 'proxy') {
+    return runConfigProxy(rest, {
+      json: flags.json === true,
+      fetchConfig,
+      writeConfig,
+      testConnection: async (agentId) => {
+        const response = await fetch(`${base}/api/test/connection`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'agent', agentId }),
+        });
+        if (!response.ok) return structuredHttpFailure(response);
+        return response.json();
+      },
+    });
+  }
 
   switch (sub) {
     case 'list': {
@@ -9669,6 +9712,88 @@ Common options:
       console.error(`unknown subcommand: od config ${sub}`);
       process.exit(2);
   }
+}
+
+async function readProxyPasswordFile(path) {
+  if (path === '-') {
+    let contents = '';
+    for await (const chunk of process.stdin) contents += chunk;
+    return contents;
+  }
+  const { readFile } = await import('node:fs/promises');
+  return readFile(path, 'utf8');
+}
+
+function writeProxyPolicy(policy, json, agentId) {
+  const publicPolicy = policy?.mode === 'direct'
+    ? { mode: 'direct' }
+    : policy?.mode === 'custom'
+      ? {
+          mode: 'custom',
+          proxyUrl: typeof policy.proxyUrl === 'string' ? policy.proxyUrl : '',
+          ...(typeof policy.noProxy === 'string' ? { noProxy: policy.noProxy } : {}),
+          ...(typeof policy.username === 'string' ? { username: policy.username } : {}),
+          passwordConfigured: policy.passwordConfigured === true,
+        }
+      : { mode: 'inherit' };
+  if (json) {
+    process.stdout.write(JSON.stringify(publicPolicy, null, 2) + '\n');
+    return;
+  }
+  if (publicPolicy.mode === 'inherit') {
+    console.log(`[config] proxy ${agentId}: inherit (follow system)`);
+    return;
+  }
+  if (publicPolicy.mode === 'direct') {
+    console.log(`[config] proxy ${agentId}: direct`);
+    return;
+  }
+  console.log(`[config] proxy ${agentId}: custom ${publicPolicy.proxyUrl}`);
+  if (publicPolicy.noProxy !== undefined) console.log(`noProxy\t${publicPolicy.noProxy}`);
+  if (publicPolicy.username !== undefined) console.log(`username\t${publicPolicy.username}`);
+  console.log(`passwordConfigured\t${publicPolicy.passwordConfigured ? 'yes' : 'no'}`);
+}
+
+async function runConfigProxy(args, deps) {
+  let command;
+  try {
+    command = await parseAgentNetworkProxyCommand(args, readProxyPasswordFile);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
+
+  if (command.verb === 'get') {
+    const config = await deps.fetchConfig();
+    writeProxyPolicy(config.agentNetwork?.[command.agentId] ?? { mode: 'inherit' }, deps.json, command.agentId);
+    return;
+  }
+  if (command.verb === 'test') {
+    const result = await deps.testConnection(command.agentId);
+    if (deps.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } else {
+      const status = result?.ok ? 'ok' : 'failed';
+      const kind = typeof result?.kind === 'string' ? ` (${result.kind})` : '';
+      console.log(`[config] proxy test ${command.agentId}: ${status}${kind}`);
+    }
+    return;
+  }
+
+  const config = await deps.fetchConfig();
+  let next;
+  try {
+    next = mergeAgentNetworkCliUpdate(config.agentNetwork ?? {}, command);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
+  const written = await deps.writeConfig({ agentNetwork: next });
+  writeProxyPolicy(
+    written.agentNetwork?.[command.agentId] ?? { mode: 'inherit' },
+    deps.json,
+    command.agentId,
+  );
 }
 
 // ---------------------------------------------------------------------------
