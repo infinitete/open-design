@@ -9,6 +9,43 @@ export interface AgentModelPrefs {
 export type AgentCliEnvPrefs = Record<string, Record<string, string>>;
 export type AgentCliEnvIntentPrefs = Record<string, { apiKeyOverride?: boolean }>;
 
+export type AgentNetworkPolicyView =
+  | { mode: 'direct' }
+  | {
+      mode: 'custom';
+      proxyUrl: string;
+      noProxy?: string;
+      username?: string;
+      passwordConfigured: boolean;
+    };
+
+export type AgentNetworkPolicyUpdate =
+  | { mode: 'direct' }
+  | {
+      mode: 'custom';
+      proxyUrl: string;
+      noProxy?: string;
+      username?: string;
+      password?: string;
+      clearPassword?: true;
+    };
+
+export type AgentNetworkPrefs = Record<string, AgentNetworkPolicyView>;
+export type AgentNetworkUpdatePrefs = Record<string, AgentNetworkPolicyUpdate>;
+
+export type AgentNetworkTestPolicy =
+  | { mode: 'inherit' }
+  | { mode: 'direct' }
+  | ({
+      mode: 'custom';
+      proxyUrl: string;
+      noProxy?: string;
+      username?: string;
+      password?: string;
+      clearPassword?: true;
+      useStoredPassword?: true;
+    });
+
 export interface TelemetryPrefs {
   metrics?: boolean;
   content?: boolean;
@@ -45,6 +82,7 @@ export interface AppConfigPrefs {
   agentModels?: Record<string, AgentModelPrefs>;
   agentCliEnv?: AgentCliEnvPrefs;
   agentCliEnvIntent?: AgentCliEnvIntentPrefs;
+  agentNetwork?: AgentNetworkPrefs;
   skillId?: string | null;
   designSystemId?: string | null;
   disabledSkills?: string[];
@@ -95,7 +133,9 @@ export interface AppConfigResponse {
   config: AppConfigPrefs;
 }
 
-export type UpdateAppConfigRequest = Partial<AppConfigPrefs>;
+export type UpdateAppConfigRequest =
+  & Omit<Partial<AppConfigPrefs>, 'agentNetwork'>
+  & { agentNetwork?: AgentNetworkUpdatePrefs };
 
 /** Response body for `GET /api/recent-dirs` — recent working directories
  *  pruned to those that still exist on disk, most-recent-first. */

@@ -2,7 +2,7 @@
 // translates each kind into user-facing copy; the daemon picks one per test
 // and returns it inside a JSON envelope (always HTTP 200 — see notes in the
 // daemon module for why).
-import type { AgentCliEnvPrefs } from './app-config';
+import type { AgentCliEnvPrefs, AgentNetworkTestPolicy } from './app-config';
 import type { ReasoningExecutionRequestFields } from './reasoningExecution';
 
 export interface BaseUrlValidationResult {
@@ -273,6 +273,7 @@ export interface AgentTestRequest {
   reasoning?: string;
   serviceTier?: string;
   agentCliEnv?: AgentCliEnvPrefs;
+  agentNetwork?: AgentNetworkTestPolicy;
 }
 
 export type ConnectionTestRequest =

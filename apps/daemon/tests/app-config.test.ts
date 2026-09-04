@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -13,8 +13,15 @@ import {
   it,
 } from 'vitest';
 
-import { agentCliEnvForAgent, readAppConfig, writeAppConfig } from '../src/app-config.js';
+import {
+  agentCliEnvForAgent,
+  InvalidAppConfigValueError,
+  readAppConfig,
+  toPublicAppConfigPrefs,
+  writeAppConfig,
+} from '../src/app-config.js';
 import { isLocalSameOrigin } from '../src/origin-validation.js';
+import { resolveAgentNetworkTestPolicy } from '../src/storage/agent-network-config.js';
 
 // Default telemetry preference applied when an existing config has no
 // telemetry block (fresh install, pre-disclosure). See
@@ -304,6 +311,193 @@ describe('app-config', () => {
   });
 
   describe('writeAppConfig', () => {
+    it('persists a custom agent network policy while redacting its password publicly', async () => {
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            noProxy: '.corp.test',
+            username: 'alice',
+            password: 'proxy-password-value',
+          },
+          'corp-profile': { mode: 'direct' },
+        },
+      });
+
+      const stored = await readAppConfig(dataDir);
+      expect(stored.agentNetwork?.codex).toMatchObject({
+        mode: 'custom',
+        password: 'proxy-password-value',
+      });
+      expect(toPublicAppConfigPrefs(stored).agentNetwork).toEqual({
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.corp.test:8080',
+          noProxy: '.corp.test',
+          username: 'alice',
+          passwordConfigured: true,
+        },
+        'corp-profile': { mode: 'direct' },
+      });
+    });
+
+    it('preserves, replaces, and explicitly clears a stored proxy password', async () => {
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            username: 'alice',
+            password: 'first-password',
+          },
+        },
+      });
+
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            username: 'alice',
+          },
+        },
+      });
+      expect((await readAppConfig(dataDir)).agentNetwork?.codex).toMatchObject({
+        password: 'first-password',
+      });
+
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            username: 'alice',
+            password: 'second-password',
+          },
+        },
+      });
+      expect((await readAppConfig(dataDir)).agentNetwork?.codex).toMatchObject({
+        password: 'second-password',
+      });
+
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            username: 'alice',
+            clearPassword: true,
+          },
+        },
+      });
+      expect((await readAppConfig(dataDir)).agentNetwork?.codex).not.toHaveProperty('password');
+    });
+
+    it('clears the complete agent network map from an explicit empty update', async () => {
+      await writeAppConfig(dataDir, { agentNetwork: { codex: { mode: 'direct' } } });
+      await writeAppConfig(dataDir, { agentNetwork: {} });
+      expect((await readAppConfig(dataDir)).agentNetwork).toEqual({});
+    });
+
+    it('keeps syntactically valid private and custom CLI profile IDs', async () => {
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          'Private_Profile-1.2': { mode: 'direct' },
+        },
+      });
+      expect((await readAppConfig(dataDir)).agentNetwork).toEqual({
+        'Private_Profile-1.2': { mode: 'direct' },
+      });
+    });
+
+    it('drops malformed persisted agent network entries without failing the daemon read', async () => {
+      await writeFile(path.join(dataDir, 'app-config.json'), JSON.stringify(JSON.parse(`{
+        "agentNetwork": {
+          "codex": { "mode": "custom", "proxyUrl": "ftp://bad.test" },
+          "claude": { "mode": "direct" },
+          "__proto__": { "mode": "direct" }
+        }
+      }`)));
+      expect((await readAppConfig(dataDir)).agentNetwork).toEqual({
+        claude: { mode: 'direct' },
+      });
+    });
+
+    it('bounds an oversized persisted agent network map without blocking daemon startup', async () => {
+      const agentNetwork = Object.fromEntries(
+        Array.from({ length: 129 }, (_, index) => [`cli-${index}`, { mode: 'direct' }]),
+      );
+      await writeFile(path.join(dataDir, 'app-config.json'), JSON.stringify({ agentNetwork }));
+      expect(Object.keys((await readAppConfig(dataDir)).agentNetwork ?? {})).toHaveLength(128);
+    });
+
+    it.each([
+      ['unsupported protocol', { codex: { mode: 'custom', proxyUrl: 'ftp://proxy.test' } }],
+      ['URL credentials', { codex: { mode: 'custom', proxyUrl: 'http://alice:password@proxy.test' } }],
+      ['URL path', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test/path' } }],
+      ['URL query', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test?query=value' } }],
+      ['URL fragment', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test#fragment' } }],
+      ['control character', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test', noProxy: 'safe\u0000unsafe' } }],
+      ['password without username', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test', password: 'password-value' } }],
+      ['proxy URL over limit', { codex: { mode: 'custom', proxyUrl: `http://${'a'.repeat(2_041)}.test` } }],
+      ['bypass list over limit', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test', noProxy: 'a'.repeat(4_097) } }],
+      ['username over limit', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test', username: 'a'.repeat(257) } }],
+      ['password over limit', { codex: { mode: 'custom', proxyUrl: 'http://proxy.test', username: 'alice', password: 'a'.repeat(1_025) } }],
+      ['malformed empty ID', { '': { mode: 'direct' } }],
+      ['malformed prototype ID', JSON.parse('{"__proto__":{"mode":"direct"}}')],
+      ['malformed first character', { '-codex': { mode: 'direct' } }],
+      ['over-limit ID', { [`a${'b'.repeat(128)}`]: { mode: 'direct' } }],
+    ])('rejects agent network updates with %s', async (_case, agentNetwork) => {
+      const error = await writeAppConfig(dataDir, { agentNetwork }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(InvalidAppConfigValueError);
+      expect(error).toMatchObject({
+        code: 'INVALID_APP_CONFIG_VALUE',
+        key: expect.stringMatching(/^agentNetwork/),
+      });
+    });
+
+    it('rejects the 129th agent network entry', async () => {
+      const entries = Object.fromEntries(
+        Array.from({ length: 129 }, (_, index) => [`cli-${index}`, { mode: 'direct' }]),
+      );
+      const error = await writeAppConfig(dataDir, { agentNetwork: entries }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(InvalidAppConfigValueError);
+      expect(error).toMatchObject({
+        code: 'INVALID_APP_CONFIG_VALUE',
+        key: expect.stringMatching(/^agentNetwork/),
+      });
+    });
+
+    it.each([
+      [{ mode: 'custom', proxyUrl: 'http://proxy.test', username: 'alice', password: 'new-password', useStoredPassword: true }],
+      [{ mode: 'custom', proxyUrl: 'http://proxy.test', username: 'alice', clearPassword: true, useStoredPassword: true }],
+      [{ mode: 'inherit', password: 'new-password', useStoredPassword: true }],
+    ])('rejects conflicting connection-test password actions', (agentNetwork) => {
+      let caught: unknown;
+      try {
+        resolveAgentNetworkTestPolicy(agentNetwork, {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.test',
+          username: 'alice',
+          password: 'stored-password',
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(InvalidAppConfigValueError);
+      expect(caught).toMatchObject({
+        code: 'INVALID_APP_CONFIG_VALUE',
+        key: expect.stringMatching(/^agentNetwork/),
+      });
+    });
+
+    it.runIf(process.platform !== 'win32')('writes app-config owner-only', async () => {
+      await writeAppConfig(dataDir, { agentNetwork: { codex: { mode: 'direct' } } });
+      const mode = (await stat(path.join(dataDir, 'app-config.json'))).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
+
     it('creates data directory if missing', async () => {
       const nested = path.join(dataDir, 'sub', 'dir');
       await writeAppConfig(nested, { onboardingCompleted: true });

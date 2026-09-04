@@ -18,12 +18,24 @@
 // this machine.
 
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
-import type { OdNextRolloutMode } from '@open-design/contracts';
+import type {
+  AppConfigPrefs as PublicAppConfigPrefs,
+  OdNextRolloutMode,
+} from '@open-design/contracts';
 
 import { expandHomePrefix } from './home-expansion.js';
+import {
+  mergeAgentNetworkUpdate,
+  parseStoredAgentNetworkPrefs,
+  toPublicAgentNetworkPrefs,
+  type StoredAgentNetworkPrefs,
+} from './storage/agent-network-config.js';
+import { InvalidAppConfigValueError } from './storage/app-config-errors.js';
+
+export { InvalidAppConfigValueError } from './storage/app-config-errors.js';
 
 import {
   readInstallationFile,
@@ -113,6 +125,7 @@ export interface AppConfigPrefs {
   agentModels?: Record<string, AgentModelPrefs>;
   agentCliEnv?: AgentCliEnvPrefs;
   agentCliEnvIntent?: AgentCliEnvIntentPrefs;
+  agentNetwork?: StoredAgentNetworkPrefs;
   skillId?: string | null;
   designSystemId?: string | null;
   disabledSkills?: string[];
@@ -146,6 +159,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'agentModels',
   'agentCliEnv',
   'agentCliEnvIntent',
+  'agentNetwork',
   'skillId',
   'designSystemId',
   'disabledSkills',
@@ -737,10 +751,24 @@ function filterAllowedKeys(obj: Record<string, unknown>): AppConfigPrefs {
   const result: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(obj)) {
     if (ALLOWED_KEYS.has(key as keyof AppConfigPrefs)) {
+      if (key === 'agentNetwork') {
+        const parsed = parseStoredAgentNetworkPrefs(obj[key]);
+        if (parsed !== undefined) result.agentNetwork = parsed;
+        continue;
+      }
       applyConfigValue(result, key as keyof AppConfigPrefs, obj[key]);
     }
   }
   return normalizeRetiredAgentPrefs(normalizeAgentCliEnvPrefs(result as AppConfigPrefs));
+}
+
+export function toPublicAppConfigPrefs(prefs: AppConfigPrefs): PublicAppConfigPrefs {
+  const { agentNetwork: stored, ...rest } = prefs;
+  const agentNetwork = toPublicAgentNetworkPrefs(stored);
+  return {
+    ...rest,
+    ...(agentNetwork ? { agentNetwork } : {}),
+  };
 }
 
 // Fill in telemetry defaults when the saved config has no `telemetry`
@@ -872,16 +900,6 @@ export async function writeAppConfig(
   }
 }
 
-/** Thrown by `writeAppConfig` when a control key is handed a value it cannot mean. */
-export class InvalidAppConfigValueError extends Error {
-  readonly code = 'INVALID_APP_CONFIG_VALUE';
-
-  constructor(public readonly key: string, message: string) {
-    super(message);
-    this.name = 'InvalidAppConfigValueError';
-  }
-}
-
 /**
  * Refuse a write that names a control key with a value that is not one of its
  * modes.
@@ -915,7 +933,13 @@ async function doWrite(
   assertWritableControlValues(partial);
   const existing = await readAppConfig(dataDir);
   const next: Record<string, unknown> = { ...existing };
+  if (Object.hasOwn(partial, 'agentNetwork')) {
+    const agentNetwork = mergeAgentNetworkUpdate(partial.agentNetwork, existing.agentNetwork);
+    if (agentNetwork === undefined) delete next.agentNetwork;
+    else next.agentNetwork = agentNetwork;
+  }
   for (const key of Object.keys(partial)) {
+    if (key === 'agentNetwork') continue;
     if (!ALLOWED_KEYS.has(key as keyof AppConfigPrefs)) continue;
     applyConfigValue(next, key as keyof AppConfigPrefs, partial[key]);
   }
@@ -927,8 +951,12 @@ async function doWrite(
   const file = configFile(dataDir);
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';
-  await writeFile(tmp, JSON.stringify(normalizedNextWithoutRetiredAgents, null, 2), 'utf8');
+  await writeFile(tmp, JSON.stringify(normalizedNextWithoutRetiredAgents, null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   await rename(tmp, file);
+  if (process.platform !== 'win32') await chmod(file, 0o600);
   const installationIdWasExplicitlyReset = Object.prototype.hasOwnProperty.call(partial, 'installationId')
     && (partial.installationId == null || (
       typeof existing.installationId === 'string'

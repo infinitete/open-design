@@ -18,6 +18,7 @@ import type { RouteDeps } from '../server-context.js';
 type AuthorizeProjectRequest = any;
 type AuthorizeProjectToolRequest = any;
 import { proxyDispatcherRequestInit } from '../connectionTest.js';
+import { toPublicAppConfigPrefs } from '../app-config.js';
 import {
   aihubmixCatalogUrl,
   parseAIHubMixCatalog,
@@ -587,7 +588,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
     try {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
-      res.json({ config });
+      res.json({ config: toPublicAppConfigPrefs(config) });
     } catch (err: any) {
       res
         .status(500)
@@ -633,7 +634,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       const config = await writeAppConfig(RUNTIME_DATA_DIR, req.body);
       orbitService.configure(config.orbit);
       onAppConfigWritten?.(config);
-      res.json({ config });
+      res.json({ config: toPublicAppConfigPrefs(config) });
     } catch (err: any) {
       if (err?.code === 'INVALID_APP_CONFIG_VALUE') {
         // Nested envelope on purpose. `od`'s error reader only finds a code in

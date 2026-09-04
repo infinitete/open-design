@@ -133,6 +133,30 @@ describe('daemon startup route smoke', () => {
     }));
   }, 60_000);
 
+  it('redacts proxy passwords from app-config GET and PUT responses', async () => {
+    const put = await fetch(`${started.url}/api/app-config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentNetwork: {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.corp.test:8080',
+            username: 'alice',
+            password: 'http-secret-value',
+          },
+        },
+      }),
+    });
+    expect(put.status).toBe(200);
+    expect(await put.text()).not.toContain('http-secret-value');
+
+    const get = await fetch(`${started.url}/api/app-config`);
+    const text = await get.text();
+    expect(text).not.toContain('http-secret-value');
+    expect(JSON.parse(text).config.agentNetwork.codex.passwordConfigured).toBe(true);
+  });
+
   it('keeps core project, conversation, message, and routine write paths wired', async () => {
     const projectId = `startup-write-${Date.now()}`;
     const projectResponse = await fetch(`${started.url}/api/projects`, {
