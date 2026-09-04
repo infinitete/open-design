@@ -2,11 +2,13 @@ import type { Locator, Page } from '@playwright/test';
 
 import { expect, test } from '@/playwright/suite';
 import { openSettingsDialog } from '@/playwright/amr';
+import { expectStableCount } from '@/playwright/assertions';
 import {
   routeAgents,
   routeUnavailableVelaStatus,
   suppressWhatsNew,
 } from '@/playwright/mock-factory';
+import { T } from '@/timeouts';
 
 const STORAGE_KEY = 'open-design:config';
 
@@ -265,9 +267,18 @@ test('[P1] keeps independent explicit-save proxy drafts for two local CLIs', asy
       claude: { mode: 'direct' },
     },
   });
+  const networkWritesBeforeReload = harness.appConfigWrites.length;
   await harness.reloadSettings();
   await harness.selectAgent('codex');
   await expect(harness.proxyUrl).toHaveValue('http://codex.proxy.test:8080');
   await harness.selectAgent('claude');
   await expect(harness.mode('Direct')).toBeChecked();
+  await expectStableCount(
+    () => harness.appConfigWrites.length,
+    networkWritesBeforeReload,
+    {
+      timeout: T.short,
+      message: 'reload must restore proxy policies without writing agentNetwork again',
+    },
+  );
 });
