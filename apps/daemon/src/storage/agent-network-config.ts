@@ -57,7 +57,7 @@ function validateProxyUrl(value: unknown, key: string): string {
   if (
     !PROXY_PROTOCOLS.has(url.protocol)
     || url.hostname === ''
-    || url.pathname !== '/'
+    || (url.pathname !== '' && url.pathname !== '/')
     || url.search !== ''
     || url.hash !== ''
     || url.username !== ''

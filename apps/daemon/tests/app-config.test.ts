@@ -342,6 +342,25 @@ describe('app-config', () => {
       });
     });
 
+    it.each([
+      'socks5://proxy.test:1080',
+      'socks5://proxy.test:1080/',
+    ])('persists and publicly maps an authority-only SOCKS5 proxy URL: %s', async (proxyUrl) => {
+      await writeAppConfig(dataDir, {
+        agentNetwork: {
+          codex: { mode: 'custom', proxyUrl },
+        },
+      });
+
+      const stored = await readAppConfig(dataDir);
+      expect(stored.agentNetwork?.codex).toEqual({ mode: 'custom', proxyUrl });
+      expect(toPublicAppConfigPrefs(stored).agentNetwork?.codex).toEqual({
+        mode: 'custom',
+        proxyUrl,
+        passwordConfigured: false,
+      });
+    });
+
     it('preserves, replaces, and explicitly clears a stored proxy password', async () => {
       await writeAppConfig(dataDir, {
         agentNetwork: {
