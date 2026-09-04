@@ -1455,18 +1455,34 @@ export function SettingsDialog({
       previousInitial.installationId !== initial.installationId ||
       previousInitial.privacyDecisionAt !== initial.privacyDecisionAt ||
       !telemetryPrefsEqual(previousInitial.telemetry, initial.telemetry);
-    if (parentPrivacyChanged) {
+    const parentAgentNetworkChanged =
+      previousInitial.agentNetwork !== initial.agentNetwork;
+    if (parentPrivacyChanged || parentAgentNetworkChanged) {
       setCfg((current) => ({
         ...current,
-        installationId: initial.installationId,
-        privacyDecisionAt: initial.privacyDecisionAt,
-        telemetry: initial.telemetry ? { ...initial.telemetry } : undefined,
+        ...(parentPrivacyChanged
+          ? {
+              installationId: initial.installationId,
+              privacyDecisionAt: initial.privacyDecisionAt,
+              telemetry: initial.telemetry ? { ...initial.telemetry } : undefined,
+            }
+          : {}),
+        ...(parentAgentNetworkChanged
+          ? { agentNetwork: initial.agentNetwork ?? {} }
+          : {}),
       }));
       autosaveLastSavedRef.current = {
         ...autosaveLastSavedRef.current,
-        installationId: initial.installationId,
-        privacyDecisionAt: initial.privacyDecisionAt,
-        telemetry: initial.telemetry ? { ...initial.telemetry } : undefined,
+        ...(parentPrivacyChanged
+          ? {
+              installationId: initial.installationId,
+              privacyDecisionAt: initial.privacyDecisionAt,
+              telemetry: initial.telemetry ? { ...initial.telemetry } : undefined,
+            }
+          : {}),
+        ...(parentAgentNetworkChanged
+          ? { agentNetwork: initial.agentNetwork ?? {} }
+          : {}),
       };
     }
     previousInitialRef.current = initial;

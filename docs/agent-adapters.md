@@ -470,6 +470,44 @@ runs; it does not rebind or mutate a child process that is already running.
 Cancel the existing run separately if it should stop. There is no
 `POST agents.setActive` endpoint or capability-refresh handshake.
 
+### 7.1 Network policy
+
+`agentNetwork[agentId]` is an explicit, per-local-CLI policy. **Follow system**
+is represented by no saved entry and keeps the launch environment's existing
+system and inherited proxy precedence. **Direct** removes every standard proxy
+variable, case-insensitively. **Custom** first removes inherited proxy values,
+then installs either the HTTP(S) or SOCKS5 mapping below. Non-proxy environment
+variables, including the selected CLI's adapter-specific configuration, remain
+unchanged.
+
+| Mode | Child environment | Daemon/BYOK environment |
+| --- | --- | --- |
+| Follow system | Existing system + inherited proxy precedence | unchanged |
+| Direct | all standard proxy variables removed | unchanged |
+| Custom HTTP(S) | `HTTP_PROXY` + `HTTPS_PROXY` + normalized `NO_PROXY` | unchanged |
+| Custom SOCKS5 | `ALL_PROXY` + normalized `NO_PROXY` | unchanged |
+
+The explicit policy is the final proxy-specific layer after ordinary process,
+system-proxy, adapter, sandbox, and platform environment shaping. Standard
+proxy names include upper- and lower-case `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`, and `NO_PROXY`; custom policies also enable Node's environment
+proxy support. `NO_PROXY` is normalized, de-duplicated, and includes loopback
+defaults unless the configured wildcard bypass already disables proxying.
+
+Custom proxy passwords are write-only secrets stored in the daemon's local
+configuration under the resolved daemon data root. GET responses, the browser,
+human and JSON CLI output, diagnostics, telemetry, and exported logs expose at
+most `passwordConfigured`; they never return the password. Credentials are
+URL-encoded only when constructing the selected child process environment, and
+proxy URL userinfo is covered by the shared redaction boundaries.
+
+The policy is read when the next CLI operation begins. It applies to that
+CLI's detection, capability/model/auth probes, connection tests, local-memory
+work, and runs (including retry/resume launches). It never rewrites the
+environment of a process already running, and it does not proxy the daemon's
+own HTTP calls, BYOK/provider traffic, media calls, or other OpenDesign
+services.
+
 ## 8. Selection and failure recovery
 
 OpenDesign does not implement an ordered cross-agent fallback chain. A chat

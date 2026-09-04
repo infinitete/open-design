@@ -184,6 +184,7 @@ export function AgentNetworkProxySection({
   const { t } = useI18n();
   const groupId = useId();
   const previousSavedPrefsRef = useRef(savedPrefs);
+  const dirtyAgentIdsRef = useRef(new Set<string>());
   const [baseline, setBaseline] = useState(savedPrefs);
   const [drafts, setDrafts] = useState<Record<string, AgentNetworkDraft>>(() => ({
     [agentId]: draftFromPolicy(savedPrefs[agentId]),
@@ -201,6 +202,14 @@ export function AgentNetworkProxySection({
     if (previousSavedPrefsRef.current === savedPrefs) return;
     previousSavedPrefsRef.current = savedPrefs;
     setBaseline(savedPrefs);
+    setDrafts((current) => Object.fromEntries(
+      Object.entries(current).map(([draftAgentId, currentDraft]) => [
+        draftAgentId,
+        dirtyAgentIdsRef.current.has(draftAgentId)
+          ? currentDraft
+          : draftFromPolicy(savedPrefs[draftAgentId]),
+      ]),
+    ));
   }, [savedPrefs]);
 
   useEffect(() => {
@@ -208,6 +217,7 @@ export function AgentNetworkProxySection({
   }, [agentId, draft, onDraftChange, savedPolicy]);
 
   const updateDraft = (patch: Partial<AgentNetworkDraft>) => {
+    dirtyAgentIdsRef.current.add(agentId);
     setDrafts((current) => ({
       ...current,
       [agentId]: { ...(current[agentId] ?? draftFromPolicy(baseline[agentId])), ...patch },
@@ -227,6 +237,7 @@ export function AgentNetworkProxySection({
       const accepted = await onSave(
         updateMapFromDraft(baseline, savingAgentId, savingDraft),
       );
+      dirtyAgentIdsRef.current.delete(savingAgentId);
       setBaseline(accepted);
       setDrafts((current) => ({
         ...current,

@@ -123,6 +123,16 @@ availability; help/capability, model, and declared auth probes then run in
 parallel. There is no config-directory confidence heuristic or persisted
 24-hour availability cache. See [`agent-adapters.md`](agent-adapters.md).
 
+#### Agent switching
+
+The selected local CLI is stored in `AppConfig.agentId`. Model and reasoning
+preferences remain scoped to that CLI under `agentModels[agentId]`, while its
+explicit network policy is scoped independently under `agentNetwork[agentId]`.
+Changing either preference applies on the next detection, connection test,
+memory operation, or run that starts for that CLI only. It does not mutate the
+environment of an already-running child process; cancel that operation
+separately when it must stop.
+
 ### 3.4 Content registries
 
 Functional skills and rendering templates are separate listing surfaces:

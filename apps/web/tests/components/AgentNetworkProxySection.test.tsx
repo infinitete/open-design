@@ -234,6 +234,115 @@ describe('AgentNetworkProxySection', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it('hydrates an untouched draft when daemon proxy preferences arrive after mount', () => {
+    const { rerender } = renderSection({ savedPrefs: {} });
+
+    rerender(
+      <I18nProvider initial="en">
+        <AgentNetworkProxySection
+          agentId="codex"
+          savedPrefs={{
+            codex: {
+              mode: 'custom',
+              proxyUrl: 'http://hydrated.proxy:8080',
+              passwordConfigured: true,
+            },
+          }}
+          onSave={vi.fn()}
+          onDraftChange={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole('radio', { name: 'Custom' })).toBeChecked();
+    expect(screen.getByLabelText('Proxy URL')).toHaveValue('http://hydrated.proxy:8080');
+    expect(screen.getByText('Password configured')).toBeTruthy();
+  });
+
+  it('preserves an edited draft when daemon proxy preferences refresh', () => {
+    const { rerender } = renderSection({ savedPrefs: {} });
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom' }));
+    fireEvent.change(screen.getByLabelText('Proxy URL'), {
+      target: { value: 'http://draft.proxy:8080' },
+    });
+
+    rerender(
+      <I18nProvider initial="en">
+        <AgentNetworkProxySection
+          agentId="codex"
+          savedPrefs={{
+            codex: {
+              mode: 'custom',
+              proxyUrl: 'http://daemon.proxy:8080',
+              passwordConfigured: false,
+            },
+          }}
+          onSave={vi.fn()}
+          onDraftChange={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByLabelText('Proxy URL')).toHaveValue('http://draft.proxy:8080');
+  });
+
+  it('reconciles daemon proxy preferences that reach Settings after mount', () => {
+    const agents: AgentInfo[] = [{
+      id: 'codex',
+      name: 'Codex',
+      bin: 'codex',
+      available: true,
+    }];
+    const props = {
+      presentation: 'page' as const,
+      agents,
+      daemonLive: true,
+      appVersionInfo: null,
+      initialSection: 'execution' as const,
+      onPersist: vi.fn(),
+      onPersistComposioKey: vi.fn(),
+      onPersistAgentNetwork: vi.fn(),
+      onClose: vi.fn(),
+      onRefreshAgents: vi.fn(),
+    };
+    const { rerender } = render(
+      <I18nProvider initial="en">
+        <SettingsDialog
+          {...props}
+          initial={{
+            ...DEFAULT_CONFIG,
+            mode: 'daemon',
+            agentId: 'codex',
+            agentNetwork: {},
+          }}
+        />
+      </I18nProvider>,
+    );
+
+    rerender(
+      <I18nProvider initial="en">
+        <SettingsDialog
+          {...props}
+          initial={{
+            ...DEFAULT_CONFIG,
+            mode: 'daemon',
+            agentId: 'codex',
+            agentNetwork: {
+              codex: {
+                mode: 'custom',
+                proxyUrl: 'http://daemon.proxy:8080',
+                passwordConfigured: false,
+              },
+            },
+          }}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole('radio', { name: 'Custom' })).toBeChecked();
+    expect(screen.getByLabelText('Proxy URL')).toHaveValue('http://daemon.proxy:8080');
+  });
+
   it('sends the selected unsaved draft to connection test without entering autosave', async () => {
     const onPersist = vi.fn();
     const onPersistAgentNetwork = vi.fn().mockResolvedValue({

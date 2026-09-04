@@ -123,6 +123,31 @@ test('[P2] captures the settings local CLI surface', async ({ page }) => {
   await captureVisual(page, 'visual-settings-local-cli');
 });
 
+test('[P2] captures the settings local CLI custom proxy surface', async ({ page }) => {
+  await configureVisualPage(page, {
+    agents: VISUAL_CLI_AGENTS,
+    config: {
+      agentId: 'codex',
+      agentNetwork: {
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.corp.test:8080',
+          noProxy: '.corp.test',
+          username: 'alice',
+          passwordConfigured: true,
+        },
+      },
+    },
+  });
+  await gotoVisualHome(page);
+  await gotoVisualWorkspace(page);
+  const dialog = await prepareVisualSettingsDialog(page);
+  await dialog.getByRole('tab', { name: /Local CLI/i }).click();
+  await expect(dialog.getByLabel('Proxy URL')).toHaveValue('http://proxy.corp.test:8080');
+  await waitForVisualFonts(page);
+  await captureVisual(page, 'visual-settings-local-cli-custom-proxy');
+});
+
 test('[P2] captures the settings local CLI model dropdown surface', async ({ page }) => {
   await configureVisualPage(page, {
     agents: VISUAL_CLI_AGENTS,

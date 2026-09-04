@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import type { Locator, Page, Route } from '@playwright/test';
-import type { Project } from '@open-design/contracts';
+import type { AgentNetworkPrefs, Project } from '@open-design/contracts';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fulfillAgentsRoute } from './mock-factory.js';
@@ -27,6 +27,7 @@ type VisualConfig = {
   onboardingCompleted: boolean;
   agentModels: Record<string, { model?: string; reasoning?: string }>;
   agentCliEnv?: Record<string, Record<string, string>>;
+  agentNetwork?: AgentNetworkPrefs;
   privacyDecisionAt: number | null;
   telemetry: { metrics?: boolean; content?: boolean; artifactManifest?: boolean };
 };
