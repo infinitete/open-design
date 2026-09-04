@@ -434,6 +434,7 @@ describe('diagnostics export handler — run event logs', () => {
     const secretBearer = 'od_bearer_secret_12345';
     const secretQuery = 'query-token-secret';
     const secretApiKey = 'api-key-secret';
+    const proxyCredential = 'proxy-pass';
     const stderrMarker = 'Agent failed while calling upstream provider';
     try {
       await mkdir(dirname(runLogPath), { recursive: true });
@@ -462,6 +463,12 @@ describe('diagnostics export handler — run event logs', () => {
             event: 'stderr',
             data: {
               chunk: `provider api_key=${secretApiKey}`,
+            },
+          },
+          {
+            event: 'stderr',
+            data: {
+              chunk: `proxy connection failed http://alice:${proxyCredential}@proxy.test:8080/connect`,
             },
           },
           {
@@ -508,10 +515,13 @@ describe('diagnostics export handler — run event logs', () => {
       expect(runLog).toContain('Bearer [REDACTED]');
       expect(runLog).toContain('access_token=[REDACTED]');
       expect(runLog).toContain('api_key=[REDACTED]');
+      expect(runLog).toContain('http://[REDACTED]@proxy.test:8080/connect');
       expect(runLog).toContain('/Users/<USER>/open-design/project');
       expect(runLog).not.toContain(secretBearer);
       expect(runLog).not.toContain(secretQuery);
       expect(runLog).not.toContain(secretApiKey);
+      expect(runLog).not.toContain(proxyCredential);
+      expect(runLog).not.toContain('alice');
       expect(runLog).not.toContain(homePath);
     } finally {
       await rm(root, { recursive: true, force: true });

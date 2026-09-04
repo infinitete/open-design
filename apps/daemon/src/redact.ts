@@ -107,6 +107,7 @@ const CARD_CANDIDATE = /\b(?:\d[ -]?){12,18}\d\b/g;
 const API_KEY_HEADER =
   /(^|[^?&\w-])("?)(x-api-key|api-key|x-goog-api-key)\2(\s*[:=]\s*)("[^"]*"|[^\s,;"'#}]+)/gi;
 const API_KEY_QUERY = /([?&](?:key|api_key|api-key)=)[^&#\s,;"']+/gi;
+const URL_USERINFO_RE = /\b((?:https?|socks5):\/\/)[^/@\s]+@/giu;
 
 function isLuhnValid(digits: string): boolean {
   if (digits.length < 13 || digits.length > 19) return false;
@@ -148,7 +149,7 @@ function redactApiKeyHeaderValue(
  */
 export function redactSecrets(input: string): string {
   if (!input) return input;
-  let out = input;
+  let out = input.replace(URL_USERINFO_RE, '$1[REDACTED:proxy_credentials]@');
   for (const { name, regex } of PATTERNS) {
     out = out.replace(regex, `[REDACTED:${name}]`);
   }
@@ -183,7 +184,7 @@ export function redactSecretsWithCounts(input: string): {
 } {
   const counts: Record<string, number> = {};
   if (!input) return { redacted: input, counts };
-  let out = input;
+  let out = input.replace(URL_USERINFO_RE, '$1[REDACTED:proxy_credentials]@');
   for (const { name, regex } of PATTERNS) {
     let matched = 0;
     out = out.replace(regex, () => {

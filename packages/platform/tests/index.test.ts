@@ -9,6 +9,7 @@ import {
   createCommandInvocation,
   createPackageManagerInvocation,
   createProcessStampArgs,
+  mergeNoProxyWithLoopbackDefaults,
   mergeProxyAwareEnv,
   matchesStampedProcess,
   parseMacosScutilProxyOutput,
@@ -17,6 +18,7 @@ import {
   readProcessStampFromCommand,
   removePathBestEffort,
   resolveSystemProxyEnv,
+  withoutProxyEnv,
   wellKnownUserToolchainBins,
   type ProcessStampContract,
 } from "../src/index.js";
@@ -154,6 +156,35 @@ describe("generic filesystem primitives", () => {
 });
 
 describe("system proxy env resolution", () => {
+  it("strips every proxy spelling without mutating the input environment", () => {
+    const input = {
+      http_proxy: "http://lower.test:8080",
+      HTTPS_PROXY: "https://upper.test:8443",
+      All_Proxy: "socks5://mixed.test:1080",
+      no_proxy: ".internal.test",
+      Node_Use_Env_Proxy: "1",
+      KEEP_ME: "yes",
+    };
+
+    expect(withoutProxyEnv(input)).toEqual({ KEEP_ME: "yes" });
+    expect(input).toEqual({
+      http_proxy: "http://lower.test:8080",
+      HTTPS_PROXY: "https://upper.test:8443",
+      All_Proxy: "socks5://mixed.test:1080",
+      no_proxy: ".internal.test",
+      Node_Use_Env_Proxy: "1",
+      KEEP_ME: "yes",
+    });
+  });
+
+  it.each([
+    [" .corp.test,::1 localhost ", ".corp.test,[::1],localhost,127.0.0.1"],
+    ["*,.corp.test", "*"],
+    [undefined, "localhost,127.0.0.1,[::1]"],
+  ])("normalizes NO_PROXY loopback defaults for %p", (input, expected) => {
+    expect(mergeNoProxyWithLoopbackDefaults(input)).toBe(expected);
+  });
+
   it("enables Node env proxy support when merging user proxy variables", () => {
     const env = mergeProxyAwareEnv("darwin", {
       http_proxy: "http://user-proxy:7890",

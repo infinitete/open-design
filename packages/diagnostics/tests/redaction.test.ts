@@ -27,6 +27,18 @@ describe("redactJsonValue", () => {
 });
 
 describe("redactText", () => {
+  it.each([
+    "http://alice:proxy-pass@proxy.test:8080",
+    "https://alice:p%40ss@proxy.test:8443",
+    "socks5://alice:proxy-pass@proxy.test:1080",
+  ])("redacts proxy URL credentials from %s", (url) => {
+    const output = redactText(`spawn failed with ${url}/connect`);
+
+    expect(output).not.toContain("alice");
+    expect(output).not.toMatch(/proxy-pass|p%40ss/u);
+    expect(output).toContain("proxy.test");
+  });
+
   it("masks URL query secrets", () => {
     const line = "GET https://api.example.com/v1/foo?token=abc123&page=2";
     expect(redactText(line)).toContain("token=[REDACTED]");

@@ -20,10 +20,13 @@ export { createCommandInvocation, createPackageManagerInvocation } from "./comma
 
 export type { ResolveSystemProxyEnvOptions, SystemProxyCommandRunner } from "./proxy-env.js";
 export {
+  mergeNoProxyWithLoopbackDefaults,
   mergeProxyAwareEnv,
   parseMacosScutilProxyOutput,
+  PROXY_ENV_KEYS,
   parseWindowsInternetSettingsProxyOutput,
   resolveSystemProxyEnv,
+  withoutProxyEnv,
 } from "./proxy-env.js";
 
 export type {

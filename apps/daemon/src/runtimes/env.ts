@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { mergeProxyAwareEnv, resolveSystemProxyEnv } from '@open-design/platform';
 import { resolveProjectRelativePath } from '../home-expansion.js';
+import type { StoredAgentNetworkPolicy } from '../storage/agent-network-config.js';
+import { applyAgentNetworkPolicy } from './network-policy.js';
 import { expandConfiguredEnv } from './paths.js';
 import { resolveProjectRootFromNestedModule } from '../project-root.js';
 import {
@@ -16,6 +18,7 @@ import {
 type RuntimeEnvMap = NodeJS.ProcessEnv | Record<string, string>;
 type SpawnEnvOptions = {
   resolvedBin?: string | null;
+  networkPolicy?: StoredAgentNetworkPolicy;
 };
 
 const RUNTIME_MODULE_PROJECT_ROOT = resolveProjectRootFromNestedModule(
@@ -41,7 +44,7 @@ export function spawnEnvForAgent(
   baseEnv: RuntimeEnvMap,
   configuredEnv: unknown = {},
   systemProxyEnv: RuntimeEnvMap = resolveSystemProxyEnv(),
-  _options: SpawnEnvOptions = {},
+  options: SpawnEnvOptions = {},
 ): NodeJS.ProcessEnv {
   const sandboxRuntime = sandboxRuntimeConfigForBaseEnv(baseEnv);
   const expandedConfiguredEnv = expandConfiguredEnv(configuredEnv);
@@ -52,7 +55,7 @@ export function spawnEnvForAgent(
     expandedConfiguredEnv,
   );
   if (agentId === 'claude') {
-    return finalizeRuntimeEnv(env, sandboxRuntime);
+    return finalizeRuntimeEnv(env, sandboxRuntime, options.networkPolicy);
   }
   if (agentId === 'codex') {
     // Name the rollout root the codex CLI is about to write into. Child
@@ -68,7 +71,7 @@ export function spawnEnvForAgent(
       const home = os.homedir();
       if (home) env.CODEX_HOME = path.join(home, '.codex');
     }
-    return finalizeRuntimeEnv(env, sandboxRuntime);
+    return finalizeRuntimeEnv(env, sandboxRuntime, options.networkPolicy);
   }
   if (agentId === 'opencode' || agentId === 'byok-opencode') {
     stripKeysCaseInsensitive(env, [
@@ -87,7 +90,7 @@ export function spawnEnvForAgent(
     if (!env.OPENCODE_DISABLE_PROJECT_CONFIG?.trim()) {
       env.OPENCODE_DISABLE_PROJECT_CONFIG = 'true';
     }
-    return finalizeRuntimeEnv(env, sandboxRuntime);
+    return finalizeRuntimeEnv(env, sandboxRuntime, options.networkPolicy);
   }
   if (agentId === 'mimo') {
     stripKeysCaseInsensitive(env, [
@@ -103,9 +106,9 @@ export function spawnEnvForAgent(
     if (!env.MIMOCODE_DISABLE_PROJECT_CONFIG?.trim()) {
       env.MIMOCODE_DISABLE_PROJECT_CONFIG = 'true';
     }
-    return finalizeRuntimeEnv(env, sandboxRuntime);
+    return finalizeRuntimeEnv(env, sandboxRuntime, options.networkPolicy);
   }
-  return finalizeRuntimeEnv(env, sandboxRuntime);
+  return finalizeRuntimeEnv(env, sandboxRuntime, options.networkPolicy);
 }
 
 function sandboxRuntimeConfigForBaseEnv(
@@ -132,11 +135,13 @@ function reapplySandboxRuntimeEnv(
 function finalizeRuntimeEnv(
   env: NodeJS.ProcessEnv,
   sandboxRuntime: SandboxRuntimeConfig | null,
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): NodeJS.ProcessEnv {
-  const finalizedEnv = reapplySandboxRuntimeEnv(env, sandboxRuntime);
-  applyWindowsUserCacheEnv(finalizedEnv);
-  sanitizeProxyEnv(finalizedEnv);
-  return finalizedEnv;
+  const sandboxed = reapplySandboxRuntimeEnv(env, sandboxRuntime);
+  applyWindowsUserCacheEnv(sandboxed);
+  const networked = applyAgentNetworkPolicy(sandboxed, networkPolicy);
+  sanitizeProxyEnv(networked);
+  return networked;
 }
 
 function sanitizeProxyEnv(env: NodeJS.ProcessEnv): void {

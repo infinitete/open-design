@@ -321,6 +321,36 @@ test('spawnEnvForAgent enables Node env proxy support for inherited lowercase pr
   }
 });
 
+test('spawnEnvForAgent applies a network policy after configured and system proxy env', () => {
+  const env = spawnEnvForAgent(
+    'opencode',
+    {
+      HTTP_PROXY: 'http://inherited.test:8080',
+      PATH: '/usr/bin',
+    },
+    {
+      HTTPS_PROXY: 'http://configured.test:8443',
+    },
+    {
+      ALL_PROXY: 'socks5://system.test:1080',
+    },
+    {
+      networkPolicy: {
+        mode: 'custom',
+        proxyUrl: 'socks5://policy.test:1081',
+        noProxy: '.corp.test',
+      },
+    },
+  );
+
+  assert.equal(env.ALL_PROXY, 'socks5://policy.test:1081');
+  assert.equal(env.NO_PROXY, '.corp.test,localhost,127.0.0.1,[::1]');
+  assert.equal(env.NODE_USE_ENV_PROXY, '1');
+  assert.equal(env.PATH, '/usr/bin');
+  assert.equal('HTTP_PROXY' in env, false);
+  assert.equal('HTTPS_PROXY' in env, false);
+});
+
 test('spawnEnvForAgent expands configured env home paths', () => {
   const env = spawnEnvForAgent('codex', { PATH: '/usr/bin' }, {
     CODEX_HOME: '~/.codex-alt',

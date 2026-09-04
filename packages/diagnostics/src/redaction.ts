@@ -18,6 +18,7 @@ const BARE_SECRET_RE = /(^|[\s,;])(access_token|refresh_token|id_token|api[_-]?k
 // / "~" / "+" / "/" / "=") plus ":" for Basic credentials. Missing "~"
 // previously left tokens like `Bearer abcd~efgh` partially exposed.
 const HTTP_AUTH_SCHEME_RE = /\b(Bearer|Token|Basic)\s+([A-Za-z0-9._~\-+/=:]{4,})/gi;
+const URL_USERINFO_RE = /\b((?:https?|socks5):\/\/)[^/@\s]+@/giu;
 
 const REDACTED = "[REDACTED]";
 
@@ -43,10 +44,11 @@ export function redactJsonValue(value: unknown, opts: RedactionOptions = {}): un
 }
 
 export function redactText(text: string, opts: RedactionOptions = {}): string {
-  // Run the HTTP auth scheme replacement first so the credential after
-  // `Bearer` / `Token` / `Basic` is captured before BARE_SECRET_RE swallows
-  // the `Authorization: Bearer` prefix and stops at the space.
-  let out = text.replace(HTTP_AUTH_SCHEME_RE, (_match, scheme) => `${scheme} ${REDACTED}`);
+  // Strip proxy URL userinfo before the other patterns, then handle HTTP auth
+  // schemes before BARE_SECRET_RE can swallow the `Authorization: Bearer`
+  // prefix and stop at the space.
+  let out = text.replace(URL_USERINFO_RE, "$1[REDACTED]@");
+  out = out.replace(HTTP_AUTH_SCHEME_RE, (_match, scheme) => `${scheme} ${REDACTED}`);
   out = out.replace(URL_QUERY_SECRET_RE, (_match, sep, name, eq) => `${sep}${name}${eq}${REDACTED}`);
   out = out.replace(BARE_SECRET_RE, (_match, lead, name, sep) => `${lead}${name}${sep}${REDACTED}`);
   const username = opts.username;

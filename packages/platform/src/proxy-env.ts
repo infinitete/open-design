@@ -27,6 +27,34 @@ const CANONICAL_PROXY_ENV_KEYS = new Map<string, "ALL_PROXY" | "HTTP_PROXY" | "H
   ["no_proxy", "NO_PROXY"],
 ]);
 
+export const PROXY_ENV_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "NODE_USE_ENV_PROXY",
+] as const;
+
+/** Return a copy of `env` with all proxy variables removed case-insensitively. */
+export function withoutProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const proxyKeys = new Set<string>(PROXY_ENV_KEYS);
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !proxyKeys.has(key.toUpperCase())),
+  );
+}
+
+/** Add loopback hosts to a NO_PROXY value, preserving a wildcard bypass. */
+export function mergeNoProxyWithLoopbackDefaults(noProxy: string | undefined): string {
+  if (noProxy?.split(/[\s,]+/u).some((token) => token.trim() === "*")) return "*";
+  const values = [
+    ...(noProxy ? noProxy.split(/[\s,]+/u) : []),
+    "localhost",
+    "127.0.0.1",
+    "[::1]",
+  ].map((token) => token.trim() === "::1" ? "[::1]" : token.trim()).filter(Boolean);
+  return [...new Set(values)].join(",");
+}
+
 /** @internal Default proxy-config command runner: a short-timeout synchronous shell-out with output captured as UTF-8. */
 function defaultSystemProxyCommandRunner(command: string, args: string[]): string {
   return execFileSync(command, args, {

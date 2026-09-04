@@ -31,6 +31,7 @@ import {
 } from './agents.js';
 import {
   createCommandInvocation,
+  mergeNoProxyWithLoopbackDefaults,
   mergeProxyAwareEnv,
   resolveSystemProxyEnv,
 } from '@open-design/platform';
@@ -386,7 +387,6 @@ export async function assertAndFetchExternalAsset(
 // Override with OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS for slow networks
 // or distant providers; invalid values fall back to the default.
 const DEFAULT_PROVIDER_TIMEOUT_MS = 12_000;
-const LOOPBACK_NO_PROXY_TOKENS = ['localhost', '127.0.0.1', '[::1]'] as const;
 // CLI boot time is dominated by adapter auth/session restore; the heavy
 // adapters (Codex, Cursor Agent) regularly take 5–10 s on a cold first
 // run, so 45 s leaves headroom without making a hung child invisible.
@@ -432,21 +432,7 @@ function agentTimeoutMs(): number {
   );
 }
 
-export function mergeNoProxyWithLoopbackDefaults(noProxy: string | undefined): string | null {
-  if (noProxy?.split(/[\s,]+/).some((token) => token.trim() === '*')) return '*';
-  const seen = new Set<string>();
-  const values: string[] = [];
-  for (const rawToken of [
-    ...(noProxy ? noProxy.split(/[\s,]+/) : []),
-    ...LOOPBACK_NO_PROXY_TOKENS,
-  ]) {
-    const token = rawToken.trim() === '::1' ? '[::1]' : rawToken.trim();
-    if (!token || seen.has(token)) continue;
-    seen.add(token);
-    values.push(token);
-  }
-  return values.length > 0 ? values.join(',') : null;
-}
+export { mergeNoProxyWithLoopbackDefaults };
 
 function defaultPortForProtocol(protocol: string): string {
   if (protocol === 'http:') return '80';
@@ -847,12 +833,15 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const URL_USERINFO_RE = /\b((?:https?|socks5):\/\/)[^/@\s]+@/giu;
+
 export function redactSecrets(
   text: string,
   exactSecrets: Array<string | undefined | null> = [],
 ): string {
   if (typeof text !== 'string' || text.length === 0) return '';
   let redacted = text
+    .replace(URL_USERINFO_RE, '$1[REDACTED]@')
     .replace(/Bearer\s+[A-Za-z0-9_\-.+/=]+/gi, 'Bearer [REDACTED]')
     .replace(/(x-api-key|api-key|x-goog-api-key)\s*[:=]\s*[^\s,;"']+/gi, '$1: [REDACTED]')
     .replace(/([?&]key=)[^&\s]+/gi, '$1[REDACTED]');

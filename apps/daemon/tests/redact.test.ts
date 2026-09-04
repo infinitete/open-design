@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { redactSecrets, redactSecretsWithCounts } from '../src/redact.js';
 
 describe('redactSecrets', () => {
+  it.each([
+    'http://alice:proxy-pass@proxy.test:8080',
+    'https://alice:p%40ss@proxy.test:8443',
+    'socks5://alice:proxy-pass@proxy.test:1080',
+  ])('redacts proxy URL credentials from %s', (url) => {
+    const output = redactSecrets(`spawn failed with ${url}/connect`);
+
+    expect(output).not.toContain('alice');
+    expect(output).not.toMatch(/proxy-pass|p%40ss/u);
+    expect(output).toContain('proxy.test');
+  });
+
   it('returns empty / non-string input unchanged', () => {
     expect(redactSecrets('')).toBe('');
     expect(redactSecrets(undefined as unknown as string)).toBe(undefined);
