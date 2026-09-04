@@ -190,6 +190,38 @@ describe('od config proxy CLI', () => {
     });
   });
 
+  it('removes URL credentials from proxy get JSON and human output', async () => {
+    stub.setResponder(() => ({
+      status: 200,
+      body: {
+        config: {
+          agentNetwork: {
+            codex: {
+              mode: 'custom',
+              proxyUrl: 'http://alice:malicious-url-secret@proxy.test:8080/private?token=secret',
+              username: 'alice',
+              passwordConfigured: true,
+            },
+          },
+        },
+      },
+    }));
+
+    const jsonResult = await runCli([
+      'config', 'proxy', 'get', 'codex', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(jsonResult.code).toBe(0);
+    expect(`${jsonResult.stdout}${jsonResult.stderr}`).not.toContain('malicious-url-secret');
+    expect(JSON.parse(jsonResult.stdout).proxyUrl).toBe('http://proxy.test:8080');
+
+    const humanResult = await runCli([
+      'config', 'proxy', 'get', 'codex', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(humanResult.code).toBe(0);
+    expect(`${humanResult.stdout}${humanResult.stderr}`).not.toContain('malicious-url-secret');
+    expect(humanResult.stdout).toContain('custom http://proxy.test:8080');
+  });
+
   it('sets an authenticated custom policy without printing the password', async () => {
     const passwordFile = join(tempDir, 'proxy-password.txt');
     await writeFile(passwordFile, 'proxy-password-value\n');
@@ -226,6 +258,43 @@ describe('od config proxy CLI', () => {
       username: 'alice',
       passwordConfigured: true,
     });
+  });
+
+  it('removes URL credentials from post-set JSON and human output', async () => {
+    stub.setResponder((request) => request.method === 'GET'
+      ? {
+          status: 200,
+          body: { config: { agentNetwork: {} } },
+        }
+      : {
+          status: 200,
+          body: {
+            config: {
+              agentNetwork: {
+                codex: {
+                  mode: 'custom',
+                  proxyUrl: 'socks5://alice:malicious-set-url-secret@proxy.test:1080/private',
+                  passwordConfigured: true,
+                },
+              },
+            },
+          },
+        });
+
+    const setArgs = [
+      'config', 'proxy', 'set', 'codex',
+      '--mode', 'custom', '--url', 'socks5://proxy.test:1080',
+      '--daemon-url', stub.baseUrl,
+    ];
+    const jsonResult = await runCli([...setArgs, '--json']);
+    expect(jsonResult.code).toBe(0);
+    expect(`${jsonResult.stdout}${jsonResult.stderr}`).not.toContain('malicious-set-url-secret');
+    expect(JSON.parse(jsonResult.stdout).proxyUrl).toBe('socks5://proxy.test:1080');
+
+    const humanResult = await runCli(setArgs);
+    expect(humanResult.code).toBe(0);
+    expect(`${humanResult.stdout}${humanResult.stderr}`).not.toContain('malicious-set-url-secret');
+    expect(humanResult.stdout).toContain('custom socks5://proxy.test:1080');
   });
 
   it('reads a password from stdin once and preserves the saved public fields', async () => {
@@ -351,6 +420,31 @@ describe('od config proxy CLI', () => {
     expect(JSON.parse(result.stderr)).toEqual({
       error: {
         code: 'missing-input',
+        message: 'Proxy configuration request failed (HTTP 400)',
+        data: {},
+      },
+    });
+  });
+
+  it('replaces an unknown credential-bearing daemon error code', async () => {
+    stub.setResponder(() => ({
+      status: 400,
+      body: {
+        error: {
+          code: 'malicious-code-secret',
+          message: 'otherwise safe',
+        },
+      },
+    }));
+
+    const result = await runCli([
+      'config', 'proxy', 'test', 'codex', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(result.code).toBe(1);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('malicious-code-secret');
+    expect(JSON.parse(result.stderr)).toEqual({
+      error: {
+        code: 'proxy-request-failed',
         message: 'Proxy configuration request failed (HTTP 400)',
         data: {},
       },

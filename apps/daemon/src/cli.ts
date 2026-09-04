@@ -2149,9 +2149,9 @@ async function proxyStructuredHttpFailure(resp) {
       : parsed?.error;
   const normalizedCode = normalizeRecoverableErrorCode(errorObj?.code, errorObj?.message);
   const code = typeof normalizedCode === 'string'
-    && /^[A-Za-z0-9_-]{1,64}$/u.test(normalizedCode)
+    && Object.hasOwn(RECOVERABLE_EXIT_CODES, normalizedCode)
     ? normalizedCode
-    : 'daemon-not-running';
+    : 'proxy-request-failed';
   exitWithStructuredError({
     code,
     message: `Proxy configuration request failed (HTTP ${resp.status})`,
@@ -9768,13 +9768,26 @@ async function readProxyPasswordFile(path) {
   return readFile(path, 'utf8');
 }
 
+function proxyUrlForOutput(value) {
+  if (typeof value !== 'string') return '[invalid proxy URL]';
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:', 'socks5:'].includes(url.protocol) || url.host === '') {
+      return '[invalid proxy URL]';
+    }
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return '[invalid proxy URL]';
+  }
+}
+
 function writeProxyPolicy(policy, json, agentId) {
   const publicPolicy = policy?.mode === 'direct'
     ? { mode: 'direct' }
     : policy?.mode === 'custom'
       ? {
           mode: 'custom',
-          proxyUrl: typeof policy.proxyUrl === 'string' ? policy.proxyUrl : '',
+          proxyUrl: proxyUrlForOutput(policy.proxyUrl),
           ...(typeof policy.noProxy === 'string' ? { noProxy: policy.noProxy } : {}),
           ...(typeof policy.username === 'string' ? { username: policy.username } : {}),
           passwordConfigured: policy.passwordConfigured === true,
