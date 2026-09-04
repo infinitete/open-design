@@ -75,6 +75,7 @@ import {
   spawnEnvForAgent,
 } from './agents.js';
 import { agentCliEnvForAgent, readAppConfig } from './app-config.js';
+import { agentNetworkPolicyForAgent } from './storage/agent-network-config.js';
 import { createJsonEventStreamHandler } from './runtimes/json-event-stream.js';
 
 const SYSTEM_PROMPT = `You are a memory extractor for a personal AI design assistant.
@@ -966,11 +967,14 @@ async function callLocalCli(provider, system, user, options) {
   }
 
   let configuredAgentEnv = {};
+  let configuredNetworkPolicy;
   try {
     const appConfig = options?.dataDir ? await readAppConfig(options.dataDir) : {};
     configuredAgentEnv = agentCliEnvForAgent(appConfig.agentCliEnv, def.id);
+    configuredNetworkPolicy = agentNetworkPolicyForAgent(appConfig.agentNetwork, def.id);
   } catch {
     configuredAgentEnv = {};
+    configuredNetworkPolicy = undefined;
   }
 
   const launch = resolveAgentLaunch(def, configuredAgentEnv);
@@ -1037,7 +1041,10 @@ async function callLocalCli(provider, system, user, options) {
       { ...process.env, ...(def.env || {}) },
       configuredAgentEnv,
       undefined,
-      { resolvedBin: launch.selectedPath },
+      {
+        resolvedBin: launch.selectedPath,
+        networkPolicy: configuredNetworkPolicy,
+      },
     ),
     launch,
   );

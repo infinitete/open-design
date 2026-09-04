@@ -36,6 +36,10 @@ import { newInsertId, readAnalyticsContext } from '../analytics.js';
 import type { AnalyticsContext } from '../analytics.js';
 import { spawnEnvForAgent } from '../agents.js';
 import { agentCliEnvForAgent, readAppConfig } from '../app-config.js';
+import {
+  agentNetworkPolicyForAgent,
+  type StoredAgentNetworkPrefs,
+} from '../storage/agent-network-config.js';
 
 // Collab types removed - define locally
 type AuthorizeProjectRequest = any;
@@ -559,7 +563,10 @@ export interface RegisterRunRoutesDeps {
     RUNTIME_DATA_DIR: string;
   };
   agents: {
-    detectAgents: (agentCliEnv?: Record<string, unknown>) => Promise<DetectedAgent[]>;
+    detectAgents: (
+      agentCliEnv?: Record<string, Record<string, string>>,
+      agentNetwork?: StoredAgentNetworkPrefs,
+    ) => Promise<DetectedAgent[]>;
     getAgentDef: (agentId: string) => RuntimeAgentDef | null | undefined;
   };
   chat: {
@@ -1494,7 +1501,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           ? appCfg.agentId
           : null;
         const agents = await detectAgents(
-          toJsonRecord(appCfg.agentCliEnv),
+          appCfg.agentCliEnv ?? {},
+          appCfg.agentNetwork ?? {},
         ).catch((): DetectedAgent[] => []);
         const cfgAgentAvailable = cfgAgent
           ? agents.some((agent) => agent.id === cfgAgent && agent.available)
@@ -1729,14 +1737,18 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
               (rolloutAppConfig as { agentCliEnv?: AgentCliEnv }).agentCliEnv,
               effectiveAgentId,
             );
+            const networkPolicy = agentNetworkPolicyForAgent(
+              (rolloutAppConfig as { agentNetwork?: StoredAgentNetworkPrefs }).agentNetwork,
+              effectiveAgentId,
+            );
             // Both probes read the same resolved launch path. The `--version`
             // read establishes invocability; the `--help` read establishes
             // which optional flags this installed build advertises. OD Next
             // needs both, because the fixture registry below only proves what
             // the runtime *path* can do, not what the user's build exposes.
             const [versions, advertised] = await Promise.all([
-              ensureDetectedRuntimeVersions(effectiveAgentId, agentCliEnv),
-              ensureDetectedRuntimeCapabilities(effectiveAgentId, agentCliEnv),
+              ensureDetectedRuntimeVersions(effectiveAgentId, agentCliEnv, networkPolicy),
+              ensureDetectedRuntimeCapabilities(effectiveAgentId, agentCliEnv, networkPolicy),
             ]);
             rolloutVersions = versions;
             advertisedCapabilityGap = odNextAdvertisedCapabilityGap({
@@ -2023,7 +2035,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           ? appCfg.agentId
           : null;
         const agents = await detectAgents(
-          toJsonRecord(appCfg.agentCliEnv),
+          appCfg.agentCliEnv ?? {},
+          appCfg.agentNetwork ?? {},
         ).catch((): DetectedAgent[] => []);
         const cfgAgentAvailable = cfgAgent
           ? agents.some((agent) => agent.id === cfgAgent && agent.available)

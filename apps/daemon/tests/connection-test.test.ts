@@ -2496,6 +2496,64 @@ setImmediate(() => process.exit(0));
     );
   });
 
+  it('tests an unsaved direct draft instead of the saved custom policy', async () => {
+    if (!process.env.OD_DATA_DIR) throw new Error('OD_DATA_DIR is required for agent network tests');
+    const previousConfig = await readAppConfig(process.env.OD_DATA_DIR);
+    try {
+      await writeAppConfig(process.env.OD_DATA_DIR, {
+        agentNetwork: {
+          codex: { mode: 'custom', proxyUrl: 'http://saved.test:8080' },
+        },
+      });
+      await withFakeCodex(
+        `
+const proxyKeys = Object.keys(process.env).filter((key) => /^(?:http|https|all|no)_proxy$/i.test(key));
+if (proxyKeys.length > 0 || process.env.NODE_USE_ENV_PROXY) process.exit(61);
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'ok' } }));
+setImmediate(() => process.exit(0));
+`,
+        async () => {
+          const response = await realFetch(`${baseUrl}/api/test/connection`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'agent',
+              agentId: 'codex',
+              agentNetwork: { mode: 'direct' },
+            }),
+          });
+
+          expect(response.status).toBe(200);
+          await expect(response.json()).resolves.toMatchObject({ ok: true, kind: 'success' });
+        },
+      );
+    } finally {
+      await writeAppConfig(process.env.OD_DATA_DIR, {
+        agentNetwork: previousConfig.agentNetwork ?? {},
+      });
+    }
+  });
+
+  it('returns the app-config 400 envelope for an invalid network draft', async () => {
+    const response = await realFetch(`${baseUrl}/api/test/connection`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'agent',
+        agentId: 'codex',
+        agentNetwork: { mode: 'custom', proxyUrl: 'ftp://invalid.test' },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: 'INVALID_APP_CONFIG_VALUE',
+        message: expect.any(String),
+      },
+    });
+  });
+
   // The connection-test surface must stay generic after the cloud provider
   // retirement: both the CLI availability listing and the agent-mode test
   // response keep working (non-empty agent list, successful smoke test) while

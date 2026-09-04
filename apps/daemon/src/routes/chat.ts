@@ -38,6 +38,11 @@ import { isKnownReasoningEffort, resolveModelForServiceTier } from '../runtimes/
 import { googleStreamGenerateContentUrl } from '../integrations/google-models.js';
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
 import { authorizeReasoningEgress, sendReasoningEgressDenial } from '../reasoning-egress.js';
+import { InvalidAppConfigValueError } from '../app-config.js';
+import {
+  agentNetworkPolicyForAgent,
+  resolveAgentNetworkTestPolicy,
+} from '../storage/agent-network-config.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -391,6 +396,13 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
             isKnownServiceTier(def, safeModel, body.serviceTier)
               ? body.serviceTier
               : undefined;
+          const savedPolicy = agentNetworkPolicyForAgent(
+            appConfig.agentNetwork,
+            body.agentId,
+          );
+          const networkPolicy = Object.hasOwn(body, 'agentNetwork')
+            ? resolveAgentNetworkTestPolicy(body.agentNetwork, savedPolicy)
+            : savedPolicy;
           const result = await testAgentConnection({
             agentId: body.agentId,
             model: safeModel ?? undefined,
@@ -400,10 +412,16 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
               body.agentCliEnv && typeof body.agentCliEnv === 'object'
                 ? body.agentCliEnv
                 : undefined,
+            networkPolicy,
             signal: controller.signal,
           });
           return res.json(result);
         } catch (err: any) {
+          if (err instanceof InvalidAppConfigValueError) {
+            return res.status(400).json({
+              error: { code: err.code, message: String(err.message) },
+            });
+          }
           console.warn(
             `[test:agent] uncaught: ${err instanceof Error ? err.message : String(err)}`,
           );

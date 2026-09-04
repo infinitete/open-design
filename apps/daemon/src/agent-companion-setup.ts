@@ -220,6 +220,7 @@ async function installDeepSeekHarnessCompanionOnce(options: {
       'DeepSeek Harness is not installed. Install the official dsh CLI, then scan again.',
     );
   }
+  // Network policy is intentionally omitted: this daemon-owned child only installs the local companion.
   const childEnv = applyAgentLaunchEnv(
     spawnEnvForAgent(DSH_AGENT_ID, process.env, configuredEnv),
     launch,

@@ -12,6 +12,11 @@ import { probeAgentAuthStatus } from './auth.js';
 import { agentCapabilities } from './capabilities.js';
 import { installMetaForAgent } from './metadata.js';
 import {
+  agentNetworkPolicyForAgent,
+  type StoredAgentNetworkPolicy,
+  type StoredAgentNetworkPrefs,
+} from '../storage/agent-network-config.js';
+import {
   forgetUnusableExecutables,
   rememberUnusableExecutable,
 } from './executables.js';
@@ -88,11 +93,12 @@ export function getDetectedRuntimeVersions(
 export async function ensureDetectedRuntimeVersions(
   agentId: string | null | undefined,
   configuredAgentEnv: Record<string, string> = {},
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): Promise<DetectedRuntimeVersions | null> {
   if (!agentId) return null;
   const def = AGENT_DEFS.find((candidate) => candidate.id === agentId);
   if (!def) return null;
-  const context = runtimeVersionProbeContext(def, configuredAgentEnv);
+  const context = runtimeVersionProbeContext(def, configuredAgentEnv, networkPolicy);
   if (!context) return null;
   const remembered = getDetectedRuntimeVersions(agentId);
   if (
@@ -134,11 +140,12 @@ export async function ensureDetectedRuntimeVersions(
 export async function ensureDetectedRuntimeCapabilities(
   agentId: string | null | undefined,
   configuredAgentEnv: Record<string, string> = {},
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): Promise<RuntimeCapabilityMap | null> {
   if (!agentId) return null;
   const def = AGENT_DEFS.find((candidate) => candidate.id === agentId);
   if (!def) return null;
-  const context = runtimeVersionProbeContext(def, configuredAgentEnv);
+  const context = runtimeVersionProbeContext(def, configuredAgentEnv, networkPolicy);
   if (!context) return null;
   const remembered = agentCapabilities.get(agentId);
   if (
@@ -358,6 +365,7 @@ type RuntimeVersionProbeContext = {
 function runtimeVersionProbeContext(
   def: RuntimeAgentDef,
   configuredEnv: Record<string, string>,
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): RuntimeVersionProbeContext | null {
   const launch = resolveAgentLaunch(def, configuredEnv);
   if (!launch.selectedPath || !launch.launchPath) return null;
@@ -370,7 +378,10 @@ function runtimeVersionProbeContext(
       },
       configuredEnv,
       undefined,
-      { resolvedBin: launch.selectedPath },
+      {
+        resolvedBin: launch.selectedPath,
+        ...(networkPolicy ? { networkPolicy } : {}),
+      },
     ),
     launch,
   );
@@ -381,6 +392,7 @@ function runtimeVersionProbeContext(
       agentId: def.id,
       selectedPath: launch.selectedPath,
       launchPath: launch.launchPath,
+      networkPolicy,
     })).digest('hex'),
   };
 }
@@ -457,6 +469,7 @@ async function probeCapabilities(
 async function probe(
   def: RuntimeAgentDef,
   configuredEnv: Record<string, string> = {},
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): Promise<DetectedAgent> {
   detectedRuntimeVersions.delete(def.id);
   // Forget what a previous pass proved unusable before re-probing: a rescan
@@ -495,7 +508,10 @@ async function probe(
       },
       configuredEnv,
       undefined,
-      { resolvedBin: launch.selectedPath },
+      {
+        resolvedBin: launch.selectedPath,
+        ...(networkPolicy ? { networkPolicy } : {}),
+      },
     ),
     launch,
   );
@@ -539,7 +555,10 @@ async function probe(
         },
         configuredEnv,
         undefined,
-        { resolvedBin: next.selectedPath },
+        {
+          resolvedBin: next.selectedPath,
+          ...(networkPolicy ? { networkPolicy } : {}),
+        },
       ),
       next,
     );
@@ -635,7 +654,7 @@ async function probe(
     detectedRuntimeVersions.set(def.id, runtimeVersions);
     detectedRuntimeVersionScopes.set(
       def.id,
-      runtimeVersionProbeContext(def, configuredEnv)?.scope ?? '',
+      runtimeVersionProbeContext(def, configuredEnv, networkPolicy)?.scope ?? '',
     );
   }
   return {
@@ -698,9 +717,10 @@ function stripFns(
 export async function detectAgent(
   def: RuntimeAgentDef,
   configuredEnv: Record<string, string> = {},
+  networkPolicy?: StoredAgentNetworkPolicy,
 ): Promise<DetectedAgent> {
   try {
-    return await probe(def, configuredEnv);
+    return await probe(def, configuredEnv, networkPolicy);
   } catch {
     // Fault isolation (issue #2297): one adapter's probe blowing up
     // — e.g. a synchronous filesystem throw during PATH walking on a
@@ -719,9 +739,14 @@ function rememberDetectedLiveModels(agent: DetectedAgent): void {
 
 export async function detectAgents(
   configuredEnvByAgent: Record<string, Record<string, string>> = {},
+  agentNetworkByAgent: StoredAgentNetworkPrefs = {},
 ) {
   const results = await Promise.all(
-    AGENT_DEFS.map((def) => detectAgent(def, configuredEnvForAgent(configuredEnvByAgent, def.id))),
+    AGENT_DEFS.map((def) => detectAgent(
+      def,
+      configuredEnvForAgent(configuredEnvByAgent, def.id),
+      agentNetworkPolicyForAgent(agentNetworkByAgent, def.id),
+    )),
   );
   // Refresh the validation cache from whatever we just surfaced to the UI
   // so /api/chat can accept any model the user could have just picked,
@@ -740,9 +765,14 @@ export async function detectAgents(
 // that don't care about incremental delivery (cache warm, analytics, chat).
 export async function* detectAgentsStream(
   configuredEnvByAgent: Record<string, Record<string, string>> = {},
+  agentNetworkByAgent: StoredAgentNetworkPrefs = {},
 ): AsyncGenerator<DetectedAgent> {
   const tagged = AGENT_DEFS.map((def, index) =>
-    detectAgent(def, configuredEnvForAgent(configuredEnvByAgent, def.id)).then((agent) => {
+    detectAgent(
+      def,
+      configuredEnvForAgent(configuredEnvByAgent, def.id),
+      agentNetworkPolicyForAgent(agentNetworkByAgent, def.id),
+    ).then((agent) => {
       rememberDetectedLiveModels(agent);
       return { index, agent };
     }),

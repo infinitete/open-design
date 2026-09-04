@@ -63,6 +63,7 @@ import {
 import { aihubmixHeaders } from './integrations/aihubmix.js';
 import type { AgentCliEnvPrefs } from './app-config.js';
 import type { RuntimeAgentDef } from './runtimes/types.js';
+import type { StoredAgentNetworkPolicy } from './storage/agent-network-config.js';
 import { preparePromptFileForAgent, type PreparedPromptFile } from './runtimes/prompt-file.js';
 import { configuredAllowedInternalHosts } from './origin-validation.js';
 import {
@@ -853,7 +854,10 @@ export function redactSecrets(
 }
 
 type ProviderConnectionInput = ProviderTestRequest & { signal?: AbortSignal };
-type AgentConnectionInput = AgentTestRequest & { signal?: AbortSignal };
+type ResolvedAgentConnectionInput = Omit<AgentTestRequest, 'agentNetwork'> & {
+  signal?: AbortSignal;
+  networkPolicy?: StoredAgentNetworkPolicy;
+};
 
 function appendVersionedApiPath(baseUrl: string, suffix: string): string {
   const url = new URL(baseUrl);
@@ -2259,7 +2263,7 @@ async function prepareOpenCodeConnectionTestCwd(tempDir: string): Promise<void> 
 }
 
 async function testAgentConnectionInternal(
-  input: AgentConnectionInput,
+  input: ResolvedAgentConnectionInput,
 ): Promise<ConnectionTestResponse> {
   const start = Date.now();
   let model =
@@ -2578,7 +2582,10 @@ async function testAgentConnectionInternal(
       },
       configuredAgentEnv,
       undefined,
-      { resolvedBin: executableResolution.selectedPath },
+      {
+        resolvedBin: executableResolution.selectedPath,
+        ...(input.networkPolicy ? { networkPolicy: input.networkPolicy } : {}),
+      },
     );
     const mmdRouteLaunchEnv = input.agentId === 'claude'
       ? await loadMmdRouteLaunchEnv(
@@ -3073,7 +3080,7 @@ async function testAgentConnectionInternal(
 }
 
 export async function testAgentConnection(
-  input: AgentConnectionInput,
+  input: ResolvedAgentConnectionInput,
 ): Promise<ConnectionTestResponse> {
   const primaryResult = await testAgentConnectionInternal(input);
   const validatedPrefs = validateAgentCliEnv(input.agentCliEnv);

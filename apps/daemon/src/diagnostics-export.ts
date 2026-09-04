@@ -52,6 +52,7 @@ async function resolveDiagnosticsAgentEnvironment(
   if (!dataDir) return empty;
   try {
     const appConfig = await readAppConfig(dataDir);
+    // Network policy is intentionally omitted: diagnostics only inspect local config and executable paths.
     const envFor = (agentId: string) =>
       spawnEnvForAgent(
         agentId,

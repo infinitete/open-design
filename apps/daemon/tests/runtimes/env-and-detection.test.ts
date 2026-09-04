@@ -749,6 +749,50 @@ test('detectAgents applies configured env while probing the CLI', async () => {
   }
 });
 
+fsTest('detectAgents applies the selected agent network policy to version and model probes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-agent-network-detect-'));
+  try {
+    await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
+      const bin = join(dir, 'codex');
+      writeFileSync(
+        bin,
+        `#!/bin/sh
+if [ "$HTTP_PROXY" != "http://proxy.test:8080" ] || [ "$HTTPS_PROXY" != "http://proxy.test:8080" ]; then exit 41; fi
+if [ "$NO_PROXY" != ".corp.test,localhost,127.0.0.1,[::1]" ]; then exit 42; fi
+if [ "$1" = "--version" ]; then echo "codex-cli 9.9.9"; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-network-test","display_name":"GPT Network Test","visibility":"list"}]}'
+  exit 0
+fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+exit 0
+`,
+      );
+      chmodSync(bin, 0o755);
+      process.env.PATH = '';
+      process.env.OD_AGENT_HOME = dir;
+
+      const agents = await detectAgents(
+        { codex: { CODEX_BIN: bin } },
+        {
+          codex: {
+            mode: 'custom',
+            proxyUrl: 'http://proxy.test:8080',
+            noProxy: '.corp.test',
+          },
+        },
+      );
+
+      const detected = agents.find((agent) => agent.id === 'codex');
+      assert.equal(detected?.available, true);
+      assert.equal(detected?.modelsSource, 'live');
+      assert.equal(detected?.models.some((model) => model.id === 'gpt-network-test'), true);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('detectAgents records Antigravity permission capability from stderr help output', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-antigravity-capability-'));
   try {

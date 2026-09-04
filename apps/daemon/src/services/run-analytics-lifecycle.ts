@@ -30,6 +30,7 @@ import { spawnEnvForAgent } from '../agents.js';
 import { newInsertId } from '../analytics.js';
 import type { AnalyticsContext } from '../analytics.js';
 import { agentCliEnvForAgent, readAppConfig } from '../app-config.js';
+import type { StoredAgentNetworkPrefs } from '../storage/agent-network-config.js';
 import {
   codexSessionIdFromRunEvents,
   readCodexRolloutFirstCall,
@@ -227,7 +228,8 @@ export interface RunAnalyticsLifecycleDeps {
   paths: { PROJECTS_DIR: string; RUNTIME_DATA_DIR: string };
   agents: {
     detectAgents: (
-      agentCliEnv?: Record<string, unknown>,
+      agentCliEnv?: Record<string, Record<string, string>>,
+      agentNetwork?: StoredAgentNetworkPrefs,
     ) => Promise<Array<{ id: string; available: boolean }>>;
   };
   telemetry: RunAnalyticsTelemetryDeps;
@@ -370,7 +372,8 @@ export function createRunAnalyticsLifecycle(
           () => ({} as Record<string, unknown>),
         );
         const detectedAgentsForAnalytics = await detectAgents(
-          toJsonRecord((appCfgForAnalytics as { agentCliEnv?: unknown }).agentCliEnv),
+          (appCfgForAnalytics as { agentCliEnv?: Record<string, Record<string, string>> }).agentCliEnv,
+          (appCfgForAnalytics as { agentNetwork?: StoredAgentNetworkPrefs }).agentNetwork,
         ).catch((): Array<{ id: string; available: boolean }> => []);
         const configureGlobals = deriveConfigureGlobals({
           mode: 'daemon',
@@ -757,6 +760,7 @@ export function createRunAnalyticsLifecycle(
               // outer run_finished .catch and drop the whole completion event.
               try {
                 const sessionId = codexSessionIdFromRunEvents(run.events);
+                // Network policy is intentionally omitted: this only derives CODEX_HOME for local rollout reads.
                 const codexHome = spawnEnvForAgent(
                   'codex',
                   { ...process.env, OD_DATA_DIR: RUNTIME_DATA_DIR },

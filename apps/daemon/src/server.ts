@@ -605,6 +605,10 @@ import {
   RETIRED_WORKSPACE_CONTEXT_SOURCE,
   writeAppConfig,
 } from './app-config.js';
+import {
+  agentNetworkPolicyForAgent,
+  type StoredAgentNetworkPolicy,
+} from './storage/agent-network-config.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -3160,9 +3164,9 @@ export async function startServer({
   void readAppConfig(RUNTIME_DATA_DIR)
     .then((config) => {
       orbitService.configure(config.orbit);
-      return detectAgents(config.agentCliEnv ?? {});
+      return detectAgents(config.agentCliEnv ?? {}, config.agentNetwork ?? {});
     })
-    .catch(() => detectAgents().catch(() => {}));
+    .catch(() => detectAgents({}, {}).catch(() => {}));
 
   await recoverStaleLiveArtifactRefreshes({ projectsRoot: PROJECTS_DIR }).catch((error) => {
     console.warn('[od] Failed to recover stale live artifact refreshes:', error);
@@ -5302,7 +5306,10 @@ export async function startServer({
         : null;
       let detectedAgentName: string | null = null;
       if (!agentId) {
-        const agents = await detectAgents(config.agentCliEnv ?? {}).catch(() => []);
+        const agents = await detectAgents(
+          config.agentCliEnv ?? {},
+          config.agentNetwork ?? {},
+        ).catch(() => []);
         const available = agents.find((agent) => agent.available);
         agentId = available?.id ?? null;
         detectedAgentName = available?.name ?? null;
@@ -6626,6 +6633,7 @@ export async function startServer({
       getRuntimeVersions: () => ensureDetectedRuntimeVersions(
         agentId,
         agentCliEnvForAgent(appConfigForPrompt?.agentCliEnv, agentId),
+        agentNetworkPolicyForAgent(appConfigForPrompt?.agentNetwork, agentId),
       ),
     });
 
@@ -7840,13 +7848,16 @@ export async function startServer({
     // the upstream session's own configured default; omitted models may still
     // resolve to an available fallback below.
     let configuredAgentEnv = {};
+    let configuredNetworkPolicy: StoredAgentNetworkPolicy | undefined;
     let appConfigForRun = null;
     try {
       const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
       appConfigForRun = appConfig;
       configuredAgentEnv = agentCliEnvForAgent(appConfig.agentCliEnv, def.id);
+      configuredNetworkPolicy = agentNetworkPolicyForAgent(appConfig.agentNetwork, def.id);
     } catch {
       configuredAgentEnv = {};
+      configuredNetworkPolicy = undefined;
     }
     const configuredModel =
       typeof appConfigForRun?.agentModels?.[def.id]?.model === 'string'
@@ -9073,7 +9084,10 @@ export async function startServer({
         process.env,
         configuredAgentEnv,
         undefined,
-        { resolvedBin: agentLaunch.selectedPath },
+        {
+          resolvedBin: agentLaunch.selectedPath,
+          networkPolicy: configuredNetworkPolicy,
+        },
       );
       await normalizeCodexConfigFile(codexConfigEnv);
 
@@ -9200,7 +9214,11 @@ export async function startServer({
       // Optional argv flags are gated on the `--help` capability map, which used
       // to be filled only by `GET /api/agents`. Probe it here so a daemon that
       // has never served that route still builds the same argv as one that has.
-      await ensureDetectedRuntimeCapabilities(def.id, configuredAgentEnv);
+      await ensureDetectedRuntimeCapabilities(
+        def.id,
+        configuredAgentEnv,
+        configuredNetworkPolicy,
+      );
       args = def.buildArgs(
         composed,
         promptImagePaths,
@@ -9738,7 +9756,10 @@ export async function startServer({
       },
       configuredAgentSpawnEnv,
       undefined,
-      { resolvedBin: agentLaunch.selectedPath },
+      {
+        resolvedBin: agentLaunch.selectedPath,
+        networkPolicy: configuredNetworkPolicy,
+      },
     );
     const odMediaEnv = createOpenDesignToolEnv({
       daemonUrl,
@@ -12209,7 +12230,10 @@ export async function startServer({
       ? appConfig.agentId
       : null;
     if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      const agents = await detectAgents(
+        appConfig.agentCliEnv ?? {},
+        appConfig.agentNetwork ?? {},
+      ).catch(() => []);
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     if (!agentId) throw new Error('No available agent is configured for Orbit. Choose an agent in Settings first.');
@@ -12441,7 +12465,10 @@ export async function startServer({
     let agentId = routine.agentId
       || (typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null);
     if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      const agents = await detectAgents(
+        appConfig.agentCliEnv ?? {},
+        appConfig.agentNetwork ?? {},
+      ).catch(() => []);
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     if (!agentId) {

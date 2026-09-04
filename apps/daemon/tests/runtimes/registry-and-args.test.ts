@@ -76,6 +76,57 @@ test('local agent profiles inherit a base adapter and can pin the default model'
   }
 });
 
+test.runIf(process.platform !== 'win32')('local agent profile detection applies its non-built-in network policy', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-local-agent-profile-network-'));
+  const originalAgentDefCount = AGENT_DEFS.length;
+  try {
+    await withEnvSnapshot(['OD_AGENT_PROFILES_CONFIG', 'PATH', 'OD_AGENT_HOME'], async () => {
+      const config = join(dir, 'agents.local.json');
+      const bin = join(dir, 'zcode');
+      writeFileSync(
+        config,
+        JSON.stringify({
+          agents: [{
+            id: 'zcode',
+            name: 'ZCode',
+            baseAgent: 'claude',
+            bin: 'zcode',
+            args: ['run'],
+          }],
+        }),
+      );
+      writeFileSync(
+        bin,
+        `#!/bin/sh
+if [ "$HTTP_PROXY" != "http://profile-proxy.test:8080" ]; then exit 51; fi
+if [ "$1" = "--version" ]; then echo "zcode 1.0.0"; exit 0; fi
+exit 0
+`,
+      );
+      chmodSync(bin, 0o755);
+      process.env.OD_AGENT_PROFILES_CONFIG = config;
+      process.env.OD_AGENT_HOME = dir;
+      process.env.PATH = dir;
+
+      const profile = readLocalAgentProfileDefs().find((candidate) => candidate.id === 'zcode');
+      assert.ok(profile);
+      AGENT_DEFS.push(profile);
+      const agents = await detectAgents(
+        {},
+        { zcode: { mode: 'custom', proxyUrl: 'http://profile-proxy.test:8080' } },
+      );
+      const detected = agents.find((candidate) => candidate.id === 'zcode');
+
+      assert.equal(detected?.id, 'zcode');
+      assert.equal(detected?.available, true);
+      assert.equal(detected?.version, 'zcode 1.0.0');
+    });
+  } finally {
+    AGENT_DEFS.splice(originalAgentDefCount);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('local agent profiles skip explicit unknown baseAgent without falling back', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-local-agent-profiles-invalid-'));
   try {

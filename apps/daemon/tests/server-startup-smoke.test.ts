@@ -349,6 +349,38 @@ describe('daemon startup route smoke', () => {
     }
   });
 
+  it('[P0] applies the saved custom network policy to a real agent run', async () => {
+    const binDir = await mkdtemp(join(tmpdir(), 'od-startup-run-network-bin-'));
+    try {
+      const claudeBin = await writeProxyRequiredClaudeBin(binDir, 'claude-network');
+      await putAppConfig(started.url, {
+        agentId: 'claude',
+        agentCliEnv: { claude: { CLAUDE_BIN: claudeBin } },
+        agentNetwork: {
+          claude: {
+            mode: 'custom',
+            proxyUrl: 'http://run-proxy.test:8080',
+          },
+        },
+      });
+
+      const run = await createAndWaitForRun(started.url, {
+        caseId: `network_policy_${randomUUID()}`,
+        agentId: 'claude',
+        message: 'startup network policy smoke',
+      });
+
+      expect(run).toMatchObject({
+        agentId: 'claude',
+        status: 'succeeded',
+        exitCode: 0,
+      });
+    } finally {
+      await putAppConfig(started.url, { agentCliEnv: null, agentId: null, agentNetwork: {} });
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
   it('[P0] cancels an active run, exposes canceled status, and keeps the daemon healthy', async () => {
     const binDir = await mkdtemp(join(tmpdir(), 'od-startup-cancel-smoke-bin-'));
     try {
@@ -1052,6 +1084,37 @@ console.log(JSON.stringify({
   message: {
     id: 'msg-sse-smoke',
     content: [{ type: 'text', text: 'SSE replay smoke complete.' }],
+    stop_reason: 'end_turn'
+  }
+}));
+setTimeout(() => process.exit(0), 20);
+`, 'utf8');
+  await chmod(bin, 0o755);
+  return bin;
+}
+
+async function writeProxyRequiredClaudeBin(dir: string, name: string): Promise<string> {
+  const bin = join(dir, name);
+  await writeFile(bin, `#!/usr/bin/env node
+const expectedProxy = 'http://run-proxy.test:8080';
+if (process.env.HTTP_PROXY !== expectedProxy || process.env.HTTPS_PROXY !== expectedProxy) {
+  process.stderr.write('required run proxy was not applied');
+  process.exit(1);
+}
+if (process.argv.includes('--version')) {
+  console.log('claude 0.0.0-network-smoke');
+  process.exit(0);
+}
+if (process.argv.includes('--help')) {
+  console.log('Usage: claude -p [--include-partial-messages] [--add-dir DIR]');
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-network-smoke' }));
+console.log(JSON.stringify({
+  type: 'assistant',
+  message: {
+    id: 'msg-network-smoke',
+    content: [{ type: 'text', text: 'Network policy smoke complete.' }],
     stop_reason: 'end_turn'
   }
 }));
