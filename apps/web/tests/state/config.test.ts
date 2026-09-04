@@ -188,6 +188,25 @@ describe('syncConfigToDaemon', () => {
     });
   });
 
+  it('does not send agent network preferences through generic app-config sync', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await syncConfigToDaemon({
+      ...DEFAULT_CONFIG,
+      agentNetwork: {
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.test:8080',
+          passwordConfigured: true,
+        },
+      },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('agentNetwork');
+  });
+
   it('syncs CLI API key env values and intent to daemon app config while localStorage strips them', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -366,6 +385,28 @@ describe('mergeDaemonConfig', () => {
 
     expect(merged.agentCliEnvIntent).toEqual({
       codex: { apiKeyOverride: true },
+    });
+  });
+
+  it('hydrates the public agent network preferences from the daemon', () => {
+    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
+      agentNetwork: {
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.test:8080',
+          username: 'alice',
+          passwordConfigured: true,
+        },
+      },
+    });
+
+    expect(merged.agentNetwork).toEqual({
+      codex: {
+        mode: 'custom',
+        proxyUrl: 'http://proxy.test:8080',
+        username: 'alice',
+        passwordConfigured: true,
+      },
     });
   });
 
@@ -1570,6 +1611,34 @@ describe('saveConfig', () => {
     expect(saved.privacyDecisionAt).toBeUndefined();
     expect(saved.telemetry).toBeUndefined();
     expect(saved.allowSilentUpdates).toBeUndefined();
+  });
+
+  it('persists only the public agent network view to localStorage', () => {
+    saveConfig({
+      ...DEFAULT_CONFIG,
+      agentNetwork: {
+        codex: {
+          mode: 'custom',
+          proxyUrl: 'http://proxy.test:8080',
+          passwordConfigured: true,
+          // This simulates a future caller bypassing the public TypeScript
+          // shape. Browser persistence must still never retain a password.
+          password: 'write-only-password',
+          nested: { password: 'nested-write-only-password' },
+        } as never,
+      },
+    });
+
+    const raw = store.get('open-design:config') ?? '';
+    expect(raw).not.toContain('write-only-password');
+    expect(JSON.parse(raw).agentNetwork).toEqual({
+      codex: {
+        mode: 'custom',
+        proxyUrl: 'http://proxy.test:8080',
+        passwordConfigured: true,
+        nested: {},
+      },
+    });
   });
 
   it('keeps CLI API key env values out of localStorage while preserving intent and non-secret env', () => {

@@ -88,6 +88,8 @@ import {
 import type {
   AgentInfo,
   AgentModelChoice,
+  AgentNetworkConfig,
+  AgentNetworkUpdatePrefs,
   ApiProtocol,
   ApiProtocolConfig,
   AppConfig,
@@ -448,6 +450,14 @@ interface Props {
    * "Save key" button rather than the autosave channel.
    */
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
+  /**
+   * Explicit write-only proxy persistence. The editor surface is responsible
+   * for calling this only from its Save action; the App owns reconciliation
+   * after the daemon returns its public view.
+   */
+  onPersistAgentNetwork?: (
+    agentNetwork: AgentNetworkUpdatePrefs,
+  ) => Promise<AgentNetworkConfig>;
   /**
    * True while the daemon-backed Composio config is still hydrating on
    * first paint after a dev-server / app restart. The Connectors section

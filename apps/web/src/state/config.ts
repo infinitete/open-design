@@ -82,6 +82,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   agentModels: {},
   agentCliEnv: {},
   agentCliEnvIntent: {},
+  agentNetwork: {},
   notifications: DEFAULT_NOTIFICATIONS,
   orbit: DEFAULT_ORBIT,
   projectLocations: [],
@@ -993,11 +994,21 @@ function sanitizeAgentCliEnv(agentCliEnv: AppConfig['agentCliEnv']): AppConfig['
   return sanitized;
 }
 
+function removePasswordProperties(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(removePasswordProperties);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'password')
+      .map(([key, nestedValue]) => [key, removePasswordProperties(nestedValue)]),
+  );
+}
+
 export function saveConfig(config: AppConfig): void {
-  const sanitized: AppConfig = {
+  const sanitized = removePasswordProperties({
     ...config,
     agentCliEnv: sanitizeAgentCliEnv(config.agentCliEnv),
-  };
+  }) as AppConfig;
   for (const key of DAEMON_OWNED_KEYS) {
     delete (sanitized as unknown as Record<string, unknown>)[key];
   }
@@ -1065,6 +1076,7 @@ export function mergeDaemonConfig(
   }
   next.agentCliEnv = daemonConfig.agentCliEnv ?? {};
   next.agentCliEnvIntent = daemonConfig.agentCliEnvIntent ?? {};
+  next.agentNetwork = daemonConfig.agentNetwork ?? {};
   if (daemonConfig.disabledSkills !== undefined) {
     next.disabledSkills = daemonConfig.disabledSkills;
   }

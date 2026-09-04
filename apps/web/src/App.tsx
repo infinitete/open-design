@@ -109,6 +109,7 @@ import {
   syncConfigToDaemon,
   syncMediaProvidersToDaemon,
 } from './state/config';
+import { saveAgentNetworkPrefs } from './providers/agent-network';
 import { createSilentUpdatePreferenceWriter } from './state/silent-update-preference';
 import { applyAppearanceToDocument } from './state/appearance';
 import { isMacPlatform } from './utils/platform';
@@ -152,6 +153,7 @@ import { useI18n } from './i18n';
 import { liveArtifactTabId } from './types';
 import type {
   AgentInfo,
+  AgentNetworkUpdatePrefs,
   AgentModelChoice,
   ApiProtocol,
   AppConfig,
@@ -1437,6 +1439,17 @@ function AppInner() {
     },
     [],
   );
+
+  const handlePersistAgentNetwork = useCallback(async (
+    agentNetwork: AgentNetworkUpdatePrefs,
+  ) => {
+    const accepted = await saveAgentNetworkPrefs(agentNetwork);
+    const next = { ...latestPersistedConfigRef.current, agentNetwork: accepted };
+    latestPersistedConfigRef.current = next;
+    saveConfig(next);
+    setConfig(next);
+    return accepted;
+  }, []);
 
   const handleModeChange = useCallback(
     (mode: AppConfig['mode']) => {
@@ -2759,6 +2772,7 @@ function AppInner() {
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
+      onPersistAgentNetwork={handlePersistAgentNetwork}
       onClose={handleCloseSettings}
       onResetOnboarding={handleResetOnboarding}
       onRefreshAgents={refreshAgents}

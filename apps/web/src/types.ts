@@ -4,6 +4,7 @@ import type {
   AgentFixIntent,
   AgentCliEnvPrefs,
   AgentCliEnvIntentPrefs,
+  AgentNetworkPrefs,
   AgentModelPrefs,
   AgentTestRequest,
   AppRuntimeCapabilities,
@@ -92,6 +93,8 @@ import type {
   UpdateDeployConfigRequest,
 } from '@open-design/contracts';
 
+export type { AgentNetworkUpdatePrefs } from '@open-design/contracts';
+
 export type {
   CloudflarePagesDeploySelection,
   CloudflarePagesDeploymentInfo,
@@ -108,6 +111,7 @@ export type {
 } from '@open-design/contracts';
 
 export type ExecMode = 'daemon' | 'api';
+export type AgentNetworkConfig = AgentNetworkPrefs;
 export type ApiProtocol =
   | 'anthropic'
   | 'openai'
@@ -348,6 +352,9 @@ export interface AppConfig {
   // Per-agent marker that says an API key was saved as an explicit Local CLI
   // environment override, not as an older proxy-only credential.
   agentCliEnvIntent?: AgentCliEnvIntentConfig;
+  // Public per-agent proxy settings returned by the daemon. Passwords are
+  // write-only and must never appear in this browser-owned config shape.
+  agentNetwork?: AgentNetworkConfig;
   // Caps the upstream completion length in API mode. Defaults to 8192 when
   // unset; raise it for providers (e.g. MiMo) that allow longer responses.
   maxTokens?: number;
