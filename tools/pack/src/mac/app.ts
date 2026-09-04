@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 
 import { rebuild, type RebuildOptions } from "@electron/rebuild";
+import { RELEASE_CHANNELS, releaseNamespace } from "@open-design/release";
+import { SIDECAR_DEFAULTS } from "@open-design/sidecar-proto";
 
 import type { ToolPackConfig } from "../config/index.js";
 import {
@@ -154,6 +156,8 @@ export function renderMacPackagedConfig(options: {
   config: ToolPackConfig;
   usePrebundledStandaloneWeb: boolean;
 }): string {
+  const useStableProductData = options.config.namespaceWasExplicit === false
+    && options.config.namespace === SIDECAR_DEFAULTS.namespace;
   return `${JSON.stringify(
     {
       appVersion: options.appVersion,
@@ -161,14 +165,18 @@ export function renderMacPackagedConfig(options: {
       ...(options.usePrebundledStandaloneWeb
         ? { daemonSidecarEntryRelative: MAC_PREBUNDLED_DAEMON_SIDECAR_RELATIVE_PATH }
         : {}),
-      namespace: options.config.namespace,
+      namespace: useStableProductData
+        ? releaseNamespace(RELEASE_CHANNELS.STABLE)
+        : options.config.namespace,
       ...(options.config.telemetryRelayUrl == null ? {} : { telemetryRelayUrl: options.config.telemetryRelayUrl }),
       ...(options.config.updateMetadataUrl == null ? {} : { updateMetadataUrl: options.config.updateMetadataUrl }),
       ...(options.config.posthogKey == null ? {} : { posthogKey: options.config.posthogKey }),
       ...(options.config.posthogHost == null ? {} : { posthogHost: options.config.posthogHost }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
-      ...(options.config.portable ? {} : { namespaceBaseRoot: options.config.roots.runtime.namespaceBaseRoot }),
+      ...(options.config.portable || useStableProductData
+        ? {}
+        : { namespaceBaseRoot: options.config.roots.runtime.namespaceBaseRoot }),
     },
     null,
     2,

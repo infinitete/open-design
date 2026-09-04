@@ -92,6 +92,8 @@ export type ToolPackConfig = {
   macCompression: ToolPackMacCompression;
   macNotarize?: boolean;
   namespace: string;
+  /** Whether the caller supplied `--namespace` instead of accepting the derived default. */
+  namespaceWasExplicit?: boolean;
   platform: ToolPackPlatform;
   portable: boolean;
   removeCache?: boolean;
@@ -337,6 +339,7 @@ export function resolveToolPackConfig(
     macCompression: resolveToolPackMacCompression(options.macCompression),
     macNotarize: options.notarize === true,
     namespace,
+    namespaceWasExplicit: options.namespace != null,
     platform,
     portable: options.portable === true,
     roots: {

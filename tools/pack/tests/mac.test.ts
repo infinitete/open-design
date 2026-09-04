@@ -309,6 +309,46 @@ describe("copyMacPrebundleRuntimeDependencies", () => {
 });
 
 describe("renderMacPackagedConfig", () => {
+  it("uses the stable product data root when the installed mac app uses the default build options", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    try {
+      const config = resolveToolPackConfig("mac", { dir: root });
+
+      const packagedConfig = JSON.parse(
+        renderMacPackagedConfig({
+          appVersion: "1.2.3",
+          config,
+          usePrebundledStandaloneWeb: true,
+        }),
+      ) as Record<string, unknown>;
+
+      expect(packagedConfig.namespace).toBe("release-stable");
+      expect(packagedConfig).not.toHaveProperty("namespaceBaseRoot");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps an explicitly selected default namespace on the tools-pack runtime root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    try {
+      const config = resolveToolPackConfig("mac", { dir: root, namespace: "default" });
+
+      const packagedConfig = JSON.parse(
+        renderMacPackagedConfig({
+          appVersion: "1.2.3",
+          config,
+          usePrebundledStandaloneWeb: true,
+        }),
+      ) as Record<string, unknown>;
+
+      expect(packagedConfig.namespace).toBe("default");
+      expect(packagedConfig.namespaceBaseRoot).toBe(config.roots.runtime.namespaceBaseRoot);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("omits nodeCommandRelative so packaged mac sidecars use Electron as Node", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
     try {
