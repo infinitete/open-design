@@ -491,8 +491,12 @@ export async function resolvePackagedLauncherRuntime(
   // payload branch can refresh install.json when an update moved the launcher
   // (issue #6494) instead of keeping a stale persisted launchPath forever.
   const currentPackageLaunchPath = stableAppLaunchPathFromExecutable(currentExecutablePath);
+  const currentPackageOwnsSelectedVersion = selection.selected
+    && config.appVersion != null
+    && normalizeLauncherVersion(config.appVersion) === selection.pointer.version
+    && !containsPath(launcherPaths.versionsRoot, currentExecutablePath);
 
-  if (selection.selected) {
+  if (selection.selected && !currentPackageOwnsSelectedVersion) {
     const versionPaths = resolveLauncherVersionPaths({
       channel,
       namespace: config.namespace,

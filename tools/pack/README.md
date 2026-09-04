@@ -63,9 +63,9 @@ placeholder so future design-provided assets can replace the resource files with
 The default macOS developer artifact is safe to install manually: its embedded config uses the stable product namespace
 and resolves data/log/runtime/user-data from Electron's user data root instead of the build machine's `.tmp` path.
 `tools-pack mac start` still injects a launch-only config that uses the tools-pack namespace runtime root, so
-`start/stop/logs/cleanup` remain isolated and manageable from the repo. An explicit `--namespace` keeps the local runtime
-root embedded for multi-instance testing. Release artifacts continue to use `--portable` so build-machine paths are never
-shipped.
+`start/stop/logs/cleanup` remain isolated and manageable from the repo. An explicit `--namespace` other than
+`release-stable` keeps the local runtime root embedded for multi-instance testing. Release artifacts continue to use
+`--portable` so build-machine paths are never shipped.
 
 ### macOS compatibility notes
 

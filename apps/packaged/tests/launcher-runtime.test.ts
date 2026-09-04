@@ -172,6 +172,43 @@ describe("resolvePackagedLauncherRuntime", () => {
     }
   });
 
+  it("prefers the current installed package over an active payload with the same version", async () => {
+    const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-same-version-"));
+    try {
+      const config = fakeConfig(root, "1.2.3-beta.5");
+      const paths = resolvePackagedNamespacePaths(config);
+      await writeActiveMacPayloadFixture(root, config);
+
+      const runtime = await resolvePackagedLauncherRuntime(config, paths, {
+        currentExecutablePath: "/Applications/Open Design Beta.app/Contents/MacOS/Open Design Beta",
+      });
+
+      expect(runtime.source).toBe("current-package");
+      expect(runtime.config).toBe(config);
+      expect(runtime.desktopExecutablePath).toBeNull();
+      expect(runtime.targetVersion).toBeNull();
+
+      const versionPaths = resolveLauncherVersionPaths({
+        channel: "beta",
+        namespace: config.namespace,
+        root,
+        version: "1.2.3-beta.5",
+      });
+      const payloadRuntime = await resolvePackagedLauncherRuntime(config, paths, {
+        currentExecutablePath: join(
+          versionPaths.payloadRoot,
+          "Open Design Beta.app",
+          "Contents",
+          "MacOS",
+          "Open Design Beta",
+        ),
+      });
+      expect(payloadRuntime.source).toBe("payload");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("uses the active launcher payload when runtime state and payload manifest are valid", async () => {
     const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-payload-"));
     try {

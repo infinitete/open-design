@@ -329,6 +329,30 @@ describe("renderMacPackagedConfig", () => {
     }
   });
 
+  it("uses the stable product data root when the stable release namespace is explicit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    try {
+      const config = resolveToolPackConfig("mac", {
+        appVersion: "0.21.1",
+        dir: root,
+        namespace: "release-stable",
+      });
+
+      const packagedConfig = JSON.parse(
+        renderMacPackagedConfig({
+          appVersion: "0.21.1",
+          config,
+          usePrebundledStandaloneWeb: true,
+        }),
+      ) as Record<string, unknown>;
+
+      expect(packagedConfig.namespace).toBe("release-stable");
+      expect(packagedConfig).not.toHaveProperty("namespaceBaseRoot");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("keeps an explicitly selected default namespace on the tools-pack runtime root", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
     try {

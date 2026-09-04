@@ -156,8 +156,10 @@ export function renderMacPackagedConfig(options: {
   config: ToolPackConfig;
   usePrebundledStandaloneWeb: boolean;
 }): string {
-  const useStableProductData = options.config.namespaceWasExplicit === false
-    && options.config.namespace === SIDECAR_DEFAULTS.namespace;
+  const stableReleaseNamespace = releaseNamespace(RELEASE_CHANNELS.STABLE);
+  const useStableProductData = options.config.namespace === stableReleaseNamespace
+    || (options.config.namespaceWasExplicit === false
+      && options.config.namespace === SIDECAR_DEFAULTS.namespace);
   return `${JSON.stringify(
     {
       appVersion: options.appVersion,
@@ -166,7 +168,7 @@ export function renderMacPackagedConfig(options: {
         ? { daemonSidecarEntryRelative: MAC_PREBUNDLED_DAEMON_SIDECAR_RELATIVE_PATH }
         : {}),
       namespace: useStableProductData
-        ? releaseNamespace(RELEASE_CHANNELS.STABLE)
+        ? stableReleaseNamespace
         : options.config.namespace,
       ...(options.config.telemetryRelayUrl == null ? {} : { telemetryRelayUrl: options.config.telemetryRelayUrl }),
       ...(options.config.updateMetadataUrl == null ? {} : { updateMetadataUrl: options.config.updateMetadataUrl }),
