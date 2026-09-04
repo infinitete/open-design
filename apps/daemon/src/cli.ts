@@ -233,6 +233,27 @@ const CONFIG_STRING_FLAGS = new Set([
   'mode', 'url', 'no-proxy', 'username', 'password-file',
 ]);
 const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'clear-password']);
+const PROXY_TEST_KINDS = new Set([
+  'success',
+  'auth_failed',
+  'forbidden',
+  'not_found_model',
+  'invalid_model_id',
+  'invalid_base_url',
+  'rate_limited',
+  'upstream_unavailable',
+  'timeout',
+  'agent_not_installed',
+  'agent_auth_required',
+  'agent_spawn_failed',
+  'unknown',
+]);
+const PROXY_TEST_EXECUTABLE_SOURCES = new Set([
+  'configured',
+  'path',
+  'fallback_invalid',
+  'fallback_failed',
+]);
 
 /** Stub — workspace member headers are no longer used in single-player mode. */
 function workspaceHeadersFromExplicitFlags(_flags?: Record<string, unknown>, _required = false): Record<string, string> {
@@ -2111,6 +2132,29 @@ async function structuredHttpFailure(resp, fallbackCode = 'daemon-not-running') 
     code:    fallbackCode,
     message: errorObj?.message ?? `HTTP ${resp.status}${raw ? `: ${raw}` : ''}`,
     data:    structuredErrorData(errorObj),
+  });
+}
+
+async function proxyStructuredHttpFailure(resp) {
+  let parsed;
+  try {
+    const raw = await resp.text();
+    parsed = raw ? JSON.parse(raw) : {};
+  } catch {
+    parsed = {};
+  }
+  const errorObj =
+    typeof parsed?.error === 'string'
+      ? { message: parsed.error }
+      : parsed?.error;
+  const normalizedCode = normalizeRecoverableErrorCode(errorObj?.code, errorObj?.message);
+  const code = typeof normalizedCode === 'string'
+    && /^[A-Za-z0-9_-]{1,64}$/u.test(normalizedCode)
+    ? normalizedCode
+    : 'daemon-not-running';
+  exitWithStructuredError({
+    code,
+    message: `Proxy configuration request failed (HTTP ${resp.status})`,
   });
 }
 
@@ -9604,34 +9648,34 @@ Common options:
   }
   const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
 
-  const fetchConfig = async () => {
+  const fetchConfig = async (httpFailure = structuredHttpFailure) => {
     const resp = await fetch(`${base}/api/app-config`);
-    if (!resp.ok) return structuredHttpFailure(resp);
+    if (!resp.ok) return httpFailure(resp);
     const data = await resp.json();
     return data?.config ?? {};
   };
-  const writeConfig = async (next) => {
+  const writeConfig = async (next, httpFailure = structuredHttpFailure) => {
     const resp = await fetch(`${base}/api/app-config`, {
       method:  'PUT',
       headers: { 'content-type': 'application/json' },
       body:    JSON.stringify(next),
     });
-    if (!resp.ok) return structuredHttpFailure(resp);
+    if (!resp.ok) return httpFailure(resp);
     return (await resp.json())?.config ?? next;
   };
 
   if (sub === 'proxy') {
     return runConfigProxy(rest, {
       json: flags.json === true,
-      fetchConfig,
-      writeConfig,
+      fetchConfig: () => fetchConfig(proxyStructuredHttpFailure),
+      writeConfig: (next) => writeConfig(next, proxyStructuredHttpFailure),
       testConnection: async (agentId) => {
         const response = await fetch(`${base}/api/test/connection`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'agent', agentId }),
         });
-        if (!response.ok) return structuredHttpFailure(response);
+        if (!response.ok) return proxyStructuredHttpFailure(response);
         return response.json();
       },
     });
@@ -9754,6 +9798,39 @@ function writeProxyPolicy(policy, json, agentId) {
   console.log(`passwordConfigured\t${publicPolicy.passwordConfigured ? 'yes' : 'no'}`);
 }
 
+function toPublicProxyTestResult(result) {
+  const source = result && typeof result === 'object' ? result : {};
+  const kind = typeof source.kind === 'string' && PROXY_TEST_KINDS.has(source.kind)
+    ? source.kind
+    : 'unknown';
+  const latencyMs = typeof source.latencyMs === 'number' && Number.isFinite(source.latencyMs)
+    ? source.latencyMs
+    : 0;
+  return {
+    ok: source.ok === true,
+    kind,
+    latencyMs,
+    ...(typeof source.status === 'number' && Number.isFinite(source.status)
+      ? { status: source.status }
+      : {}),
+    ...(typeof source.model === 'string' ? { model: source.model } : {}),
+    ...(typeof source.agentName === 'string' ? { agentName: source.agentName } : {}),
+    ...(typeof source.configuredExecutablePath === 'string'
+      ? { configuredExecutablePath: source.configuredExecutablePath }
+      : {}),
+    ...(typeof source.detectedExecutablePath === 'string'
+      ? { detectedExecutablePath: source.detectedExecutablePath }
+      : {}),
+    ...(typeof source.usedExecutablePath === 'string'
+      ? { usedExecutablePath: source.usedExecutablePath }
+      : {}),
+    ...(typeof source.usedExecutableSource === 'string'
+      && PROXY_TEST_EXECUTABLE_SOURCES.has(source.usedExecutableSource)
+      ? { usedExecutableSource: source.usedExecutableSource }
+      : {}),
+  };
+}
+
 async function runConfigProxy(args, deps) {
   let command;
   try {
@@ -9769,7 +9846,7 @@ async function runConfigProxy(args, deps) {
     return;
   }
   if (command.verb === 'test') {
-    const result = await deps.testConnection(command.agentId);
+    const result = toPublicProxyTestResult(await deps.testConnection(command.agentId));
     if (deps.json) {
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     } else {

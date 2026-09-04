@@ -273,7 +273,44 @@ describe('od config proxy CLI', () => {
     }]);
   });
 
-  it('maps structured HTTP errors through the established exit contract', async () => {
+  it('allowlists proxy test JSON and human output from a malicious success response', async () => {
+    stub.setResponder(() => ({
+      status: 200,
+      body: {
+        ok: true,
+        kind: 'success',
+        latencyMs: 12,
+        agentName: 'Codex',
+        password: 'malicious-success-secret',
+        detail: 'credential=malicious-success-secret',
+        diagnostics: {
+          phase: 'connection_smoke_test',
+          stdoutTail: 'malicious-success-secret',
+        },
+      },
+    }));
+
+    const jsonResult = await runCli([
+      'config', 'proxy', 'test', 'codex', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(jsonResult.code).toBe(0);
+    expect(`${jsonResult.stdout}${jsonResult.stderr}`).not.toContain('malicious-success-secret');
+    expect(JSON.parse(jsonResult.stdout)).toEqual({
+      ok: true,
+      kind: 'success',
+      latencyMs: 12,
+      agentName: 'Codex',
+    });
+
+    const humanResult = await runCli([
+      'config', 'proxy', 'test', 'codex', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(humanResult.code).toBe(0);
+    expect(`${humanResult.stdout}${humanResult.stderr}`).not.toContain('malicious-success-secret');
+    expect(humanResult.stdout).toContain('[config] proxy test codex: ok (success)');
+  });
+
+  it('maps structured HTTP error codes while replacing daemon-provided messages', async () => {
     stub.setResponder(() => ({
       status: 400,
       body: { error: { code: 'missing-input', message: 'agent policy rejected' } },
@@ -283,7 +320,40 @@ describe('od config proxy CLI', () => {
     ]);
     expect(result.code).toBe(67);
     expect(JSON.parse(result.stderr)).toMatchObject({
-      error: { code: 'missing-input', message: 'agent policy rejected' },
+      error: {
+        code: 'missing-input',
+        message: 'Proxy configuration request failed (HTTP 400)',
+      },
+    });
+  });
+
+  it('preserves structured HTTP exit mapping without exposing malicious proxy error fields', async () => {
+    stub.setResponder(() => ({
+      status: 400,
+      body: {
+        error: {
+          code: 'missing-input',
+          message: 'cannot use http://alice:malicious-error-secret@proxy.test:8080',
+          data: {
+            password: 'malicious-error-secret',
+            proxyUrl: 'http://alice:malicious-error-secret@proxy.test:8080',
+          },
+        },
+      },
+    }));
+
+    const result = await runCli([
+      'config', 'proxy', 'test', 'codex', '--daemon-url', stub.baseUrl,
+    ]);
+    expect(result.code).toBe(67);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('malicious-error-secret');
+    expect(result.stderr).not.toContain('alice:');
+    expect(JSON.parse(result.stderr)).toEqual({
+      error: {
+        code: 'missing-input',
+        message: 'Proxy configuration request failed (HTTP 400)',
+        data: {},
+      },
     });
   });
 
