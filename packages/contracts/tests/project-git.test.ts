@@ -22,10 +22,8 @@ function validSnapshot() {
       repositoryProjectId: 'repo-one',
       resources: [{
         digest,
-        path: `.open-design/resources/${digest}/attachment.png`,
-        purpose: 'attachment',
+        locations: [{ path: `.open-design/resources/${digest}/attachment.png`, purpose: 'attachment', sourceLabel: 'uploaded image' }],
         references: ['repo-one', 'message-one'],
-        sourceLabel: 'uploaded image',
       }],
     },
     project: {
@@ -70,6 +68,23 @@ function validSnapshot() {
 }
 
 describe('portable manifest', () => {
+  it('preserves every location and role for identical bytes while rejecting alias collisions', () => {
+    const locations = [
+      { path: `.open-design/resources/${digest}/content`, purpose: 'attachment', sourceLabel: 'upload' },
+      { path: '.open-design/legacy-file-history/one/v1.html', purpose: 'legacy-history' },
+      { path: '.open-design/legacy-file-history/two/v1.html', purpose: 'legacy-history' },
+      { path: `.open-design/resources/${digest}/content`, purpose: 'skill', sourceLabel: 'skill' },
+      { path: `.open-design/resources/${digest}/content`, purpose: 'plugin', sourceLabel: 'plugin' },
+    ];
+    const resource = { digest, locations, references: ['repo-one', 'message-one'] };
+    const value = validSnapshot();
+    const candidate = { ...value, manifest: { ...value.manifest, resources: [resource] } };
+    expect(parsePortableSnapshot(candidate)).toEqual(candidate);
+    expect(() => parsePortableSnapshot({ ...candidate, manifest: { ...candidate.manifest,
+      resources: [{ ...resource, locations: [...locations, locations[0]] }] } })).toThrow();
+    expect(() => parsePortableSnapshot({ ...candidate, manifest: { ...candidate.manifest,
+      resources: [resource, { digest: 'b'.repeat(64), references: [], locations: [locations[1]] }] } })).toThrow();
+  });
   it('accepts v1 and rejects newer schema without rewriting it', () => {
     const value = { schemaVersion: 1, repositoryProjectId: 'repo-one', resources: [] };
     expect(parsePortableManifest(value)).toEqual(value);
@@ -78,8 +93,7 @@ describe('portable manifest', () => {
       ...value,
       resources: [{
         digest: 'a'.repeat(64),
-        path: '../outside',
-        purpose: 'attachment',
+        locations: [{ path: '../outside', purpose: 'attachment' }],
         references: ['m1'],
       }],
     })).toThrow();
@@ -87,6 +101,41 @@ describe('portable manifest', () => {
 });
 
 describe('portable project snapshot', () => {
+  it('preserves display feedback while rejecting telemetry authority and invalid timestamps', () => {
+    const value = validSnapshot();
+    const feedback = { rating: 'negative', reasonCodes: ['weak_visual', 'other'], customReason: 'Contrast',
+      createdAt: 1, reasonsSubmittedAt: 2, updatedAt: 3 };
+    const candidate = { ...value, messages: [{ ...value.messages[0], context: { feedback } }] };
+    expect(parsePortableSnapshot(candidate)).toEqual(candidate);
+    for (const bad of [{ ...feedback, runId: 'native' }, { ...feedback, telemetryConsent: true },
+      { ...feedback, reasonCodes: ['unknown'] }, { ...feedback, updatedAt: Infinity }, { ...feedback, createdAt: NaN }]) {
+      expect(() => parsePortableSnapshot({ ...candidate, messages: [{ ...candidate.messages[0], context: { feedback: bad } }] })).toThrow();
+    }
+  });
+  it('preserves inert structured comments and scenario resources with reciprocal digest edges', () => {
+    const value = validSnapshot();
+    const comment = { order: 0, label: 'Heading', comment: 'Larger', currentText: 'Hello',
+      filePath: 'index.html', elementId: 'heading', selector: '#heading', htmlHint: '<h1>Hello</h1>',
+      pagePosition: { x: 1, y: 2, width: 3, height: 4 }, style: { fontSize: '16px' },
+      selectionKind: 'pod', memberCount: 1, slideIndex: 0,
+      podMembers: [{ elementId: 'child', selector: 'span', label: 'Child', text: 'Hello',
+        position: { x: 1, y: 2, width: 3, height: 4 }, style: { color: 'red' } }],
+      screenshotResourceRef: digest, imageAttachments: [{ resourceRef: digest, name: 'capture.png' }],
+      markKind: 'click', intent: 'resize', commentContext: 'context', source: 'saved-comment' };
+    const candidate = { ...value, manifest: { ...value.manifest,
+      resources: [{ ...value.manifest.resources[0], locations: [{ ...value.manifest.resources[0].locations[0], purpose: 'scenario' }] }] },
+      messages: [{ ...value.messages[0], context: { commentAttachments: [comment] } }] };
+    expect(parsePortableSnapshot(candidate)).toEqual(candidate);
+    for (const bad of [{ ...comment, id: 'local-authority' }, { ...comment, filePath: '/private/index.html' },
+      { ...comment, style: { fontSize: '16px', onClick: 'execute' } },
+      { ...comment, screenshotResourceRef: 'b'.repeat(64) }]) {
+      expect(() => parsePortableSnapshot({ ...candidate,
+        messages: [{ ...candidate.messages[0], context: { commentAttachments: [bad] } }] })).toThrow();
+    }
+    expect(() => parsePortableSnapshot({ ...candidate,
+      messages: [{ ...candidate.messages[0], resourceRefs: [] }] })).toThrow();
+  });
+
   it('roundtrips a valid v1 snapshot', () => {
     const value = validSnapshot();
     expect(parsePortableSnapshot(value)).toEqual(value);
@@ -162,7 +211,7 @@ describe('portable project snapshot', () => {
         ...wrongResourcePath.manifest,
         resources: [{
           ...wrongResourcePath.manifest.resources[0],
-          path: `.open-design/resources/${'b'.repeat(64)}/attachment.png`,
+          locations: [{ ...wrongResourcePath.manifest.resources[0].locations[0], path: `.open-design/resources/${'b'.repeat(64)}/attachment.png` }],
         }],
       },
     })).toThrow();

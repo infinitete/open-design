@@ -236,6 +236,36 @@ describe('project Git durable store', () => {
     expect(store.getPortableId('r1', 'c1', 'conversation', 'existing-row')).toBe('portable-1');
   });
 
+  it('separates portable turns from record identities while preserving clone ownership', () => {
+    let store = createProjectGitStore(db);
+    store.attachId('r1', 'c1', 'message', 'shared-id', 'local-message');
+    const turn = store.mapId('r1', 'c1', 'turn', 'shared-id');
+    expect(turn).not.toBe('local-message');
+    expect(store.getPortableId('r1', 'c1', 'turn', turn)).toBe('shared-id');
+    expect(() => store.mapId('r1', 'c2', 'conversation', 'shared-id')).toThrow();
+    expect(store.mapId('r1', 'c2', 'turn', 'shared-id')).not.toBe(turn);
+    expect(() => store.attachId('r1', 'c3', 'turn', 'shared-id', turn)).toThrow();
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.mapId('r1', 'c1', 'turn', 'shared-id')).toBe(turn);
+    expect(store.mapId('r1', 'c1', 'message', 'shared-id')).toBe('local-message');
+  });
+
+  it('migrates the old all-kind namespace without changing any mapped IDs', () => {
+    db.exec(`DROP TABLE project_git_id_map;
+      CREATE TABLE project_git_id_map (
+        repository_project_id TEXT NOT NULL, clone_id TEXT NOT NULL, kind TEXT NOT NULL,
+        portable_id TEXT NOT NULL, local_id TEXT NOT NULL,
+        PRIMARY KEY (repository_project_id, clone_id, portable_id),
+        UNIQUE (repository_project_id, clone_id, kind, local_id));
+      INSERT INTO project_git_id_map VALUES ('r1', 'c1', 'message', 'm1', 'local-m1');
+      INSERT INTO project_git_id_map VALUES ('r1', 'c1', 'turn', 't1', 'local-t1');`);
+    migrateProjectGit(db); migrateProjectGit(db);
+    const store = createProjectGitStore(db);
+    expect(store.mapId('r1', 'c1', 'message', 'm1')).toBe('local-m1');
+    expect(store.mapId('r1', 'c1', 'turn', 't1')).toBe('local-t1');
+    expect(store.mapId('r1', 'c1', 'turn', 'm1')).not.toBe('local-m1');
+  });
+
   it('rejects attaching one physical local message to different clones while retaining exact retry', () => {
     let store = createProjectGitStore(db);
     expect(store.attachId('r1', 'c1', 'message', 'portable-message', 'local-message')).toBe('local-message');

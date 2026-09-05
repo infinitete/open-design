@@ -17,8 +17,7 @@ const relativePath = z.string().min(1).refine((value) =>
     && value.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
 );
 
-const portableResourceSchema = z.object({
-  digest: z.string().regex(/^[a-f0-9]{64}$/),
+const portableResourceLocationSchema = z.object({
   path: relativePath,
   purpose: z.enum([
     'attachment',
@@ -26,20 +25,27 @@ const portableResourceSchema = z.object({
     'design-system',
     'skill',
     'plugin',
+    'scenario',
     'legacy-history',
   ]),
-  references: z.array(z.string().min(1)),
   sourceLabel: z.string().optional(),
+}).strict();
+const portableResourceSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  locations: z.array(portableResourceLocationSchema).nonempty(),
+  references: z.array(z.string().min(1)),
 }).strict().superRefine((resource, context) => {
-  const expectedPrefix = resource.purpose === 'legacy-history'
-    ? '.open-design/legacy-file-history/'
-    : `.open-design/resources/${resource.digest}/`;
-  if (!resource.path.startsWith(expectedPrefix) || resource.path.length === expectedPrefix.length) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['path'],
-      message: `resource path must be inside ${expectedPrefix}`,
-    });
+  const tuples = new Set<string>();
+  for (const [index, location] of resource.locations.entries()) {
+    const expectedPrefix = location.purpose === 'legacy-history'
+      ? '.open-design/legacy-file-history/' : `.open-design/resources/${resource.digest}/`;
+    if (!location.path.startsWith(expectedPrefix) || location.path.length === expectedPrefix.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['locations', index, 'path'],
+        message: `resource path must be inside ${expectedPrefix}` });
+    }
+    const tuple = JSON.stringify([location.path, location.purpose, location.sourceLabel ?? null]);
+    if (tuples.has(tuple)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['locations', index], message: 'resource location tuple must be unique' });
+    tuples.add(tuple);
   }
 });
 
@@ -50,6 +56,8 @@ const manifestSchema = z.object({
 }).strict();
 
 export type PortableResource = z.infer<typeof portableResourceSchema>;
+export type PortableResourceLocation = z.infer<typeof portableResourceLocationSchema>;
+export type PortableResourcePurpose = PortableResourceLocation['purpose'];
 export type PortableManifest = z.infer<typeof manifestSchema>;
 
 const projectKindSchema = z.enum([
@@ -219,7 +227,42 @@ const portableConversationSchema = z.object({
   preferences: portableExecutionPreferencesSchema.optional(),
 }).strict();
 
+const portableCommentPositionSchema = z.object({
+  x: z.number().finite(), y: z.number().finite(), width: z.number().finite(), height: z.number().finite(),
+}).strict();
+const portableCommentStyleSchema = z.object({
+  color: z.string().optional(), backgroundColor: z.string().optional(), fontSize: z.string().optional(),
+  fontWeight: z.string().optional(), lineHeight: z.string().optional(), textAlign: z.string().optional(),
+  fontFamily: z.string().optional(), paddingTop: z.string().optional(), paddingRight: z.string().optional(),
+  paddingBottom: z.string().optional(), paddingLeft: z.string().optional(), borderRadius: z.string().optional(),
+}).strict();
+/** Historical selection geometry/text only; never apply to a live document or resume a task. */
+const portableCommentAttachmentSchema = z.object({
+  order: z.number().int().nonnegative(), label: z.string(), comment: z.string(), currentText: z.string(),
+  filePath: relativePath.optional(), elementId: z.string().optional(), selector: z.string().optional(),
+  htmlHint: z.string().optional(), pagePosition: portableCommentPositionSchema.optional(),
+  style: portableCommentStyleSchema.optional(), selectionKind: z.enum(['element', 'pod', 'visual']).optional(),
+  memberCount: z.number().int().nonnegative().optional(), slideIndex: z.number().int().nonnegative().optional(),
+  podMembers: z.array(z.object({
+    elementId: z.string(), selector: z.string(), label: z.string(), text: z.string(),
+    position: portableCommentPositionSchema, htmlHint: z.string().optional(), style: portableCommentStyleSchema.optional(),
+  }).strict()).optional(),
+  screenshotResourceRef: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  imageAttachments: z.array(z.object({ resourceRef: z.string().regex(/^[a-f0-9]{64}$/), name: z.string() }).strict()).optional(),
+  markKind: z.enum(['click', 'stroke', 'click+stroke']).optional(), intent: z.string().optional(),
+  commentContext: z.enum(['context', 'query']).optional(), source: z.enum(['saved-comment', 'board-batch']).optional(),
+  unavailable: z.boolean().optional(),
+}).strict();
+
 const portableMessageContextSchema = z.object({
+  feedback: z.object({
+    rating: z.enum(['positive', 'negative']), createdAt: z.number().finite(),
+    reasonCodes: z.array(z.enum(['matched_request', 'strong_visual', 'useful_structure', 'easy_to_continue',
+      'followed_design_system', 'missed_request', 'weak_visual', 'incomplete_output', 'hard_to_use',
+      'missed_design_system', 'other'])).optional(),
+    customReason: z.string().optional(), reasonsSubmittedAt: z.number().finite().optional(),
+    updatedAt: z.number().finite().optional(),
+  }).strict().optional(),
   agentId: z.string().optional(),
   agentName: z.string().optional(),
   model: z.string().optional(),
@@ -239,6 +282,7 @@ const portableMessageContextSchema = z.object({
     size: z.number().nonnegative().optional(),
     order: z.number().int().nonnegative().optional(),
   }).strict()).optional(),
+  commentAttachments: z.array(portableCommentAttachmentSchema).optional(),
 }).strict();
 
 const portableDisplayEventSchema = z.discriminatedUnion('kind', [
@@ -292,7 +336,7 @@ const portableSnapshotSchema = z.object({
   messages: z.array(portableMessageSchema),
 }).strict().superRefine((snapshot, context) => {
   const resourceDigests = new Set<string>();
-  const resourcePaths = new Set<string>();
+  const resourcePaths = new Map<string, string>();
   const actualReferencesByDigest = new Map<string, Set<string>>();
   const recordKindsById = new Map<string, 'project' | 'conversation' | 'message'>([
     [snapshot.manifest.repositoryProjectId, 'project'],
@@ -321,15 +365,15 @@ const portableSnapshotSchema = z.object({
         message: 'resource digest must be unique',
       });
     }
-    if (resourcePaths.has(resource.path)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['manifest', 'resources', index, 'path'],
-        message: 'resource path must be unique',
+    for (const [locationIndex, location] of resource.locations.entries()) {
+      const existing = resourcePaths.get(location.path);
+      if (existing !== undefined && existing !== resource.digest) context.addIssue({
+        code: z.ZodIssueCode.custom, path: ['manifest', 'resources', index, 'locations', locationIndex, 'path'],
+        message: 'resource path cannot be claimed by different digests',
       });
+      resourcePaths.set(location.path, resource.digest);
     }
     resourceDigests.add(resource.digest);
-    resourcePaths.add(resource.path);
     actualReferencesByDigest.set(resource.digest, new Set());
   }
 
@@ -379,6 +423,10 @@ const portableSnapshotSchema = z.object({
     const contextRefs = [
       ...(message.context.contentItems ?? []).flatMap((item) => item.resourceRef ? [item.resourceRef] : []),
       ...(message.context.attachments ?? []).map((attachment) => attachment.resourceRef),
+      ...(message.context.commentAttachments ?? []).flatMap((comment) => [
+        ...(comment.screenshotResourceRef ? [comment.screenshotResourceRef] : []),
+        ...(comment.imageAttachments ?? []).map((attachment) => attachment.resourceRef),
+      ]),
     ];
     for (const contextRef of contextRefs) {
       if (!resourceDigests.has(contextRef) || !message.resourceRefs.includes(contextRef)) {
@@ -538,6 +586,7 @@ export type PortableExecutionPreferences = z.infer<typeof portableExecutionPrefe
 export type PortableProject = z.infer<typeof portableProjectSchema>;
 export type PortableConversation = z.infer<typeof portableConversationSchema>;
 export type PortableMessageContext = z.infer<typeof portableMessageContextSchema>;
+export type PortableCommentAttachment = z.infer<typeof portableCommentAttachmentSchema>;
 export type PortableDisplayEvent = z.infer<typeof portableDisplayEventSchema>;
 export type PortableMessage = z.infer<typeof portableMessageSchema>;
 export type PortableSnapshot = z.infer<typeof portableSnapshotSchema>;

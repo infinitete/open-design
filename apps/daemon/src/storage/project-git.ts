@@ -164,6 +164,8 @@ export interface ProjectGitBindingTombstone {
 }
 
 export interface ProjectGitStore {
+  /** Transaction identity, not merely a matching SQLite filename. */
+  assertDatabase(database: Database.Database): void;
   getBinding(projectId: string): ProjectGitBindingRecord | null;
   listBindings(): ProjectGitBindingRecord[];
   getBindingGeneration(projectId: string): number;
@@ -322,11 +324,11 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
 
   function attachId(repositoryProjectId: string, cloneId: string, kind: ProjectGitIdKind, portableId: string, localId?: string): string {
     return transaction(() => {
-      const mismatchedKind = db.prepare('SELECT 1 FROM project_git_id_map WHERE repository_project_id = ? AND portable_id = ? AND kind != ? LIMIT 1')
+      const mismatchedKind = kind === 'turn' ? undefined : db.prepare("SELECT 1 FROM project_git_id_map WHERE repository_project_id = ? AND portable_id = ? AND kind != ? AND kind != 'turn' LIMIT 1")
         .get(repositoryProjectId, portableId, kind);
       if (mismatchedKind) throw conflict();
-      const current = db.prepare('SELECT local_id FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND portable_id = ?')
-        .get(repositoryProjectId, cloneId, portableId) as { local_id: string } | undefined;
+      const current = db.prepare('SELECT local_id FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND kind = ? AND portable_id = ?')
+        .get(repositoryProjectId, cloneId, kind, portableId) as { local_id: string } | undefined;
       if (current) { if (localId && localId !== current.local_id) throw conflict(); return current.local_id; }
       const target = localId ?? randomUUID();
       const reverse = db.prepare('SELECT 1 FROM project_git_id_map WHERE kind = ? AND local_id = ?')
@@ -456,6 +458,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       db.prepare('DELETE FROM project_git_push_queue WHERE project_id = ?').run(id);
       return b.generation + 1;
     }),
+    assertDatabase: database => { if (database !== db) throw recoveryRequired(); },
     mapId: (repository, clone, kind, portable) => attachId(repository, clone, kind, portable),
     attachId,
     getPortableId: (repository, clone, kind, local) => (db.prepare('SELECT portable_id FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND kind = ? AND local_id = ?')

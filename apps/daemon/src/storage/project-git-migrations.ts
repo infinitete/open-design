@@ -23,7 +23,7 @@ export function migrateProjectGit(db: Database.Database): void {
       kind TEXT NOT NULL CHECK (kind IN ('project', 'conversation', 'message', 'turn')),
       portable_id TEXT NOT NULL,
       local_id TEXT NOT NULL,
-      PRIMARY KEY (repository_project_id, clone_id, portable_id),
+      PRIMARY KEY (repository_project_id, clone_id, kind, portable_id),
       UNIQUE (repository_project_id, clone_id, kind, local_id)
     );
     CREATE INDEX IF NOT EXISTS project_git_portable_kind
@@ -60,6 +60,39 @@ export function migrateProjectGit(db: Database.Database): void {
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS project_git_push_due ON project_git_push_queue(next_attempt_at);
+    CREATE TABLE IF NOT EXISTS project_git_portable_records (
+      project_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('manifest', 'project', 'conversation', 'message')),
+      local_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+      snapshot_digest TEXT,
+      PRIMARY KEY (project_id, kind, local_id)
+    );
+    `);
+    const idColumns = db.prepare('PRAGMA table_info(project_git_id_map)').all() as { name: string; pk: number }[];
+    if (idColumns.find(column => column.name === 'kind')?.pk === 0) {
+      // Only the mapping table changes. Keep every historical mapping and roll
+      // the whole migration back if a new invariant cannot be satisfied.
+      db.exec(`
+        ALTER TABLE project_git_id_map RENAME TO project_git_id_map_prior;
+        CREATE TABLE project_git_id_map (
+          repository_project_id TEXT NOT NULL, clone_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('project', 'conversation', 'message', 'turn')),
+          portable_id TEXT NOT NULL, local_id TEXT NOT NULL,
+          PRIMARY KEY (repository_project_id, clone_id, kind, portable_id),
+          UNIQUE (repository_project_id, clone_id, kind, local_id));
+        INSERT INTO project_git_id_map SELECT repository_project_id, clone_id, kind, portable_id, local_id
+          FROM project_git_id_map_prior;
+        DROP TABLE project_git_id_map_prior;
+      `);
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS project_git_portable_kind
+        ON project_git_id_map(repository_project_id, portable_id, kind);
+      CREATE UNIQUE INDEX IF NOT EXISTS project_git_local_record ON project_git_id_map(kind, local_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS project_git_record_namespace
+        ON project_git_id_map(repository_project_id, clone_id, portable_id) WHERE kind != 'turn';
     `);
     const columns = db.prepare('PRAGMA table_info(project_git_operations)').all() as { name: string }[];
     for (const name of ['records_transition_json', 'protection_json', 'owner_operation_id']) {
