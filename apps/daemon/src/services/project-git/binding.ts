@@ -38,10 +38,14 @@ export interface ProjectGitBindingServiceInput {
 const stateChanged = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original project preview changed. Create a new preview.');
 const validation = () => new GitDomainError('VALIDATION_FAILED', 400, 'Invalid project repository request.');
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
-const systemErrorCodes = new Set([...getSystemErrorMap().values()].map(([code]) => code));
+const systemErrors = getSystemErrorMap();
 function expectedSystemFailure(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  return error instanceof Error && error.name === 'Error' && typeof code === 'string' && /^E[A-Z0-9]+$/u.test(code) && systemErrorCodes.has(code);
+  if (!(error instanceof Error) || Object.getPrototypeOf(error) !== Error.prototype) return false;
+  const { code, errno, syscall } = error as NodeJS.ErrnoException;
+  return typeof code === 'string' && /^E[A-Z0-9]+$/u.test(code)
+    && typeof errno === 'number' && Number.isInteger(errno)
+    && typeof syscall === 'string' && syscall.trim().length > 0
+    && systemErrors.get(errno)?.[0] === code;
 }
 const jsonValue = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const requestHash = (value: unknown) => sha256(Buffer.from(canonicalJson(jsonValue(value))));

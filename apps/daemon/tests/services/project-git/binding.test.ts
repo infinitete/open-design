@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { getSystemErrorMap } from 'node:util';
 import { classifyBinding, validateBindingConfirmation, inspectBindingCommit, prepareIndependentBinding, createProjectGitBindingService } from '../../../src/services/project-git/binding.js';
 import { createProjectGitStore } from '../../../src/storage/project-git.js';
 import { closeDatabase, openDatabase, insertProject, getProject, listProjects } from '../../../src/db.js';
@@ -184,13 +185,16 @@ it.each(['exact', 'changed-file', 'changed-inode', 'ancestor-repository', 'wrong
   expect(store.listPendingRegistrations()).toEqual([]);
 });
 
+const systemErrno = (code: string) => [...getSystemErrorMap()].find(([, [name]]) => name === code)![0];
+class PreparationProgrammingFault extends Error {}
+
 it.each(['ENOSPC', 'EIO', 'EMFILE', 'EROFS', 'ENFILE'])('returns the exact accepted failed open operation for mkdir %s without native diagnostics', async code => {
   const { service, store, db, configuration } = await serviceFixture(); const mkdirOriginal = fs.mkdir;
   const request = { actorId: 'local', idempotencyKey: 'filesystem', url: 'ssh://git@example.invalid/repo', branch: 'main' };
   vi.spyOn(fs, 'mkdir').mockImplementation((...args) => {
     if (String(args[0]).startsWith(configuration.ownedProjectsRoot + '/')) {
       expect(store.findOperation({ actorId: 'local', projectId: null, kind: 'open', idempotencyKey: request.idempotencyKey })).not.toBeNull();
-      throw Object.assign(new Error(`${code}: native diagnostic /private/source/path`), { code });
+      throw Object.assign(new Error(`${code}: native diagnostic /private/source/path`), { code, errno: systemErrno(code), syscall: 'mkdir' });
     }
     return mkdirOriginal(...args);
   });
@@ -200,7 +204,29 @@ it.each(['ENOSPC', 'EIO', 'EMFILE', 'EROFS', 'ENFILE'])('returns the exact accep
   expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]); expect(store.listPendingRegistrations()).toEqual([]);
 });
 
+it('returns the exact accepted failed open operation for a genuine Node filesystem error without native diagnostics', async () => {
+  const { service, store, db, configuration, f } = await serviceFixture(); const mkdirOriginal = fs.mkdir;
+  const missingPath = join(f.root, 'missing-native-source');
+  const failure = await fs.open(missingPath, 'r').catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: 'ENOENT', errno: systemErrno('ENOENT'), syscall: 'open', path: missingPath });
+  vi.spyOn(fs, 'mkdir').mockImplementation((...args) => {
+    if (String(args[0]).startsWith(configuration.ownedProjectsRoot + '/')) throw failure;
+    return mkdirOriginal(...args);
+  });
+  const operation = await service.openRepository({ actorId: 'local', idempotencyKey: 'genuine-filesystem', url: 'ssh://git@example.invalid/repo', branch: 'main' });
+  expect(operation).toMatchObject({ kind: 'open', status: 'failed', error: { code: 'CONFLICT' } });
+  expect(operation).toEqual(store.getOperation(operation.id)); expect(JSON.stringify(operation)).not.toContain(f.root);
+  expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]); expect(store.listPendingRegistrations()).toEqual([]);
+});
+
 it.each([new TypeError('programmer fault'), Object.assign(new TypeError('programmer fault'), { code: 'ENOSPC' }),
+  Object.assign(new Error('code only'), { code: 'ENOSPC' }),
+  Object.assign(new Error('mismatched errno'), { code: 'ENOSPC', errno: systemErrno('EIO'), syscall: 'mkdir' }),
+  Object.assign(new Error('missing syscall'), { code: 'ENOSPC', errno: systemErrno('ENOSPC') }),
+  Object.assign(new Error('empty syscall'), { code: 'ENOSPC', errno: systemErrno('ENOSPC'), syscall: '' }),
+  Object.assign(new Error('blank syscall'), { code: 'ENOSPC', errno: systemErrno('ENOSPC'), syscall: ' ' }),
+  Object.assign(new Error('noninteger errno'), { code: 'ENOSPC', errno: 0.5, syscall: 'mkdir' }),
+  Object.assign(new PreparationProgrammingFault('subclass programming fault'), { code: 'ENOSPC', errno: systemErrno('ENOSPC'), syscall: 'mkdir' }),
   Object.assign(new Error('unknown code'), { code: 'EFAKE' })])('does not hide a non-system preparation fault: %s', async failure => {
   const { service, store, configuration } = await serviceFixture(); const mkdirOriginal = fs.mkdir;
   vi.spyOn(fs, 'mkdir').mockImplementation((...args) => {
