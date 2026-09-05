@@ -22,6 +22,7 @@ import { migrateProjectScenarioBindings } from './plugins/scenario-binding.js';
 import { emittedRenderableQuestionForm } from './question-form-detect.js';
 import { migrateOdNextRolloutStore } from './strategies/od-next/rollout.js';
 import { migrateStrategyTaskStore } from './strategies/task-store.js';
+import { migrateProjectGit } from './storage/project-git-migrations.js';
 
 type SqliteDb = Database.Database;
 type DbRow = Record<string, any>;
@@ -470,6 +471,7 @@ function migrate(db: SqliteDb): void {
   migrateProjectScenarioBindings(db);
   migrateStrategyTaskStore(db);
   migrateOdNextRolloutStore(db);
+  migrateProjectGit(db);
   retireVelaProjectMetadata(db);
 }
 
