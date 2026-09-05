@@ -148,6 +148,69 @@ it('coalesces identical concurrent enable calls into the same durable result', a
   expect(store.listBindings()).toHaveLength(1);
 });
 
+it.each(['exact', 'changed-file', 'changed-inode', 'ancestor-repository', 'wrong-branch', 'wrong-format', 'wrong-preview', 'wrong-digest', 'wrong-basis'])('resumes %s durable enable intent interrupted before Git initialization', async fault => {
+  const { f, service, store, db, existing, configuration } = await serviceFixture(); const root = await existing();
+  const request = { actorId: 'local', idempotencyKey: 'before-init', expectedProjectRevision: 0 };
+  const preview = await service.previewEnable('existing', { ...request, idempotencyKey: 'before-init-preview' });
+  const freeze = store.freezeEnableInitialization;
+  const interruption = vi.spyOn(store, 'freezeEnableInitialization').mockImplementationOnce((id, initialization) => {
+    freeze(id, initialization); throw new Error('after-intent-before-init');
+  });
+  await expect(service.enable('existing', preview.id, request)).rejects.toThrow('after-intent-before-init'); interruption.mockRestore();
+  const operation = store.findOperation({ actorId: 'local', projectId: 'existing', kind: 'enable', idempotencyKey: request.idempotencyKey })!;
+  const intent = store.getEnableInitialization(operation.id)!; expect(intent).not.toBeNull();
+  await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' }); expect(store.getBinding('existing')).toBeNull();
+  if (fault === 'changed-file') await writeFile(join(root, 'index.html'), 'external edit');
+  if (fault === 'changed-inode') { const original = join(f.root, 'original-unmanaged'); await fs.rename(root, original); await fs.cp(original, root, { recursive: true }); }
+  if (fault === 'ancestor-repository') await gitProcess.initializeRepository({ root: f.root, initialBranch: 'main', objectFormat: 'sha1', env: configuration.gitEnv });
+  if (fault.startsWith('wrong-')) {
+    if (fault === 'wrong-branch') intent.branch = 'other';
+    if (fault === 'wrong-format') intent.objectFormat = 'sha256';
+    if (fault === 'wrong-preview') intent.previewId = 'another-preview';
+    if (fault === 'wrong-digest') intent.previewEvidenceDigest = '0'.repeat(64);
+    if (fault === 'wrong-basis') intent.basis.projectRevision = 1;
+    db.prepare('UPDATE project_git_preparations SET initialization_json=? WHERE operation_id=?').run(JSON.stringify(intent), operation.id);
+  }
+  if (fault === 'exact') {
+    const resumed = await service.enable('existing', preview.id, request);
+    expect(resumed).toMatchObject({ id: operation.id, status: 'succeeded' });
+    expect(await service.enable('existing', preview.id, request)).toEqual(resumed);
+    expect(await f.git(root, 'show', 'HEAD:index.html')).toBe('user file'); expect(store.listBindings()).toHaveLength(1);
+  } else {
+    await expect(service.enable('existing', preview.id, request)).rejects.toBeDefined();
+    await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' }); expect(store.listBindings()).toEqual([]);
+  }
+  if (fault !== 'wrong-preview') expect(store.getEnableInitialization(operation.id)).toEqual(intent);
+  expect(store.listPendingRegistrations()).toEqual([]);
+});
+
+it.each(['ENOSPC', 'EIO', 'EMFILE', 'EROFS', 'ENFILE'])('returns the exact accepted failed open operation for mkdir %s without native diagnostics', async code => {
+  const { service, store, db, configuration } = await serviceFixture(); const mkdirOriginal = fs.mkdir;
+  const request = { actorId: 'local', idempotencyKey: 'filesystem', url: 'ssh://git@example.invalid/repo', branch: 'main' };
+  vi.spyOn(fs, 'mkdir').mockImplementation((...args) => {
+    if (String(args[0]).startsWith(configuration.ownedProjectsRoot + '/')) {
+      expect(store.findOperation({ actorId: 'local', projectId: null, kind: 'open', idempotencyKey: request.idempotencyKey })).not.toBeNull();
+      throw Object.assign(new Error(`${code}: native diagnostic /private/source/path`), { code });
+    }
+    return mkdirOriginal(...args);
+  });
+  const operation = await service.openRepository(request);
+  expect(operation).toMatchObject({ kind: 'open', status: 'failed', error: { code: 'CONFLICT' } });
+  expect(operation).toEqual(store.getOperation(operation.id)); expect(JSON.stringify(operation)).not.toContain('/private/');
+  expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]); expect(store.listPendingRegistrations()).toEqual([]);
+});
+
+it.each([new TypeError('programmer fault'), Object.assign(new TypeError('programmer fault'), { code: 'ENOSPC' }),
+  Object.assign(new Error('unknown code'), { code: 'EFAKE' })])('does not hide a non-system preparation fault: %s', async failure => {
+  const { service, store, configuration } = await serviceFixture(); const mkdirOriginal = fs.mkdir;
+  vi.spyOn(fs, 'mkdir').mockImplementation((...args) => {
+    if (String(args[0]).startsWith(configuration.ownedProjectsRoot + '/')) throw failure;
+    return mkdirOriginal(...args);
+  });
+  await expect(service.openRepository({ actorId: 'local', idempotencyKey: 'programming', url: 'ssh://git@example.invalid/repo', branch: 'main' })).rejects.toBe(failure);
+  expect(store.listBindings()).toEqual([]); expect(store.listPendingRegistrations()).toEqual([]);
+});
+
 it('keeps ordinary unmanaged mutations available when Git disappears after registration of the stable gate', async () => {
   const { service, existing, registry, f } = await serviceFixture(); const root = await existing();
   const noGit = join(f.root, 'no-git'); await mkdir(noGit); const oldPath = process.env.PATH;
@@ -703,6 +766,22 @@ async function registrationChild(root: string, window: string) {
   let stderr = ''; worker.stderr.on('data', bytes => { stderr += String(bytes); });
   const result = await once(worker, 'exit'); return { result, stderr };
 }
+
+it('resumes the original enable after a real process exits between intent commit and Git initialization', async () => {
+  const { f, service, db, existing, configuration } = await serviceFixture(); const root = await existing();
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'process-preview', expectedProjectRevision: 0 });
+  await writeFile(join(f.root, 'binding-fixture.json'), JSON.stringify({ ...configuration, enableProject: { id: 'existing', root, previewId: preview.id } })); db.close();
+  expect(await registrationChild(f.root, 'enable-intent')).toEqual({ result: [73, null], stderr: '' });
+  await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
+  const interrupted = new Database(join(configuration.data, 'app.sqlite')); const store = createProjectGitStore(interrupted);
+  const operation = store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'enable', idempotencyKey: 'process-enable' })!;
+  const intent = store.getEnableInitialization(operation.id); expect(intent).not.toBeNull(); expect(store.listBindings()).toEqual([]); interrupted.close();
+  expect(await registrationChild(f.root, 'resume')).toEqual({ result: [0, null], stderr: '' });
+  const reopened = new Database(join(configuration.data, 'app.sqlite')); const restored = createProjectGitStore(reopened);
+  expect(restored.getOperation(operation.id)).toMatchObject({ id: operation.id, status: 'succeeded' });
+  expect(restored.getEnableInitialization(operation.id)).toEqual(intent); expect(restored.listBindings()).toHaveLength(1); reopened.close();
+  expect(await f.git(root, 'show', 'HEAD:index.html')).toBe('user file');
+});
 
 it.each(['plain', 'empty'])('reuses the frozen %s candidate after an actual process exits before registration', async mode => {
   const { f, db, configuration } = await serviceFixture();

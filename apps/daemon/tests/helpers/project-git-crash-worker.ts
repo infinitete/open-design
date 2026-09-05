@@ -131,7 +131,10 @@ async function registrationWorker(root: string, window: string): Promise<void> {
   if (config.enableProject && !projects.has(config.enableProject.id)) {
     const { getUnmanagedProjectGate, resumeInitializedProjectGate } = await import('../../src/services/project-git/gate.js');
     const prior = store.findOperation({ projectId: config.enableProject.id, actorId: 'local', kind: 'enable', idempotencyKey: 'process-enable' });
-    const gate = prior && store.getEnableInitialization(prior.id)
+    let initialized = true;
+    try { await fsPromises.lstat(join(config.enableProject.root, '.git')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; initialized = false; }
+    const gate = initialized && prior && store.getEnableInitialization(prior.id)
       ? await resumeInitializedProjectGate({ root: config.enableProject.root, ...config.ownership, store, operationRoot: config.operationRoot, operationId: prior.id })
       : await getUnmanagedProjectGate({ root: config.enableProject.root, ...config.ownership });
     projects.set(config.enableProject.id, { root: config.enableProject.root, branch: 'main', gate, ...(config.gitEnv ? { gitEnv: config.gitEnv } : {}) });
@@ -179,6 +182,10 @@ async function registrationWorker(root: string, window: string): Promise<void> {
     store.freezeOpenPreparation = (id, preparation) => { freeze(id, preparation); if (preparation.candidate) process.exit(73); };
   }
   if (window === 'enable-init') store.prepareRegistration = () => { process.exit(73); };
+  if (window === 'enable-intent') {
+    const freeze = store.freezeEnableInitialization;
+    store.freezeEnableInitialization = (id, initialization) => { freeze(id, initialization); process.exit(73); };
+  }
   if (config.enableProject) await service.enable(config.enableProject.id, config.enableProject.previewId,
     { actorId: 'local', idempotencyKey: 'process-enable', expectedProjectRevision: 0 });
   else await service.openRepository({ url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'process-open' });

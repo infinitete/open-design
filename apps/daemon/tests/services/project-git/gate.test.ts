@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { mkdir, symlink } from 'node:fs/promises';
+import { access, mkdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createProjectGate, getProjectGate, getUnmanagedProjectGate, initializeProjectRepository, type MutationPermit } from '../../../src/services/project-git/gate.js';
 import { acquireRepositoryLease, getRepositoryOwnerDomain } from '../../../src/services/project-git/repository-lease.js';
@@ -36,6 +36,29 @@ it('rejects repository appearance on every unmanaged admission even while an ear
   run();
   await expect(getProjectGate(identity)).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
   await expect(getUnmanagedProjectGate({ ...identity, root: f.a })).rejects.toBeDefined();
+});
+
+it('runs the initialization verifier exclusively and leaves no Git or promotion on verifier failure', async () => {
+  const f = await createGitFixture(); fixtures.push(f); const root = join(f.root, 'unmanaged'); await mkdir(root);
+  const identity = { root, instanceId: 'verifier', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: f.root };
+  const gate = await getUnmanagedProjectGate(identity); let mutation: Promise<string> | undefined; let mutated = false; let registered = false;
+  await expect(initializeProjectRepository({ ...identity, initialBranch: 'main', objectFormat: 'sha1' }, async () => { registered = true; }, async () => {
+    mutation = gate.mutate(async () => { mutated = true; return 'unmanaged mutation'; });
+    await tick(); expect(mutated).toBe(false); await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
+    throw new Error('verification refused');
+  })).rejects.toThrow('verification refused');
+  expect(await mutation).toBe('unmanaged mutation'); expect(registered).toBe(false);
+  await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await getUnmanagedProjectGate(identity)).toBe(gate);
+});
+
+it('rechecks its own ancestor fence after the initialization verifier returns', async () => {
+  const f = await createGitFixture(); fixtures.push(f); const root = join(f.root, 'unmanaged'); await mkdir(root);
+  const identity = { root, instanceId: 'verifier', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: f.root };
+  await getUnmanagedProjectGate(identity);
+  await expect(initializeProjectRepository({ ...identity, initialBranch: 'main', objectFormat: 'sha1' }, async () => {},
+    async () => { await f.git(f.root, 'init', '--initial-branch=main'); })).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('quarantines ordinary admission after failure until the owning recovery converges', async () => {

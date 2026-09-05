@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { GitDomainError } from './errors.js';
 import { lstat, mkdir, mkdtemp, open, readdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
+import { getSystemErrorMap, isDeepStrictEqual } from 'node:util';
 import { assertGitIdentity, initializeRepository, runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
 import { computeCheckpointContentDigest, isPrivateProjectGitPath, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
@@ -38,6 +38,11 @@ export interface ProjectGitBindingServiceInput {
 const stateChanged = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original project preview changed. Create a new preview.');
 const validation = () => new GitDomainError('VALIDATION_FAILED', 400, 'Invalid project repository request.');
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+const systemErrorCodes = new Set([...getSystemErrorMap().values()].map(([code]) => code));
+function expectedSystemFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return error instanceof Error && error.name === 'Error' && typeof code === 'string' && /^E[A-Z0-9]+$/u.test(code) && systemErrorCodes.has(code);
+}
 const jsonValue = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const requestHash = (value: unknown) => sha256(Buffer.from(canonicalJson(jsonValue(value))));
 const emptyChanges = (): ProjectGitChangeSummary => ({ addedPaths: [], modifiedPaths: [], deletedPaths: [], settingsChanged: 0,
@@ -377,7 +382,12 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           || preview.status !== 'succeeded' || preview.result?.preview?.id !== previewId || preview.result.preview.expiresAt <= input.now()
           || preview.result.preview.dependencies.some(item => item.requiredForContent || item.nextStep?.action === 'retry' || ['git', 'identity'].includes(item.kind))) throw stateChanged();
         const captured = await readEvidence(preview);
-        const initialized = prior && captured.git === null && store.getEnableInitialization(prior.id);
+        const initialization = prior && captured.git === null && store.getEnableInitialization(prior.id);
+        let initialized = false;
+        if (initialization) {
+          try { await lstat(join(project.root, '.git')); initialized = true; }
+          catch (error) { if (!absent(error)) throw error; }
+        }
         if (initialized && await resumeInitializedProjectGate({ root: project.root, ...input.ownership, store, operationRoot: input.operationRoot, operationId: prior!.id }) !== project.gate) throw stateChanged();
         let consumer: ProjectGitJournalRecord;
         await project.gate.exclusive(async () => {
@@ -398,6 +408,17 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         if (captured.git === null && !initialized) await initializeProjectRepository({ root: project.root, ...input.ownership,
           initialBranch: captured.localBranch, objectFormat: 'sha1', ...(input.gitEnv ? { env: input.gitEnv } : {}) }, async () => {
           intent = await prepareIntent(id, consumer!, captured, 'checkpoint', null, captured.localBranch);
+        }, async () => {
+          const frozen = store.getEnableInitialization(consumer!.id); const durablePreview = store.getJournal(previewId);
+          const info = await lstat(project.root);
+          if (!frozen || !durablePreview || frozen.previewId !== previewId || frozen.projectId !== id || frozen.canonicalRoot !== project.root
+            || frozen.dev !== String(info.dev) || frozen.ino !== String(info.ino) || !info.isDirectory() || info.isSymbolicLink()
+            || await realpath(project.root) !== project.root || frozen.branch !== captured.localBranch || frozen.objectFormat !== 'sha1'
+            || !isDeepStrictEqual(frozen.basis, captured.basis) || durablePreview.actorId !== request.actorId || durablePreview.projectId !== id
+            || durablePreview.kind !== 'enable_preview' || durablePreview.status !== 'succeeded'
+            || frozen.previewEvidenceDigest !== (durablePreview.payload as { evidenceDigest?: unknown }).evidenceDigest
+            || !isDeepStrictEqual(await readEvidence(durablePreview), captured)
+            || !sameCapture(await capture(id, project, captured), captured)) throw stateChanged();
         });
         else await project.gate.exclusive(async () => { intent = await prepareIntent(id, consumer!, captured, 'checkpoint', null, captured.localBranch); });
         return completeEnable(id, consumer!, captured, intent!);
@@ -667,7 +688,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
               label: error.message, requiredForContent: true, nextStep: null } : null;
           store.updateOperation(user.id, { status: 'failed', phase: 'failed', result: dependencies.length ? { dependencies } : dependency ? { dependencies: [dependency] } : null, error: failure });
           if (error instanceof GitDomainError || error instanceof Error && error.name === 'ZodError'
-            || ['EEXIST', 'EACCES', 'EPERM', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) return store.getOperation(user.id)!;
+            || expectedSystemFailure(error)) return store.getOperation(user.id)!;
         }
         throw error;
       }

@@ -210,11 +210,13 @@ export async function getUnmanagedProjectGate(input: RepositoryLeaseInput): Prom
  * The callback must not re-enter this gate. Promotion remains installed after callback failure.
  */
 export async function initializeProjectRepository<T>(input: RepositoryLeaseInput & Omit<GitInitializationInput, 'root'>,
-  work: () => Promise<T>): Promise<T> {
+  work: () => Promise<T>, verifyBeforeInitialize?: () => Promise<void>): Promise<T> {
   const entry = unmanagedRoots.get(input.root);
   if (!entry || entry.identity !== ownershipIdentity(input)) throw unexpectedRepository();
   return entry.gate.exclusive(async () => {
     if (entry.acquire) return work();
+    await verifyBeforeInitialize?.();
+    await assertUnmanagedRoot(input.root);
     await initializeRepository(input);
     const repository = await discoverRepository(input.root);
     let shared = repositories.get(repository.commonDir);
