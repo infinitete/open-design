@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { readFile, writeFile, rename, unlink as fsUnlink } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ProjectGitOperation } from '@open-design/contracts';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { recoverProjectOperations } from '../../../src/services/project-git/recovery.js';
 import { materializeProject } from '../../../src/services/project-git/materialize.js';
 import { createCrashFixture, openCrashFixture } from '../../helpers/project-git-crash-worker.js';
@@ -12,7 +13,8 @@ import { createCrashFixture, openCrashFixture } from '../../helpers/project-git-
 const fixtures: Awaited<ReturnType<typeof createCrashFixture>>[] = [];
 const reopened: Awaited<ReturnType<typeof openCrashFixture>>[] = [];
 const children: ChildProcess[] = [];
-afterEach(async () => { for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; }
+vi.mock('node:fs/promises', async original => ({ ...await original<typeof import('node:fs/promises')>() }));
+afterEach(async () => { vi.restoreAllMocks(); for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; }
   for (const f of reopened.splice(0)) if (f.db.open) f.db.close();
   for (const f of fixtures.splice(0)) { if (f.db.open) f.db.close(); await f.close(); } });
 async function crash(phase: string, kill = false) {
@@ -59,12 +61,47 @@ async function runCrashCase(phase: string): Promise<{ operation: ProjectGitOpera
 
 it.each(['prepared', 'protected', 'files_applied', 'records_applied', 'ref_published', 'index_published', 'complete',
   'file_applied', 'before_records_commit', 'inside_records_transaction', 'after_records_commit',
-  'before_ref_update', 'after_ref_update', 'before_index_rename', 'after_index_rename', 'before_file_rename'])('reopens and converges an actual child crash at %s', async phase => {
+  'before_ref_update', 'after_ref_update', 'before_index_rename', 'after_index_rename', 'before_file_rename',
+  'after_file_rename_before_sync', 'after_index_rename_before_sync'])('reopens and converges an actual child crash at %s', async phase => {
   const result = await runCrashCase(phase);
   expect(result.operation.status).toBe('succeeded');
   expect(result.fileBytes).toEqual(Buffer.from('after\n'));
   expect(result.portableBytes).toEqual(Buffer.from('{"contentRefs":[],"createdAt":1,"kind":"prototype","linkedFolderRequirements":[],"name":"After","preferences":{},"schemaVersion":1}\n'));
   expect(result.databaseImportCount).toBe(1);
+});
+
+it('flushes already-written checkpoint bytes and parent before completing an interrupted files intent', async () => {
+  const { f, restarted } = await crash('checkpoint:prepared'); const originalOpen = fs.open;
+  const checkpointId = await readFile(join(f.root, 'checkpoint-operation'), 'utf8');
+  const path = join(f.a, '.open-design/project.json'); let fail = true; const events: string[] = [];
+  vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === path || args[0] === join(f.a, '.open-design')) {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, 'sync').mockImplementation(async () => {
+        if (args[0] === path && fail) throw new Error('fixture checkpoint file flush failed');
+        await sync(); events.push(args[0] === path ? 'file-synced' : 'directory-synced');
+      });
+    }
+    return handle;
+  });
+  await expect(recoverProjectOperations(restarted.recoveryInput)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  expect(JSON.parse(await readFile(path, 'utf8')).name).toBe('Checkpoint');
+  expect(restarted.store.getJournal(checkpointId)).toMatchObject({ journalPhase: 'files_applied', phaseCompleted: false });
+  await expect(recoverProjectOperations(restarted.recoveryInput)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await expect(restarted.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+  fail = false; events.length = 0;
+  const completePhase = restarted.store.completePhase.bind(restarted.store);
+  vi.spyOn(restarted.store, 'completePhase').mockImplementation((...args) => {
+    if (args[0] === checkpointId && args[1] === 'files_applied') {
+      expect(events.indexOf('file-synced')).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf('directory-synced')).toBeGreaterThan(events.indexOf('file-synced'));
+    }
+    return completePhase(...args);
+  });
+  await recoverProjectOperations(restarted.recoveryInput);
+  expect(restarted.store.getJournal(checkpointId)!.status).toBe('succeeded');
+  expect(restarted.store.getBinding('project')!.projectRevision).toBe(0);
 });
 
 it('rejects a target-matching external edit before any files intent', async () => {
@@ -230,5 +267,45 @@ it('rejects an orphan prepared checkpoint child instead of claiming startup reco
   const childId = await readFile(join(f.root, 'checkpoint-operation'), 'utf8');
   restarted.db.prepare('UPDATE project_git_operations SET owner_operation_id = ? WHERE id = ?').run('missing-owner', childId);
   await expect(recoverProjectOperations(restarted.recoveryInput)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await expect(restarted.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+});
+
+it.each(['standalone', 'linked-child'] as const)('rejects valid %s checkpoint artifacts outside the injected parent before consuming them', async kind => {
+  const { f, restarted } = await crash(kind === 'standalone' ? 'checkpoint:prepared' : 'protection:complete');
+  const checkpointId = kind === 'standalone' ? await readFile(join(f.root, 'checkpoint-operation'), 'utf8')
+    : restarted.store.getJournal(f.input.operationId)!.protection!.checkpointOperationId;
+  const checkpoint = restarted.store.getJournal(checkpointId)!;
+  const wrongParent = join(f.root, 'wrong-artifact-parent'); await fs.mkdir(wrongParent);
+  let artifactRoot = checkpoint.recoveryData!.operationRoot;
+  if (kind === 'linked-child') {
+    const moved = join(wrongParent, 'retained-child'); await rename(artifactRoot, moved);
+    const remap = (value: unknown) => JSON.parse(JSON.stringify(value).split(artifactRoot).join(moved));
+    const evidencePath = join(moved, 'checkpoint.json');
+    await writeFile(evidencePath, JSON.stringify(remap(JSON.parse(await readFile(evidencePath, 'utf8')))));
+    restarted.db.prepare('UPDATE project_git_operations SET recovery_json = ? WHERE id = ?').run(JSON.stringify(remap(checkpoint.recoveryData)), checkpointId);
+    artifactRoot = moved;
+  }
+  const { readCheckpointPublication } = await import('../../../src/services/project-git/checkpoint.js');
+  await expect(readCheckpointPublication({ root: f.a, operationId: checkpointId, store: restarted.store })).resolves.toBeDefined();
+  const artifacts = await fs.readdir(artifactRoot); const bytes = await Promise.all(artifacts.map(path => readFile(join(artifactRoot, path))));
+  const originalIndex = await readFile(join(f.a, '.git/index')); const head = await f.git(f.a, 'rev-parse', 'HEAD');
+  const portable = await readFile(join(f.a, '.open-design/project.json')); const binding = restarted.store.getBinding('project');
+  const beforeCheckpoint = restarted.store.getJournal(checkpointId)!.recoveryData;
+  const protection = restarted.store.getJournal(f.input.operationId)!.protection;
+  let artifactOpened = false; const originalOpen = fs.open;
+  vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    if (String(args[0]).startsWith(artifactRoot + '/')) artifactOpened = true;
+    return originalOpen(...args);
+  });
+  await expect(recoverProjectOperations({ ...restarted.recoveryInput,
+    operationRoot: kind === 'standalone' ? wrongParent : restarted.recoveryInput.operationRoot })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  expect(artifactOpened).toBe(false);
+  expect(await fs.readdir(artifactRoot)).toEqual(artifacts);
+  expect(await Promise.all(artifacts.map(path => readFile(join(artifactRoot, path))))).toEqual(bytes);
+  expect(await readFile(join(f.a, '.git/index'))).toEqual(originalIndex); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(head);
+  expect(await readFile(join(f.a, '.open-design/project.json'))).toEqual(portable);
+  expect(restarted.store.getBinding('project')).toEqual(binding);
+  expect(restarted.store.getJournal(checkpointId)!.recoveryData).toEqual(beforeCheckpoint);
+  expect(restarted.store.getJournal(f.input.operationId)!.protection).toEqual(protection);
   await expect(restarted.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
 });

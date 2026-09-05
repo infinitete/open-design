@@ -133,6 +133,14 @@ async function worker(): Promise<void> {
     fsPromises.rename = async (source, target) => { if (String(source).includes('/.od-materialize-')) crash(); return original(source, target); };
     syncBuiltinESMExports();
   }
+  if (window === 'after_file_rename_before_sync' || window === 'after_index_rename_before_sync') {
+    const original = fsPromises.rename;
+    fsPromises.rename = async (source, target) => {
+      await original(source, target);
+      if (window === 'after_file_rename_before_sync' ? String(source).includes('/.od-materialize-') : target === join(f.input.root, '.git/index')) crash();
+    };
+    syncBuiltinESMExports();
+  }
   if (window.startsWith('protection:')) {
     const boundary = window.slice('protection:'.length);
     const enqueue = f.store.enqueueCheckpoint;

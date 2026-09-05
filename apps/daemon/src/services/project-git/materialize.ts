@@ -9,10 +9,10 @@ import type { ProjectGate, ProjectRecoveryBarrier } from './gate.js';
 import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import { discoverRepository, validateBranch, validateTreeEntries } from './repository.js';
-import { computeCheckpointContentDigest, isPrivateProjectGitPath, journalCheckpoint, prepareCheckpoint, publishCheckpoint, readCheckpointPublication } from './checkpoint.js';
+import { computeCheckpointContentDigest, isPrivateProjectGitPath, journalCheckpoint, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
 import { parsePortableEntries, portableImportMarker } from './portable.js';
 import { assertOperationBasis, durableDirectory, durableWrite, finishRecovery, gitTree, readBytes, readMaterialization,
-  recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within } from './recovery.js';
+  readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within } from './recovery.js';
 import type { MaterializationEvidence, MaterializationPath, RecoveryContext } from './recovery.js';
 
 export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'records_applied' | 'ref_published' | 'index_published' | 'complete';
@@ -98,7 +98,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   const protectionRequired = computeCheckpointContentDigest({ sourceDigests: baseDigests, sourceModes: baseModes, portableDigests: {}, removedPaths: [] }) !== previewContentDigest;
   if (!isAbsolute(input.operationDir)) throw recoveryRequired();
   await durableDirectory(input.operationDir); const operationParent = await realpath(input.operationDir);
-  if (operationParent === repository.root || within(repository.root, operationParent)) throw recoveryRequired();
+  if (operationParent !== input.operationDir || operationParent === repository.root || within(repository.root, operationParent)) throw recoveryRequired();
   const operationRoot = await mkdtemp(join(operationParent, 'materialize-')); await syncDirectory(operationParent);
   const ownerToken = randomUUID(); const paths: MaterializationPath[] = [];
   // Original tracked, explicit target and current portable paths only. Other untracked files remain untouched.
@@ -153,7 +153,7 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
     if (journal.protection && !journal.protection.completed) {
       const completed = context.store.getJournal(journal.protection.checkpointOperationId);
       if (completed?.journalPhase === 'complete') {
-        await readCheckpointPublication({ ...context, operationId: completed.id });
+        await readRecoveryCheckpoint(context, completed.id);
         context.store.completeProtection(operationId, { basis: journal.basis, checkpointOperationId: completed.id, checkpointOid: journal.protection.checkpointOid });
         journal = context.store.getJournal(operationId)!;
       }
@@ -196,7 +196,7 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
     await barrier.exclusive(() => replayOperation(context, child!.id)); child = context.store.getJournal(child.id)!;
   }
   await barrier.exclusive(async () => {
-    const receipt = await readCheckpointPublication({ ...context, operationId: child!.id });
+    const receipt = await readRecoveryCheckpoint(context, child!.id);
     if (receipt.journal.ownerOperationId !== operationId) throw recoveryRequired();
     context.store.completeProtection(operationId, { basis: journal.basis, checkpointOperationId: child!.id, checkpointOid: child!.recoveryData!.publishHead });
     journal = context.store.getJournal(operationId)!;

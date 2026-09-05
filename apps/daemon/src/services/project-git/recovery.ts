@@ -120,10 +120,27 @@ export async function assertOperationBasis(context: RecoveryProject, journal: Pr
   if (!isDeepStrictEqual(await context.readBasis(), expected)) throw recoveryRequired();
 }
 
+async function assertArtifactBoundary(context: RecoveryContext, journal: ProjectGitJournalRecord): Promise<void> {
+  const artifactRoot = journal.recoveryData?.operationRoot;
+  if (!artifactRoot || !isAbsolute(context.operationRoot) || await realpath(context.operationRoot) !== context.operationRoot
+    || !isAbsolute(artifactRoot) || !within(context.operationRoot, artifactRoot) || await realpath(artifactRoot) !== artifactRoot
+    || within(context.root, artifactRoot) || artifactRoot === context.root) throw recoveryRequired();
+}
+
+/** The producer reader validates evidence; this consumer additionally enforces the injected recovery boundary. */
+export async function readRecoveryCheckpoint(context: RecoveryContext, operationId: string, lockOwnerOperationId?: string) {
+  const journal = context.store.getJournal(operationId); if (!journal) throw recoveryRequired();
+  await assertArtifactBoundary(context, journal);
+  if (journal.ownerOperationId || lockOwnerOperationId) {
+    const owner = context.store.getJournal(lockOwnerOperationId ?? journal.ownerOperationId!); if (!owner) throw recoveryRequired();
+    await assertArtifactBoundary(context, owner);
+  }
+  return readCheckpointPublication({ ...context, operationId, ...(lockOwnerOperationId ? { lockOwnerOperationId } : {}) });
+}
+
 export async function readMaterialization(context: RecoveryContext, operationId: string): Promise<MaterializationEvidence> {
   const journal = context.store.getJournal(operationId)!; const data = journal.recoveryData;
-  if (!data || !within(context.operationRoot, data.operationRoot) || await realpath(data.operationRoot) !== data.operationRoot
-    || within(context.root, data.operationRoot) || data.operationRoot === context.root) throw recoveryRequired();
+  await assertArtifactBoundary(context, journal); if (!data) throw recoveryRequired();
   const bytes = await readBytes(join(data.operationRoot, 'materialization.json')); if (!bytes) throw recoveryRequired();
   const evidence = JSON.parse(bytes.toString()) as MaterializationEvidence;
   if (evidence.operationId !== journal.id || evidence.projectId !== journal.projectId || evidence.treeOid !== data.candidateTreeOid
@@ -159,6 +176,7 @@ export async function readMaterialization(context: RecoveryContext, operationId:
 
 async function validateContext(context: RecoveryContext, journal: ProjectGitJournalRecord) {
   context.store.assertDatabase(context.db);
+  await assertArtifactBoundary(context, journal);
   const binding = journal.projectId ? context.store.getBinding(journal.projectId) : null;
   const repository = await discoverRepository(context.root);
   if (!binding || binding.canonicalRoot !== repository.root || binding.commonDir !== repository.commonDir
@@ -178,7 +196,7 @@ const phaseOrder: MaterializePhase[] = ['prepared', 'protected', 'files_applied'
 export async function replayOperation(context: RecoveryContext, operationId: string): Promise<string> {
   let journal = context.store.getJournal(operationId)!; const data = journal.recoveryData!;
   const repository = await validateContext(context, journal); await actualCommit(context, journal);
-  const checkpoint = journal.kind === 'checkpoint' ? await readCheckpointPublication({ ...context, operationId }) : null;
+  const checkpoint = journal.kind === 'checkpoint' ? await readRecoveryCheckpoint(context, operationId) : null;
   const evidence = checkpoint ? null : await readMaterialization(context, operationId);
   const paths: MaterializationPath[] = checkpoint ? checkpoint.evidence.portablePaths.map(path => ({ ...path,
     oldMode: checkpoint.evidence.sourceModes[path.path] ?? '0', temporaryPath: null, temporaryReceiptPath: null })) : evidence!.paths;
@@ -189,8 +207,7 @@ export async function replayOperation(context: RecoveryContext, operationId: str
   const oldPaths = new Map(paths.map(path => [path.path, { digest: path.oldDigest, mode: path.oldMode }]));
   if (journal.protection?.completed) {
     const ownerReceipt = await readBytes(join(data.operationRoot, 'index-lock.json'));
-    const child = await readCheckpointPublication({ ...context, operationId: journal.protection.checkpointOperationId,
-      ...(ownerReceipt !== null ? { lockOwnerOperationId: journal.id } : {}) });
+    const child = await readRecoveryCheckpoint(context, journal.protection.checkpointOperationId, ownerReceipt !== null ? journal.id : undefined);
     if (child.journal.journalPhase !== 'complete' || child.journal.ownerOperationId !== journal.id) throw recoveryRequired();
     oldIndexDigest = child.evidence.candidateIndexDigest;
     for (const path of child.evidence.portablePaths) oldPaths.set(path.path, { digest: path.candidateDigest, mode: path.candidateDigest === null ? '0' : path.mode });
@@ -199,6 +216,8 @@ export async function replayOperation(context: RecoveryContext, operationId: str
     const file = await safeFile(context.root, item.path); return { digest: file.bytes === null ? null : sha256(file.bytes), mode: file.mode };
   };
   const targetState = (item: MaterializationPath) => ({ digest: item.candidateDigest, mode: item.candidateDigest === null ? '0' : item.mode });
+  const source = checkpoint?.evidence ?? evidence!;
+  const planned = new Set(paths.map(path => path.path));
   const checkFiles = async (applied: boolean) => {
     for (const item of paths) {
       const actual = await fileState(item);
@@ -206,14 +225,13 @@ export async function replayOperation(context: RecoveryContext, operationId: str
       if (applied ? !isDeepStrictEqual(actual, targetState(item))
         : !isDeepStrictEqual(actual, oldPaths.get(item.path)) && (!fileIntent || !isDeepStrictEqual(actual, targetState(item)))) throw recoveryRequired();
     }
+    // Unchanged captured paths are not write targets, but remain part of every publication fence.
+    for (const path of Object.keys(source.sourceDigests)) if (!planned.has(path)) {
+      const current = await safeFile(context.root, path);
+      if ((current.bytes === null ? 'missing' : sha256(current.bytes)) !== source.sourceDigests[path] || current.mode !== source.sourceModes[path]) throw recoveryRequired();
+    }
   };
   await checkFiles(phaseOrder.indexOf(journal.journalPhase!) > 2 || (journal.journalPhase === 'files_applied' && journal.phaseCompleted));
-  const source = checkpoint?.evidence ?? evidence!;
-  const planned = new Set(paths.map(path => path.path));
-  for (const path of Object.keys(source.sourceDigests)) if (!planned.has(path)) {
-    const current = await safeFile(context.root, path);
-    if ((current.bytes === null ? 'missing' : sha256(current.bytes)) !== source.sourceDigests[path] || current.mode !== source.sourceModes[path]) throw recoveryRequired();
-  }
   if (repository.head !== publication.publishBase && repository.head !== publication.publishHead) throw recoveryRequired();
   const normal = await readBytes(data.index.path); const normalDigest = normal === null ? null : sha256(normal);
   if (normalDigest !== oldIndexDigest && normalDigest !== data.index.candidateDigest) throw recoveryRequired();
@@ -271,7 +289,19 @@ export async function replayOperation(context: RecoveryContext, operationId: str
       }
       if (phase === 'files_applied') {
         for (const item of paths) {
-          if (isDeepStrictEqual(await fileState(item), targetState(item))) continue;
+          if (isDeepStrictEqual(await fileState(item), targetState(item))) {
+            // Target bytes do not prove the preceding write/rename durability barrier completed.
+            if (checkpoint && item.candidateDigest !== null) {
+              const output = await open(join(context.root, item.path), constants.O_RDONLY | constants.O_NOFOLLOW);
+              try {
+                const info = await output.stat();
+                if (!info.isFile() || (info.mode & 0o111 ? '100755' : '100644') !== item.mode
+                  || sha256(await output.readFile()) !== item.candidateDigest) throw recoveryRequired();
+                await output.sync();
+              } finally { await output.close(); }
+            }
+            await syncDirectory(dirname(join(context.root, item.path))); continue;
+          }
           if (!isDeepStrictEqual(await fileState(item), oldPaths.get(item.path))) throw recoveryRequired();
           const target = join(context.root, item.path);
           if (item.candidatePath === null) { await unlink(target); await syncDirectory(dirname(target)); }
@@ -356,6 +386,7 @@ export async function replayOperation(context: RecoveryContext, operationId: str
           await handle?.close(); handle = undefined;
           await rename(lockPath, state.index.path); await syncDirectory(repository.gitDir); await context.afterEffect?.('after_index_rename');
         }
+        else await syncDirectory(repository.gitDir);
         state.index.published = true;
       }
       context.store.completePhase(operationId, phase, state); await context.afterDurablePhase?.(phase);

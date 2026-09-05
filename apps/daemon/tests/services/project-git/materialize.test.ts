@@ -71,6 +71,14 @@ it('rejects same-revision external edits after the original preview without effe
   expect(f.db.prepare('SELECT count(*) AS n FROM fixture_imports').get()).toEqual({ n: 0 });
 });
 
+it('rejects a noncanonical artifact parent before preparing retained materials', async () => {
+  const f = await fixture(); await fs.mkdir(f.input.operationDir);
+  await expect(materializeProject({ ...f.input, operationDir: f.input.operationDir + '/.' })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  expect(f.store.getJournal(f.input.operationId)!.recoveryData).toBeNull();
+  expect(await fs.readdir(f.input.operationDir)).toEqual([]);
+  expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('before\n');
+});
+
 it('protects uncommitted content with an owned checkpoint and changes only the local parent', async () => {
   const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'unsaved user work\n');
   f.input.previewContentDigest = await captureFixturePreview(f.input);
@@ -119,6 +127,18 @@ it('rechecks files after the final pre-CAS boundary instead of publishing stale 
   } })).rejects.toBeDefined();
   expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
   expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('external late edit');
+});
+
+it.each(['before_ref_update', 'before_index_rename', 'after_index_rename'] as const)('fences unchanged captured target content at %s', async boundary => {
+  const f = await fixture(); const originalIndex = await readFile(join(f.a, '.git/index'));
+  await expect(materializeProject({ ...f.input, afterEffect: async point => {
+    if (point === boundary) await writeFile(join(f.a, '.gitignore'), 'external late ignore edit\n');
+  } })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  expect(await readFile(join(f.a, '.gitignore'), 'utf8')).toBe('external late ignore edit\n');
+  expect(f.store.getOperation(f.input.operationId)!.status).toBe('waiting');
+  await expect(f.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+  if (boundary === 'before_ref_update') expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+  if (boundary !== 'after_index_rename') expect(await readFile(join(f.a, '.git/index'))).toEqual(originalIndex);
 });
 
 it('reports missing LFS payloads before claiming a complete materialization', async () => {
@@ -188,6 +208,46 @@ it('keeps the files intent and read quarantine after a real directory flush fail
   await expect(f.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
   vi.restoreAllMocks(); await recoverProjectOperations(f.recoveryInput);
   expect(await readFile(join(f.a, 'nested/new.txt'), 'utf8')).toBe('new\n');
+});
+
+it.each(['file', 'index'] as const)('repairs a missing %s rename directory flush before completing recovery', async kind => {
+  const f = await fixture(); const originalOpen = fs.open; const originalRename = fs.rename;
+  const target = kind === 'file' ? join(f.a, 'nested/new.txt') : join(f.a, '.git/index');
+  const directory = kind === 'file' ? join(f.a, 'nested') : join(f.a, '.git');
+  let renamed = false; let fail = true; const events: string[] = [];
+  vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+    await originalRename(from, to); if (to === target) renamed = true;
+  });
+  vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === directory && (await handle.stat()).isDirectory()) {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, 'sync').mockImplementation(async () => {
+        if (renamed && fail) throw new Error('fixture post-rename flush failed');
+        await sync(); if (renamed) events.push('directory-synced');
+      });
+    }
+    return handle;
+  });
+  await expect(materializeProject(f.input)).rejects.toThrow('fixture post-rename flush failed');
+  expect(renamed).toBe(true);
+  expect(f.store.getJournal(f.input.operationId)).toMatchObject({ journalPhase: kind === 'file' ? 'files_applied' : 'index_published', phaseCompleted: false });
+  await expect(recoverProjectOperations(f.recoveryInput)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await expect(f.gate.read(async () => 'mixed', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+  expect(f.store.getBinding('project')!.projectRevision).toBe(kind === 'file' ? 0 : 1);
+  fail = false;
+  const completePhase = f.store.completePhase.bind(f.store);
+  vi.spyOn(f.store, 'completePhase').mockImplementation((...args) => {
+    if (args[1] === (kind === 'file' ? 'files_applied' : 'index_published')) {
+      expect(events).toContain('directory-synced'); events.push('phase-complete');
+    }
+    return completePhase(...args);
+  });
+  await recoverProjectOperations(f.recoveryInput);
+  expect(events.indexOf('directory-synced')).toBeLessThan(events.indexOf('phase-complete'));
+  expect(f.store.getOperation(f.input.operationId)!.status).toBe('succeeded');
+  expect(f.store.getBinding('project')!.projectRevision).toBe(1);
+  await expect(f.gate.read(async () => 'converged', 10)).resolves.toBe('converged');
 });
 
 it.each(['.env', 'state.sqlite'])('rejects private candidate %s before materialization effects with path-only diagnostics', async path => {
