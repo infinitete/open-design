@@ -311,6 +311,54 @@ it('still checkpoints ordinary database edits when reserved working files match 
   expect(JSON.parse(await readFile(join(f.a, '.open-design/project.json'), 'utf8')).name).toBe('Database edit');
 });
 
+it.each(['.env', 'secrets.json', 'secrets', '.ssh'] as const)('rejects ignored reserved private member %s by path without reading or traversing it', async name => {
+  const f = await fixture(); await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  const privatePath = join(f.a, '.open-design', name); let secretPath = privatePath;
+  if (name === 'secrets') { await mkdir(privatePath); secretPath = join(privatePath, 'value.txt'); }
+  if (name === '.ssh') {
+    const target = join(f.root, 'owned-secret-target'); await mkdir(target); secretPath = join(target, 'value.txt');
+    await fs.symlink(target, privatePath, 'dir');
+  }
+  const sentinel = 'fixture-private-value-must-not-be-read'; await writeFile(secretPath, sentinel);
+  await writeFile(join(f.a, '.git/info/exclude'), `.open-design/${name}\n`);
+  const index = await readFile(join(f.a, '.git/index')); let accesses = 0;
+  const deny = (path: unknown) => {
+    const value = String(path);
+    if (value === privatePath || value.startsWith(privatePath + '/') || value === secretPath || value === join(f.root, 'owned-secret-target')) {
+      accesses++; throw new Error('Private access forbidden by fixture');
+    }
+  };
+  const originalRead = fs.readFile; const originalOpen = fs.open; const originalList = fs.readdir;
+  const hooks = [
+    vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => { deny(args[0]); return originalRead(...args); }),
+    vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => { deny(args[0]); return originalOpen(...args); }),
+    vi.spyOn(fs, 'readdir').mockImplementation(async (...args: Parameters<typeof fs.readdir>) => { deny(args[0]); return originalList(...args); }),
+  ];
+  syncBuiltinESMExports();
+  try {
+    await expect(f.deps.automaticReady('a')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'external_head_conflict' } });
+    await expect(f.deps.checkpoint('a')).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(accesses).toBe(0);
+    const pending = f.store.listPendingOperations();
+    expect(pending).toContainEqual(expect.objectContaining({ projectId: 'a', phase: 'conflict' }));
+    expect(JSON.stringify(pending)).not.toContain(sentinel);
+  } finally { for (const hook of hooks) hook.mockRestore(); syncBuiltinESMExports(); }
+  expect(await readFile(secretPath, 'utf8')).toBe(sentinel);
+  expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+  expect(f.db.prepare('SELECT name FROM projects WHERE id = ?').get('a')).toEqual({ name: 'Before' });
+});
+
+it('keeps ignored ordinary-root private files excluded from readiness and checkpoint content', async () => {
+  const f = await fixture(); await writeFile(join(f.a, '.git/info/exclude'), '.env\nsecrets.json\n');
+  await writeFile(join(f.a, '.env'), 'ordinary-root fixture private'); await writeFile(join(f.a, 'secrets.json'), '{}');
+  await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  await expect(f.deps.checkpoint('a')).resolves.toBe(f.head);
+  expect(await f.git(f.a, 'ls-files')).not.toContain('.env');
+  expect(await f.git(f.a, 'ls-files')).not.toContain('secrets.json');
+  expect(await readFile(join(f.a, '.env'), 'utf8')).toBe('ordinary-root fixture private');
+});
+
 it.each(['file', 'path', 'index', 'head'] as const)('rejects a torn automatic %s observation and restarts the quiet proof', async boundary => {
   const f = await fixture(); await expect(f.deps.automaticReady('a')).resolves.toBe(true);
   const original = fs.readFile; let raced = false;

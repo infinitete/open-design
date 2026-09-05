@@ -242,7 +242,9 @@ export function createProjectGitSyncDeps(input: {
     // following symlinks or reading private bytes; safeFile validates each leaf.
     const reserved: string[] = [];
     const visit = async (path: string): Promise<void> => {
-      if (isPrivateProjectGitPath(path)) return;
+      if (isPrivateProjectGitPath(path)) throw new GitDomainError('CONFLICT', 409,
+        'A private-named member in the reserved portable namespace requires reconciliation.',
+        { reason: 'external_head_conflict', nextStep: 'Review reserved paths without importing private content.' });
       let info;
       try { info = await lstat(join(root, path)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
