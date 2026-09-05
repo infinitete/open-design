@@ -37,7 +37,7 @@ const keysOf = (...values: Array<Record<string, unknown> | undefined>) => [...ne
 const pointer = (value: string) => value.replaceAll('~', '~0').replaceAll('/', '~1');
 // Only strictly parsed portable records reach this encoder. Their optional
 // TypeScript properties include undefined; JSON represents these by absence.
-function portableJson(value: PortableSnapshot['project'] | PortableConversation | PortableMessage | PortableResource | PortableResourceLocation): JsonValue {
+function portableJson(value: PortableSnapshot | PortableSnapshot['project'] | PortableConversation | PortableMessage | PortableResource | PortableResourceLocation): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
@@ -220,8 +220,13 @@ function renameConflicts(base: FileTree, local: FileTree, remote: FileTree): Set
 
 /** Build retained objects using a private index, never materialize into the project.
  * Caller owns stagingDir and all generated scratch/index files until operation cleanup.
+ * A plain input requires the caller's preview-approved portable head as metadataSource.
+ * This kernel validates composition, not the preview's revision/authorization basis.
  */
-export async function mergeFileTrees(input: { root: string; base: string; local: string; remote: string; stagingDir: string }): Promise<{
+export async function mergeFileTrees(input: {
+  root: string; base: string; local: string; remote: string; stagingDir: string;
+  metadataSource?: 'local' | 'remote';
+}): Promise<{
   tree: string | null; conflicts: ProjectGitConflict[];
 }> {
   if (!isAbsolute(input.root) || !isAbsolute(input.stagingDir)) throw new GitDomainError('VALIDATION_FAILED', 400, 'Merge paths must be absolute.');
@@ -229,11 +234,14 @@ export async function mergeFileTrees(input: { root: string; base: string; local:
   const repository = await discoverRepository(root);
   const within = (parent: string, child: string) => { const rest = relative(parent, child); return rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest); };
   if (within(root, stagingDir) || within(repository.commonDir, stagingDir)) throw new GitDomainError('VALIDATION_FAILED', 400, 'Merge preparation must be outside the project and Git directory.');
-  const trees: FileTree[] = []; const snapshots: PortableSnapshot[] = [];
+  const trees: FileTree[] = []; const snapshots: Array<PortableSnapshot | null> = [];
   for (const oid of [input.base, input.local, input.remote]) {
     try {
       const files = await readFileTree(root, oid); trees.push(files);
-      snapshots.push(parsePortableEntries(new Map([...files].map(([path, file]) => [path, file.bytes]))));
+      // Only genuine namespace absence is plain. Partial or case-variant layouts
+      // must enter the strict parser and can never be selected away as ordinary files.
+      const hasMetadata = [...files.keys()].some(path => path.split('/')[0]!.normalize('NFC').toLowerCase() === '.open-design');
+      snapshots.push(hasMetadata ? parsePortableEntries(new Map([...files].map(([path, file]) => [path, file.bytes]))) : null);
     } catch (error) {
       if (!(error instanceof GitDomainError) || error.code !== 'PORTABLE_RESOURCE_MISSING') throw error;
       const paths = Array.isArray(error.details?.paths) ? error.details.paths.filter((value): value is string => typeof value === 'string')
@@ -242,7 +250,29 @@ export async function mergeFileTrees(input: { root: string; base: string; local:
         { oid: input.base, path }, { oid: input.local, path }, { oid: input.remote, path })) };
     }
   }
-  const merged = mergePortableSnapshots(snapshots[0]!, snapshots[1]!, snapshots[2]!);
+  if (new Set(snapshots.flatMap(snapshot => snapshot ? [snapshot.manifest.repositoryProjectId] : [])).size > 1) {
+    throw new GitDomainError('CONFLICT', 409, 'Cannot merge a different repository project.');
+  }
+  let merged: ReturnType<typeof mergePortableSnapshots>; let resourceTrees = trees;
+  if (snapshots.every(snapshot => snapshot !== null)) {
+    if (input.metadataSource !== undefined) throw new GitDomainError('VALIDATION_FAILED', 400,
+      'Metadata source selection requires a plain Git input.', { reason: 'metadata_source_not_applicable' });
+    merged = mergePortableSnapshots(snapshots[0]!, snapshots[1]!, snapshots[2]!);
+  } else {
+    if (input.metadataSource === undefined) throw new GitDomainError('VALIDATION_FAILED', 400,
+      'Plain Git inputs require an explicit portable metadata source.', { reason: 'metadata_source_required' });
+    if (input.metadataSource !== 'local' && input.metadataSource !== 'remote') throw new GitDomainError('VALIDATION_FAILED', 400,
+      'Metadata source must be a local or remote head.', { reason: 'metadata_source_invalid' });
+    const sourceIndex = input.metadataSource === 'local' ? 1 : 2;
+    const source = snapshots[sourceIndex];
+    if (!source) throw new GitDomainError('VALIDATION_FAILED', 400,
+      'The selected head has no portable metadata.', { reason: 'metadata_source_not_portable' });
+    if (snapshots[1] && snapshots[2] && canonicalJson(portableJson(snapshots[1])) !== canonicalJson(portableJson(snapshots[2]))) {
+      throw new GitDomainError('CONFLICT', 409, 'Different portable metadata histories have no common metadata baseline.', { reason: 'metadata_baseline_missing' });
+    }
+    merged = { snapshot: source, conflicts: [] };
+    resourceTrees = [trees[sourceIndex]!];
+  }
   const conflicts = [...merged.conflicts]; const candidate: FileTree = new Map();
   const renamePaths = renameConflicts(trees[0]!, trees[1]!, trees[2]!);
   for (const path of [...renamePaths].sort()) conflicts.push(fileConflict(path, trees));
@@ -273,7 +303,7 @@ export async function mergeFileTrees(input: { root: string; base: string; local:
   if (conflicts.length || !merged.snapshot) return { tree: null, conflicts };
   for (const [path, bytes] of serializePortableMetadata(merged.snapshot)) candidate.set(path, { oid: '', mode: '100644', bytes: Buffer.from(bytes) });
   for (const resource of merged.snapshot.manifest.resources) for (const location of resource.locations) {
-    const file = trees.map(tree => tree.get(location.path)).find(file => file && createHash('sha256').update(file.bytes).digest('hex') === resource.digest);
+    const file = resourceTrees.map(tree => tree.get(location.path)).find(file => file && createHash('sha256').update(file.bytes).digest('hex') === resource.digest);
     if (!file) conflicts.push(conflict('resource', { path: location.path },
       ...trees.map(tree => tree.has(location.path) ? resource.digest : undefined) as [JsonValue | undefined, JsonValue | undefined, JsonValue | undefined]));
     else candidate.set(location.path, file);

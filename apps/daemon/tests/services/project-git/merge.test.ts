@@ -185,8 +185,8 @@ describe('candidate Git tree merge', () => {
     const f = await createGitFixture(); fixtures.push(f); const stagingDir = join(f.root, 'operation'); await mkdir(stagingDir);
     return { ...f, stagingDir };
   }
-  async function commit(f: Awaited<ReturnType<typeof fixture>>, files: Record<string, string | Uint8Array>, portable = snapshot(), omit?: string) {
-    const entries = serializePortableMetadata(portable);
+  async function commit(f: Awaited<ReturnType<typeof fixture>>, files: Record<string, string | Uint8Array>, portable: PortableSnapshot | null = snapshot(), omit?: string, parent?: string) {
+    const entries = portable ? serializePortableMetadata(portable) : new Map<string, Uint8Array>();
     for (const [name, content] of Object.entries(files)) entries.set(name, typeof content === 'string' ? Buffer.from(content) : content);
     if (omit) entries.delete(omit);
     const env = { GIT_INDEX_FILE: join(f.root, `fixture-index-${sequence++}`),
@@ -198,7 +198,7 @@ describe('candidate Git tree merge', () => {
       await runGit({ cwd: f.a, args: ['update-index', '--add', '--cacheinfo', '100644', oid, name], env });
     }
     const tree = (await runGit({ cwd: f.a, args: ['write-tree'], env })).stdout.toString().trim();
-    return (await runGit({ cwd: f.a, args: ['commit-tree', tree], env, stdin: Buffer.from('fixture\n') })).stdout.toString().trim();
+    return (await runGit({ cwd: f.a, args: ['commit-tree', tree, ...(parent ? ['-p', parent] : [])], env, stdin: Buffer.from('fixture\n') })).stdout.toString().trim();
   }
   async function readTree(root: string, tree: string) {
     const list = (await runGit({ cwd: root, args: ['ls-tree', '-r', '-z', tree] })).stdout.toString().split('\0').filter(Boolean);
@@ -222,6 +222,83 @@ describe('candidate Git tree merge', () => {
     expect(Buffer.from(entries.get('file.txt')!).toString()).toBe('LOCAL\nmiddle\nREMOTE\n'); expect(parsePortableEntries(entries)).toEqual(snapshot());
     expect(await readFile(join(f.a, '.git/index'))).toEqual(index); expect(await readFile(join(f.a, '.git/HEAD'))).toEqual(head);
     expect(await readFile(join(f.a, 'user.txt'), 'utf8')).toBe('unstaged'); expect(existsSync(join(f.a, 'file.txt'))).toBe(false);
+  });
+
+  it('composes a real plain-repository side with explicitly selected metadata without changing commit history or user state', async () => {
+    const f = await fixture(); const portable = snapshot(); portable.project.name = 'Preview-selected metadata';
+    const bytes = Buffer.from('selected resource'); const digest = createHash('sha256').update(bytes).digest('hex');
+    const alias = `.open-design/resources/${digest}/attachment`; const archive = '.open-design/legacy-file-history/original.html';
+    portable.project.contentRefs = [digest]; portable.manifest.resources = [{ digest, references: ['repository'],
+      locations: [{ path: alias, purpose: 'attachment' }, { path: alias, purpose: 'skill' }, { path: archive, purpose: 'legacy-history' }] }];
+    const base = await commit(f, { 'file.txt': 'first\nmiddle\nlast\n' }, null);
+    const local = await commit(f, { 'file.txt': 'LOCAL\nmiddle\nlast\n', [alias]: bytes, [archive]: bytes }, portable, undefined, base);
+    const remote = await commit(f, { 'file.txt': 'first\nmiddle\nREMOTE\n', 'external.txt': 'external repository file' }, null, undefined, base);
+    await f.git(f.a, 'update-ref', 'refs/heads/main', local); await f.git(f.a, 'update-ref', 'refs/heads/external', remote);
+    await writeFile(join(f.a, 'user.txt'), 'staged'); await f.git(f.a, 'add', 'user.txt');
+    const index = await readFile(join(f.a, '.git/index')); await writeFile(join(f.a, 'user.txt'), 'unstaged');
+    const heads = await f.git(f.a, 'show-ref'); const head = await readFile(join(f.a, '.git/HEAD'));
+    const commits = async () => (await f.git(f.a, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)')).split('\n').filter(line => line.endsWith(' commit')).sort();
+    const originalCommits = await commits();
+    const originalBytes = await Promise.all([base, local, remote].map(oid => runGit({ cwd: f.a, args: ['cat-file', 'commit', oid] })));
+    const result = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, metadataSource: 'local' });
+    expect(result.conflicts).toEqual([]); const entries = await readTree(f.a, result.tree!);
+    expect(parsePortableEntries(entries)).toEqual(portable);
+    expect(Buffer.from(entries.get('file.txt')!).toString()).toBe('LOCAL\nmiddle\nREMOTE\n');
+    expect(Buffer.from(entries.get('external.txt')!).toString()).toBe('external repository file');
+    expect(entries.get(alias)).toEqual(bytes); expect(entries.get(archive)).toEqual(bytes);
+    expect(await commits()).toEqual(originalCommits); expect(await f.git(f.a, 'show-ref')).toBe(heads);
+    for (const [i, oid] of [base, local, remote].entries()) expect((await runGit({ cwd: f.a, args: ['cat-file', 'commit', oid] })).stdout).toEqual(originalBytes[i]!.stdout);
+    expect(originalBytes[1]!.stdout.toString()).toContain(`parent ${base}\n`); expect(originalBytes[2]!.stdout.toString()).toContain(`parent ${base}\n`);
+    expect(await readFile(join(f.a, '.git/index'))).toEqual(index); expect(await readFile(join(f.a, '.git/HEAD'))).toEqual(head);
+    expect(await readFile(join(f.a, 'user.txt'), 'utf8')).toBe('unstaged'); expect(existsSync(join(f.a, 'file.txt'))).toBe(false);
+  });
+
+  it('requires an explicit portable metadata source for ordinary-input composition', async () => {
+    const f = await fixture(); const base = await commit(f, {}, null); const local = await commit(f, {}); const remote = await commit(f, { 'plain.txt': 'plain' }, null);
+    const input = { root: f.a, stagingDir: f.stagingDir, base, local, remote };
+    await expect(mergeFileTrees(input)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(mergeFileTrees({ ...input, metadataSource: 'remote' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(mergeFileTrees({ ...input, local: base, metadataSource: 'local' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(mergeFileTrees({ ...input, metadataSource: 'base' as 'local' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'metadata_source_invalid' } });
+  });
+
+  it('uses the selected remote portable head when local is plain and base metadata differs', async () => {
+    const f = await fixture(); const old = snapshot(); old.project.name = 'Historical metadata';
+    const selected = snapshot(); selected.project.name = 'Selected remote metadata'; selected.project.customInstructions = 'Remote instructions';
+    const base = await commit(f, { 'file.txt': 'base' }, old);
+    const local = await commit(f, { 'file.txt': 'base', 'local-only.txt': 'keep' }, null);
+    const remote = await commit(f, { 'file.txt': 'remote edit' }, selected);
+    const result = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, metadataSource: 'remote' });
+    const entries = await readTree(f.a, result.tree!);
+    expect(result.conflicts).toEqual([]); expect(parsePortableEntries(entries)).toEqual(selected);
+    expect(Buffer.from(entries.get('file.txt')!).toString()).toBe('remote edit'); expect(entries.has('local-only.txt')).toBe(true);
+  });
+
+  it.each(['partial', 'malformed', 'higher-schema', 'reserved-case'] as const)('does not degrade %s metadata into a plain repository when another source is selected', async kind => {
+    const f = await fixture(); const local = await commit(f, {}); const remote = await commit(f, {}, null);
+    const files = kind === 'partial' ? { '.open-design/project.json': '{}' }
+      : kind === 'malformed' ? { '.open-design/manifest.json': '{' }
+        : kind === 'higher-schema' ? { '.open-design/manifest.json': '{"schemaVersion":2,"repositoryProjectId":"repository","resources":[]}' }
+          : { '.OPEN-DESIGN/manifest.json': '{}' };
+    const base = await commit(f, files, null);
+    await expect(mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, metadataSource: 'local' })).rejects.toThrow();
+  });
+
+  it('does not select away a foreign portable project or override the all-portable structural merge', async () => {
+    const f = await fixture(); const base = await commit(f, {}); const remote = await commit(f, {}, null);
+    const other = snapshot(); other.manifest.repositoryProjectId = 'foreign'; const local = await commit(f, {}, other);
+    await expect(mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, metadataSource: 'local' })).rejects.toThrow(/repository project/i);
+    await expect(mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local: base, remote: base, metadataSource: 'local' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it('composes equal portable heads over a plain base but refuses to select away different metadata histories', async () => {
+    const f = await fixture(); const base = await commit(f, {}, null);
+    const local = await commit(f, { 'local.txt': 'local' }); const remote = await commit(f, { 'remote.txt': 'remote' });
+    const input = { root: f.a, stagingDir: f.stagingDir, base, local, remote, metadataSource: 'remote' as const };
+    const result = await mergeFileTrees(input); const entries = await readTree(f.a, result.tree!);
+    expect(parsePortableEntries(entries)).toEqual(snapshot()); expect(entries.has('local.txt')).toBe(true); expect(entries.has('remote.txt')).toBe(true);
+    const changed = snapshot(); changed.project.name = 'Different metadata'; const changedRemote = await commit(f, {}, changed);
+    await expect(mergeFileTrees({ ...input, remote: changedRemote })).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'metadata_baseline_missing' } });
   });
 
   it.each(['overlap', 'binary', 'delete-modify', 'add-add'] as const)('returns viewable %s conflicts without writing project conflict markers', async kind => {
