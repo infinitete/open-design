@@ -293,6 +293,7 @@ const portableSnapshotSchema = z.object({
 }).strict().superRefine((snapshot, context) => {
   const resourceDigests = new Set<string>();
   const resourcePaths = new Set<string>();
+  const actualReferencesByDigest = new Map<string, Set<string>>();
   for (const [index, resource] of snapshot.manifest.resources.entries()) {
     if (resourceDigests.has(resource.digest)) {
       context.addIssue({
@@ -310,6 +311,7 @@ const portableSnapshotSchema = z.object({
     }
     resourceDigests.add(resource.digest);
     resourcePaths.add(resource.path);
+    actualReferencesByDigest.set(resource.digest, new Set());
   }
 
   const conversationIds = new Set<string>();
@@ -349,6 +351,8 @@ const portableSnapshotSchema = z.object({
           path: ['messages', index, 'resourceRefs', refIndex],
           message: 'message resource reference must exist in the manifest',
         });
+      } else {
+        actualReferencesByDigest.get(digestRef)?.add(message.id);
       }
     }
     const contextRefs = [
@@ -362,6 +366,8 @@ const portableSnapshotSchema = z.object({
           path: ['messages', index, 'context'],
           message: 'message context resource must exist in the manifest and message resourceRefs',
         });
+      } else {
+        actualReferencesByDigest.get(contextRef)?.add(message.id);
       }
     }
     for (const event of message.displayEvents) {
@@ -373,6 +379,8 @@ const portableSnapshotSchema = z.object({
             path: ['messages', index, 'displayEvents'],
             message: 'display event resource must exist in the manifest and message resourceRefs',
           });
+        } else {
+          actualReferencesByDigest.get(eventRef)?.add(message.id);
         }
       }
     }
@@ -385,6 +393,8 @@ const portableSnapshotSchema = z.object({
         path: ['project', 'contentRefs', index],
         message: 'project content reference must exist in the manifest',
       });
+    } else {
+      actualReferencesByDigest.get(digestRef)?.add(snapshot.manifest.repositoryProjectId);
     }
   }
 
@@ -394,7 +404,17 @@ const portableSnapshotSchema = z.object({
     ...messagesById.keys(),
   ]);
   for (const [resourceIndex, resource] of snapshot.manifest.resources.entries()) {
+    const declaredReferences = new Set<string>();
+    const actualReferences = actualReferencesByDigest.get(resource.digest) ?? new Set<string>();
     for (const [referenceIndex, reference] of resource.references.entries()) {
+      if (declaredReferences.has(reference)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['manifest', 'resources', resourceIndex, 'references', referenceIndex],
+          message: 'resource reference must be unique',
+        });
+      }
+      declaredReferences.add(reference);
       if (!recordIds.has(reference)) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -402,11 +422,49 @@ const portableSnapshotSchema = z.object({
           message: 'resource reference must identify a snapshot record',
         });
       }
+      if (!actualReferences.has(reference)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['manifest', 'resources', resourceIndex, 'references', referenceIndex],
+          message: 'resource reference must match an actual snapshot content reference',
+        });
+      }
+    }
+    for (const actualReference of actualReferences) {
+      if (!declaredReferences.has(actualReference)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['manifest', 'resources', resourceIndex, 'references'],
+          message: `resource index is missing record reference ${actualReference}`,
+        });
+      }
     }
   }
 
+  const messageCountsByConversation = new Map<string, number>();
+  const rootCountsByConversation = new Map<string, number>();
+  const successorCountsByMessage = new Map<string, number>();
   for (const [index, message] of snapshot.messages.entries()) {
-    if (message.predecessorId === null) continue;
+    messageCountsByConversation.set(
+      message.conversationId,
+      (messageCountsByConversation.get(message.conversationId) ?? 0) + 1,
+    );
+    if (message.predecessorId === null) {
+      rootCountsByConversation.set(
+        message.conversationId,
+        (rootCountsByConversation.get(message.conversationId) ?? 0) + 1,
+      );
+      continue;
+    }
+    const successorCount = (successorCountsByMessage.get(message.predecessorId) ?? 0) + 1;
+    successorCountsByMessage.set(message.predecessorId, successorCount);
+    if (successorCount > 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['messages', index, 'predecessorId'],
+        message: 'each message may have at most one successor',
+      });
+    }
     const predecessor = messagesById.get(message.predecessorId);
     if (!predecessor) {
       context.addIssue({
@@ -439,6 +497,17 @@ const portableSnapshotSchema = z.object({
       cursor = cursor.predecessorId === null
         ? undefined
         : messagesById.get(cursor.predecessorId);
+    }
+  }
+
+  for (const [index, conversation] of snapshot.conversations.entries()) {
+    const messageCount = messageCountsByConversation.get(conversation.id) ?? 0;
+    if (messageCount > 0 && rootCountsByConversation.get(conversation.id) !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['conversations', index, 'id'],
+        message: 'each non-empty conversation must have exactly one root message',
+      });
     }
   }
 });

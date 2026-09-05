@@ -24,7 +24,7 @@ function validSnapshot() {
         digest,
         path: `.open-design/resources/${digest}/attachment.png`,
         purpose: 'attachment',
-        references: ['message-one'],
+        references: ['repo-one', 'message-one'],
         sourceLabel: 'uploaded image',
       }],
     },
@@ -186,6 +186,29 @@ describe('portable project snapshot', () => {
     })).toThrow();
   });
 
+  it('requires the manifest resource index to match actual project and message references', () => {
+    const base = validSnapshot();
+
+    expect(() => parsePortableSnapshot({
+      ...base,
+      messages: [{ ...base.messages[0], resourceRefs: [] }],
+    })).toThrow();
+    expect(() => parsePortableSnapshot({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        resources: [{ ...base.manifest.resources[0], references: ['repo-one'] }],
+      },
+    })).toThrow();
+    expect(() => parsePortableSnapshot({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        resources: [{ ...base.manifest.resources[0], references: ['message-one'] }],
+      },
+    })).toThrow();
+  });
+
   it('rejects duplicate and invalid message graph identities', () => {
     const base = validSnapshot();
     const secondMessage = {
@@ -224,6 +247,30 @@ describe('portable project snapshot', () => {
       messages: [
         { ...base.messages[0], predecessorId: 'message-two' },
         secondMessage,
+      ],
+    })).toThrow();
+  });
+
+  it('requires one predecessor-defined sequence per non-empty conversation', () => {
+    const base = validSnapshot();
+    const secondMessage = {
+      ...base.messages[0],
+      id: 'message-two',
+      role: 'assistant' as const,
+      predecessorId: null,
+      resourceRefs: [] as string[],
+    };
+
+    expect(() => parsePortableSnapshot({
+      ...base,
+      messages: [...base.messages, secondMessage],
+    })).toThrow();
+    expect(() => parsePortableSnapshot({
+      ...base,
+      messages: [
+        base.messages[0],
+        { ...secondMessage, predecessorId: 'message-one' },
+        { ...secondMessage, id: 'message-three', predecessorId: 'message-one' },
       ],
     })).toThrow();
   });
