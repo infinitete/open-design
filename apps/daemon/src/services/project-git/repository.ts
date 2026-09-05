@@ -79,7 +79,8 @@ export async function discoverObjectStore(cwd: string): Promise<{ objectDirector
 
 /** Validate the whole tree before writing any files; symlink traversal is never materialized. */
 export function validateTreeEntries(entries: readonly { path: string; mode: string }[]): void {
-  const paths = new Map<string, string>();
+  const paths = new Map<string, { spelling: string; directory: boolean }>();
+  const explicit = new Set<string>();
   for (const entry of entries) {
     const parts = entry.path.split('/');
     if (!entry.path || /[\\\x00-\x1f\x7f:<>"|?*\p{Cf}]/u.test(entry.path) || parts.some(part => !part || part === '.' || part === '..'
@@ -89,16 +90,15 @@ export function validateTreeEntries(entries: readonly { path: string; mode: stri
       throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'The Git tree requires unsupported linked content.', { path: entry.path, nextStep: 'Resolve linked content before restoring.' });
     }
     const normalized = entry.path.normalize('NFC').toLowerCase();
-    if (paths.has(normalized)) invalid('The Git tree contains colliding file paths.');
-    paths.set(normalized, entry.mode);
-  }
-  for (const name of paths.keys()) {
-    const parts = name.split('/');
-    parts.pop();
-    while (parts.length) {
-      const mode = paths.get(parts.join('/'));
-      if (mode && !['040000', '40000'].includes(mode)) invalid('The Git tree contains colliding file paths.');
-      parts.pop();
+    if (explicit.has(normalized)) invalid('The Git tree contains colliding file paths.');
+    explicit.add(normalized);
+    for (let index = 0; index < parts.length; index++) {
+      const spelling = parts.slice(0, index + 1).join('/');
+      const key = spelling.normalize('NFC').toLowerCase();
+      const directory = index < parts.length - 1 || ['040000', '40000'].includes(entry.mode);
+      const existing = paths.get(key);
+      if (existing && (existing.spelling !== spelling || existing.directory !== directory)) invalid('The Git tree contains colliding file paths.');
+      paths.set(key, { spelling, directory });
     }
   }
 }

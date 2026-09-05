@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { GitDomainError } from './errors.js';
-import { discoverObjectStore, redactGitText, validateBranch, validateRemote } from './repository.js';
+import { discoverObjectStore, redactGitText, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
 
 export interface GitProcessInput {
   cwd: string;
@@ -50,10 +50,32 @@ function validateArgs(args: readonly string[]): void {
   if (!args.length || args.some(arg => /[\x00\r\n]/u.test(arg))) invalid();
 }
 
+function indexCommand(args: readonly string[]): void {
+  const operands = args[0] === '--add' ? args.slice(1) : args;
+  // --index-info consumes object records, never working-file operands. Git owns
+  // record syntax validation; no argv may follow this stdin-consuming option.
+  if ((operands.length === 1 && operands[0] === '--index-info')
+    || (operands.length === 2 && operands[0] === '-z' && operands[1] === '--index-info')) return;
+  if (operands[0] !== '--cacheinfo') invalid('Index updates require cacheinfo or index-info records.');
+  let fields: readonly string[];
+  if (operands.length === 2) {
+    const match = /^([^,]+),([^,]+),(.+)$/u.exec(operands[1]!);
+    if (!match) invalid('Invalid cacheinfo record.');
+    fields = match.slice(1);
+  } else if (operands.length === 4) fields = operands.slice(1);
+  else invalid('Cacheinfo cannot include working-file operands.');
+  const [mode, oid, path] = fields;
+  if (!mode || !['100644', '100755', '120000', '160000'].includes(mode) || !oid || !/^[a-fA-F0-9]{4,}$/u.test(oid) || !path) invalid('Invalid cacheinfo record.');
+  // Validate the pathname independently of its object mode. Storing a link object
+  // is non-executing plumbing; materialization separately rejects linked content.
+  validateTreeEntries([{ path, mode: '100644' }]);
+}
+
 /** Commands here cannot checkout files, invoke filters, or start transports. */
 function localCommand(args: readonly string[]): void {
   validateArgs(args);
   const [command, ...rest] = args;
+  if (command === 'update-index') { indexCommand(rest); return; }
   const allowed: Record<string, readonly string[]> = {
     'rev-parse': ['--show-toplevel', '--git-common-dir', '--git-dir', '--absolute-git-dir', '--show-object-format', '--verify', '--quiet', '--end-of-options'],
     'symbolic-ref': ['--quiet', '--short', '--no-recurse'],
@@ -61,7 +83,6 @@ function localCommand(args: readonly string[]): void {
     'hash-object': ['-w', '--stdin'],
     'read-tree': ['--empty'],
     'write-tree': [],
-    'update-index': ['--add', '--cacheinfo', '--index-info', '-z'],
     'commit-tree': ['-p', '-m'],
     'update-ref': ['--stdin', '-z', '--no-deref', '--create-reflog'],
     'ls-files': ['--stage', '--cached', '--others', '--exclude-standard', '-z'],
@@ -247,11 +268,15 @@ export async function runGitTransport(input: GitTransportInput): Promise<GitProc
   const [operation, remote, refspec] = input.args;
   if (!['ls-remote', 'fetch', 'push'].includes(operation ?? '') || !remote || input.args.length > 3) invalid();
   validateRemote(remote);
-  if (operation === 'fetch' && (!refspec || !/^refs\/heads\/[a-zA-Z0-9._/-]+$/u.test(refspec) || refspec.includes('..'))) invalid('Fetch requires an explicit branch reference.');
-  if (operation === 'push' && (!refspec || !/^[a-fA-F0-9]+:refs\/heads\/[a-zA-Z0-9._/-]+$/u.test(refspec) || refspec.includes('..'))) invalid('Push requires a commit ID and a non-force branch reference.');
-  if (operation === 'ls-remote' && refspec && (!refspec.startsWith('refs/heads/') || /[\s:*?\[\\]/u.test(refspec))) invalid();
+  let branchRef = refspec;
+  if (operation === 'push') {
+    const separator = refspec?.indexOf(':') ?? -1;
+    if (separator < 0 || !/^[a-fA-F0-9]{4,}$/u.test(refspec!.slice(0, separator))) invalid('Push requires a commit ID and a non-force branch reference.');
+    branchRef = refspec!.slice(separator + 1);
+  }
+  if ((operation !== 'ls-remote' || branchRef !== undefined) && !branchRef?.startsWith('refs/heads/')) invalid('Transport requires an explicit branch reference.');
   if (operation !== 'ls-remote' && !input.objectDirectory) invalid('Fetch and push require a retained Git object store.');
-  if (refspec) await validateBranch(refspec.slice(refspec.indexOf('refs/heads/') + 'refs/heads/'.length));
+  if (branchRef) await validateBranch(branchRef.slice('refs/heads/'.length));
   if (!isAbsolute(input.preparationRoot) || (input.objectDirectory && !isAbsolute(input.objectDirectory))) invalid('Transport paths must be absolute.');
   if (input.objectDirectory && !input.objectFormat) invalid('Shared Git objects require an explicit object format.');
   if (input.objectDirectory) {

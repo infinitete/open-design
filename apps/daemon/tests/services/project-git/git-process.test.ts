@@ -65,6 +65,55 @@ describe('controlled project Git', () => {
     for (const secret of ['alice', 'secret', 'token123', 'bearer456', 'hunter2']) expect(value).not.toContain(secret);
   });
 
+  it.each([
+    ['A/one.txt', 'a/two.txt'],
+    ['caf\u00e9/one.txt', 'cafe\u0301/two.txt'],
+    ['outer/A/one.txt', 'outer/a/two.txt'],
+  ])('rejects implicit directory spelling collisions between %s and %s', (first, second) => {
+    expect(() => validateTreeEntries([{ path: first, mode: '100644' }, { path: second, mode: '100644' }])).toThrow();
+  });
+
+  it('accepts shared implicit directories and matching explicit directory entries', () => {
+    expect(() => validateTreeEntries([
+      { path: 'same/one.txt', mode: '100644' }, { path: 'same/two.txt', mode: '100644' },
+      { path: 'same', mode: '040000' },
+    ])).not.toThrow();
+  });
+
+  it.each(['working-file', 'cacheinfo-trailing-file', 'index-info-trailing-file'] as const)('rejects update-index %s without executing a clean filter', async form => {
+    const f = await fixture();
+    const shimDir = join(f.root, 'bin');
+    await mkdir(shimDir);
+    await executable(join(shimDir, 'ssh'), '#!/bin/sh\nexit 1\n');
+    const marker = join(f.root, 'clean-filter-ran');
+    const filter = join(f.root, 'clean-filter');
+    await executable(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    await writeFile(join(f.a, '.gitattributes'), 'file filter=evil\n');
+    await writeFile(join(f.a, 'file'), 'working content\n');
+    await f.git(f.a, 'config', 'filter.evil.clean', filter);
+    const blob = (await runGit({ cwd: f.a, args: ['hash-object', '-w', '--stdin'], stdin: Buffer.from('cached content\n') })).stdout.toString().trim();
+    const env = { ...hostConfig, GIT_INDEX_FILE: join(f.root, 'private-index'), PATH: `${shimDir}:${process.env.PATH}` };
+    const args = form === 'working-file' ? ['update-index', '--add', 'file']
+      : form === 'cacheinfo-trailing-file' ? ['update-index', '--add', '--cacheinfo', `100644,${blob},cached`, 'file']
+        : ['update-index', '--add', '--index-info', 'file'];
+    const result = await runGit({ cwd: f.a, args, env, stdin: Buffer.from(`100644 ${blob}\tcached\n`) }).catch(error => error);
+    expect.soft(result).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect.soft(existsSync(marker)).toBe(false);
+    expect(existsSync(join(f.a, '.git', 'index'))).toBe(false);
+  });
+
+  it('preserves combined and separate cacheinfo forms and NUL-delimited index-info', async () => {
+    const f = await fixture();
+    const blob = (await runGit({ cwd: f.a, args: ['hash-object', '-w', '--stdin'], stdin: Buffer.from('cached\n') })).stdout.toString().trim();
+    const env = { ...hostConfig, GIT_INDEX_FILE: join(f.root, 'private-index') };
+    await runGit({ cwd: f.a, args: ['update-index', '--add', '--cacheinfo', `100644,${blob},combined`], env });
+    await runGit({ cwd: f.a, args: ['update-index', '--add', '--cacheinfo', '100644', blob, 'separate'], env });
+    await runGit({ cwd: f.a, args: ['update-index', '-z', '--index-info'], stdin: Buffer.from(`100644 ${blob}\tfrom-stdin\0`), env });
+    const result = (await runGit({ cwd: f.a, args: ['ls-files', '--cached', '-z'], env })).stdout.toString();
+    expect(result).toBe('combined\0from-stdin\0separate\0');
+    expect(existsSync(join(f.a, '.git', 'index'))).toBe(false);
+  });
+
   it('rejects execution-capable commands/options even for internal callers', async () => {
     const f = await fixture();
     for (const args of [['checkout', 'HEAD'], ['add', '.'], ['-c', 'alias.x=!sh', 'x'], ['cat-file', '--filters', 'HEAD:file'], ['hash-object', '--path=file', '--stdin'], ['diff', '--ext-diff'], ['commit-tree', '-S', 'HEAD'], ['fetch', 'origin']]) await expect(runGit({ cwd: f.a, args })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
@@ -191,6 +240,26 @@ describe('controlled project Git', () => {
     await executable(join(shimDir, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\nexec git upload-pack '${repo}'\n`);
     await expect(runGitTransport({ preparationRoot: f.root, args: ['fetch', 'ssh://git@example.invalid/repo', 'refs/heads/main'], ...store, objectFormat: 'sha1', env: { ...hostConfig, PATH: `${shimDir}:${process.env.PATH}` } })).rejects.toMatchObject({ code: 'PORTABLE_FORMAT_UNSUPPORTED' });
     await expect(runGitTransport({ preparationRoot: f.root, args: ['fetch', 'ssh://git@example.invalid/repo', 'refs/heads/main'], ...await discoverObjectStore(f.b), env: { ...hostConfig, PATH: `${shimDir}:${process.env.PATH}` } })).rejects.toMatchObject({ code: 'PORTABLE_FORMAT_UNSUPPORTED' });
+  });
+
+  it.each(['feature/设计', 'topic+fix'])('validates, fetches and pushes the native Git branch %s', async branch => {
+    const f = await fixture();
+    const shimDir = join(f.root, 'bin');
+    await mkdir(shimDir);
+    await executable(join(shimDir, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) exec git receive-pack '${f.remote}';; *) exec git upload-pack '${f.remote}';; esac\n`);
+    const env = { ...hostConfig, PATH: `${shimDir}:${process.env.PATH}` };
+    await f.git(f.a, 'commit', '--allow-empty', '-m', 'native branch');
+    const head = await f.git(f.a, 'rev-parse', 'HEAD');
+    await f.git(f.a, 'push', 'origin', `${head}:refs/heads/${branch}`);
+    expect(await validateBranch(branch)).toBe(branch);
+    const store = await discoverObjectStore(f.b);
+    const remote = 'ssh://git@example.invalid/repo';
+    expect((await runGitTransport({ preparationRoot: f.root, args: ['fetch', remote, `refs/heads/${branch}`], ...store, env })).fetchedHead).toBe(head);
+    await runGitTransport({ preparationRoot: f.root, args: ['push', remote, `${head}:refs/heads/${branch}-copy`], ...store, env });
+    expect(await f.git(f.remote, 'rev-parse', `refs/heads/${branch}-copy`)).toBe(head);
+    await expect(runGitTransport({ preparationRoot: f.root, args: ['push', remote, `+${head}:refs/heads/${branch}`], ...store, env })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await discoverRepository(f.b)).head).toBe(null);
+    expect(existsSync(join(f.b, '.git', 'index'))).toBe(false);
   });
 
   it('initializes explicit repositories without copying host templates or executing hooks', async () => {
