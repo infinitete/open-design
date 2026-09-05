@@ -146,7 +146,7 @@ function decodePaths(bytes: Buffer): string[] {
   return text.slice(0, -1).split('\0');
 }
 
-function privatePath(path: string): boolean {
+export function isPrivateProjectGitPath(path: string): boolean {
   return path.split('/').some(part => /^(?:\.env(?:\..*)?|\.ssh|\.aws|\.gnupg|\.codex|\.claude|credentials(?:\..*)?|tokens?(?:\..*)?|secrets?(?:\..*)?|auth\.json|config\.ya?ml|app-config\.json|media-config\.json|mcp-.*\.json|id_rsa|id_ed25519)$/iu.test(part))
     || /\.(?:sqlite(?:3)?|db)(?:-(?:wal|shm|journal))?$/iu.test(path) || /\.(?:pem|key|p12|pfx)$/iu.test(path);
 }
@@ -174,7 +174,7 @@ async function inspect(root: string, head: string | null, ownedLock?: string) {
   const untracked = decodePaths((await runGit({ cwd: root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout);
   const paths = [...new Set([...tracked, ...untracked])].sort();
   for (const path of paths) safePath(path);
-  const privatePaths = paths.filter(privatePath);
+  const privatePaths = paths.filter(isPrivateProjectGitPath);
   if (privatePaths.length) throw new GitDomainError('VALIDATION_FAILED', 400,
     'Private configuration cannot be automatically tracked. Review these paths.', { paths: privatePaths });
   const index = await optionalBytes(indexPath);
@@ -322,7 +322,7 @@ export async function prepareCheckpoint(input: {
     for (const path of portable.obsolete) records.push(Buffer.from(`0 ${zero}\t${path}\0`));
     const portableDigests: Record<string, string> = Object.create(null);
     for (const [path, bytes] of [...entries].sort(([a], [b]) => a < b ? -1 : 1)) {
-      safePath(path); if (privatePath(path)) throw new GitDomainError('VALIDATION_FAILED', 400, 'Private configuration cannot be tracked.', { paths: [path] });
+      safePath(path); if (isPrivateProjectGitPath(path)) throw new GitDomainError('VALIDATION_FAILED', 400, 'Private configuration cannot be tracked.', { paths: [path] });
       portableDigests[path] = digest(bytes); await add(path, sources.modes[path] === '100755' ? '100755' : '100644', bytes);
     }
     await runGit({ cwd: root, args: ['update-index', '-z', '--index-info'], env, stdin: Buffer.concat(records) });
@@ -444,6 +444,7 @@ export interface CheckpointPublicationEvidence {
   evidence: CheckpointEvidence;
   indexBytes: Buffer;
   originalIndexBytes: Buffer | null;
+  /** Always the CHILD checkpoint receipt, never current-lock authority under lockOwnerOperationId. */
   lockReceipt: CheckpointIndexLockReceipt | null;
 }
 
@@ -451,7 +452,10 @@ export interface CheckpointPublicationEvidence {
  * gate/revision fence and reconciles the ORIGINAL journal against current files/ref/index before effects.
  * No field read from disk becomes a callback, environment override, gate or filesystem authority.
  */
-export async function readCheckpointPublication(input: { root: string; operationId: string; store: ProjectGitStore }): Promise<CheckpointPublicationEvidence> {
+export async function readCheckpointPublication(input: { root: string; operationId: string; store: ProjectGitStore;
+  /** Completed owned child evidence may be read while its exact outer operation owns the normal-index lock. */
+  lockOwnerOperationId?: string;
+}): Promise<CheckpointPublicationEvidence> {
   try {
     const journal = input.store.getJournal(input.operationId); const data = journal?.recoveryData;
     const binding = journal?.projectId ? input.store.getBinding(journal.projectId) : null;
@@ -510,9 +514,28 @@ export async function readCheckpointPublication(input: { root: string; operation
     const lockReceipt = receiptBytes === null ? null : JSON.parse(receiptBytes.toString('utf8')) as CheckpointIndexLockReceipt;
     if (lockReceipt && (lockReceipt.ownerToken !== data.index.ownerToken || !/^\d+$/u.test(lockReceipt.dev) || !/^\d+$/u.test(lockReceipt.ino))) throw recovery();
     const lockPath = data.index.path + '.lock';
+    let currentLockReceipt = lockReceipt;
+    if (input.lockOwnerOperationId !== undefined) {
+      const owner = input.store.getJournal(input.lockOwnerOperationId); const ownerData = owner?.recoveryData;
+      if (journal.journalPhase !== 'complete' || !journal.phaseCompleted || journal.status !== 'succeeded'
+        || journal.ownerOperationId !== input.lockOwnerOperationId || !owner || owner.kind === 'checkpoint' || !ownerData
+        || owner.projectId !== journal.projectId || !isDeepStrictEqual(owner.basis, journal.basis)
+        || ownerData.index.path !== data.index.path || !owner.protection?.completed
+        || owner.protection.checkpointOperationId !== journal.id || owner.protection.checkpointOid !== data.publishHead
+        || ownerData.baseHead !== data.baseHead || ownerData.previewContentDigest !== data.previewContentDigest
+        || !isAbsolute(ownerData.operationRoot) || await realpath(ownerData.operationRoot) !== ownerData.operationRoot
+        || dirname(ownerData.operationRoot) !== dirname(data.operationRoot) || ownerData.operationRoot === data.operationRoot) throw recovery();
+      const bytes = await optionalBytes(join(ownerData.operationRoot, 'index-lock.json'));
+      if (!bytes) throw recovery();
+      const receipt: unknown = JSON.parse(bytes.toString('utf8'));
+      if (!receipt || typeof receipt !== 'object' || !('ownerToken' in receipt) || typeof receipt.ownerToken !== 'string'
+        || receipt.ownerToken !== ownerData.index.ownerToken || !('dev' in receipt) || typeof receipt.dev !== 'string' || !/^\d+$/u.test(receipt.dev)
+        || !('ino' in receipt) || typeof receipt.ino !== 'string' || !/^\d+$/u.test(receipt.ino)) throw recovery();
+      currentLockReceipt = { ownerToken: receipt.ownerToken, dev: receipt.dev, ino: receipt.ino };
+    }
     if (await exists(lockPath)) {
       const info = await lstat(lockPath, { bigint: true });
-      if (!lockReceipt || info.isSymbolicLink() || String(info.dev) !== lockReceipt.dev || String(info.ino) !== lockReceipt.ino) throw recovery();
+      if (!currentLockReceipt || !info.isFile() || info.isSymbolicLink() || String(info.dev) !== currentLockReceipt.dev || String(info.ino) !== currentLockReceipt.ino) throw recovery();
     }
     return { journal, evidence, indexBytes, originalIndexBytes, lockReceipt };
   } catch (error) {

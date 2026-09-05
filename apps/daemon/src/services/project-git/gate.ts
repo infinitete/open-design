@@ -6,12 +6,18 @@ declare const permitBrand: unique symbol;
 export interface MutationPermit { readonly [permitBrand]: true }
 export interface RunRelease { (): void; readonly permit: MutationPermit }
 export interface ProjectGateOptions { acquireLease?: () => Promise<RepositoryLease> }
+export interface ProjectRecoveryBarrier {
+  readonly operationId: string;
+  exclusive<T>(work: () => Promise<T>): Promise<T>;
+  release(): void;
+}
 export interface ProjectGate {
   read<T>(work: () => Promise<T>, timeoutMs?: number): Promise<T>;
   mutate<T>(work: (permit: MutationPermit) => Promise<T>, permit?: MutationPermit): Promise<T>;
   exclusive<T>(work: () => Promise<T>): Promise<T>;
   beginRun(): Promise<RunRelease>;
   activeRuns(): number;
+  holdRecovery(operationId: string): ProjectRecoveryBarrier;
 }
 
 /** Reference counts admitted daemon work; a release in flight is an acquisition barrier. */
@@ -44,12 +50,14 @@ function shareLease(acquire: () => Promise<RepositoryLease>): () => Promise<Repo
 export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate {
   const acquire = shareLease(options.acquireLease ?? (async () => ({ release: async () => {} })));
   const permits = new WeakSet<MutationPermit>();
-  const queue: { exclusive: boolean; enter(): void; reject(error: unknown): void; timer: ReturnType<typeof setTimeout> | undefined }[] = [];
+  const barriers = new Set<ProjectRecoveryBarrier>();
+  const queue: { exclusive: boolean; read: boolean; recovery: ProjectRecoveryBarrier | undefined; enter(): void; reject(error: unknown): void; timer: ReturnType<typeof setTimeout> | undefined }[] = [];
   let active = 0;
   let runs = 0;
   let exclusiveActive = false;
   let failure: unknown;
   const busy = () => new GitDomainError('PROJECT_BUSY', 409, 'The project is busy.', { nextStep: 'Retry after the current project operation.' });
+  const recoveryRequired = () => new GitDomainError('RECOVERY_REQUIRED', 409, 'The project has an unfinished recovery operation.');
 
   function drain(): void {
     if (failure) {
@@ -58,20 +66,23 @@ export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate
     }
     if (exclusiveActive) return;
     while (queue.length) {
-      const item = queue[0]!;
+      const index = barriers.size ? queue.findIndex(item => item.recovery && barriers.has(item.recovery)) : 0;
+      if (index < 0) return;
+      const item = queue[index]!;
       if (item.exclusive && active !== 0) return;
-      queue.shift(); clearTimeout(item.timer); item.enter();
+      queue.splice(index, 1); clearTimeout(item.timer); item.enter();
       if (item.exclusive) return;
     }
   }
 
   function schedule<T>(kind: 'read' | 'mutation' | 'exclusive' | 'run', work: (permit: MutationPermit) => Promise<T>,
-    owner?: MutationPermit, timeoutMs?: number): Promise<T> {
+    owner?: MutationPermit, timeoutMs?: number, recovery?: ProjectRecoveryBarrier): Promise<T> {
     if (failure) return Promise.reject(failure);
+    if ((recovery && !barriers.has(recovery)) || (barriers.size && kind !== 'read' && !recovery && !(owner && permits.has(owner)))) return Promise.reject(recoveryRequired());
     if (owner && !permits.has(owner)) return Promise.reject(busy());
     if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0)) return Promise.reject(busy());
     return new Promise<T>((resolve, reject) => {
-      const item = { exclusive: kind === 'exclusive', reject, timer: undefined as ReturnType<typeof setTimeout> | undefined,
+      const item = { exclusive: kind === 'exclusive', read: kind === 'read', recovery, reject, timer: undefined as ReturnType<typeof setTimeout> | undefined,
         enter: () => {
           active++;
           if (kind === 'exclusive') exclusiveActive = true;
@@ -125,6 +136,24 @@ export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate
     exclusive: work => schedule('exclusive', work),
     beginRun: () => schedule<RunRelease>('run', async () => { throw new Error('Unreachable run callback.'); }),
     activeRuns: () => runs,
+    holdRecovery: operationId => {
+      if (!operationId || [...barriers].some(item => item.operationId === operationId)) throw recoveryRequired();
+      const barrier: ProjectRecoveryBarrier = Object.freeze({ operationId,
+        exclusive: <T>(work: () => Promise<T>) => schedule('exclusive', work, undefined, undefined, barrier),
+        release: () => {
+          if (!barriers.delete(barrier)) return;
+          for (let index = queue.length - 1; index >= 0; index--) if (queue[index]!.recovery === barrier) {
+            const [item] = queue.splice(index, 1); clearTimeout(item!.timer); item!.reject(recoveryRequired());
+          }
+          drain();
+        },
+      });
+      barriers.add(barrier);
+      for (let index = queue.length - 1; index >= 0; index--) if (!queue[index]!.read && !queue[index]!.recovery) {
+        const [item] = queue.splice(index, 1); clearTimeout(item!.timer); item!.reject(recoveryRequired());
+      }
+      return barrier;
+    },
   };
 }
 

@@ -8,6 +8,59 @@ import { createGitFixture } from '../../helpers/project-git.js';
 const fixtures: Awaited<ReturnType<typeof createGitFixture>>[] = [];
 afterEach(async () => { await Promise.all(fixtures.splice(0).map(f => f.close())); });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+
+it('quarantines ordinary admission after failure until the owning recovery converges', async () => {
+  const gate = createProjectGate();
+  const barrier = gate.holdRecovery('operation');
+  await expect(barrier.exclusive(async () => { throw new Error('partial files'); })).rejects.toThrow('partial files');
+  for (const action of [gate.mutate, gate.exclusive]) await expect(action(async () => 'unsafe')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await expect(gate.beginRun()).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  let read = false;
+  await expect(gate.read(async () => { read = true; }, 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+  await expect(createProjectGate().read(async () => 'other project')).resolves.toBe('other project');
+  await expect(barrier.exclusive(async () => 'repaired')).resolves.toBe('repaired');
+  barrier.release(); barrier.release();
+  await gate.read(async () => {}); expect(read).toBe(false);
+  await expect(barrier.exclusive(async () => 'stale')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+});
+
+it('drains active work and blocks already queued ordinary writes before recovery admission', async () => {
+  let leases = 0;
+  const gate = createProjectGate({ acquireLease: async () => { leases++; return { release: async () => {} }; } });
+  const end = deferred<void>();
+  const active = gate.mutate(() => end.promise);
+  await tick();
+  const queued = gate.exclusive(async () => 'unsafe').catch(error => error.code);
+  const write = gate.mutate(async () => 'unsafe').catch(error => error.code);
+  const barrier = gate.holdRecovery('operation');
+  expect(await queued).toBe('RECOVERY_REQUIRED'); expect(await write).toBe('RECOVERY_REQUIRED');
+  let entered = false;
+  const recovery = barrier.exclusive(async () => { entered = true; });
+  await tick(); expect(entered).toBe(false);
+  end.resolve(); await Promise.all([active, recovery]); expect(leases).toBe(2);
+  barrier.release();
+});
+
+it('requires every recovery owner to release and rejects duplicate operation handles', async () => {
+  const gate = createProjectGate();
+  const one = gate.holdRecovery('one'); const two = gate.holdRecovery('two');
+  expect(Object.isFrozen(one)).toBe(true);
+  expect(() => gate.holdRecovery('one')).toThrow();
+  one.release();
+  await expect(gate.read(async () => 'unsafe', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+  await two.exclusive(async () => {}); two.release();
+  await expect(gate.read(async () => 'safe')).resolves.toBe('safe');
+});
+
+it('lets an already admitted run drain owned terminal writes before recovery', async () => {
+  const gate = createProjectGate(); const run = await gate.beginRun();
+  const barrier = gate.holdRecovery('recovery'); const seen: string[] = [];
+  const recovery = barrier.exclusive(async () => { seen.push('recovery'); });
+  await gate.mutate(async () => { seen.push('terminal persistence'); }, run.permit);
+  expect(seen).toEqual(['terminal persistence']); run(); await recovery;
+  await expect(gate.mutate(async () => {}, run.permit)).rejects.toBeDefined();
+  expect(seen).toEqual(['terminal persistence', 'recovery']); barrier.release();
+});
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>(done => { resolve = done; });

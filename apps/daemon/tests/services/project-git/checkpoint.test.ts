@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileSync as requireWrite } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, stat, utimes, unlink, rename, readdir, symlink } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile, stat, utimes, unlink, rename, readdir, symlink } from 'node:fs/promises';
 import * as fs from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -75,6 +75,37 @@ async function fixture(initial = true, seed?: (f: Awaited<ReturnType<typeof crea
 }
 
 describe('consistent project checkpoints', () => {
+  it.each(['valid', 'wrong-owner', 'incomplete-child', 'uncompleted-protection', 'unlinked', 'foreign-project', 'missing-receipt', 'malformed-receipt', 'symlink-owner-root'])('reads completed protection evidence beneath its outer lock only with %s proof', async fault => {
+    const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'protected');
+    const candidate = await prepareCheckpoint(f.input);
+    const outer = f.store.enqueueOperation({ projectId: 'p1', actorId: 'local', kind: 'restore', basis: f.coordination.basis,
+      idempotencyKey: 'owner', requestDigest: 'owner', payload: {} });
+    const ownerRoot = join(f.input.operationDir, 'outer'); await mkdir(ownerRoot);
+    const data = { operationRoot: ownerRoot, baseHead: f.head, previewContentDigest: candidate.previewContentDigest,
+      candidateTreeOid: candidate.treeOid, publishBase: f.head, publicationParents: [f.head!], publishHead: candidate.commitOid!, candidateOid: candidate.commitOid!,
+      paths: [], records: null, refPublished: false,
+      index: { path: join(f.a, '.git/index'), oldDigest: null, candidateDigest: 'outer-index', backupPath: null, ownerToken: 'outer-owner', published: false } };
+    f.store.setPhase(outer.id, 'prepared', data); f.store.completePhase(outer.id, 'prepared', data); f.store.setPhase(outer.id, 'protected', data);
+    const childId = f.enqueue(outer.id); const publication = { root: f.a, branch: 'main', candidate, operationId: childId, store: f.store };
+    await journalCheckpoint(publication);
+    const protection = { basis: f.coordination.basis, checkpointOperationId: childId, checkpointOid: candidate.commitOid! };
+    f.store.prepareProtection(outer.id, protection); await publishCheckpoint(publication); f.store.completeProtection(outer.id, protection);
+    const childReceipt = (await readCheckpointPublication({ root: f.a, operationId: childId, store: f.store })).lockReceipt;
+    const lock = await open(join(f.a, '.git/index.lock'), 'wx'); const inode = await lock.stat({ bigint: true }); await lock.close();
+    await writeFile(join(ownerRoot, 'index-lock.json'), JSON.stringify({ ownerToken: 'outer-owner', dev: String(inode.dev), ino: String(inode.ino) }));
+    if (fault === 'incomplete-child') f.db.prepare("UPDATE project_git_operations SET phase_completed = 0 WHERE id = ?").run(childId);
+    if (fault === 'uncompleted-protection') f.db.prepare("UPDATE project_git_operations SET protection_json = json_set(protection_json, '$.completed', json('false')) WHERE id = ?").run(outer.id);
+    if (fault === 'unlinked') f.db.prepare("UPDATE project_git_operations SET protection_json = json_set(protection_json, '$.checkpointOperationId', 'another-child') WHERE id = ?").run(outer.id);
+    if (fault === 'foreign-project') f.db.prepare('UPDATE project_git_operations SET project_id = ? WHERE id = ?').run('foreign', outer.id);
+    if (fault === 'missing-receipt') await unlink(join(ownerRoot, 'index-lock.json'));
+    if (fault === 'malformed-receipt') await writeFile(join(ownerRoot, 'index-lock.json'), JSON.stringify({ ownerToken: 'outer-owner', dev: Number(inode.dev), ino: String(inode.ino) }));
+    if (fault === 'symlink-owner-root') { await rename(ownerRoot, ownerRoot + '-retained'); await symlink(ownerRoot + '-retained', ownerRoot, 'dir'); }
+    const read = readCheckpointPublication({ root: f.a, operationId: childId, store: f.store, lockOwnerOperationId: fault === 'wrong-owner' ? 'unknown' : outer.id });
+    if (fault === 'valid') { const result = await read; expect(result.lockReceipt).toEqual(childReceipt); expect(result.lockReceipt?.ownerToken).not.toBe('outer-owner'); }
+    else await expect(read).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    expect(await readFile(join(f.a, '.git/index.lock'))).toEqual(Buffer.alloc(0));
+  });
+
   it.each(['tracked-change', 'missing-create'])('rejects ordinary supplied %s without granting writeback authority', async kind => {
     const f = await fixture(); f.input.portableEntries = portable(false);
     const path = kind === 'tracked-change' ? 'index.html' : 'new-user-file.html';
