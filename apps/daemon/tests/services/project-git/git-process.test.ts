@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createGitFixture } from '../../helpers/project-git.js';
-import { initializeRepository, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
+import { initializeRepository, mergeGitText, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
 import { discoverObjectStore, discoverRepository, redactGitText, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from '../../../src/services/project-git/repository.js';
 
 const fixtures: Awaited<ReturnType<typeof createGitFixture>>[] = [];
@@ -15,6 +15,44 @@ const hostConfig = { GIT_CONFIG_GLOBAL: nullConfig, GIT_CONFIG_SYSTEM: nullConfi
 async function executable(path: string, content: string) { await writeFile(path, content); await chmod(path, 0o700); }
 
 describe('controlled project Git', () => {
+  it('merges only fixed scratch text operands without executing repository or host merge programs', async () => {
+    const f = await fixture();
+    await writeFile(join(f.a, 'user-file'), 'user index\n'); await f.git(f.a, 'add', 'user-file');
+    const index = await readFile(join(f.a, '.git/index')); const marker = join(f.root, 'merge-program-ran');
+    const program = join(f.root, 'evil'); await executable(program, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+    for (const key of ['merge.evil.driver', 'filter.evil.clean', 'core.fsmonitor']) await f.git(f.a, 'config', key, program);
+    await writeFile(join(f.a, '.gitattributes'), '* merge=evil filter=evil\n');
+    const host = join(f.root, 'host.config'); await writeFile(host, `[merge "evil"]\n driver = ${program}\n[merge]\n default = evil\n`);
+    vi.stubEnv('GIT_CONFIG_GLOBAL', host); vi.stubEnv('GIT_DIR', join(f.a, '.git'));
+    const input = { stagingDir: f.a, base: Buffer.from('first\nmiddle\nlast\n'), local: Buffer.from('LOCAL\nmiddle\nlast\n'), remote: Buffer.from('first\nmiddle\nREMOTE\n') };
+    expect(await mergeGitText(input)).toEqual({ kind: 'merged', content: Buffer.from('LOCAL\nmiddle\nREMOTE\n') });
+    expect(await mergeGitText({ ...input, remote: Buffer.from('REMOTE\nmiddle\nlast\n') })).toEqual({ kind: 'conflict' });
+    expect(existsSync(marker)).toBe(false); expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+    expect(await readFile(join(f.a, 'user-file'), 'utf8')).toBe('user index\n');
+    for (const args of [['merge-file', '--stdout', 'local', 'base', 'remote'], ['merge-tree', '--write-tree', 'HEAD', 'HEAD']]) {
+      await expect(runGit({ cwd: f.a, args })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    }
+  });
+
+  it('rejects oversized input, relative preparation paths, cancellation and fatal binary errors as infrastructure failures', async () => {
+    const f = await fixture(); const input = { stagingDir: f.root, base: Buffer.from('a'), local: Buffer.from('b'), remote: Buffer.from('c') };
+    await expect(mergeGitText({ ...input, local: Buffer.alloc(16 * 1024 * 1024) })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+    await expect(mergeGitText({ ...input, stagingDir: 'relative' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(mergeGitText({ ...input, signal: AbortSignal.abort() })).rejects.toMatchObject({ details: { reason: 'cancelled' } });
+    await expect(mergeGitText({ ...input, base: Buffer.from([0, 1]), local: Buffer.from([0, 2]), remote: Buffer.from([0, 3]) })).rejects.toMatchObject({ details: { exitCode: 255 } });
+  });
+
+  it.each(['overflow', 'fatal', 'signal', 'timeout'] as const)('does not turn %s execution failures into text conflicts', async scenario => {
+    const f = await fixture(); const bin = join(f.root, 'bin'); await mkdir(bin);
+    const action = scenario === 'overflow' ? 'head -c 17825792 /dev/zero' : scenario === 'fatal' ? 'exit 128'
+      : scenario === 'signal' ? 'kill -KILL $$' : 'sleep 5';
+    await executable(join(bin, 'git'), `#!/bin/sh\ncase "$*" in *merge-file*) ${action};; *) exit 0;; esac\n`);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    const pending = mergeGitText({ stagingDir: f.root, base: Buffer.from('a'), local: Buffer.from('b'), remote: Buffer.from('c'), timeoutMs: 100 });
+    await expect(pending).rejects.toMatchObject(scenario === 'overflow' ? { code: 'PAYLOAD_TOO_LARGE' }
+      : scenario === 'timeout' ? { details: { reason: 'timeout' } } : { code: 'CONFLICT', details: { exitCode: scenario === 'fatal' ? 128 : null } });
+  });
+
   it('discovers an unborn root and refuses implicitly managing a parent repository', async () => {
     const f = await fixture();
     expect(await discoverRepository(f.a)).toEqual({ root: f.a, gitDir: join(f.a, '.git'), commonDir: join(f.a, '.git'), branch: 'main', head: null });

@@ -69,7 +69,7 @@ export function exportProjectPreferences(metadata: ProjectMetadata): Record<stri
     preferences.promptTemplate = result as JsonValue;
   }
   if (metadata.designSystemReview) {
-    const reviews: NonNullable<PortableProjectPreferences['designSystemReview']> = {};
+    const reviews = Object.create(null) as NonNullable<PortableProjectPreferences['designSystemReview']>;
     for (const [key, review] of Object.entries(metadata.designSystemReview)) {
       const result: typeof reviews[string] = { decision: review.decision, updatedAt: review.updatedAt };
       if (review.feedback !== undefined) result.feedback = review.feedback;

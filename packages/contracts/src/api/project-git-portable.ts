@@ -119,6 +119,24 @@ const portableDesignSystemReviewSchema = z.object({
   files: z.array(relativePath).optional(),
 }).strict();
 
+/** Arbitrary JSON keys are data, including __proto__; validate every own value. */
+function ownKeyRecord<T extends z.ZodTypeAny>(valueSchema: T) {
+  return z.unknown().transform((value, context): Record<string, z.output<T>> => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)
+      || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Expected a JSON record' });
+      return z.NEVER;
+    }
+    const entries: Array<[string, z.output<T>]> = [];
+    for (const [key, item] of Object.entries(value)) {
+      const result = valueSchema.safeParse(item);
+      if (result.success) entries.push([key, result.data]);
+      else for (const issue of result.error.issues) context.addIssue({ ...issue, path: [key, ...issue.path] });
+    }
+    return Object.fromEntries(entries);
+  });
+}
+
 const preferenceKeys = [
   'intent', 'fidelity', 'speakerNotes', 'slideCount', 'animations', 'includeLandingPage',
   'includeOsWidgets', 'templateId', 'templateLabel', 'platform', 'platformTargets',
@@ -172,9 +190,9 @@ const portableProjectPreferencesSchema = z.object({
   skipDiscoveryBrief: z.boolean().optional(),
   examplePrompt: z.boolean().optional(),
   examplePromptTitle: z.string().optional(),
-  examplePromptBrief: z.record(z.string()).optional(),
+  examplePromptBrief: ownKeyRecord(z.string()).optional(),
   promptTemplate: promptTemplateSchema.optional(),
-  designSystemReview: z.record(portableDesignSystemReviewSchema).optional(),
+  designSystemReview: ownKeyRecord(portableDesignSystemReviewSchema).optional(),
   agentId: z.string().optional(),
   model: z.string().optional(),
 }).strict();

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { GitDomainError } from './errors.js';
 import { discoverObjectStore, redactGitText, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
@@ -208,6 +208,42 @@ export async function runGit(input: GitProcessInput): Promise<GitProcessResult> 
   const args = ['diff-tree', 'diff-index'].includes(input.args[0] ?? '')
     ? [input.args[0]!, '--no-ext-diff', '--no-textconv', ...input.args.slice(1)] : input.args;
   return execute({ ...input, args }, env);
+}
+
+export interface GitTextMergeInput extends Pick<GitProcessInput, 'signal' | 'timeoutMs'> {
+  /** Absolute operation-owned preparation directory; caller fences its lifecycle and location. */
+  stagingDir: string;
+  base: Uint8Array;
+  local: Uint8Array;
+  remote: Uint8Array;
+}
+
+/** Native text only, with no repository attributes, merge drivers or writable worktree operands.
+ * Scratch operands/config remain under the caller-owned operation directory for recovery/inspection.
+ */
+export async function mergeGitText(input: GitTextMergeInput): Promise<{ kind: 'merged'; content: Buffer } | { kind: 'conflict' }> {
+  if (!isAbsolute(input.stagingDir)) invalid('Text merging requires an absolute preparation directory.');
+  const bytes = input.base.byteLength + input.local.byteLength + input.remote.byteLength;
+  if (!Number.isFinite(bytes) || bytes > OUTPUT_LIMIT) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Git input exceeds the size limit.', { limitBytes: OUTPUT_LIMIT });
+  if (input.signal?.aborted) throw new GitDomainError('CONFLICT', 409, 'Git operation cancelled.', { reason: 'cancelled' });
+  const scratch = await mkdtemp(join(await realpath(input.stagingDir), 'git-text-'));
+  const env = environment();
+  env.GIT_DIR = join(scratch, 'repository');
+  env.GIT_CONFIG_SYSTEM = NULL_CONFIG; env.GIT_CONFIG_GLOBAL = NULL_CONFIG; env.GIT_CONFIG_NOSYSTEM = '1';
+  const invoke = (args: string[]) => execute({ cwd: scratch, args,
+    ...(input.signal ? { signal: input.signal } : {}), ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}) }, env);
+  await invoke(['init', '--bare', '--template=', '--object-format=sha1', env.GIT_DIR]);
+  await writeFile(join(scratch, 'base'), input.base, { flag: 'wx', mode: 0o600 });
+  await writeFile(join(scratch, 'local'), input.local, { flag: 'wx', mode: 0o600 });
+  await writeFile(join(scratch, 'remote'), input.remote, { flag: 'wx', mode: 0o600 });
+  try {
+    const result = await invoke(['merge-file', '--stdout', '--diff3', '--', 'local', 'base', 'remote']);
+    return { kind: 'merged', content: result.stdout };
+  } catch (error) {
+    const exitCode = error instanceof GitDomainError ? error.details?.exitCode : undefined;
+    if (typeof exitCode === 'number' && exitCode >= 1 && exitCode <= 127) return { kind: 'conflict' };
+    throw error;
+  }
 }
 
 export interface GitTransportInput extends Omit<GitProcessInput, 'cwd' | 'stdin'> {

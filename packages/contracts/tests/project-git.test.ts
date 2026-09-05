@@ -101,6 +101,27 @@ describe('portable manifest', () => {
 });
 
 describe('portable project snapshot', () => {
+  it('preserves JSON own preference keys as data without changing prototypes', () => {
+    const value = validSnapshot();
+    const preferences = JSON.parse('{"designSystemReview":{"__proto__":{"decision":"looks-good","updatedAt":"one"},"constructor":{"decision":"needs-work","updatedAt":"two"}},"examplePromptBrief":{"__proto__":"prototype label","constructor":"constructor label"}}');
+    const result = parsePortableSnapshot({ ...value, project: { ...value.project, preferences } });
+    expect(result.project.preferences).toEqual(preferences);
+    for (const record of [result.project.preferences.designSystemReview!, result.project.preferences.examplePromptBrief!]) {
+      expect(Object.keys(record).sort()).toEqual(['__proto__', 'constructor']);
+      expect(Object.getPrototypeOf(record)).toBe(Object.prototype);
+    }
+    expect(Object.getPrototypeOf({})).toBe(Object.prototype);
+  });
+
+  it('strictly validates values under special preference keys and rejects non-JSON records', () => {
+    const value = validSnapshot();
+    for (const preferences of [JSON.parse('{"designSystemReview":{"__proto__":{"decision":"looks-good","updatedAt":"now","task":"execute"}}}'),
+      JSON.parse('{"examplePromptBrief":{"__proto__":{"unexpected":true}}}'),
+      { examplePromptBrief: Object.create({ inherited: 'not own' }) }, { designSystemReview: [] }]) {
+      expect(() => parsePortableSnapshot({ ...value, project: { ...value.project, preferences } })).toThrow();
+    }
+  });
+
   it('preserves display feedback while rejecting telemetry authority and invalid timestamps', () => {
     const value = validSnapshot();
     const feedback = { rating: 'negative', reasonCodes: ['weak_visual', 'other'], customReason: 'Contrast',

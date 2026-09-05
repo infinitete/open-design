@@ -11,6 +11,21 @@ import { appendMessageAgentEvent, closeDatabase, insertConversation, insertProje
 import { createProjectGitStore, type ProjectGitRecoveryData, type ProjectGitStore } from '../../../src/storage/project-git.js';
 
 describe('portable serialization', () => {
+  it('exports and roundtrips own preference keys including __proto__ as inert data', () => {
+    const metadata = JSON.parse('{"kind":"prototype","designSystemReview":{"__proto__":{"decision":"looks-good","updatedAt":"one"},"constructor":{"decision":"needs-work","updatedAt":"two"}},"examplePromptBrief":{"__proto__":"prototype label","constructor":"constructor label"}}');
+    const preferences = exportProjectPreferences(metadata);
+    expect(preferences).toEqual({ designSystemReview: metadata.designSystemReview, examplePromptBrief: metadata.examplePromptBrief });
+    const entries = serializePortableMetadata({ manifest: { schemaVersion: 1, repositoryProjectId: 'repository', resources: [] },
+      project: { schemaVersion: 1, name: 'Special keys', kind: 'prototype', createdAt: 1, preferences,
+        contentRefs: [], linkedFolderRequirements: [] }, conversations: [], messages: [] });
+    const result = parsePortableEntries(entries);
+    expect(result.project.preferences).toEqual(preferences);
+    for (const record of [result.project.preferences.designSystemReview!, result.project.preferences.examplePromptBrief!]) {
+      expect(Object.keys(record).sort()).toEqual(['__proto__', 'constructor']); expect(Object.getPrototypeOf(record)).toBe(Object.prototype);
+    }
+    expect(Object.getPrototypeOf(metadata.designSystemReview)).toBe(Object.prototype);
+  });
+
   it('serializes deterministically and never migrates local authority', () => {
     expect(canonicalJson({ z: 2, a: { y: 1, x: 0 } })).toBe('{"a":{"x":0,"y":1},"z":2}\n');
     expect(exportProjectPreferences({ kind: 'prototype', imageModel: 'chosen-model',
