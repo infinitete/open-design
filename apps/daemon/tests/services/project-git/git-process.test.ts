@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createGitFixture } from '../../helpers/project-git.js';
-import { initializeRepository, mergeGitText, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
+import { assertGitIdentity, initializeRepository, mergeGitText, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
 import { discoverObjectStore, discoverRepository, redactGitText, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from '../../../src/services/project-git/repository.js';
 
 const fixtures: Awaited<ReturnType<typeof createGitFixture>>[] = [];
@@ -15,6 +15,13 @@ const hostConfig = { GIT_CONFIG_GLOBAL: nullConfig, GIT_CONFIG_SYSTEM: nullConfi
 async function executable(path: string, content: string) { await writeFile(path, content); await chmod(path, 0o700); }
 
 describe('controlled project Git', () => {
+  it('checks trusted identity without creating an index or commit object', async () => {
+    const f = await fixture();
+    await expect(assertGitIdentity({ cwd: f.a, env: hostConfig })).rejects.toMatchObject({ code: 'GIT_IDENTITY_REQUIRED' });
+    await expect(assertGitIdentity({ cwd: f.a, env: { ...hostConfig, ...identity } })).resolves.toBeUndefined();
+    expect(existsSync(join(f.a, '.git/index'))).toBe(false);
+    expect(await f.git(f.a, 'count-objects', '-v')).toContain('count: 0');
+  });
   it('merges only fixed scratch text operands without executing repository or host merge programs', async () => {
     const f = await fixture();
     await writeFile(join(f.a, 'user-file'), 'user index\n'); await f.git(f.a, 'add', 'user-file');

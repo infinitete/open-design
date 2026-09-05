@@ -179,26 +179,35 @@ async function execute(input: GitProcessInput, env: NodeJS.ProcessEnv, config = 
   });
 }
 
+async function resolveGitIdentity(input: Pick<GitProcessInput, 'cwd' | 'env' | 'signal' | 'timeoutMs'>, env: NodeJS.ProcessEnv): Promise<void> {
+  // Read identity only from explicitly trusted host scopes, never local config.
+  const values = new Map<string, string>();
+  for (const scope of ['--system', '--global']) {
+    try {
+      const result = await execute({ ...input, args: ['config', scope, '--includes', '--null', '--list'] }, env);
+      for (const line of result.stdout.toString().split('\0')) {
+        const separator = line.indexOf('\n');
+        if (separator > 0) values.set(line.slice(0, separator).toLowerCase(), line.slice(separator + 1));
+      }
+    } catch (error) {
+      if (!(error instanceof GitDomainError) || error.details?.exitCode !== 128) throw error;
+    }
+  }
+  for (const key of IDENTITY_KEYS) env[key] = input.env?.[key] ?? values.get(key.endsWith('_NAME') ? 'user.name' : 'user.email') ?? '';
+  if (IDENTITY_KEYS.some(key => !env[key]?.trim())) throw new GitDomainError('GIT_IDENTITY_REQUIRED', 409, 'Configure a host Git name and email to save versions.', { nextStep: 'Configure the host Git identity.' });
+}
+
+/** Preflight identity before constructing candidate objects; commit-tree repeats this check. */
+export async function assertGitIdentity(input: Pick<GitProcessInput, 'cwd' | 'env' | 'signal' | 'timeoutMs'>): Promise<void> {
+  await resolveGitIdentity(input, environment(input.env));
+}
+
 export async function runGit(input: GitProcessInput): Promise<GitProcessResult> {
   localCommand(input.args);
   const env = environment(input.env);
   if (input.args[0] === 'commit-tree') {
-    // Read identity only from explicitly trusted host scopes, never local config.
-    const values = new Map<string, string>();
-    for (const scope of ['--system', '--global']) {
-      try {
-        const { stdin: _stdin, ...identityInput } = input;
-        const result = await execute({ ...identityInput, args: ['config', scope, '--includes', '--null', '--list'] }, env);
-        for (const line of result.stdout.toString().split('\0')) {
-          const separator = line.indexOf('\n');
-          if (separator > 0) values.set(line.slice(0, separator).toLowerCase(), line.slice(separator + 1));
-        }
-      } catch (error) {
-        if (!(error instanceof GitDomainError) || error.details?.exitCode !== 128) throw error;
-      }
-    }
-    for (const key of IDENTITY_KEYS) env[key] = input.env?.[key] ?? values.get(key.endsWith('_NAME') ? 'user.name' : 'user.email') ?? '';
-    if (IDENTITY_KEYS.some(key => !env[key]?.trim())) throw new GitDomainError('GIT_IDENTITY_REQUIRED', 409, 'Configure a host Git name and email to save versions.', { nextStep: 'Configure the host Git identity.' });
+    const { stdin: _stdin, ...identityInput } = input;
+    await resolveGitIdentity(identityInput, env);
   }
   // Local plumbing never needs host execution settings. Repository programs are
   // disabled by mandatory command options, independently of mutable local config.
