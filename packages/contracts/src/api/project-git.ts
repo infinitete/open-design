@@ -89,6 +89,20 @@ export interface ProjectGitPreview {
   expiresAt: number;
   changes: ProjectGitChangeSummary;
   dependencies: ProjectGitDependency[];
+  binding?: ProjectGitBindingPreview;
+}
+
+export interface ProjectGitBindingPreview {
+  classification: 'empty' | 'shared_history' | 'independent_history' | 'different_project';
+  /** Available portable heads when a genuine metadata namespace is absent. */
+  metadataSources: ('local' | 'remote')[];
+  /** Exact full path union requiring a decision, including reserved portable members. */
+  requiredPaths: string[];
+}
+
+export interface ProjectGitBindConfirmation {
+  metadataSource?: 'local' | 'remote';
+  paths?: { path: string; selectedSide: 'local' | 'remote' | 'delete' }[];
 }
 
 export interface ProjectGitFileResponse {
@@ -128,7 +142,7 @@ export type ProjectGitAction =
   | { kind: 'enable_preview' }
   | { kind: 'enable'; previewId: string }
   | { kind: 'binding_preview'; url: string; branch: string }
-  | { kind: 'bind'; previewId: string }
+  | { kind: 'bind'; previewId: string; confirmation?: ProjectGitBindConfirmation }
   | { kind: 'unbind' }
   | { kind: 'pause' }
   | { kind: 'resume' }
@@ -173,6 +187,7 @@ export type ProjectGitOperationStatus = 'queued' | 'running' | 'waiting' | 'succ
 
 export interface ProjectGitOperationResult {
   projectId?: string;
+  existingProjectIds?: string[];
   preview?: ProjectGitPreview;
   head?: string;
   dependencies?: ProjectGitDependency[];
@@ -239,6 +254,7 @@ export type ProjectGitBindingPreviewResponse = ProjectGitAccepted;
 
 export interface ProjectGitBindRequest extends ProjectMutationRevision {
   previewId: string;
+  confirmation?: ProjectGitBindConfirmation;
 }
 export type ProjectGitBindResponse = ProjectGitAccepted;
 
@@ -359,6 +375,48 @@ const projectMutationRevisionSchema = {
   expectedProjectRevision: z.number().int().nonnegative().optional(),
 };
 
+export const ProjectGitBindConfirmationSchema = z.object({
+  metadataSource: z.enum(['local', 'remote']).optional(),
+  paths: z.array(z.object({ path: z.string().min(1), selectedSide: z.enum(['local', 'remote', 'delete']) }).strict())
+    .refine(paths => new Set(paths.map(item => item.path)).size === paths.length, 'Duplicate path decisions').optional(),
+}).strict();
+
+export const ProjectGitBindRequestSchema = z.object({
+  previewId: z.string().min(1), confirmation: ProjectGitBindConfirmationSchema.optional(), ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitDependencySchema = z.object({
+  kind: z.enum(['git', 'identity', 'agent', 'model', 'plugin', 'linked_folder', 'lfs', 'submodule', 'resource']),
+  label: z.string(), requiredForContent: z.boolean(),
+  nextStep: z.object({ action: z.enum(['install_git', 'configure_identity', 'authenticate', 'install_dependency', 'locate_folder', 'resolve_conflict', 'retry']),
+    label: z.string() }).strict().nullable(),
+}).strict();
+
+export const ProjectGitBindingPreviewSchema = z.object({
+  classification: z.enum(['empty', 'shared_history', 'independent_history', 'different_project']),
+  metadataSources: z.array(z.enum(['local', 'remote'])), requiredPaths: z.array(z.string().min(1)),
+}).strict();
+
+export const ProjectGitPreviewSchema = z.object({
+  id: z.string().min(1), kind: z.enum(['enable', 'bind', 'restore', 'resolve']),
+  basis: z.object({ projectRevision: z.number().int().nonnegative(), contentRevision: z.number().int().nonnegative(),
+    localHead: z.string().nullable(), remoteHead: z.string().nullable(), bindingGeneration: z.number().int().nonnegative() }).strict(),
+  targetOid: z.string().nullable(), expiresAt: z.number().finite(),
+  changes: z.object({ addedPaths: z.array(z.string()), modifiedPaths: z.array(z.string()), deletedPaths: z.array(z.string()),
+    settingsChanged: z.number().int().nonnegative(), conversationsChanged: z.number().int().nonnegative(),
+    ignoredPaths: z.array(z.string()), privatePaths: z.array(z.string()), missingPaths: z.array(z.string()),
+    historyMode: z.enum(['complete', 'files_only']), collisions: z.array(z.object({ id: z.string(), kind: z.enum(['repository', 'project', 'path']),
+      label: z.string(), path: z.string().optional() }).strict()) }).strict(),
+  dependencies: z.array(ProjectGitDependencySchema), binding: ProjectGitBindingPreviewSchema.optional(),
+}).strict();
+
+export const ProjectGitOperationResultSchema = z.object({
+  projectId: z.string().min(1).optional(), existingProjectIds: z.array(z.string().min(1)).optional(),
+  preview: ProjectGitPreviewSchema.optional(), head: z.string().min(1).optional(),
+  dependencies: z.array(ProjectGitDependencySchema).optional(),
+}).strict().refine(value => value.existingProjectIds === undefined || (new Set(value.existingProjectIds).size === value.existingProjectIds.length
+  && !value.existingProjectIds.includes(value.projectId ?? '')), 'Existing copies must be distinct from the opened project.');
+
 export const ProjectGitEnableRequestSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('preview'), ...projectMutationRevisionSchema }).strict(),
   z.object({
@@ -376,7 +434,7 @@ export const ProjectGitActionSchema = z.discriminatedUnion('kind', [
     url: z.string().min(1),
     branch: z.string().min(1),
   }).strict(),
-  z.object({ kind: z.literal('bind'), previewId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('bind'), previewId: z.string().min(1), confirmation: ProjectGitBindConfirmationSchema.optional() }).strict(),
   z.object({ kind: z.literal('unbind') }).strict(),
   z.object({ kind: z.literal('pause') }).strict(),
   z.object({ kind: z.literal('resume') }).strict(),

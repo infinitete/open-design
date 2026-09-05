@@ -47,6 +47,7 @@ export interface ProjectGitSyncDeps {
   /** Coherent automatic detection/checkpoint, sharing the sole observed-content quiet clock. */
   automaticReady(projectId: string): Promise<boolean>;
 }
+export interface ProjectGitSyncRuntime extends ProjectGitSyncDeps { readonly recoveryReady: Promise<void> }
 
 function networkOperations(store: ProjectGitStore, projectId: string) {
   return store.listPendingOperations().filter(op => op.projectId === projectId && op.actorId === actorId
@@ -150,6 +151,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
 export interface ProjectGitSyncProject {
   root: string; branch: string; gate: ProjectGate; gitEnv?: Record<string, string>;
   readOwnedResource?: (reference: string) => Promise<Uint8Array | null>;
+  prepareRegistrationCompletion?: (operationId: string) => Promise<import('./registration.js').RegistrationTerminalCapability>;
 }
 
 /** Resolved daemon roots and pre-registered lease-backed gates are required before construction. */
@@ -157,7 +159,7 @@ export function createProjectGitSyncDeps(input: {
   db: Database.Database; store: ProjectGitStore; operationRoot: string; preparationRoot: string;
   resolveProject(projectId: string): ProjectGitSyncProject;
   now(): number; random(): number;
-}): ProjectGitSyncDeps {
+}): ProjectGitSyncRuntime {
   const { store } = input; store.assertDatabase(input.db);
   function binding(id: string) { const found = store.getBinding(id); if (!found) throw changed(); return found; }
   const readBasis = (id: string) => basisFor(binding(id));
@@ -169,7 +171,7 @@ export function createProjectGitSyncDeps(input: {
     const b = binding(id); const project = input.resolveProject(id);
     const repository = await discoverRepository(project.root);
     if (repository.root !== b.canonicalRoot || project.root !== repository.root || repository.commonDir !== b.commonDir
-      || repository.branch !== b.branch || project.branch !== b.branch) throw changed();
+      || repository.branch !== (b.localBranch ?? b.branch) || project.branch !== (b.localBranch ?? b.branch)) throw changed();
     for (const root of [input.operationRoot, input.preparationRoot]) {
       if (!isAbsolute(root) || root !== await realpath(root) || within(project.root, root) || within(repository.commonDir, root)) {
         throw new GitDomainError('VALIDATION_FAILED', 400, 'Preparation roots must be canonical injected directories outside the project.');
@@ -446,7 +448,7 @@ export function createProjectGitSyncDeps(input: {
     },
     async automaticReady(id) { await deps.detect(id); return observations.get(id)?.saved === true; },
   };
-  return deps;
+  return Object.assign(deps, { recoveryReady: ready });
 }
 
 export function retryDelayMs(attempt: number, random: () => number): number {

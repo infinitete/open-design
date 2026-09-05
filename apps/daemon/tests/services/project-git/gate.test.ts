@@ -1,13 +1,42 @@
 import { afterEach, expect, it } from 'vitest';
-import { symlink } from 'node:fs/promises';
+import { mkdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createProjectGate, getProjectGate, type MutationPermit } from '../../../src/services/project-git/gate.js';
-import { getRepositoryOwnerDomain } from '../../../src/services/project-git/repository-lease.js';
+import { createProjectGate, getProjectGate, getUnmanagedProjectGate, initializeProjectRepository, type MutationPermit } from '../../../src/services/project-git/gate.js';
+import { acquireRepositoryLease, getRepositoryOwnerDomain } from '../../../src/services/project-git/repository-lease.js';
 import { createGitFixture } from '../../helpers/project-git.js';
 
 const fixtures: Awaited<ReturnType<typeof createGitFixture>>[] = [];
 afterEach(async () => { await Promise.all(fixtures.splice(0).map(f => f.close())); });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+
+it('promotes the same unmanaged gate after draining admitted work and owns the real lease during registration', async () => {
+  const f = await createGitFixture(); fixtures.push(f); const root = join(f.root, 'unmanaged'); await mkdir(root);
+  const identity = { root, instanceId: 'promotion', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: f.root };
+  const gate = await getUnmanagedProjectGate(identity);
+  expect(await getUnmanagedProjectGate(identity)).toBe(gate);
+  const end = deferred<void>(); const active = gate.mutate(() => end.promise); await tick();
+  let promoted = false;
+  const promotion = initializeProjectRepository({ ...identity, initialBranch: 'main', objectFormat: 'sha1' }, async () => {
+    promoted = true;
+    await expect(acquireRepositoryLease({ ...identity, dataRootId: 'another-data-root' })).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+    throw new Error('registration fixture failed');
+  });
+  const failure = expect(promotion).rejects.toThrow('registration fixture failed');
+  await tick(); expect(promoted).toBe(false); end.resolve(); await active; await failure;
+  expect(await getProjectGate(identity)).toBe(gate);
+  expect(await gate.mutate(async () => 'managed')).toBe('managed');
+});
+
+it('rejects repository appearance on every unmanaged admission even while an earlier run owns its local lease', async () => {
+  const f = await createGitFixture(); fixtures.push(f); const root = join(f.root, 'unmanaged'); await mkdir(root);
+  const identity = { root, instanceId: 'promotion', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: f.root };
+  const gate = await getUnmanagedProjectGate(identity); const run = await gate.beginRun();
+  await f.git(root, 'init', '--initial-branch=main');
+  await expect(gate.mutate(async () => 'unsafe', run.permit)).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  run();
+  await expect(getProjectGate(identity)).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  await expect(getUnmanagedProjectGate({ ...identity, root: f.a })).rejects.toBeDefined();
+});
 
 it('quarantines ordinary admission after failure until the owning recovery converges', async () => {
   const gate = createProjectGate();

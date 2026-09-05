@@ -6,7 +6,7 @@ import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import Database from 'better-sqlite3';
 import type { PortableSnapshot, ProjectGitBasis } from '@open-design/contracts';
-import { closeDatabase, insertProject, openDatabase } from '../../src/db.js';
+import { closeDatabase, getProject, insertProject, openDatabase } from '../../src/db.js';
 import { createProjectGitStore } from '../../src/storage/project-git.js';
 import { getProjectGate } from '../../src/services/project-git/gate.js';
 import { getRepositoryOwnerDomain } from '../../src/services/project-git/repository-lease.js';
@@ -19,6 +19,9 @@ import type { ProjectGitStore } from '../../src/storage/project-git.js';
 import type { ProjectGate } from '../../src/services/project-git/gate.js';
 import { computeCheckpointContentDigest } from '../../src/services/project-git/checkpoint.js';
 import { safeFile, sha256 } from '../../src/services/project-git/recovery.js';
+import { createProjectGitBindingService, type ProjectGitBindingServiceInput } from '../../src/services/project-git/binding.js';
+import { createProjectGitSyncDeps, syncProject, type ProjectGitSyncProject } from '../../src/services/project-git/sync.js';
+import { createProjectGitScheduler } from '../../src/services/project-git/scheduler.js';
 
 export const fixtureGitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 'Materialize Test', GIT_AUTHOR_EMAIL: 'materialize@example.invalid',
@@ -118,10 +121,60 @@ export async function createUnbornCrashFixture(): Promise<Fixture & { head: null
   const f = await makeCrashFixture(true); if (f.head !== null) throw new Error('Expected unborn fixture.'); return { ...f, head: null };
 }
 
+async function registrationWorker(root: string, window: string): Promise<void> {
+  const config = JSON.parse(await readFile(join(root, 'binding-fixture.json'), 'utf8')) as Pick<ProjectGitBindingServiceInput,
+    'operationRoot' | 'preparationRoot' | 'ownedProjectsRoot' | 'ownership' | 'gitEnv'> & { data: string };
+  const db = new Database(join(config.data, 'app.sqlite')); const store = createProjectGitStore(db);
+  const projects = new Map<string, ProjectGitSyncProject>();
+  for (const b of store.listBindings()) projects.set(b.projectId, { root: b.canonicalRoot, branch: b.localBranch ?? b.branch,
+    gate: await getProjectGate({ root: b.canonicalRoot, ...config.ownership }), ...(config.gitEnv ? { gitEnv: config.gitEnv } : {}) });
+  let service!: ReturnType<typeof createProjectGitBindingService>;
+  const resolveProject = (id: string): ProjectGitSyncProject => {
+    const project = projects.get(id); if (!project) throw new Error('Missing trusted fixture registration');
+    return { ...project, prepareRegistrationCompletion: operationId => service.prepareRegistrationCompletion(operationId) };
+  };
+  const deps = createProjectGitSyncDeps({ db, store, ...config, resolveProject, now: () => 100_000, random: () => 0.5 });
+  const scheduler = createProjectGitScheduler({ store, now: deps.now, random: deps.random, detect: deps.detect,
+    sync: (projectId, oneShot) => syncProject({ projectId, oneShot, deps }) });
+  service = createProjectGitBindingService({ ...config, db, store, scheduler, checkpointCurrent: deps.checkpoint, recoveryReady: deps.recoveryReady,
+    resolveProject, now: deps.now, newId: randomUUID,
+    requireCreate: actor => { if (actor !== 'local') throw new Error('Fixture authorization failed'); },
+    requireProject: (actor, id) => { if (actor !== 'local' || !getProject(db, id)) throw new Error('Fixture authorization failed'); },
+    reserveProject: ({ projectId, root: projectRoot, localBranch, gate }) => {
+      const previous = projects.get(projectId);
+      if (previous && (previous.root !== projectRoot || previous.branch !== localBranch || previous.gate !== gate)) throw new Error('Conflicting fixture reservation');
+      projects.set(projectId, { root: projectRoot, branch: localBranch, gate, ...(config.gitEnv ? { gitEnv: config.gitEnv } : {}) });
+      return () => { if (!previous) projects.delete(projectId); };
+    } });
+  if (window === 'owner') {
+    const original = fsPromises.mkdtemp;
+    fsPromises.mkdtemp = (async (...args: Parameters<typeof original>) => {
+      if (String(args[0]).startsWith(join(config.operationRoot, 'materialize-'))) process.exit(73);
+      return original(...args);
+    }) as typeof original;
+    syncBuiltinESMExports();
+  }
+  if (window === 'records') {
+    const original = store.completeRecords;
+    store.completeRecords = (id, completion, records) => { const result = original(id, completion, records); process.exit(73); return result; };
+  }
+  if (window === 'index') {
+    const original = store.completePhase;
+    store.completePhase = (id, phase, data) => { original(id, phase, data); if (phase === 'index_published') process.exit(73); };
+  }
+  if (window === 'terminal') {
+    const original = store.completeRegistration;
+    store.completeRegistration = intent => { const result = original(intent); process.exit(73); return result; };
+  }
+  await service.openRepository({ url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'process-open' });
+  await scheduler.stop(); db.close();
+}
+
 async function worker(): Promise<void> {
   const [root, requestedWindow, method] = process.argv.slice(2);
   const window = requestedWindow?.replace(/^dirty:/u, '');
   if (!root || !window) throw new Error('Fixture root and crash window are required.');
+  if (window.startsWith('registration:')) return registrationWorker(root, window.slice('registration:'.length));
   const f = await openCrashFixture(root);
   if (requestedWindow?.startsWith('dirty:') || window.startsWith('protection:')) {
     await writeFile(join(f.input.root, 'index.html'), 'protected user bytes\n');

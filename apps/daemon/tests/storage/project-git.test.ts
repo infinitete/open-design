@@ -12,6 +12,7 @@ import {
   type ProjectGitJournalPhase,
   type ProjectGitRecoveryData,
   type ProjectGitStore,
+  type ProjectGitRegistrationIntent,
 } from '../../src/storage/project-git.js';
 
 describe('project Git durable store', () => {
@@ -31,6 +32,23 @@ describe('project Git durable store', () => {
   });
   const request = { projectId: null, actorId: 'local', kind: 'open' as const,
     idempotencyKey: 'request-1', requestDigest: 'digest-1', payload: { branch: 'main' } };
+  it('durably consumes a succeeded preview for exactly one same-actor/project matching confirmation', () => {
+    let store = createProjectGitStore(db);
+    const preview = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'enable_preview' });
+    const consumer = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'enable', idempotencyKey: 'confirm' });
+    expect(() => store.consumePreview(preview.id, consumer.id)).toThrow();
+    store.updateOperation(preview.id, { status: 'succeeded', phase: 'local_saved', error: null, result: { preview: { id: preview.id, kind: 'enable', basis: preview.basis,
+      targetOid: null, expiresAt: 1000, dependencies: [], changes: { addedPaths: [], modifiedPaths: [], deletedPaths: [], settingsChanged: 0,
+        conversationsChanged: 0, ignoredPaths: [], privatePaths: [], missingPaths: [], historyMode: 'complete', collisions: [] } } } });
+    store.consumePreview(preview.id, consumer.id);
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(() => store.consumePreview(preview.id, consumer.id)).not.toThrow();
+    for (const change of [{ idempotencyKey: 'other' }, { actorId: 'foreign', idempotencyKey: 'foreign' },
+      { projectId: 'p2', idempotencyKey: 'other-project' }, { kind: 'bind' as const, idempotencyKey: 'wrong-kind' }]) {
+      const other = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'enable', ...change });
+      expect(() => store.consumePreview(preview.id, other.id)).toThrow();
+    }
+  });
   function binding(): ProjectGitBindingRecord {
     return { projectId: 'p1', cloneId: 'c1', repositoryProjectId: 'r1',
       canonicalRoot: join(root, 'project'), commonDir: join(root, 'project/.git'),
@@ -66,6 +84,44 @@ describe('project Git durable store', () => {
     if (kind === 'content') store.bumpContent('p1', basis(current));
     if (kind === 'remote') store.observeRemote('p1', current.generation, 'external-remote');
   }
+
+  it('keeps the actual local branch immutable while changing the remote target and rejects duplicate writable roots', () => {
+    const store = createProjectGitStore(db); const initial = store.saveBinding(binding());
+    const next = store.saveBinding({ ...initial, branch: 'release' });
+    expect(next).toMatchObject({ branch: 'release', localBranch: 'main', generation: 2 });
+    expect(() => store.saveBinding({ ...next, localBranch: 'other' })).toThrow();
+    expect(() => store.saveBinding({ ...binding(), projectId: 'p2', branch: 'other', commonDir: join(root, 'other/.git') })).toThrow();
+    expect(() => store.saveBinding({ ...binding(), projectId: 'p2', branch: 'other', localBranch: 'main', canonicalRoot: join(root, 'worktree') })).toThrow();
+    db.close(); db = new Database(file); migrateProjectGit(db);
+    expect(createProjectGitStore(db).getBinding('p1')).toMatchObject({ branch: 'release', localBranch: 'main' });
+  });
+
+  it('retains immutable registration intent and atomically finalizes binding-only target changes', () => {
+    const store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'bind', basis: basis(b) });
+    const intent: ProjectGitRegistrationIntent = { kind: 'bind', completion: 'binding_only', userOperationId: op.id, executionOperationId: op.id,
+      projectId: 'p1', cloneId: 'c1', repositoryProjectId: 'r1', dataRootId: 'data', canonicalRoot: b.canonicalRoot, commonDir: b.commonDir,
+      localBranch: 'main', targetBranch: 'release', remoteUrl: 'https://new.invalid/repo', autoSync: true,
+      originalUserBasis: op.basis, executionBasis: op.basis, hidden: false,
+      previousOwner: { ref: 'refs/open-design/bindings/old', oid: 'a'.repeat(40), generation: 1 },
+      targetOwner: { ref: 'refs/open-design/bindings/new', expectedOid: null, oid: 'b'.repeat(40), generation: 2 } };
+    expect(() => store.prepareRegistration({ ...intent, existingProjectIds: [] })).toThrow();
+    store.prepareRegistration(intent);
+    expect(store.listPendingRegistrations()).toEqual([{ ...intent, state: 'pending' }]);
+    expect(() => store.prepareRegistration({ ...intent, targetBranch: 'forged' })).toThrow();
+    expect(() => store.completeRegistration(intent)).toThrow();
+    expect(() => db.transaction(() => { store.completeRegistration(intent); throw new Error('rollback'); })()).toThrow('rollback');
+    expect(store.getBinding('p1')!.branch).toBe('main');
+    expect(store.getRegistration(op.id)!.state).toBe('pending');
+    db.transaction(() => store.completeRegistration(intent))();
+    expect(store.getBinding('p1')).toMatchObject({ branch: 'release', localBranch: 'main', generation: 2 });
+    expect(store.getOperation(op.id)).toMatchObject({ status: 'succeeded', result: { projectId: 'p1' } });
+    expect(store.listPendingRegistrations()).toEqual([]);
+    db.transaction(() => store.completeRegistration(intent))();
+    expect(store.getBinding('p1')!.generation).toBe(2);
+    db.close(); db = new Database(file);
+    expect(createProjectGitStore(db).getRegistration(op.id)!.state).toBe('complete');
+  });
 
   it('adopts an external HEAD with exact basis CAS, keeps revisions and export provenance, and queues the OID atomically', () => {
     const store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40), materializedHead: 'a'.repeat(40) });
@@ -210,7 +266,7 @@ describe('project Git durable store', () => {
   it('prevents duplicate writable branch bindings in the same common directory', () => {
     const store = createProjectGitStore(db); const b = store.saveBinding(binding());
     expect(() => store.saveBinding({ ...binding(), projectId: 'p2', cloneId: 'c2' })).toThrow();
-    expect(store.saveBinding({ ...binding(), projectId: 'p2', cloneId: 'c2', branch: 'other' }).generation).toBe(1);
+    expect(store.saveBinding({ ...binding(), projectId: 'p2', cloneId: 'c2', branch: 'other', canonicalRoot: join(root, 'other-worktree') }).generation).toBe(1);
     store.invalidateBinding('p1', basis(b));
     expect(store.saveBinding({ ...binding(), projectId: 'p3', cloneId: 'c3' }).generation).toBe(1);
   });

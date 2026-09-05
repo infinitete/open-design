@@ -15,6 +15,8 @@ export interface ProjectGitBindingRecord {
   canonicalRoot: string;
   commonDir: string;
   branch: string;
+  /** Actual local writable ref. Older records default to branch (the remote target). */
+  localBranch?: string;
   remoteUrl: string | null;
   generation: number;
   autoSync: boolean;
@@ -26,6 +28,25 @@ export interface ProjectGitBindingRecord {
   exportedContentRevision: number;
   materializedHead: string | null;
   dirty: boolean;
+}
+
+/** Private immutable admission journal; paths and owners originate only in the trusted registry. */
+export interface ProjectGitRegistrationIntent {
+  kind: 'enable' | 'bind' | 'open' | 'unbind';
+  completion: 'materialization' | 'checkpoint' | 'binding_only';
+  userOperationId: string; executionOperationId: string;
+  projectId: string; cloneId: string; repositoryProjectId: string; dataRootId: string;
+  canonicalRoot: string; commonDir: string; localBranch: string; targetBranch: string;
+  remoteUrl: string | null; autoSync: boolean; hidden: boolean;
+  originalUserBasis: ProjectGitBasis; executionBasis: ProjectGitBasis;
+  previousOwner: { ref: string; oid: string; generation: number } | null;
+  targetOwner: { ref: string; expectedOid: string | null; oid: string; generation: number };
+  initialImport?: { candidateOid: string; rootDev: string; rootIno: string };
+  materialization?: { candidateOid: string; publicationMode: 'commit' | 'fast_forward'; previewContentDigest: string };
+  existingProjectIds?: string[];
+}
+export interface ProjectGitRegistrationRecord extends ProjectGitRegistrationIntent {
+  state: 'pending' | 'complete' | 'aborted';
 }
 
 export type ProjectGitIdKind = 'project' | 'conversation' | 'message' | 'turn';
@@ -44,7 +65,7 @@ export interface ProjectGitRecoveryPath {
 /** Server supplies all machine-local paths. Intent identity is immutable once prepared. */
 export interface ProjectGitRecoveryData {
   /** Missing on older journals means the original direct-parent commit protocol. */
-  publicationMode?: 'commit' | 'fast_forward';
+  publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   operationRoot: string;
   baseHead: string | null;
   previewContentDigest: string;
@@ -166,6 +187,15 @@ export interface ProjectGitBindingTombstone {
 }
 
 export interface ProjectGitStore {
+  freezeOpenRemote(operationId: string, remote: { head: string | null; objectFormat: 'sha1' | 'sha256' }): void;
+  getOpenRemote(operationId: string): { head: string | null; objectFormat: 'sha1' | 'sha256' } | null;
+  consumePreview(previewOperationId: string, consumerOperationId: string): void;
+  prepareRegistration(intent: ProjectGitRegistrationIntent): void;
+  getRegistration(executionOperationId: string): ProjectGitRegistrationRecord | null;
+  listPendingRegistrations(): ProjectGitRegistrationRecord[];
+  /** Called only by an owned synchronous terminal closure inside the same database transaction. */
+  completeRegistration(intent: ProjectGitRegistrationIntent): ProjectGitBindingRecord;
+  abortRegistration(intent: ProjectGitRegistrationIntent, error: ApiError): void;
   /** Transaction identity, not merely a matching SQLite filename. */
   assertDatabase(database: Database.Database): void;
   getBinding(projectId: string): ProjectGitBindingRecord | null;
@@ -190,6 +220,7 @@ export interface ProjectGitStore {
   enqueueOperation(input: ProjectGitOperationInput): ProjectGitOperation;
   enqueueCheckpoint(input: ProjectGitCheckpointInput): ProjectGitJournalRecord;
   getOperation(id: string): ProjectGitOperation | null;
+  findOperation(input: Pick<ProjectGitOperationInput, 'actorId' | 'projectId' | 'kind' | 'idempotencyKey'>): ProjectGitJournalRecord | null;
   getJournal(id: string): ProjectGitJournalRecord | null;
   /** Associate a reserved import ID before prepared; does not create or expose an application project row. */
   attachOperationProject(id: string, projectId: string, basis: ProjectGitBasis): void;
@@ -268,7 +299,8 @@ function basisFor(b: ProjectGitBindingRecord): ProjectGitBasis {
 /** Completions may add facts, but must not erase facts or replace the prepared intent. */
 function validateRecovery(previous: ProjectGitRecoveryData | null, next: ProjectGitRecoveryData): void {
   const mode = next.publicationMode ?? 'commit';
-  if (!['commit', 'fast_forward'].includes(mode) || (mode === 'fast_forward' && next.baseHead === null)
+  if (!['commit', 'fast_forward', 'initial_import'].includes(mode) || (mode === 'fast_forward' && next.baseHead === null)
+    || (mode === 'initial_import' && next.baseHead !== null)
     || !next.operationRoot || !next.candidateOid || !next.publishHead || !next.index.ownerToken
     || !next.previewContentDigest || !next.candidateTreeOid || next.publishBase !== next.baseHead
     || next.publishHead !== next.candidateOid || new Set(next.publicationParents).size !== next.publicationParents.length
@@ -298,6 +330,18 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   function requireGeneration(id: string, generation: number): ProjectGitBindingRecord {
     const b = getBinding(id); if (!b || b.generation !== generation) throw changed(); return b;
   }
+  function getRegistration(id: string): ProjectGitRegistrationRecord | null {
+    const row = db.prepare('SELECT intent_json, state FROM project_git_registrations WHERE execution_operation_id = ?').get(id) as
+      { intent_json: string; state: ProjectGitRegistrationRecord['state'] } | undefined;
+    return row ? { ...JSON.parse(row.intent_json) as ProjectGitRegistrationIntent, state: row.state } : null;
+  }
+  function requireRegistration(intent: ProjectGitRegistrationIntent): ProjectGitRegistrationRecord {
+    const record = getRegistration(intent.executionOperationId);
+    if (!record) throw recoveryRequired();
+    const { state: _state, ...original } = record;
+    if (!isDeepStrictEqual(original, intent)) throw recoveryRequired();
+    return record;
+  }
   function requireBasis(id: string, expected: ProjectGitBasis): ProjectGitBindingRecord {
     const b = requireGeneration(id, expected.bindingGeneration);
     if (!sameBasis(basisFor(b), expected)) throw changed(); return b;
@@ -309,7 +353,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   function protectionPair(id: string, input: ProjectGitProtectionInput) {
     const op = getJournal(id); const checkpoint = getJournal(input.checkpointOperationId);
     if (!op?.projectId || !op.recoveryData || !sameBasis(op.basis, input.basis)) throw changed();
-    if (op.recoveryData.publicationMode === 'fast_forward') throw recoveryRequired();
+    if (['fast_forward', 'initial_import'].includes(op.recoveryData.publicationMode ?? '')) throw recoveryRequired();
     if (op.kind === 'checkpoint' || !checkpoint?.recoveryData || checkpoint.kind !== 'checkpoint'
       || checkpoint.ownerOperationId !== op.id || checkpoint.projectId !== op.projectId
       || !sameBasis(checkpoint.basis, op.basis) || checkpoint.recoveryData.publishHead !== input.checkpointOid
@@ -408,8 +452,101 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         .run(phase, Number(completed), json(data), Date.now(), id);
     });
   }
+  function visibleExistingProjects(intent: ProjectGitRegistrationIntent): string[] {
+    if (intent.existingProjectIds === undefined) return [];
+    if (intent.kind !== 'open' || !Array.isArray(intent.existingProjectIds)
+      || intent.existingProjectIds.some(id => typeof id !== 'string' || !id || id === intent.projectId)
+      || new Set(intent.existingProjectIds).size !== intent.existingProjectIds.length) throw recoveryRequired();
+    return intent.existingProjectIds.filter(id => {
+      const b = getBinding(id);
+      return b?.repositoryProjectId === intent.repositoryProjectId && Boolean(db.prepare(`SELECT 1 FROM projects p WHERE p.id = ?
+        AND NOT EXISTS (SELECT 1 FROM project_git_registrations r WHERE r.project_id = p.id AND r.hidden = 1 AND r.state != 'complete')`).get(id));
+    });
+  }
   const pushColumns = 'q.project_id AS projectId, q.binding_generation AS generation, q.target_oid AS targetOid, q.attempts, q.next_attempt_at AS nextAttemptAt';
   const store: ProjectGitStore = {
+    getRegistration,
+    listPendingRegistrations: () => (db.prepare("SELECT execution_operation_id FROM project_git_registrations WHERE state = 'pending' ORDER BY execution_operation_id").all() as
+      { execution_operation_id: string }[]).map(row => getRegistration(row.execution_operation_id)!),
+    prepareRegistration: intent => transaction(() => {
+      if (getRegistration(intent.executionOperationId)) { requireRegistration(intent); return; }
+      if (visibleExistingProjects(intent).length !== (intent.existingProjectIds?.length ?? 0)) throw recoveryRequired();
+      const user = getJournal(intent.userOperationId); const execution = getJournal(intent.executionOperationId);
+      if (!user || !execution || user.kind !== intent.kind || execution.projectId !== intent.projectId
+        || !sameBasis(user.basis, intent.originalUserBasis) || !sameBasis(execution.basis, intent.executionBasis)
+        || execution.journalPhase !== null || execution.ownerOperationId !== null
+        || (intent.hidden && intent.kind !== 'open')
+        || (intent.initialImport && (!intent.hidden || intent.completion !== 'materialization' || intent.executionBasis.localHead !== null))
+        || (intent.completion === 'checkpoint' ? intent.kind !== 'enable' || execution.kind !== 'checkpoint' || user.id === execution.id
+          : user.id !== execution.id)) throw recoveryRequired();
+      const b = requireBasis(intent.projectId, intent.executionBasis);
+      if (intent.materialization) {
+        const candidate = intent.materialization; const payload = user.payload as { previewId?: unknown; previewContentDigest?: unknown };
+        const preview = typeof payload?.previewId === 'string' ? getJournal(payload.previewId) : null;
+        const consumed = db.prepare('SELECT 1 FROM project_git_preview_consumers WHERE preview_operation_id = ? AND consumer_operation_id = ?')
+          .get(typeof payload?.previewId === 'string' ? payload.previewId : '', user.id);
+        if (intent.kind !== 'bind' || intent.completion !== 'materialization' || intent.initialImport || !consumed
+          || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(candidate.candidateOid) || !/^[a-f0-9]{64}$/u.test(candidate.previewContentDigest)
+          || !['commit', 'fast_forward'].includes(candidate.publicationMode) || payload.previewContentDigest !== candidate.previewContentDigest
+          || preview?.kind !== 'binding_preview' || preview.actorId !== user.actorId || preview.projectId !== intent.projectId
+          || preview.status !== 'succeeded' || !sameBasis(preview.basis, intent.executionBasis)
+          || (candidate.publicationMode === 'fast_forward' && (!intent.executionBasis.localHead || candidate.candidateOid !== preview.result?.preview?.targetOid))) throw recoveryRequired();
+      } else if (intent.kind === 'bind' && intent.completion === 'materialization') throw recoveryRequired();
+      if (b.canonicalRoot !== intent.canonicalRoot || b.commonDir !== intent.commonDir || b.cloneId !== intent.cloneId
+        || b.repositoryProjectId !== intent.repositoryProjectId || (b.localBranch ?? b.branch) !== intent.localBranch) throw changed();
+      db.prepare(`INSERT INTO project_git_registrations (execution_operation_id, user_operation_id, project_id, hidden, state, intent_json)
+        VALUES (?, ?, ?, ?, 'pending', ?)`)
+        .run(intent.executionOperationId, intent.userOperationId, intent.projectId, Number(intent.hidden), json(intent));
+    }),
+    completeRegistration: intent => {
+      if (!db.inTransaction) throw recoveryRequired();
+      return transaction(() => {
+        const record = requireRegistration(intent);
+        if (record.state === 'aborted') throw recoveryRequired();
+        const b = getBinding(intent.projectId); if (!b) throw recoveryRequired();
+        if (record.state === 'complete') return b;
+        const execution = getJournal(intent.executionOperationId)!;
+        if (intent.completion === 'binding_only') requireBasis(intent.projectId, intent.executionBasis);
+        else if (intent.completion === 'checkpoint' && execution.journalPhase === null && execution.recoveryData === null) {
+          requireBasis(intent.projectId, intent.executionBasis);
+          if (execution.status !== 'succeeded' || execution.ownerOperationId !== null
+            || (execution.result?.head ?? null) !== intent.executionBasis.localHead) throw recoveryRequired();
+        }
+        else if (execution.journalPhase !== 'complete' || execution.status !== 'succeeded'
+          || b.generation !== intent.executionBasis.bindingGeneration || b.contentRevision !== intent.executionBasis.contentRevision
+          || b.projectRevision !== execution.completedProjectRevision
+          || b.localHead !== execution.result?.head) throw recoveryRequired();
+        const next = store.saveBinding({ ...b, branch: intent.targetBranch, localBranch: intent.localBranch,
+          remoteUrl: intent.remoteUrl, autoSync: intent.autoSync });
+        if (next.generation !== intent.targetOwner.generation) throw recoveryRequired();
+        if (next.remoteUrl && next.localHead) store.queuePush(next.projectId, next.generation, next.localHead);
+        if (intent.hidden) {
+          const row = db.prepare('SELECT metadata_json FROM projects WHERE id = ?').get(intent.projectId) as { metadata_json: string | null } | undefined;
+          if (!row) throw recoveryRequired();
+          const metadata = row.metadata_json ? JSON.parse(row.metadata_json) as Record<string, JsonValue> : {};
+          metadata.baseDir = intent.canonicalRoot;
+          db.prepare('UPDATE projects SET metadata_json = ? WHERE id = ?').run(json(metadata), intent.projectId);
+        }
+        db.prepare("UPDATE project_git_registrations SET state = 'complete' WHERE execution_operation_id = ?").run(intent.executionOperationId);
+        const result: ProjectGitOperationResult = { projectId: next.projectId, ...(next.localHead ? { head: next.localHead } : {}),
+          ...(intent.existingProjectIds === undefined ? {} : { existingProjectIds: visibleExistingProjects(intent) }) };
+        db.prepare("UPDATE project_git_operations SET status = 'succeeded', phase = 'local_saved', result_json = ?, error_json = NULL, updated_at = ? WHERE id = ?")
+          .run(json(result), Date.now(), intent.userOperationId);
+        return next;
+      });
+    },
+    abortRegistration: (intent, error) => transaction(() => {
+      const record = requireRegistration(intent);
+      if (record.state === 'aborted') return;
+      const execution = getJournal(intent.executionOperationId);
+      if (record.state !== 'pending' || !execution || execution.journalPhase !== null || execution.recoveryData !== null) throw recoveryRequired();
+      requireBasis(intent.projectId, intent.executionBasis);
+      if (intent.kind === 'enable' || intent.kind === 'open') store.invalidateBinding(intent.projectId, intent.executionBasis);
+      db.prepare("UPDATE project_git_registrations SET state = 'aborted' WHERE execution_operation_id = ?").run(intent.executionOperationId);
+      for (const id of new Set([intent.userOperationId, intent.executionOperationId])) {
+        store.updateOperation(id, { status: 'failed', phase: 'failed', result: null, error });
+      }
+    }),
     getBinding,
     listBindings: () => (db.prepare('SELECT * FROM project_git_bindings WHERE active = 1 ORDER BY project_id').all() as BindingRow[]).map(bindingFrom),
     getBindingGeneration: id => bindingRow(id)?.generation ?? 0,
@@ -421,20 +558,25 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       const row = bindingRow(input.projectId); const current = row ? bindingFrom(row) : null;
       if (input.generation !== (row?.generation ?? 0) || (current && (input.projectRevision !== current.projectRevision
         || input.contentRevision !== current.contentRevision))) throw changed();
+      const localBranch = input.localBranch ?? (row?.active && current ? current.localBranch ?? current.branch : input.branch);
+      if (row?.active && current && localBranch !== (current.localBranch ?? current.branch)) throw changed();
       const targetChanged = !row?.active || !current || ['cloneId', 'repositoryProjectId', 'canonicalRoot', 'commonDir', 'branch', 'remoteUrl']
         .some(key => input[key as keyof ProjectGitBindingRecord] !== current[key as keyof ProjectGitBindingRecord]);
-      const next = { ...input, ...(current ? { localHead: current.localHead, observedRemoteHead: current.observedRemoteHead,
+      const next = { ...input, ...(localBranch !== input.branch || input.localBranch !== undefined ? { localBranch } : {}),
+        ...(current ? { localHead: current.localHead, observedRemoteHead: current.observedRemoteHead,
         confirmedRemoteHead: current.confirmedRemoteHead, materializedHead: current.materializedHead,
         exportedContentRevision: current.exportedContentRevision, dirty: current.dirty } : {}),
         generation: input.generation + Number(targetChanged) };
       if (targetChanged) { next.observedRemoteHead = null; next.confirmedRemoteHead = null; }
-      const duplicate = db.prepare('SELECT 1 FROM project_git_bindings WHERE common_dir = ? AND branch = ? AND active = 1 AND project_id != ?')
-        .get(next.commonDir, next.branch, next.projectId);
+      const duplicate = db.prepare(`SELECT 1 FROM project_git_bindings WHERE active = 1 AND project_id != ?
+        AND (canonical_root = ? OR (common_dir = ? AND (branch = ? OR local_branch = ?)))`)
+        .get(next.projectId, next.canonicalRoot, next.commonDir, next.branch, localBranch);
       if (duplicate) throw new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'This branch already has a writable binding.');
-      db.prepare(`INSERT INTO project_git_bindings (project_id, common_dir, branch, generation, active, project_revision, content_revision, exported_content_revision, record_json)
-        VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET common_dir = excluded.common_dir,
-        branch = excluded.branch, generation = excluded.generation, active = 1, record_json = excluded.record_json`)
-        .run(next.projectId, next.commonDir, next.branch, next.generation, next.projectRevision, next.contentRevision, next.exportedContentRevision, json(next));
+      db.prepare(`INSERT INTO project_git_bindings (project_id, common_dir, branch, generation, active, project_revision, content_revision, exported_content_revision, record_json, canonical_root, local_branch)
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET common_dir = excluded.common_dir,
+        branch = excluded.branch, generation = excluded.generation, active = 1, record_json = excluded.record_json,
+        canonical_root = excluded.canonical_root, local_branch = excluded.local_branch`)
+        .run(next.projectId, next.commonDir, next.branch, next.generation, next.projectRevision, next.contentRevision, next.exportedContentRevision, json(next), next.canonicalRoot, localBranch);
       if (targetChanged) db.prepare('DELETE FROM project_git_push_queue WHERE project_id = ?').run(input.projectId);
       return getBinding(input.projectId)!;
     }),
@@ -477,9 +619,45 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     attachId,
     getPortableId: (repository, clone, kind, local) => (db.prepare('SELECT portable_id FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND kind = ? AND local_id = ?')
       .get(repository, clone, kind, local) as { portable_id: string } | undefined)?.portable_id ?? null,
+    getOpenRemote: id => {
+      const row = db.prepare('SELECT head, object_format FROM project_git_open_remotes WHERE operation_id = ?').get(id) as { head: string | null; object_format: string } | undefined;
+      if (!row) return null;
+      if (!['sha1', 'sha256'].includes(row.object_format) || (row.head !== null && (typeof row.head !== 'string'
+        || !(row.object_format === 'sha1' ? /^[a-f0-9]{40}$/u : /^[a-f0-9]{64}$/u).test(row.head)))) throw recoveryRequired();
+      return { head: row.head, objectFormat: row.object_format as 'sha1' | 'sha256' };
+    },
+    freezeOpenRemote: (id, remote) => transaction(() => {
+      const op = getJournal(id);
+      if (!op || op.kind !== 'open' || op.scope !== 'import' || !['sha1', 'sha256'].includes(remote.objectFormat)
+        || (remote.head !== null && !(remote.objectFormat === 'sha1' ? /^[a-f0-9]{40}$/u : /^[a-f0-9]{64}$/u).test(remote.head))) throw recoveryRequired();
+      const current = store.getOpenRemote(id);
+      if (current) { if (!isDeepStrictEqual(current, remote)) throw changed(); return; }
+      if (op.journalPhase !== null || op.recoveryData !== null || store.getRegistration(id)) throw recoveryRequired();
+      db.prepare('INSERT INTO project_git_open_remotes VALUES (?, ?, ?)').run(id, remote.head, remote.objectFormat);
+    }),
+    consumePreview: (previewId, consumerId) => transaction(() => {
+      const preview = getJournal(previewId); const consumer = getJournal(consumerId);
+      if (!preview || !consumer || preview.actorId !== consumer.actorId || preview.projectId === null
+        || preview.projectId !== consumer.projectId || preview.scope !== consumer.scope || preview.status !== 'succeeded'
+        || preview.result?.preview?.id !== previewId || !sameBasis(preview.basis, consumer.basis)
+        || !((preview.kind === 'enable_preview' && consumer.kind === 'enable' && preview.result.preview.kind === 'enable')
+          || (preview.kind === 'binding_preview' && consumer.kind === 'bind' && preview.result.preview.kind === 'bind'))) throw conflict();
+      const existing = db.prepare('SELECT preview_operation_id, consumer_operation_id FROM project_git_preview_consumers WHERE preview_operation_id = ? OR consumer_operation_id = ?')
+        .all(previewId, consumerId) as { preview_operation_id: string; consumer_operation_id: string }[];
+      if (existing.length) {
+        if (existing.length !== 1 || existing[0]!.preview_operation_id !== previewId || existing[0]!.consumer_operation_id !== consumerId) throw conflict();
+        return;
+      }
+      db.prepare('INSERT INTO project_git_preview_consumers VALUES (?, ?)').run(previewId, consumerId);
+    }),
     enqueueOperation: input => publicOperation(enqueue(input))!,
     enqueueCheckpoint: input => enqueue({ ...input, kind: 'checkpoint' }),
     getOperation: id => { const op = getJournal(id); return op ? publicOperation(op) : null; },
+    findOperation: input => {
+      const row = db.prepare('SELECT * FROM project_git_operations WHERE actor_id = ? AND scope = ? AND kind = ? AND idempotency_key = ?')
+        .get(input.actorId, input.projectId === null ? 'import' : `project:${input.projectId}`, input.kind, input.idempotencyKey) as OperationRow | undefined;
+      return row ? journalFrom(row) : null;
+    },
     getJournal,
     attachOperationProject: (id, projectId, basis) => transaction(() => {
       const op = getJournal(id);
@@ -556,7 +734,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     sealProtectedCandidate: (id, basis, candidate) => transaction(() => {
       const op = getJournal(id); const protection = op?.protection; const data = op?.recoveryData;
       if (!op?.projectId || !data || !sameBasis(op.basis, basis)) throw changed();
-      if (data.publicationMode === 'fast_forward') throw recoveryRequired();
+      if (['fast_forward', 'initial_import'].includes(data.publicationMode ?? '')) throw recoveryRequired();
       if (!protection?.completed) throw recoveryRequired();
       if (op.journalPhase !== 'complete') requireBasis(op.projectId, ownedBasis(op));
       if (protection.sealedCandidate) {

@@ -5,6 +5,9 @@ import type { UpdateConversationRequest, UpdateProjectRequest } from '../src/api
 import {
   parseProjectGitAction,
   parseProjectGitEnableRequest,
+  ProjectGitBindRequestSchema,
+  ProjectGitPreviewSchema,
+  ProjectGitOperationResultSchema,
   type ProjectGitAction,
   type ProjectMutationRevision,
 } from '../src/api/project-git.js';
@@ -14,6 +17,42 @@ import {
 } from '../src/api/project-git-portable.js';
 
 const digest = 'a'.repeat(64);
+
+it('validates existing-copy operation results without exposing clone identity', () => {
+  expect(ProjectGitOperationResultSchema.parse({ projectId: 'new', existingProjectIds: ['first', 'second'] }))
+    .toEqual({ projectId: 'new', existingProjectIds: ['first', 'second'] });
+  expect(ProjectGitOperationResultSchema.safeParse({ projectId: 'new', existingProjectIds: ['first', 'first'] }).success).toBe(false);
+  expect(ProjectGitOperationResultSchema.safeParse({ projectId: 'new', existingProjectIds: ['new'] }).success).toBe(false);
+  expect(ProjectGitOperationResultSchema.safeParse({ projectId: 'new', cloneId: 'private' }).success).toBe(false);
+});
+
+describe('binding confirmation', () => {
+  it('carries explicit ordinary and portable path decisions through request and action parsing', () => {
+    const confirmation = { paths: [
+      { path: 'index.html', selectedSide: 'local' },
+      { path: '.open-design/project.json', selectedSide: 'remote' },
+      { path: 'old.html', selectedSide: 'delete' },
+    ] };
+    expect(ProjectGitBindRequestSchema.parse({ previewId: 'preview', confirmation, expectedProjectRevision: 3 }))
+      .toEqual({ previewId: 'preview', confirmation, expectedProjectRevision: 3 });
+    expect(parseProjectGitAction({ kind: 'bind', previewId: 'preview', confirmation }))
+      .toEqual({ kind: 'bind', previewId: 'preview', confirmation });
+    expect(ProjectGitBindRequestSchema.parse({ previewId: 'preview', confirmation: { metadataSource: 'local' } }))
+      .toEqual({ previewId: 'preview', confirmation: { metadataSource: 'local' } });
+    expect(() => ProjectGitBindRequestSchema.parse({ previewId: 'preview', confirmation: { paths: [confirmation.paths[0], confirmation.paths[0]] } })).toThrow();
+    expect(() => ProjectGitBindRequestSchema.parse({ previewId: 'preview', confirmation: { paths: [{ path: 'index.html', selectedSide: 'base' }] } })).toThrow();
+  });
+
+  it('preserves preview provenance without changing the frozen full basis', () => {
+    const preview = { id: 'preview', kind: 'bind', basis: { projectRevision: 3, contentRevision: 8,
+      localHead: 'a'.repeat(40), remoteHead: 'b'.repeat(40), bindingGeneration: 2 }, targetOid: 'b'.repeat(40), expiresAt: 1000,
+      changes: { addedPaths: [], modifiedPaths: ['index.html'], deletedPaths: [], settingsChanged: 0, conversationsChanged: 0,
+        ignoredPaths: [], privatePaths: [], missingPaths: [], historyMode: 'complete', collisions: [] }, dependencies: [],
+      binding: { classification: 'independent_history', metadataSources: [], requiredPaths: ['index.html', '.open-design/project.json'] } };
+    expect(ProjectGitPreviewSchema.parse(preview)).toEqual(preview);
+    expect(() => ProjectGitPreviewSchema.parse({ ...preview, binding: { ...preview.binding, metadataSources: ['base'] } })).toThrow();
+  });
+});
 
 function validSnapshot() {
   return {

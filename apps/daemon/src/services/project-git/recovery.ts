@@ -20,6 +20,8 @@ export interface RecoveryProject {
   root: string; branch: string; gate: ProjectGate;
   readBasis(): ProjectGitBasis | Promise<ProjectGitBasis>;
   gitEnv?: Record<string, string>;
+  /** Trusted original-registration verifier, invoked only under this operation's real exclusive lease. */
+  prepareRegistrationCompletion?: (operationId: string) => Promise<import('./registration.js').RegistrationTerminalCapability>;
 }
 export interface RecoveryContext extends RecoveryProject {
   db: Database.Database; store: ProjectGitStore; operationRoot: string;
@@ -30,7 +32,7 @@ export interface MaterializationPath extends ProjectGitRecoveryPath {
   candidatePath: string | null; mode: string; oldMode: string; temporaryPath: string | null; temporaryReceiptPath: string | null;
 }
 export interface MaterializationEvidence {
-  publicationMode?: 'commit' | 'fast_forward';
+  publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   operationId: string; projectId: string; treeOid: string; candidateOid: string;
   sourceDigests: Record<string, string>; sourceModes: Record<string, string>;
   portableDigests: Record<string, string>; removedPaths: string[];
@@ -142,15 +144,24 @@ export async function readRecoveryCheckpoint(context: RecoveryContext, operation
 export async function readMaterialization(context: RecoveryContext, operationId: string): Promise<MaterializationEvidence> {
   const journal = context.store.getJournal(operationId)!; const data = journal.recoveryData;
   await assertArtifactBoundary(context, journal); if (!data) throw recoveryRequired();
+  const registration = context.store.getRegistration(operationId);
+  if (registration?.materialization && (data.candidateOid !== registration.materialization.candidateOid
+    || data.publicationMode !== registration.materialization.publicationMode || data.previewContentDigest !== registration.materialization.previewContentDigest)) throw recoveryRequired();
   const bytes = await readBytes(join(data.operationRoot, 'materialization.json')); if (!bytes) throw recoveryRequired();
   const evidence = JSON.parse(bytes.toString()) as MaterializationEvidence;
   const mode = data.publicationMode ?? 'commit';
-  if (!['commit', 'fast_forward'].includes(mode) || mode !== (evidence.publicationMode ?? 'commit')
-    || (mode === 'fast_forward' && (evidence.protectionRequired || journal.protection))
+  if (!['commit', 'fast_forward', 'initial_import'].includes(mode) || mode !== (evidence.publicationMode ?? 'commit')
+    || (mode !== 'commit' && (evidence.protectionRequired || journal.protection))
     || evidence.operationId !== journal.id || evidence.projectId !== journal.projectId || evidence.treeOid !== data.candidateTreeOid
     || evidence.candidateOid !== data.candidateOid || computeCheckpointContentDigest(evidence) !== data.previewContentDigest
     || evidence.previewContentDigest !== data.previewContentDigest || !Array.isArray(evidence.paths) || evidence.paths.length !== data.paths.length
     || typeof evidence.protectionRequired !== 'boolean' || !Array.isArray(evidence.currentPortable)) throw recoveryRequired();
+  if (mode === 'initial_import') {
+    await assertInitialImportRegistration(context, operationId, data.candidateOid);
+    if (data.baseHead !== null || data.index.oldDigest !== null || evidence.currentPortable.length || evidence.removedPaths.length
+      || Object.keys(evidence.portableDigests).length || Object.values(evidence.sourceDigests).some(value => value !== 'missing')
+      || Object.values(evidence.sourceModes).some(value => value !== '0')) throw recoveryRequired();
+  }
   const tree = await gitTree(context.root, data.candidateTreeOid);
   const snapshot = parsePortableEntries(new Map([...tree].map(([path, entry]) => [path, entry.bytes])));
   if (portableImportMarker(snapshot) !== data.records?.importMarker) throw recoveryRequired();
@@ -178,13 +189,24 @@ export async function readMaterialization(context: RecoveryContext, operationId:
   return evidence;
 }
 
+export async function assertInitialImportRegistration(context: { root: string; store: ProjectGitStore }, operationId: string, candidateOid: string): Promise<void> {
+  const registration = context.store.getRegistration(operationId); const journal = context.store.getJournal(operationId);
+  const info = await lstat(context.root);
+  if (!registration || registration.state === 'aborted' || registration.kind !== 'open' || !registration.hidden
+    || registration.completion !== 'materialization' || registration.initialImport?.candidateOid !== candidateOid
+    || registration.canonicalRoot !== context.root || registration.executionOperationId !== operationId
+    || registration.executionBasis.localHead !== null || journal?.kind !== 'open' || journal.projectId !== registration.projectId
+    || !isDeepStrictEqual(journal.basis, registration.executionBasis) || !info.isDirectory() || info.isSymbolicLink()
+    || String(info.dev) !== registration.initialImport.rootDev || String(info.ino) !== registration.initialImport.rootIno) throw recoveryRequired();
+}
+
 async function validateContext(context: RecoveryContext, journal: ProjectGitJournalRecord) {
   context.store.assertDatabase(context.db);
   await assertArtifactBoundary(context, journal);
   const binding = journal.projectId ? context.store.getBinding(journal.projectId) : null;
   const repository = await discoverRepository(context.root);
   if (!binding || binding.canonicalRoot !== repository.root || binding.commonDir !== repository.commonDir
-    || binding.branch !== context.branch || repository.branch !== context.branch
+    || (binding.localBranch ?? binding.branch) !== context.branch || repository.branch !== context.branch
     || binding.generation !== journal.basis.bindingGeneration || journal.recoveryData?.index.path !== join(repository.gitDir, 'index')) throw recoveryRequired();
   await assertOperationBasis(context, journal); return repository;
 }
@@ -198,6 +220,9 @@ async function actualCommit(context: RecoveryContext, journal: ProjectGitJournal
     if (!data.publishBase || journal.protection || data.publishBase === data.candidateOid) throw recoveryRequired();
     try { await runGit({ cwd: context.root, args: ['merge-base', '--is-ancestor', data.publishBase, data.candidateOid] }); }
     catch { throw recoveryRequired(); }
+  } else if (mode === 'initial_import') {
+    await assertInitialImportRegistration(context, journal.id, data.candidateOid);
+    if (data.publishBase !== null || journal.protection) throw recoveryRequired();
   } else if (mode !== 'commit' || (data.publishBase && data.publicationParents.filter(parent => parent === data.publishBase).length !== 1)) throw recoveryRequired();
 }
 const phaseOrder: MaterializePhase[] = ['prepared', 'protected', 'files_applied', 'records_applied', 'ref_published', 'index_published', 'complete'];
@@ -409,7 +434,22 @@ export async function replayOperation(context: RecoveryContext, operationId: str
       const snapshot = readPortableRecords(context.db, journal.projectId!);
       if (!snapshot || portableImportMarker(snapshot) !== journal.recoveryData!.records!.importMarker) throw recoveryRequired();
     }
-    context.store.completeMaterialization(operationId, { basis: journal.basis, advanceProjectRevision: journal.kind !== 'checkpoint' });
+    const registration = context.store.getRegistration(operationId);
+    let completeRegistration: import('./registration.js').RegistrationTerminalCapability | undefined;
+    if (registration?.state === 'pending') {
+      if (!context.prepareRegistrationCompletion) throw recoveryRequired();
+      completeRegistration = await context.prepareRegistrationCompletion(operationId);
+      // The owner verifier is asynchronous: reprove actual final content after it settles.
+      await checkFiles(true);
+      if ((await discoverRepository(context.root)).head !== publication.publishHead
+        || sha256(await readBytes(data.index.path) ?? Buffer.alloc(0)) !== data.index.candidateDigest) throw recoveryRequired();
+      if (journal.kind !== 'checkpoint') {
+        const current = readPortableRecords(context.db, journal.projectId!);
+        if (!current || portableImportMarker(current) !== journal.recoveryData!.records!.importMarker) throw recoveryRequired();
+      }
+    }
+    if (completeRegistration) completeRegistration.completeMaterialization();
+    else context.store.completeMaterialization(operationId, { basis: journal.basis, advanceProjectRevision: journal.kind !== 'checkpoint' });
     return publication.publishHead;
   } finally { await handle?.close(); }
 }

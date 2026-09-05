@@ -1,6 +1,9 @@
 import { GitDomainError } from './errors.js';
 import { acquireRepositoryLease, type RepositoryLease, type RepositoryLeaseInput } from './repository-lease.js';
 import { discoverRepository } from './repository.js';
+import { lstat, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { initializeRepository, runGit, type GitInitializationInput } from './git-process.js';
 
 declare const permitBrand: unique symbol;
 export interface MutationPermit { readonly [permitBrand]: true }
@@ -48,6 +51,9 @@ function shareLease(acquire: () => Promise<RepositoryLease>): () => Promise<Repo
 }
 
 export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate {
+  return createGate(options);
+}
+function createGate(options: ProjectGateOptions, validateAdmission?: () => Promise<void>): ProjectGate {
   const acquire = shareLease(options.acquireLease ?? (async () => ({ release: async () => {} })));
   const permits = new WeakSet<MutationPermit>();
   const barriers = new Set<ProjectRecoveryBarrier>();
@@ -98,7 +104,7 @@ export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate
           };
           void (async () => {
             try {
-              if (kind !== 'read') lease = await acquire();
+              if (kind !== 'read') { await validateAdmission?.(); lease = await acquire(); }
               if (kind === 'run') {
                 runs++; permits.add(permit);
                 let released = false;
@@ -158,12 +164,62 @@ export function createProjectGate(options: ProjectGateOptions = {}): ProjectGate
 }
 
 const repositories = new Map<string, { identity: string; acquire: () => Promise<RepositoryLease>; gates: Map<string, ProjectGate> }>();
+interface UnmanagedGate { identity: string; gate: ProjectGate; acquire: (() => Promise<RepositoryLease>) | null }
+const unmanagedRoots = new Map<string, UnmanagedGate>();
+const ownershipIdentity = (input: RepositoryLeaseInput) => JSON.stringify([input.instanceId, input.ownerDomain, input.dataRootId]);
+const unexpectedRepository = () => new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'The project repository changed. Refresh its registration before writing.');
+
+async function assertUnmanagedRoot(root: string): Promise<void> {
+  if (await realpath(root) !== root) throw unexpectedRepository();
+  try { await lstat(join(root, '.git')); throw unexpectedRepository(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  try { await runGit({ cwd: root, args: ['rev-parse', '--git-dir'] }); throw unexpectedRepository(); }
+  catch (error) { if (!(error instanceof GitDomainError) || error.details?.reason !== 'not_repository') throw error; }
+}
+
+/** Register local admission before initialization. Managed Git roots never use this lane. */
+export async function getUnmanagedProjectGate(input: RepositoryLeaseInput): Promise<ProjectGate> {
+  if ([input.instanceId, input.ownerDomain, input.dataRootId].some(value => !value.trim())) throw unexpectedRepository();
+  const identity = ownershipIdentity(input); const current = unmanagedRoots.get(input.root);
+  if (current?.identity !== undefined && current.identity !== identity) throw unexpectedRepository();
+  if (current?.acquire) return current.gate;
+  await assertUnmanagedRoot(input.root);
+  const raced = unmanagedRoots.get(input.root);
+  if (raced) { if (raced.identity !== identity) throw unexpectedRepository(); return raced.gate; }
+  const entry: UnmanagedGate = { identity, acquire: null,
+    gate: createGate({ acquireLease: async () => entry.acquire ? entry.acquire() : { release: async () => {} } },
+      async () => { if (!entry.acquire) await assertUnmanagedRoot(input.root); }) };
+  unmanagedRoots.set(input.root, entry); return entry.gate;
+}
+
+/** Initializes under the existing local gate, then holds a real shared commonDir lease for registration.
+ * The callback must not re-enter this gate. Promotion remains installed after callback failure.
+ */
+export async function initializeProjectRepository<T>(input: RepositoryLeaseInput & Omit<GitInitializationInput, 'root'>,
+  work: () => Promise<T>): Promise<T> {
+  const entry = unmanagedRoots.get(input.root);
+  if (!entry || entry.identity !== ownershipIdentity(input)) throw unexpectedRepository();
+  return entry.gate.exclusive(async () => {
+    if (entry.acquire) return work();
+    await initializeRepository(input);
+    const repository = await discoverRepository(input.root);
+    let shared = repositories.get(repository.commonDir);
+    if (shared && (shared.identity !== entry.identity || (shared.gates.has(repository.root) && shared.gates.get(repository.root) !== entry.gate))) throw unexpectedRepository();
+    shared ??= { identity: entry.identity, acquire: shareLease(() => acquireRepositoryLease(input)), gates: new Map() };
+    // Install only after actual lease acquisition. An ambiguous competing initialization fails above.
+    const lease = await shared.acquire();
+    shared.gates.set(repository.root, entry.gate); repositories.set(repository.commonDir, shared); entry.acquire = shared.acquire;
+    try { return await work(); } finally { await lease.release(); }
+  });
+}
 
 /** All callers for a canonical worktree receive the same gate, independent of project IDs. */
 export async function getProjectGate(input: RepositoryLeaseInput): Promise<ProjectGate> {
   const registration = { ...input };
   const repository = await discoverRepository(registration.root);
   const identity = JSON.stringify([registration.instanceId, registration.ownerDomain, registration.dataRootId]);
+  const promoted = unmanagedRoots.get(repository.root);
+  if (promoted && (promoted.identity !== identity || !promoted.acquire)) throw unexpectedRepository();
   let shared = repositories.get(repository.commonDir);
   if (shared && shared.identity !== identity) {
     throw new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'The repository is registered to a different daemon ownership context.');

@@ -10,6 +10,8 @@ import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import { discoverRepository, validateBranch } from './repository.js';
 import { canonicalJson, parsePortableEntries } from './portable.js';
+import { registrationCheckpointLane, prepareCheckpointRegistrationCompletion, finishCheckpointRegistration,
+  type CheckpointRegistrationCapability } from './registration.js';
 
 export interface CheckpointReason {
   source: 'initialize' | 'manual' | 'ai' | 'merge' | 'restore';
@@ -24,6 +26,7 @@ export interface CheckpointCoordination {
   gate: ProjectGate;
   readBasis(): ProjectGitBasis | Promise<ProjectGitBasis>;
   gitEnv?: Record<string, string>;
+  registration?: CheckpointRegistrationCapability;
 }
 
 export interface CheckpointCandidate {
@@ -275,7 +278,8 @@ export async function prepareCheckpoint(input: {
   const entries = new Map([...input.portableEntries].map(([path, bytes]) => [path, Buffer.from(bytes)]));
   const reason = JSON.parse(JSON.stringify(input.reason ?? { source: 'manual', runs: [] })) as CheckpointReason;
   const head = input.head; const root = input.root; const operationDir = input.operationDir;
-  return context.gate.exclusive(async () => {
+  const lane = context.registration ? registrationCheckpointLane(context.registration, context) : context.gate;
+  return lane.exclusive(async () => {
     await assertBasis(context);
     if (context.basis.localHead !== head) throw changed();
     const before = await inspect(root, head);
@@ -393,7 +397,10 @@ async function journal(input: PublicationInput, state: Prepared): Promise<void> 
 /** Task 8 journals an owned child here, then calls outer prepareProtection before publishing it. */
 export async function journalCheckpoint(input: PublicationInput): Promise<void> {
   const state = await publicationContext(input);
-  return state.coordination.gate.exclusive(() => journal(input, state));
+  const context = state.coordination;
+  const lane = context.registration ? registrationCheckpointLane(context.registration,
+    { ...context, operationId: input.operationId, store: input.store }) : context.gate;
+  return lane.exclusive(() => journal(input, state));
 }
 
 async function verifySources(state: Prepared, ownedLock?: string, filesApplied = false): Promise<void> {
@@ -462,7 +469,7 @@ export async function readCheckpointPublication(input: { root: string; operation
     const repository = await discoverRepository(input.root);
     if (!journal || journal.kind !== 'checkpoint' || !data || !binding || !journal.journalPhase
       || binding.generation !== journal.basis.bindingGeneration || binding.canonicalRoot !== repository.root
-      || binding.commonDir !== repository.commonDir || binding.branch !== repository.branch
+      || binding.commonDir !== repository.commonDir || (binding.localBranch ?? binding.branch) !== repository.branch
       || data.index.path !== join(repository.gitDir, 'index') || data.baseHead !== journal.basis.localHead
       || data.publishBase !== data.baseHead || data.publishHead !== data.candidateOid
       || !isDeepStrictEqual(data.publicationParents, data.baseHead ? [data.baseHead] : [])
@@ -546,13 +553,18 @@ export async function readCheckpointPublication(input: { root: string; operation
 
 export async function publishCheckpoint(input: PublicationInput): Promise<string | null> {
   const state = await publicationContext(input);
-  return state.coordination.gate.exclusive(async () => {
+  const context = state.coordination;
+  const lane = context.registration ? registrationCheckpointLane(context.registration,
+    { ...context, operationId: input.operationId, store: input.store }) : context.gate;
+  const result = await lane.exclusive(async () => {
     const op = input.store.getJournal(input.operationId)!;
     if (op.journalPhase === 'complete') return op.recoveryData?.publishHead ?? null;
     await assertBasis(state.coordination);
     if (!input.candidate.commitOid) {
+      const terminal = context.registration ? await prepareCheckpointRegistrationCompletion(context.registration) : null;
       await verifySources(state);
-      input.store.updateOperation(input.operationId, { status: 'succeeded', phase: 'local_saved',
+      if (terminal) terminal.completeNoopCheckpoint(input.candidate.baseHead, input.candidate.previewContentDigest);
+      else input.store.updateOperation(input.operationId, { status: 'succeeded', phase: 'local_saved',
         result: input.candidate.baseHead === null ? {} : { head: input.candidate.baseHead }, error: null });
       return null;
     }
@@ -606,7 +618,11 @@ export async function publishCheckpoint(input: PublicationInput): Promise<string
       await handle.close();
       await rename(lockPath, data.index.path); await syncDirectory(state.gitDir);
       data.index.published = true; input.store.completePhase(input.operationId, 'index_published', data);
-      input.store.completeMaterialization(input.operationId, { basis: state.coordination.basis, advanceProjectRevision: false });
+      if (context.registration) {
+        const terminal = await prepareCheckpointRegistrationCompletion(context.registration);
+        await verifyPublishedSources(state);
+        terminal.completePublishedCheckpoint();
+      } else input.store.completeMaterialization(input.operationId, { basis: state.coordination.basis, advanceProjectRevision: false });
       return input.candidate.commitOid;
     } finally {
       try {
@@ -616,4 +632,20 @@ export async function publishCheckpoint(input: PublicationInput): Promise<string
       } finally { await handle.close(); }
     }
   });
+  if (context.registration) finishCheckpointRegistration(context.registration);
+  return result;
+}
+
+async function verifyPublishedSources(state: Prepared): Promise<void> {
+  await assertBasis(state.coordination);
+  const current = await inspect(state.root, state.evidence.commitOid);
+  if (current.branch !== state.branch || current.gitDir !== state.gitDir || current.indexDigest !== state.evidence.candidateIndexDigest) throw recovery();
+  const reserved = Object.keys(state.evidence.portableDigests).length ? await reservedPaths(state.root) : [];
+  const sources = await readSources(state.root, [...new Set([...current.paths, ...reserved, ...Object.keys(state.evidence.sourceDigests)])].sort());
+  const digests = { ...state.evidence.sourceDigests }; const modes = { ...state.evidence.sourceModes };
+  for (const item of state.evidence.portablePaths) {
+    digests[item.path] = item.candidateDigest ?? 'missing'; modes[item.path] = item.candidateDigest === null ? '0' : item.mode;
+  }
+  if (!isDeepStrictEqual({ ...sources.digests }, digests) || !isDeepStrictEqual({ ...sources.modes }, modes)) throw recovery();
+  await assertBasis(state.coordination);
 }

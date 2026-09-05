@@ -858,6 +858,8 @@ export function listProjects(db: SqliteDb) {
     .prepare(
       `SELECT ${PROJECT_COLS}
          FROM projects
+        WHERE NOT EXISTS (SELECT 1 FROM project_git_registrations r
+          WHERE r.project_id = projects.id AND r.hidden = 1 AND r.state = 'pending')
         ORDER BY updated_at DESC`,
     )
     .all() as DbRow[];
@@ -1253,7 +1255,8 @@ export function listConversationsAwaitingInput(db: SqliteDb) {
 
 export function getProject(db: SqliteDb, id: string) {
   const row = db
-    .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ?`)
+    .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ? AND NOT EXISTS
+      (SELECT 1 FROM project_git_registrations r WHERE r.project_id = projects.id AND r.hidden = 1 AND r.state = 'pending')`)
     .get(id) as DbRow | undefined;
   return row ? normalizeProject(row) : null;
 }

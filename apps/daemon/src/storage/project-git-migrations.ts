@@ -59,6 +59,15 @@ export function migrateProjectGit(db: Database.Database): void {
       attempts INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS project_git_preview_consumers (
+      preview_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
+      consumer_operation_id TEXT NOT NULL UNIQUE REFERENCES project_git_operations(id)
+    );
+    CREATE TABLE IF NOT EXISTS project_git_open_remotes (
+      operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
+      head TEXT,
+      object_format TEXT NOT NULL CHECK (object_format IN ('sha1', 'sha256'))
+    );
     CREATE INDEX IF NOT EXISTS project_git_push_due ON project_git_push_queue(next_attempt_at);
     CREATE TABLE IF NOT EXISTS project_git_portable_records (
       project_id TEXT NOT NULL,
@@ -69,6 +78,16 @@ export function migrateProjectGit(db: Database.Database): void {
       snapshot_digest TEXT,
       PRIMARY KEY (project_id, kind, local_id)
     );
+    CREATE TABLE IF NOT EXISTS project_git_registrations (
+      execution_operation_id TEXT PRIMARY KEY,
+      user_operation_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      hidden INTEGER NOT NULL CHECK(hidden IN (0, 1)),
+      state TEXT NOT NULL CHECK(state IN ('pending', 'complete', 'aborted')),
+      intent_json TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS project_git_pending_registration
+      ON project_git_registrations(project_id) WHERE state = 'pending';
     `);
     const idColumns = db.prepare('PRAGMA table_info(project_git_id_map)').all() as { name: string; pk: number }[];
     if (idColumns.find(column => column.name === 'kind')?.pk === 0) {
@@ -100,5 +119,14 @@ export function migrateProjectGit(db: Database.Database): void {
         db.exec(`ALTER TABLE project_git_operations ADD COLUMN ${name} TEXT`);
       }
     }
+    const bindingColumns = db.prepare('PRAGMA table_info(project_git_bindings)').all() as { name: string }[];
+    for (const name of ['canonical_root', 'local_branch']) {
+      if (!bindingColumns.some(column => column.name === name)) db.exec(`ALTER TABLE project_git_bindings ADD COLUMN ${name} TEXT`);
+    }
+    db.exec(`UPDATE project_git_bindings SET canonical_root = json_extract(record_json, '$.canonicalRoot'),
+      local_branch = COALESCE(json_extract(record_json, '$.localBranch'), branch)
+      WHERE canonical_root IS NULL OR local_branch IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS project_git_writable_root ON project_git_bindings(canonical_root) WHERE active = 1;
+      CREATE UNIQUE INDEX IF NOT EXISTS project_git_writable_local_branch ON project_git_bindings(common_dir, local_branch) WHERE active = 1;`);
   }).immediate();
 }

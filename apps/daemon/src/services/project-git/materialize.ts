@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdtemp, open, realpath } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
@@ -12,14 +12,14 @@ import { discoverRepository, validateBranch, validateTreeEntries } from './repos
 import { computeCheckpointContentDigest, isPrivateProjectGitPath, journalCheckpoint, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
 import { parsePortableEntries, portableImportMarker } from './portable.js';
 import { assertOperationBasis, durableDirectory, durableWrite, finishRecovery, gitTree, readBytes, readMaterialization,
-  readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within } from './recovery.js';
+  readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within, assertInitialImportRegistration } from './recovery.js';
 import type { MaterializationEvidence, MaterializationPath, RecoveryContext } from './recovery.js';
 
 export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'records_applied' | 'ref_published' | 'index_published' | 'complete';
 export type MaterializeEffect = 'file_applied' | 'before_records_commit' | 'after_records_commit' | 'before_ref_update'
   | 'after_ref_update' | 'before_index_rename' | 'after_index_rename' | 'index_lock_acquired' | 'index_lock_receipted';
 export interface MaterializeInput {
-  publicationMode?: 'commit' | 'fast_forward';
+  publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   projectId: string; root: string; branch: string; operationId: string; operationDir: string;
   basis: ProjectGitBasis; candidateOid: string; snapshot: PortableSnapshot; store: ProjectGitStore; db: Database.Database; gate: ProjectGate;
   /** Frozen caller-captured semantic content identity, never refreshed for an old request. */
@@ -27,6 +27,7 @@ export interface MaterializeInput {
   readBasis(): ProjectGitBasis | Promise<ProjectGitBasis>;
   exportCurrentPortable(): Promise<Map<string, Uint8Array>>;
   gitEnv?: Record<string, string>;
+  prepareRegistrationCompletion?: (operationId: string) => Promise<import('./registration.js').RegistrationTerminalCapability>;
   afterDurablePhase?: (phase: MaterializePhase) => Promise<void>;
   afterEffect?: (point: MaterializeEffect, path?: string) => Promise<void>;
 }
@@ -60,7 +61,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   if (journal.recoveryData || input.store.listRecoverable().some(op => op.id !== input.operationId && op.projectId === input.projectId && op.recoveryData)) throw recoveryRequired();
   await validateBranch(input.branch);
   const repository = await discoverRepository(input.root); const binding = input.store.getBinding(input.projectId);
-  if (!binding || binding.canonicalRoot !== repository.root || binding.commonDir !== repository.commonDir || binding.branch !== input.branch
+  if (!binding || binding.canonicalRoot !== repository.root || binding.commonDir !== repository.commonDir || (binding.localBranch ?? binding.branch) !== input.branch
     || repository.branch !== input.branch || repository.head !== input.basis.localHead) throw changed();
   for (const path of ['index.lock', 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'BISECT_START', 'sequencer']) {
     try { await lstat(join(repository.gitDir, path)); throw busy(); }
@@ -68,7 +69,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   }
   if (repository.head && (await runGit({ cwd: input.root, args: ['diff-index', '--cached', '--raw', '-z', repository.head] })).stdout.length) throw busy();
   if (repository.head === null && (await runGit({ cwd: input.root, args: ['ls-files', '--stage', '-z'] })).stdout.length) throw busy();
-  await assertGitIdentity({ cwd: input.root, ...(input.gitEnv ? { env: input.gitEnv } : {}) });
+  if (input.publicationMode !== 'initial_import') await assertGitIdentity({ cwd: input.root, ...(input.gitEnv ? { env: input.gitEnv } : {}) });
   const target = await gitTree(input.root, input.candidateOid);
   const privatePaths = [...target.keys()].filter(isPrivateProjectGitPath);
   if (privatePaths.length) throw new GitDomainError('VALIDATION_FAILED', 400, 'Private configuration cannot be materialized.', { paths: privatePaths });
@@ -77,7 +78,11 @@ async function prepare(input: MaterializeInput): Promise<void> {
   const treeOid = (await runGit({ cwd: input.root, args: ['rev-parse', '--verify', `${input.candidateOid}^{tree}`] })).stdout.toString().trim();
   const parents = (await runGit({ cwd: input.root, args: ['rev-list', '--parents', '--max-count=1', input.candidateOid] })).stdout.toString().trim().split(' ').slice(1);
   const publicationMode = input.publicationMode ?? 'commit';
-  if (!['commit', 'fast_forward'].includes(publicationMode) || new Set(parents).size !== parents.length) throw changed();
+  if (!['commit', 'fast_forward', 'initial_import'].includes(publicationMode) || new Set(parents).size !== parents.length) throw changed();
+  if (publicationMode === 'initial_import') {
+    await assertInitialImportRegistration(input, input.operationId, input.candidateOid);
+    if (repository.head !== null || !isDeepStrictEqual(await readdir(input.root), ['.git'])) throw changed();
+  }
   if (publicationMode === 'fast_forward') {
     if (!repository.head || repository.head === input.candidateOid) throw changed();
     try { await runGit({ cwd: input.root, args: ['merge-base', '--is-ancestor', repository.head, input.candidateOid] }); }
@@ -85,7 +90,8 @@ async function prepare(input: MaterializeInput): Promise<void> {
   } else if (repository.head && parents.filter(parent => parent === repository.head).length !== 1) throw changed();
   const base = repository.head ? await gitTree(input.root, repository.head) : new Map<string, { bytes: Buffer; mode: string }>();
   const portable = new Map([...await input.exportCurrentPortable()].map(([path, bytes]) => [path, Buffer.from(bytes)]));
-  parsePortableEntries(portable);
+  if (publicationMode === 'initial_import') { if (portable.size) throw changed(); }
+  else parsePortableEntries(portable);
   for (const path of portable.keys()) if (!path.startsWith('.open-design/')) throw changed();
   const beforePaths = await sourcePaths(input.root);
   const allPaths = [...new Set([...beforePaths, ...base.keys(), ...target.keys(), ...portable.keys()])].sort();
@@ -137,6 +143,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
     || !isDeepStrictEqual(source, await capture(input.root, allPaths)) || !isDeepStrictEqual(input.basis, await input.readBasis())
     || (await discoverRepository(input.root)).head !== input.basis.localHead
     || !isDeepStrictEqual(originalIndex, await readBytes(indexPath))) throw changed();
+  if (publicationMode === 'initial_import' && !isDeepStrictEqual(await readdir(input.root), ['.git'])) throw changed();
   const data: ProjectGitRecoveryData = { publicationMode, operationRoot, baseHead: input.basis.localHead, previewContentDigest, candidateTreeOid: treeOid,
     publishBase: input.basis.localHead, publicationParents: parents, publishHead: input.candidateOid, candidateOid: input.candidateOid,
     paths: paths.map(({ candidatePath: _candidate, mode: _mode, oldMode: _oldMode, temporaryPath: _temporary, temporaryReceiptPath: _receipt, ...path }) => path),
@@ -170,7 +177,7 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
     evidence = await readMaterialization(context, operationId);
     if (journal.journalPhase === 'prepared') context.store.setPhase(operationId, 'protected', journal.recoveryData!);
   });
-  if (journal.recoveryData?.publicationMode === 'fast_forward' && (evidence.protectionRequired || journal.protection)) throw recoveryRequired();
+  if (['fast_forward', 'initial_import'].includes(journal.recoveryData?.publicationMode ?? '') && (evidence.protectionRequired || journal.protection)) throw recoveryRequired();
   if (!evidence.protectionRequired) return;
   let child = context.store.listRecoverable().find(op => op.ownerOperationId === operationId);
   journal = context.store.getJournal(operationId)!;
@@ -227,7 +234,14 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
 export async function materializeProject(input: MaterializeInput): Promise<string> {
   const context: RecoveryContext = { ...input, operationRoot: input.operationDir };
   try {
-    await input.gate.exclusive(() => prepare(input));
+    const registration = input.store.getRegistration(input.operationId);
+    const admission = registration?.state === 'pending' && registration.projectId === input.projectId
+      && registration.completion === 'materialization' && isDeepStrictEqual(registration.executionBasis, input.basis)
+      && (!registration.materialization || (registration.materialization.candidateOid === input.candidateOid
+        && registration.materialization.publicationMode === (input.publicationMode ?? 'commit')
+        && registration.materialization.previewContentDigest === input.previewContentDigest))
+      ? recoveryBarrier(input.gate, input.operationId) : input.gate;
+    await admission.exclusive(() => prepare(input));
     const barrier = recoveryBarrier(input.gate, input.operationId);
     await ensureMaterializationProtection(context, input.operationId, barrier);
     const oid = await barrier.exclusive(() => replayOperation(context, input.operationId));
@@ -237,7 +251,7 @@ export async function materializeProject(input: MaterializeInput): Promise<strin
     if (journal?.recoveryData && journal.journalPhase !== 'complete') input.store.updateOperation(input.operationId,
       { status: 'waiting', phase: 'waiting_idle', result: null, error: { code: 'RECOVERY_REQUIRED', message: 'Retained materials need recovery before project access.' } });
     // Definitive no-intent readback means no project effects were admitted; uncertain/persisted intent stays held.
-    else if (journal && !journal.recoveryData) finishRecovery(context, input.operationId);
+    else if (journal && !journal.recoveryData && input.store.getRegistration(input.operationId)?.state !== 'pending') finishRecovery(context, input.operationId);
     throw error;
   }
 }

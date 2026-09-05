@@ -52,6 +52,8 @@ export function importPortableRecords(input: {
     // Existing local registration authority comes only from this database, never the snapshot.
     if (existing?.metadata?.baseDir) metadata.baseDir = existing.metadata.baseDir;
     if (existing?.metadata?.fromTrustedPicker === true) metadata.fromTrustedPicker = true;
+    const registration = store.getRegistration(op.id);
+    if (registration?.hidden && registration.state === 'pending') metadata.baseDir = registration.canonicalRoot;
     db.prepare(`INSERT INTO projects (id, name, skill_id, design_system_id, pending_prompt, metadata_json,
       custom_instructions, created_at, updated_at) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name, skill_id=NULL, design_system_id=NULL,

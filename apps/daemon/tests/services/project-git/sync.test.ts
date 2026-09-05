@@ -80,6 +80,27 @@ it('distinguishes equality, ancestry, divergence and remote rewrites', () => {
   expect(chooseSyncAction({ ...input, remote: null, remoteWasRewritten: true })).toBe('remote_rewritten');
 });
 
+it('exposes the same constructor recovery readiness promise without starting another runtime', async () => {
+  const f = await fixture(); const ready = f.deps.recoveryReady;
+  expect(ready).toBeInstanceOf(Promise); expect(f.deps.recoveryReady).toBe(ready);
+  await ready;
+  expect(await f.deps.checkpoint('a')).toBe(f.store.getBinding('a')!.localHead);
+});
+
+it('checkpoints and imports on the actual local branch while transporting a different remote target', async () => {
+  const f = await fixture();
+  for (const id of ['a', 'b']) f.store.saveBinding({ ...f.store.getBinding(id)!, localBranch: 'main', branch: 'release' });
+  await writeFile(join(f.a, 'index.html'), 'release content\n'); await f.sync('a');
+  const target = await f.git(f.remote, 'rev-parse', 'release');
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+  expect(await f.git(f.a, 'symbolic-ref', '--short', 'HEAD')).toBe('main');
+  await f.sync('b');
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(target);
+  expect(await f.git(f.b, 'symbolic-ref', '--short', 'HEAD')).toBe('main');
+  expect(await readFile(join(f.b, 'index.html'), 'utf8')).toBe('release content\n');
+  expect(f.store.getBinding('b')).toMatchObject({ localBranch: 'main', branch: 'release', confirmedRemoteHead: target });
+});
+
 it('retains a same-message conflict without materializing remote records or changing the current worktree', async () => {
   const f = await fixture(true);
   f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'a-message'); await f.sync('a');

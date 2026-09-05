@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import type { JsonValue } from '@open-design/contracts';
 import { canonicalJson, exportProjectPreferences, exportPortableProject, portableImportMarker, portableIdSegment, parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
 import { importPortableRecords, readPortableRecords } from '../../../src/services/project-git/portable-db.js';
-import { appendMessageAgentEvent, closeDatabase, insertConversation, insertProject, listMessages,
+import { appendMessageAgentEvent, closeDatabase, getProject, listProjects, insertConversation, insertProject, listMessages,
   openDatabase, upsertMessage } from '../../../src/db.js';
 import { createProjectGitStore, type ProjectGitRecoveryData, type ProjectGitStore } from '../../../src/storage/project-git.js';
 
@@ -69,7 +69,7 @@ describe('portable database roundtrip', () => {
     db.pragma('foreign_keys = ON');
     return { db, root, store: createProjectGitStore(db) };
   }
-  function recordsOperation(store: ProjectGitStore, root: string, projectId: string, marker: string) {
+  function recordsOperation(store: ProjectGitStore, root: string, projectId: string, marker: string, hidden = false) {
     const binding = store.saveBinding({ projectId, cloneId: 'clone-two', repositoryProjectId: 'repository',
       canonicalRoot: root, commonDir: join(root, '.git'), branch: 'main', remoteUrl: null,
       generation: 0, autoSync: false, localHead: null, observedRemoteHead: null, confirmedRemoteHead: null,
@@ -78,6 +78,10 @@ describe('portable database roundtrip', () => {
       localHead: null, remoteHead: null };
     const op = store.enqueueOperation({ projectId, actorId: 'local', kind: 'open', basis,
       idempotencyKey: 'import-once', requestDigest: marker, payload: {} });
+    if (hidden) store.prepareRegistration({ kind: 'open', completion: 'materialization', userOperationId: op.id, executionOperationId: op.id,
+      projectId, cloneId: 'clone-two', repositoryProjectId: 'repository', dataRootId: root, canonicalRoot: root, commonDir: join(root, '.git'),
+      localBranch: 'main', targetBranch: 'main', remoteUrl: null, autoSync: true, originalUserBasis: basis, executionBasis: basis,
+      hidden: true, previousOwner: null, targetOwner: { ref: 'refs/open-design/bindings/fixture', expectedOid: null, oid: 'a'.repeat(40), generation: 1 } });
     const data: ProjectGitRecoveryData = { operationRoot: join(root, 'operation'), baseHead: null,
       previewContentDigest: marker, candidateTreeOid: 'tree', publishBase: null, publicationParents: [],
       publishHead: 'candidate', candidateOid: 'candidate', paths: [],
@@ -90,6 +94,20 @@ describe('portable database roundtrip', () => {
     store.setPhase(op.id, 'records_applied', data);
     return op.id;
   }
+  it('hides records-applied open rows from normal readers while retaining trusted local registration metadata', async () => {
+    const target = await database();
+    const snapshot = { manifest: { schemaVersion: 1 as const, repositoryProjectId: 'repository', resources: [] },
+      project: { schemaVersion: 1 as const, name: 'Hidden import', kind: 'prototype' as const, createdAt: 1, preferences: {}, contentRefs: [], linkedFolderRequirements: [] },
+      conversations: [], messages: [] };
+    const operationId = recordsOperation(target.store, target.root, 'pending-project', portableImportMarker(snapshot), true);
+    importPortableRecords({ ...target, projectId: 'pending-project', cloneId: 'clone-two', snapshot, operationId });
+    expect(getProject(target.db, 'pending-project')).toBeNull();
+    expect(listProjects(target.db)).toEqual([]);
+    const row = target.db.prepare('SELECT metadata_json FROM projects WHERE id = ?').get('pending-project') as { metadata_json: string };
+    expect(JSON.parse(row.metadata_json)).toMatchObject({ baseDir: target.root });
+    expect(readPortableRecords(target.db, 'pending-project')?.project.name).toBe('Hidden import');
+    expect(target.store.getRegistration(operationId)!.state).toBe('pending');
+  });
   async function materialize(root: string, entries: Map<string, Uint8Array>) {
     for (const [file, bytes] of entries) { await mkdir(dirname(join(root, file)), { recursive: true }); await writeFile(join(root, file), bytes); }
   }
