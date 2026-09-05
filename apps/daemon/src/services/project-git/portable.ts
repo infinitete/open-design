@@ -575,7 +575,10 @@ export async function exportPortableProject(input: {
       }
     }
   };
-  await legacy('.file-versions');
+  // A valid portable snapshot establishes the once-only archive, including an
+  // empty archive after import/restore. Later native history is not its source.
+  // Task 11 owns the durable first-enable completion marker around publication.
+  if (!previous) await legacy('.file-versions');
   snapshot.project.contentRefs = [...new Set(snapshot.project.contentRefs)].sort();
   snapshot.manifest.resources = [...resources.values()].sort((a, b) => a.digest < b.digest ? -1 : 1);
   for (const resource of snapshot.manifest.resources) {

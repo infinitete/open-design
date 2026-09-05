@@ -75,4 +75,15 @@ describe('referenced portable resources', () => {
     expect(Buffer.from(result.get(resourcePath)!)).toEqual(bytes);
     expect(Buffer.from(result.get(alias)!)).toEqual(bytes);
   });
+  it('does not substitute native legacy bytes for a missing established archive', async () => {
+    const value = snapshot(); const archive = '.open-design/legacy-file-history/old/one.html';
+    value.manifest.resources[0]!.locations = [{ path: archive, purpose: 'legacy-history' }];
+    const dir = await root(); await mkdir(join(dir, '.file-versions/old'), { recursive: true });
+    await writeFile(join(dir, '.file-versions/old/one.html'), bytes);
+    const references: string[] = [];
+    await expect(collectReferencedResources({ snapshot: value, root: dir,
+      readOwnedResource: async reference => { references.push(reference); return null; } }))
+      .rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING', details: { paths: [archive] } });
+    expect(references).toEqual([archive]);
+  });
 });

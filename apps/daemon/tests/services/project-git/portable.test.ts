@@ -393,4 +393,55 @@ describe('portable database roundtrip', () => {
     expect(await readFile(join(source.root, '.open-design/manifest.json'))).toEqual(newer);
     expect(source.db.prepare('SELECT COUNT(*) AS count FROM project_git_id_map').get()).toEqual({ count: 0 });
   });
+
+  it.each([true, false])('keeps the established once-only archive when native history advances (initial archive: %s)', async (hasArchive) => {
+    const source = await database();
+    insertProject(source.db, { id: 'p', name: 'P', createdAt: 1, updatedAt: 1 });
+    const legacyRoot = join(source.root, '.file-versions/old');
+    const originalManifest = Buffer.from('{ "entries": [{"contentPath":"one.html"}] }\r\n');
+    if (hasArchive) {
+      await mkdir(legacyRoot, { recursive: true });
+      await writeFile(join(legacyRoot, 'manifest.json'), originalManifest);
+      await writeFile(join(legacyRoot, 'one.html'), '<h1>one</h1>\r\n');
+    }
+    const input = { ...source, projectId: 'p', cloneId: 'clone-one', repositoryProjectId: 'repository' };
+    const first = await exportPortableProject(input); await materialize(source.root, first.entries);
+    await mkdir(legacyRoot, { recursive: true });
+    const currentManifest = Buffer.from('{"entries":[{"contentPath":"one.html"},{"contentPath":"two.html"}]}\n');
+    await writeFile(join(legacyRoot, 'manifest.json'), currentManifest);
+    await writeFile(join(legacyRoot, 'one.html'), '<h1>one</h1>\r\n');
+    await writeFile(join(legacyRoot, 'two.html'), '<h1>two</h1>');
+    const next = await exportPortableProject(input);
+    expect([...next.entries]).toEqual([...first.entries]);
+    expect(next.entries.has('.open-design/legacy-file-history/old/two.html')).toBe(false);
+    if (hasArchive) expect(Buffer.from(next.entries.get('.open-design/legacy-file-history/old/manifest.json')!)).toEqual(originalManifest);
+    expect(await readFile(join(legacyRoot, 'manifest.json'))).toEqual(currentManifest);
+    expect(await readFile(join(legacyRoot, 'two.html'), 'utf8')).toBe('<h1>two</h1>');
+  });
+
+  it.each([true, false])('does not contaminate an imported archive with unrelated native history (archive: %s)', async (hasArchive) => {
+    const source = await database(); const target = await database();
+    insertProject(source.db, { id: 'p', name: 'P', createdAt: 1, updatedAt: 1 });
+    if (hasArchive) {
+      await mkdir(join(source.root, '.file-versions/old'), { recursive: true });
+      await writeFile(join(source.root, '.file-versions/old/manifest.json'), '{ "entries": [{"contentPath":"one.html"}] }\r\n');
+      await writeFile(join(source.root, '.file-versions/old/one.html'), 'imported version');
+    }
+    const first = await exportPortableProject({ ...source, projectId: 'p', cloneId: 'clone-one', repositoryProjectId: 'repository' });
+    // The empty case exercises established adjunct authority without disk metadata.
+    if (hasArchive) await materialize(target.root, first.entries);
+    const operationId = recordsOperation(target.store, target.root, 'imported', portableImportMarker(first.snapshot));
+    importPortableRecords({ ...target, projectId: 'imported', cloneId: 'clone-two', snapshot: first.snapshot, operationId });
+    await mkdir(join(target.root, '.file-versions/old'), { recursive: true });
+    // Even an incomplete unrelated native archive is not an input after import.
+    const unrelated = '{"entries":[{"contentPath":"unrelated.html"}]}';
+    await writeFile(join(target.root, '.file-versions/old/manifest.json'), unrelated);
+    const input = { ...target, projectId: 'imported', cloneId: 'clone-two', repositoryProjectId: 'repository' };
+    expect([...(await exportPortableProject(input)).entries]).toEqual([...first.entries]);
+    expect(await readFile(join(target.root, '.file-versions/old/manifest.json'), 'utf8')).toBe(unrelated);
+    if (hasArchive) {
+      await rm(join(target.root, '.open-design/legacy-file-history/old/one.html'));
+      await expect(exportPortableProject(input)).rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING' });
+    }
+  });
 });
