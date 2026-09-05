@@ -164,7 +164,8 @@ export function createProjectGitSyncDeps(input: {
   function binding(id: string) { const found = store.getBinding(id); if (!found) throw changed(); return found; }
   const readBasis = (id: string) => basisFor(binding(id));
   // This public recovery entry seeds every prepared hold synchronously, before its first await.
-  const recoveryInput = { ...input, resolveProject: (id: string) => ({ ...input.resolveProject(id), readBasis: () => readBasis(id) }) };
+  const recoveryInput = { ...input, resolveProject: (id: string) => ({ ...input.resolveProject(id), readBasis: () => readBasis(id),
+    exportCurrentPortable: () => exported(id, binding(id), input.resolveProject(id)) }) };
   const ready = recoverProjectOperations(recoveryInput); void ready.catch(() => {});
   async function context(id: string) {
     await ready; assertNoRecovery(store, id);

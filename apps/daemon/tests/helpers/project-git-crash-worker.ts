@@ -72,7 +72,8 @@ export async function openCrashFixture(root: string): Promise<CrashFixtureState>
     exportCurrentPortable: async () => (await exportPortableProject({ db, store, projectId: 'project',
       repositoryProjectId: 'repository', cloneId: 'clone', root: projectRoot })).entries };
   return { input, db, store, gate, description,
-    recoveryInput: { db, store, operationRoot: join(root, 'operations'), resolveProject: () => ({ root: projectRoot, branch: 'main', gate, readBasis, gitEnv: fixtureGitEnv }) } };
+    recoveryInput: { db, store, operationRoot: join(root, 'operations'), resolveProject: () => ({ root: projectRoot, branch: 'main', gate, readBasis, gitEnv: fixtureGitEnv,
+      exportCurrentPortable: input.exportCurrentPortable }) } };
 }
 
 type Fixture = Awaited<ReturnType<typeof createGitFixture>> & CrashFixtureState & { head: string | null; target: Map<string, Uint8Array> };
@@ -107,7 +108,7 @@ async function makeCrashFixture(unborn: boolean): Promise<Fixture> {
   const snapshot = portableSnapshot('After'); const target = serializePortableMetadata(snapshot);
   target.set('index.html', Buffer.from('after\n')); target.set('nested/new.txt', Buffer.from('new\n')); target.set('.gitignore', old.get('.gitignore')!);
   const candidateOid = await fixtureCommit(f.a, join(f.root, 'fixture.index'), target, head === null ? [] : [head]);
-  const operationId = store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'restore', basis,
+  const operationId = store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync', basis,
     idempotencyKey: randomUUID(), requestDigest: randomUUID(), payload: {} }).id;
   const previewContentDigest = await captureFixturePreview({ root: f.a, exportCurrentPortable: async () => (await exportPortableProject({ db, store,
     projectId: 'project', repositoryProjectId: 'repository', cloneId: 'clone', root: f.a })).entries });

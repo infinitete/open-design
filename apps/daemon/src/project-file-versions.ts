@@ -7,10 +7,15 @@ import type {
   ProjectFileVersionSource,
 } from '@open-design/contracts';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isSafeId, kindFor, mimeFor, resolveProjectDir, validateProjectPath } from './projects.js';
+import { parsePortableEntries } from './services/project-git/portable.js';
+import { safeFile } from './services/project-git/recovery.js';
+import { assertHistoryPath } from './services/project-git/history.js';
+
+export type ProjectFileHistoryId = { source: 'git'; oid: string } | { source: 'legacy'; path: string; legacyId: string };
 
 const VERSION_ROOT = '.file-versions';
 const VERSION_MANIFEST = 'manifest.json';
@@ -359,8 +364,9 @@ async function readVersionManifestState(
   fileName: string,
 ): Promise<VersionManifestState> {
   try {
-    const raw = await readFile(path.join(versionRootFor(projectsRoot, projectId, fileName), VERSION_MANIFEST), 'utf8');
-    return normalizeManifestState(JSON.parse(raw) as unknown, fileName);
+    const file = await safeFile(path.join(projectsRoot, projectId), `${VERSION_ROOT}/${fileVersionKey(fileName)}/${VERSION_MANIFEST}`);
+    if (!file.bytes) return { entries: [], currentVersionId: null };
+    return normalizeManifestState(JSON.parse(file.bytes.toString('utf8')) as unknown, fileName);
   } catch (err) {
     if (errorCode(err) === 'ENOENT') return { entries: [], currentVersionId: null };
     throw err;
@@ -443,8 +449,13 @@ export async function listProjectFileVersions(
   metadata?: unknown,
 ): Promise<ProjectFileVersion[]> {
   const safeName = validateUserFileName(fileName);
+  assertHistoryPath(safeName);
   assertProjectAvailable(projectsRoot, projectId, metadata);
   const state = await readVersionManifestState(projectsRoot, projectId, safeName);
+  if (!state.entries.length) {
+    const archived = await archivedLegacyState(resolveProjectDir(projectsRoot, projectId, metadata), safeName);
+    if (archived) return archived.state.entries.map(entry => publicVersion(entry, archived.state.currentVersionId));
+  }
   return state.entries.map((entry) => publicVersion(entry, state.currentVersionId));
 }
 
@@ -456,6 +467,7 @@ export async function readProjectFileVersion(
   metadata?: unknown,
 ): Promise<{ version: ProjectFileVersion; content: string }> {
   const safeName = validateUserFileName(fileName);
+  assertHistoryPath(safeName);
   const safeVersionId = String(versionId || '').trim();
   if (!safeVersionId || !VERSION_ID_RE.test(safeVersionId)) {
     throw codedError('version id required', 'EINVAL');
@@ -464,13 +476,63 @@ export async function readProjectFileVersion(
   const state = await readVersionManifestState(projectsRoot, projectId, safeName);
   const entry = state.entries.find((item) => item.id === safeVersionId);
   if (!entry) {
+    const archived = await archivedLegacyState(resolveProjectDir(projectsRoot, projectId, metadata), safeName);
+    const old = archived?.state.entries.find(item => item.id === safeVersionId);
+    if (old && archived) return { version: publicVersion(old, archived.state.currentVersionId),
+      content: new TextDecoder('utf-8', { fatal: true }).decode(archived.entries.get(`${archived.prefix}/${old.contentPath}`)!) };
     throw codedError('version not found', 'ENOENT');
   }
-  const content = await readFile(path.join(versionRootFor(projectsRoot, projectId, safeName), entry.contentPath), 'utf8');
+  const file = await safeFile(path.join(projectsRoot, projectId), `${VERSION_ROOT}/${fileVersionKey(safeName)}/${entry.contentPath}`);
+  if (!file.bytes) throw codedError('version content not found', 'ENOENT');
+  const content = file.bytes.toString('utf8');
   return {
     version: publicVersion(entry, state.currentVersionId),
     content,
   };
+}
+
+/** Archived manifests and bytes are validated as one portable snapshot; native files never repair it. */
+async function archivedLegacyState(root: string, fileName: string) {
+  assertHistoryPath(fileName);
+  try {
+    const directory = await lstat(path.join(root, '.open-design'));
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw codedError('invalid portable directory', 'PORTABLE_FORMAT_UNSUPPORTED');
+  } catch (error) { if (errorCode(error) === 'ENOENT') return null; throw error; }
+  const entries = new Map<string, Uint8Array>();
+  async function walk(relative: string): Promise<void> {
+    for (const child of await readdir(path.join(root, relative), { withFileTypes: true })) {
+      const member = `${relative}/${child.name}`; assertHistoryPath(member);
+      if (child.isDirectory()) await walk(member);
+      else { const file = await safeFile(root, member); if (file.bytes) entries.set(member, file.bytes); }
+    }
+  }
+  await walk('.open-design');
+  const snapshot = parsePortableEntries(entries);
+  const prefix = `.open-design/legacy-file-history/${fileVersionKey(fileName)}`;
+  if (!snapshot.manifest.resources.some(resource => resource.locations.some(location => location.path === `${prefix}/manifest.json` && location.purpose === 'legacy-history'))) return null;
+  const raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(entries.get(`${prefix}/manifest.json`)!)) as unknown;
+  return { state: normalizeManifestState(raw, fileName), prefix, entries };
+}
+
+/** Managed single-file restore reads the actual registered root, including imported-folder projects. */
+export async function readLegacyProjectFile(root: string, fileName: string, legacyId: string): Promise<{ version: ProjectFileVersion; content: string }> {
+  assertHistoryPath(fileName);
+  if (!VERSION_ID_RE.test(legacyId) || isProjectFileVersionPath(fileName)) throw codedError('invalid legacy history target', 'EINVAL');
+  const prefix = `.file-versions/${fileVersionKey(fileName)}`;
+  const manifest = await safeFile(root, `${prefix}/manifest.json`);
+  if (manifest.bytes) {
+    const state = normalizeManifestState(JSON.parse(manifest.bytes.toString()), fileName);
+    const entry = state.entries.find(item => item.id === legacyId);
+    if (entry) {
+      const file = await safeFile(root, `${prefix}/${entry.contentPath}`);
+      if (!file.bytes) throw codedError('legacy bytes missing', 'ENOENT');
+      return { version: publicVersion(entry, state.currentVersionId), content: new TextDecoder('utf-8', { fatal: true }).decode(file.bytes) };
+    }
+  }
+  const archived = await archivedLegacyState(root, fileName); const entry = archived?.state.entries.find(item => item.id === legacyId);
+  if (!archived || !entry) throw codedError('version not found', 'ENOENT');
+  return { version: publicVersion(entry, archived.state.currentVersionId),
+    content: new TextDecoder('utf-8', { fatal: true }).decode(archived.entries.get(`${archived.prefix}/${entry.contentPath}`)!) };
 }
 
 export async function createProjectFileVersion(

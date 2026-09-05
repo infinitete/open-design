@@ -10,15 +10,17 @@ import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import { discoverRepository, validateBranch, validateTreeEntries } from './repository.js';
 import { computeCheckpointContentDigest, isPrivateProjectGitPath, journalCheckpoint, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
-import { parsePortableEntries, portableImportMarker } from './portable.js';
+import { canonicalJson, parsePortableEntries, portableImportMarker } from './portable.js';
 import { assertOperationBasis, durableDirectory, durableWrite, finishRecovery, gitTree, readBytes, readMaterialization,
   readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within, assertInitialImportRegistration } from './recovery.js';
 import type { MaterializationEvidence, MaterializationPath, RecoveryContext } from './recovery.js';
+import { assertHistoryCommit } from './history.js';
 
 export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'records_applied' | 'ref_published' | 'index_published' | 'complete';
 export type MaterializeEffect = 'file_applied' | 'before_records_commit' | 'after_records_commit' | 'before_ref_update'
   | 'after_ref_update' | 'before_index_rename' | 'after_index_rename' | 'index_lock_acquired' | 'index_lock_receipted';
 export interface MaterializeInput {
+  recordsMode?: 'replace' | 'preserve';
   publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   projectId: string; root: string; branch: string; operationId: string; operationDir: string;
   basis: ProjectGitBasis; candidateOid: string; snapshot: PortableSnapshot; store: ProjectGitStore; db: Database.Database; gate: ProjectGate;
@@ -33,6 +35,32 @@ export interface MaterializeInput {
 }
 const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original project basis or content changed.');
 const busy = () => new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'External Git work requires attention.');
+
+/** Restore reason belongs to the consumed immutable preview, including after protection/restart. */
+export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | 'store' | 'root'>, operationId: string, candidateOid: string, recordsMode: 'replace' | 'preserve'): Promise<Buffer> {
+  const journal = context.store.getJournal(operationId)!;
+  const payload = journal.payload as { previewId?: string; targetOid?: string; candidateOid?: string; previewContentDigest?: string };
+  const pair = context.db.prepare('SELECT preview_operation_id AS previewId FROM project_git_preview_consumers WHERE consumer_operation_id = ?')
+    .get(operationId) as { previewId: string } | undefined;
+  if (!pair || pair.previewId !== payload.previewId) throw recoveryRequired();
+  context.store.consumePreview(pair.previewId, operationId);
+  const preview = context.store.getJournal(pair.previewId)!;
+  const frozen = preview.payload as { captured?: { targetOid?: string; candidateOid?: string; contentDigest?: string; recordsMode?: string }; evidenceDigest?: string };
+  const captured = frozen.captured;
+  if (!payload.targetOid || payload.targetOid !== preview.result!.preview!.targetOid || payload.targetOid !== captured?.targetOid
+    || payload.candidateOid !== candidateOid || candidateOid !== captured?.candidateOid
+    || payload.previewContentDigest !== captured?.contentDigest || captured?.recordsMode !== recordsMode
+    || sha256(Buffer.from(canonicalJson(captured as import('@open-design/contracts').JsonValue))) !== frozen.evidenceDigest) throw recoveryRequired();
+  await assertHistoryCommit(context.root, payload.targetOid);
+  const output = (await runGit({ cwd: context.root, args: ['cat-file', '--batch'], stdin: Buffer.from(candidateOid + '\n') })).stdout;
+  const line = output.indexOf(10); const [object, type, size] = output.subarray(0, line).toString().split(' ');
+  if (object !== candidateOid || type !== 'commit' || output.length !== line + 2 + Number(size)) throw recoveryRequired();
+  const commit = output.subarray(line + 1, -1); const separator = commit.indexOf('\n\n');
+  const expected = Buffer.from(`Open Design restore\n\nrestoreTarget: ${payload.targetOid}\n`);
+  const parents = commit.subarray(0, separator).toString().split('\n').filter(value => value.startsWith('parent ')).map(value => value.slice(7));
+  if (separator < 0 || !commit.subarray(separator + 2).equals(expected) || !isDeepStrictEqual(parents, [journal.basis.localHead])) throw recoveryRequired();
+  return expected;
+}
 
 async function sourcePaths(root: string): Promise<string[]> {
   const outputs = await Promise.all([['ls-files', '--cached', '-z'], ['ls-files', '--others', '--exclude-standard', '-z']].map(args => runGit({ cwd: root, args })));
@@ -59,6 +87,9 @@ async function prepare(input: MaterializeInput): Promise<void> {
   if (!journal || journal.kind === 'checkpoint' || journal.projectId !== input.projectId || !isDeepStrictEqual(journal.basis, input.basis)
     || !isDeepStrictEqual(await input.readBasis(), input.basis)) throw changed();
   if (journal.recoveryData || input.store.listRecoverable().some(op => op.id !== input.operationId && op.projectId === input.projectId && op.recoveryData)) throw recoveryRequired();
+  const recordsMode = input.recordsMode ?? 'replace';
+  if (!['replace', 'preserve'].includes(recordsMode) || (recordsMode === 'preserve' && journal.kind !== 'restore')) throw changed();
+  if (journal.kind === 'restore') await readRestoreMessage(input, input.operationId, input.candidateOid, recordsMode);
   await validateBranch(input.branch);
   const repository = await discoverRepository(input.root); const binding = input.store.getBinding(input.projectId);
   if (!binding || binding.canonicalRoot !== repository.root || binding.commonDir !== repository.commonDir || (binding.localBranch ?? binding.branch) !== input.branch
@@ -92,6 +123,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   const portable = new Map([...await input.exportCurrentPortable()].map(([path, bytes]) => [path, Buffer.from(bytes)]));
   if (publicationMode === 'initial_import') { if (portable.size) throw changed(); }
   else parsePortableEntries(portable);
+  if (recordsMode === 'preserve' && !isDeepStrictEqual(portable, new Map([...target].filter(([path]) => path.startsWith('.open-design/')).map(([path, item]) => [path, item.bytes])))) throw changed();
   for (const path of portable.keys()) if (!path.startsWith('.open-design/')) throw changed();
   const beforePaths = await sourcePaths(input.root);
   const allPaths = [...new Set([...beforePaths, ...base.keys(), ...target.keys(), ...portable.keys()])].sort();
@@ -135,7 +167,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   await runGit({ cwd: input.root, args: ['read-tree', input.candidateOid], env: { ...input.gitEnv, GIT_INDEX_FILE: privateIndex } });
   const candidateIndex = await readBytes(privateIndex); if (!candidateIndex) throw recoveryRequired();
   const indexHandle = await open(privateIndex, 'r'); try { await indexHandle.sync(); } finally { await indexHandle.close(); }
-  const evidence: MaterializationEvidence = { publicationMode, operationId: input.operationId, projectId: input.projectId, treeOid, candidateOid: input.candidateOid,
+  const evidence: MaterializationEvidence = { recordsMode, publicationMode, operationId: input.operationId, projectId: input.projectId, treeOid, candidateOid: input.candidateOid,
     sourceDigests: source.sourceDigests, sourceModes: source.sourceModes, portableDigests, removedPaths, previewContentDigest, protectionRequired,
     currentPortable: [...portable].map(([path, bytes]) => [path, bytes.toString('base64')]), paths };
   await durableWrite(join(operationRoot, 'materialization.json'), Buffer.from(JSON.stringify(evidence)));
@@ -149,7 +181,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
     paths: paths.map(({ candidatePath: _candidate, mode: _mode, oldMode: _oldMode, temporaryPath: _temporary, temporaryReceiptPath: _receipt, ...path }) => path),
     index: { path: indexPath, oldDigest: originalIndex === null ? null : sha256(originalIndex), candidateDigest: sha256(candidateIndex),
       backupPath: originalIndex === null ? null : join(operationRoot, 'original.index'), ownerToken, published: false },
-    records: { importMarker: portableImportMarker(snapshot), applied: false }, refPublished: false };
+    records: { importMarker: portableImportMarker(snapshot), applied: false, mode: recordsMode }, refPublished: false };
   recoveryBarrier(input.gate, input.operationId);
   input.store.setPhase(input.operationId, 'prepared', data); input.store.completePhase(input.operationId, 'prepared', data);
   await input.afterDurablePhase?.('prepared');
@@ -223,8 +255,9 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
       const data = journal.recoveryData!; const protectedOid = child!.recoveryData!.publishHead;
       const parents = journal.basis.localHead === null ? [protectedOid, ...data.publicationParents]
         : data.publicationParents.map(parent => parent === journal.basis.localHead ? protectedOid : parent);
+      const message = journal.kind === 'restore' ? await readRestoreMessage(context, operationId, data.candidateOid, data.records?.mode ?? 'replace') : Buffer.from('Open Design materialization\n');
       const oid = (await runGit({ cwd: context.root, args: ['commit-tree', data.candidateTreeOid, ...parents.flatMap(parent => ['-p', parent])],
-        ...(context.gitEnv ? { env: context.gitEnv } : {}), stdin: Buffer.from('Open Design materialization\n') })).stdout.toString().trim();
+        ...(context.gitEnv ? { env: context.gitEnv } : {}), stdin: message })).stdout.toString().trim();
       context.store.sealProtectedCandidate(operationId, journal.basis, { previewContentDigest: data.previewContentDigest, candidateTreeOid: data.candidateTreeOid,
         publishBase: protectedOid, publicationParents: parents, candidateOid: oid, publishHead: oid });
     }

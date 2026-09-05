@@ -13,13 +13,15 @@ import { discoverRepository, validateTreeEntries } from './repository.js';
 import { computeCheckpointContentDigest, readCheckpointPublication } from './checkpoint.js';
 import { parsePortableEntries, portableImportMarker } from './portable.js';
 import { importPortableRecords, readPortableRecords } from './portable-db.js';
-import { ensureMaterializationProtection } from './materialize.js';
+import { ensureMaterializationProtection, readRestoreMessage } from './materialize.js';
 import type { MaterializeEffect, MaterializePhase } from './materialize.js';
 
 export interface RecoveryProject {
   root: string; branch: string; gate: ProjectGate;
   readBasis(): ProjectGitBasis | Promise<ProjectGitBasis>;
   gitEnv?: Record<string, string>;
+  /** Trusted live export, required to replay a restore that preserves native records. */
+  exportCurrentPortable?: () => Promise<Map<string, Uint8Array>>;
   /** Trusted original-registration verifier, invoked only under this operation's real exclusive lease. */
   prepareRegistrationCompletion?: (operationId: string) => Promise<import('./registration.js').RegistrationTerminalCapability>;
 }
@@ -32,6 +34,7 @@ export interface MaterializationPath extends ProjectGitRecoveryPath {
   candidatePath: string | null; mode: string; oldMode: string; temporaryPath: string | null; temporaryReceiptPath: string | null;
 }
 export interface MaterializationEvidence {
+  recordsMode?: 'replace' | 'preserve';
   publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   operationId: string; projectId: string; treeOid: string; candidateOid: string;
   sourceDigests: Record<string, string>; sourceModes: Record<string, string>;
@@ -149,6 +152,10 @@ export async function readMaterialization(context: RecoveryContext, operationId:
     || data.publicationMode !== registration.materialization.publicationMode || data.previewContentDigest !== registration.materialization.previewContentDigest)) throw recoveryRequired();
   const bytes = await readBytes(join(data.operationRoot, 'materialization.json')); if (!bytes) throw recoveryRequired();
   const evidence = JSON.parse(bytes.toString()) as MaterializationEvidence;
+  const recordsMode = data.records?.mode ?? 'replace';
+  if (!['replace', 'preserve'].includes(recordsMode) || recordsMode !== (evidence.recordsMode ?? 'replace')
+    || (recordsMode === 'preserve' && journal.kind !== 'restore')) throw recoveryRequired();
+  if (journal.kind === 'restore') await readRestoreMessage(context, operationId, data.candidateOid, recordsMode);
   const mode = data.publicationMode ?? 'commit';
   if (!['commit', 'fast_forward', 'initial_import'].includes(mode) || mode !== (evidence.publicationMode ?? 'commit')
     || (mode !== 'commit' && (evidence.protectionRequired || journal.protection))
@@ -165,6 +172,8 @@ export async function readMaterialization(context: RecoveryContext, operationId:
   const tree = await gitTree(context.root, data.candidateTreeOid);
   const snapshot = parsePortableEntries(new Map([...tree].map(([path, entry]) => [path, entry.bytes])));
   if (portableImportMarker(snapshot) !== data.records?.importMarker) throw recoveryRequired();
+  if (recordsMode === 'preserve' && !isDeepStrictEqual(new Map(evidence.currentPortable.map(([path, bytes]) => [path, Buffer.from(bytes, 'base64')])),
+    new Map([...tree].filter(([path]) => path.startsWith('.open-design/')).map(([path, item]) => [path, item.bytes])))) throw recoveryRequired();
   const originalIndex = data.index.oldDigest === null ? null : await readBytes(join(data.operationRoot, 'original.index'));
   if (data.index.backupPath !== (data.index.oldDigest === null ? null : join(data.operationRoot, 'original.index'))
     || (originalIndex === null ? null : sha256(originalIndex)) !== data.index.oldDigest) throw recoveryRequired();
@@ -187,6 +196,15 @@ export async function readMaterialization(context: RecoveryContext, operationId:
     }
   }
   return evidence;
+}
+
+async function assertPreservedRecords(context: RecoveryContext, journal: ProjectGitJournalRecord, evidence: MaterializationEvidence): Promise<void> {
+  if (!context.exportCurrentPortable) throw recoveryRequired();
+  const current = await context.exportCurrentPortable();
+  const expected = new Map(evidence.currentPortable.map(([path, bytes]) => [path, Buffer.from(bytes, 'base64')]));
+  if (!isDeepStrictEqual(new Map([...current].map(([path, bytes]) => [path, Buffer.from(bytes)])), expected)
+    || portableImportMarker(parsePortableEntries(current)) !== journal.recoveryData!.records!.importMarker) throw recoveryRequired();
+  await assertOperationBasis(context, journal);
 }
 
 export async function assertInitialImportRegistration(context: { root: string; store: ProjectGitStore }, operationId: string, candidateOid: string): Promise<void> {
@@ -381,6 +399,10 @@ export async function replayOperation(context: RecoveryContext, operationId: str
       if (phase === 'records_applied') {
         await checkFiles(true); await context.afterEffect?.('before_records_commit');
         if (checkpoint) context.store.completeRecords(operationId, { basis: journal.basis, importMarker: null, advanceProjectRevision: false }, () => undefined);
+        else if (evidence?.recordsMode === 'preserve') {
+          await assertPreservedRecords(context, journal, evidence);
+          context.store.completeRecords(operationId, { basis: journal.basis, importMarker: state.records!.importMarker, advanceProjectRevision: true }, () => undefined);
+        }
         else {
           const entries = await gitTree(context.root, state.candidateTreeOid); const snapshot = parsePortableEntries(new Map([...entries].map(([path, item]) => [path, item.bytes])));
           importPortableRecords({ db: context.db, store: context.store, operationId, projectId: journal.projectId!,
@@ -430,7 +452,14 @@ export async function replayOperation(context: RecoveryContext, operationId: str
     await checkFiles(true);
     if ((await discoverRepository(context.root)).head !== publication.publishHead
       || sha256(await readBytes(data.index.path) ?? Buffer.alloc(0)) !== data.index.candidateDigest) throw recoveryRequired();
-    if (journal.kind !== 'checkpoint') {
+    if (evidence?.recordsMode === 'preserve') {
+      await assertPreservedRecords(context, journal, evidence);
+      // The exporter is asynchronous; external file writers do not participate in our gate.
+      await checkFiles(true);
+      if ((await discoverRepository(context.root)).head !== publication.publishHead
+        || sha256(await readBytes(data.index.path) ?? Buffer.alloc(0)) !== data.index.candidateDigest) throw recoveryRequired();
+    }
+    else if (journal.kind !== 'checkpoint') {
       const snapshot = readPortableRecords(context.db, journal.projectId!);
       if (!snapshot || portableImportMarker(snapshot) !== journal.recoveryData!.records!.importMarker) throw recoveryRequired();
     }

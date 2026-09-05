@@ -93,7 +93,7 @@ export interface ProjectGitRecoveryData {
     ownerToken: string;
     published: boolean;
   };
-  records: { importMarker: string; applied: boolean } | null;
+  records: { importMarker: string; applied: boolean; mode?: 'replace' | 'preserve' } | null;
   refPublished: boolean;
 }
 
@@ -741,7 +741,8 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         || preview.projectId !== consumer.projectId || preview.scope !== consumer.scope || preview.status !== 'succeeded'
         || preview.result?.preview?.id !== previewId || !sameBasis(preview.basis, consumer.basis)
         || !((preview.kind === 'enable_preview' && consumer.kind === 'enable' && preview.result.preview.kind === 'enable')
-          || (preview.kind === 'binding_preview' && consumer.kind === 'bind' && preview.result.preview.kind === 'bind'))) throw conflict();
+          || (preview.kind === 'binding_preview' && consumer.kind === 'bind' && preview.result.preview.kind === 'bind')
+          || (preview.kind === 'restore_preview' && consumer.kind === 'restore' && preview.result.preview.kind === 'restore'))) throw conflict();
       const existing = db.prepare('SELECT preview_operation_id, consumer_operation_id FROM project_git_preview_consumers WHERE preview_operation_id = ? OR consumer_operation_id = ?')
         .all(previewId, consumerId) as { preview_operation_id: string; consumer_operation_id: string }[];
       if (existing.length) {
