@@ -11,6 +11,8 @@ import { runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, validateTreeEntries } from './repository.js';
 import { prepareCheckpoint, publishCheckpoint, isPrivateProjectGitPath, computeCheckpointContentDigest } from './checkpoint.js';
 import { exportPortableProject, parsePortableEntries } from './portable.js';
+import { nativeHistoryRoot, projectGitPaths } from './paths.js';
+import { readBindingEvidence } from './binding-evidence.js';
 import { mergeFileTrees } from './merge.js';
 import { materializeProject } from './materialize.js';
 import { gitTree, safeFile, recoverProjectOperations, within, sha256 } from './recovery.js';
@@ -149,6 +151,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
 }
 
 export interface ProjectGitSyncProject {
+  nativeLegacyRoot?: string;
   root: string; branch: string; gate: ProjectGate; gitEnv?: Record<string, string>;
   readOwnedResource?: (reference: string) => Promise<Uint8Array | null>;
   prepareRegistrationCompletion?: (operationId: string) => Promise<import('./registration.js').RegistrationTerminalCapability>;
@@ -182,8 +185,18 @@ export function createProjectGitSyncDeps(input: {
   }
   function unchanged(id: string, basis: ProjectGitBasis) { if (!isDeepStrictEqual(readBasis(id), basis)) throw changed(); }
   async function exported(id: string, b: ProjectGitBindingRecord, project: ProjectGitSyncProject) {
+    const nativeLegacyRoot = await nativeHistoryRoot(project.root, project.nativeLegacyRoot);
+    // Recovery must not re-export from a newly resolved native archive identity.
+    for (const operation of store.listPendingOperations().filter(op => op.projectId === id)) {
+      const payload = operation.payload as { evidencePath?: unknown; previewId?: string };
+      const preview = payload.previewId ? store.getJournal(payload.previewId) : operation;
+      if (preview && (preview.payload as { evidencePath?: unknown }).evidencePath) {
+        const captured = await readBindingEvidence(input.operationRoot, preview);
+        await nativeHistoryRoot(project.root, nativeLegacyRoot, captured.nativeLegacyRoot ?? captured.root);
+      }
+    }
     return (await exportPortableProject({ db: input.db, store, projectId: id, repositoryProjectId: b.repositoryProjectId,
-      cloneId: b.cloneId, root: project.root, ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) })).entries;
+      cloneId: b.cloneId, root: project.root, nativeLegacyRoot, ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) })).entries;
   }
   async function capture(id: string) {
     let captured = await context(id);
@@ -239,8 +252,11 @@ export function createProjectGitSyncDeps(input: {
     });
   }
   async function pathsAt(root: string): Promise<string[]> {
-    const raw = (await runGit({ cwd: root, args: ['ls-files', '--cached', '--others', '--exclude-standard', '-z'] })).stdout;
-    const text = raw.toString(); if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw changed();
+    const listed = await Promise.all([['ls-files', '--cached', '-z'], ['ls-files', '--others', '--exclude-standard', '-z']].map(async args => {
+      const raw = (await runGit({ cwd: root, args })).stdout; const text = raw.toString();
+      if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw changed();
+      return text.split('\0').filter(Boolean);
+    }));
     // Ignore rules cannot hide reserved files. Walk only this namespace, without
     // following symlinks or reading private bytes; safeFile validates each leaf.
     const reserved: string[] = [];
@@ -255,7 +271,7 @@ export function createProjectGitSyncDeps(input: {
       for (const name of await readdir(join(root, path))) await visit(`${path}/${name}`);
     };
     await visit('.open-design');
-    const paths = [...new Set([...text.split('\0').filter(Boolean), ...reserved])].sort();
+    const paths = [...new Set([...projectGitPaths(listed[0]!, listed[1]!), ...reserved])].sort();
     validateTreeEntries(paths.map(path => ({ path, mode: '100644' }))); return paths;
   }
   function assertReservedUnchanged(tree: Map<string, { bytes: Buffer; mode: string }>, files: Map<string, { bytes: Buffer | null; mode: string }>) {

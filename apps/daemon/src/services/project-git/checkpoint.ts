@@ -10,6 +10,7 @@ import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import { discoverRepository, validateBranch } from './repository.js';
 import { canonicalJson, parsePortableEntries } from './portable.js';
+import { projectGitPaths } from './paths.js';
 import { registrationCheckpointLane, prepareCheckpointRegistrationCompletion, finishCheckpointRegistration,
   type CheckpointRegistrationCapability } from './registration.js';
 
@@ -175,7 +176,7 @@ async function inspect(root: string, head: string | null, ownedLock?: string) {
   if (head === null ? staged.length > 0
     : (await runGit({ cwd: root, args: ['diff-index', '--cached', '--raw', '-z', head] })).stdout.length > 0) throw busy();
   const untracked = decodePaths((await runGit({ cwd: root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout);
-  const paths = [...new Set([...tracked, ...untracked])].sort();
+  const paths = projectGitPaths([...tracked], untracked);
   for (const path of paths) safePath(path);
   const privatePaths = paths.filter(isPrivateProjectGitPath);
   if (privatePaths.length) throw new GitDomainError('VALIDATION_FAILED', 400,

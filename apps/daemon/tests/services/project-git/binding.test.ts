@@ -20,6 +20,8 @@ import { createGitFixture } from '../../helpers/project-git.js';
 import { portableSnapshot, writeFixtureEntries, fixtureCommit, fixtureGitEnv } from '../../helpers/project-git-crash-worker.js';
 import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
 import * as gitProcess from '../../../src/services/project-git/git-process.js';
+import { createProjectFileVersion, readLegacyProjectFile } from '../../../src/project-file-versions.js';
+import { createProjectGitRestoreService } from '../../../src/services/project-git/restore.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
@@ -51,7 +53,7 @@ async function serviceFixture(transport: 'writable' | 'readonly' | 'denied' = 'w
     reserveProject: ({ projectId, root, localBranch, gate }: { projectId: string; root: string; localBranch: string; gate: ProjectGitSyncProject['gate'] }) => {
       const prior = registry.get(projectId);
       if (prior && (prior.root !== root || prior.gate !== gate || prior.branch !== localBranch)) throw new Error('Conflicting reservation');
-      registry.set(projectId, { root, branch: localBranch, gate, gitEnv });
+      registry.set(projectId, { ...prior, root, branch: localBranch, gate, gitEnv });
       return () => { if (!prior) registry.delete(projectId); };
     }, now: deps.now, newId: randomUUID, gitEnv });
   cleanups.push(async () => { await scheduler.stop(); if (db.open) db.close(); await f.close(); });
@@ -77,6 +79,44 @@ it('previews without initializing the user root, then enables the same captured 
   expect(getProject(db, 'existing')!.name).toBe('Existing');
   expect(await f.git(root, 'show', 'HEAD:index.html')).toBe('user file');
   expect(await service.enable('existing', preview.result!.preview!.id, { actorId: 'local', idempotencyKey: 'enable', expectedProjectRevision: 0 })).toEqual(operation);
+});
+
+it.each([false, true])('archives native history at first enable and restores it from a second clone (distinct root=%s)', async distinct => {
+  const { f, db, store, service, registry, existing, configuration } = await serviceFixture(); const root = await existing();
+  const version = await createProjectFileVersion(distinct ? configuration.ownedProjectsRoot : f.root, distinct ? 'existing' : 'unmanaged', 'index.html', 'native original', {}, { kind: 'prototype', baseDir: root });
+  const nativeLegacyRoot = distinct ? join(configuration.ownedProjectsRoot, 'existing') : root;
+  if (distinct) registry.set('existing', { ...registry.get('existing')!, nativeLegacyRoot });
+  await expect(readLegacyProjectFile(root, 'index.html', version.id, nativeLegacyRoot)).resolves.toMatchObject({ content: 'native original' });
+  const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const preview = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'native-preview' });
+  await service.enable('existing', preview.id, { ...ctx, idempotencyKey: 'native-enable' });
+  expect(await f.git(root, 'ls-files', '.file-versions')).toBe('');
+  expect(await f.git(root, 'ls-files', '.open-design/legacy-file-history')).toContain('manifest.json');
+  await f.git(root, 'push', f.remote, 'HEAD:main'); await f.git(f.b, 'pull', '--ff-only', 'origin', 'main');
+  await expect(readLegacyProjectFile(f.b, 'index.html', version.id)).resolves.toMatchObject({ content: 'native original' });
+  const binding = store.getBinding('existing')!;
+  insertProject(db, { id: 'second', name: 'Existing', createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype', baseDir: f.b } });
+  const repo = await import('../../../src/services/project-git/repository.js').then(module => module.discoverRepository(f.b));
+  store.saveBinding({ ...binding, generation: 0, projectId: 'second', cloneId: 'second-clone', canonicalRoot: f.b, commonDir: repo.commonDir });
+  const gate = await getProjectGate({ root: f.b, ...configuration.ownership });
+  const restore = createProjectGitRestoreService({ db, store, operationRoot: configuration.operationRoot, recoveryReady: Promise.resolve(), now: () => 100_000,
+    requireProject: () => {}, resolveProject: () => ({ root: f.b, branch: 'main', gate, gitEnv: configuration.gitEnv }) });
+  const filePreview = await restore.previewFileRestore('second', 'index.html', { source: 'legacy', path: 'index.html', legacyId: version.id }, { ...ctx, idempotencyKey: 'second-preview' });
+  await restore.restoreProject('second', filePreview.id, { ...ctx, idempotencyKey: 'second-restore' });
+  expect(await fs.readFile(join(f.b, 'index.html'), 'utf8')).toBe('native original');
+  expect(await f.git(f.b, 'ls-files', '.file-versions')).toBe('');
+});
+
+it('rejects changing the trusted native history root after enable preview even for equal bytes', async () => {
+  const { service, registry, existing, configuration, f } = await serviceFixture(); const root = await existing();
+  await createProjectFileVersion(configuration.ownedProjectsRoot, 'existing', 'index.html', 'original', {}, { kind: 'prototype', baseDir: root });
+  const nativeLegacyRoot = join(configuration.ownedProjectsRoot, 'existing'); const other = join(f.root, 'other-native');
+  await fs.cp(nativeLegacyRoot, other, { recursive: true });
+  registry.set('existing', { ...registry.get('existing')!, nativeLegacyRoot });
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'p-root' });
+  registry.set('existing', { ...registry.get('existing')!, nativeLegacyRoot: other });
+  await expect(service.enable('existing', preview.id, { actorId: 'local', expectedProjectRevision: 0, idempotencyKey: 'e-root' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  await expect(access(join(root, '.git'))).rejects.toBeDefined();
 });
 
 it('previews the selected remote deletion before applying that exact tree', async () => {

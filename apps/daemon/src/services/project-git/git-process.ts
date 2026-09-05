@@ -17,6 +17,7 @@ export interface GitProcessResult { stdout: Buffer; stderr: Buffer }
 
 const NULL_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
+export const PROJECT_GIT_FILE_LIMIT = 200 * 1024 * 1024;
 const DEFAULT_TIMEOUT = 30_000;
 const IDENTITY_KEYS = ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'] as const;
 const TRUSTED_ENV = new Set([...IDENTITY_KEYS, 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'PATH', 'SSH_AUTH_SOCK']);
@@ -109,11 +110,11 @@ function localCommand(args: readonly string[]): void {
 }
 
 /** Buffered public result, bounded while streaming; overflow never returns partial success. */
-async function execute(input: GitProcessInput, env: NodeJS.ProcessEnv, config = SAFE_CONFIG): Promise<GitProcessResult> {
+async function execute(input: GitProcessInput, env: NodeJS.ProcessEnv, config = SAFE_CONFIG, limits = { input: OUTPUT_LIMIT, output: OUTPUT_LIMIT }): Promise<GitProcessResult> {
   if (input.signal?.aborted) throw new GitDomainError('CONFLICT', 409, 'Git operation cancelled.', { reason: 'cancelled' });
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) invalid('Git timeout must be positive.');
-  if ((input.stdin?.byteLength ?? 0) > OUTPUT_LIMIT) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Git input exceeds the size limit.', { limitBytes: OUTPUT_LIMIT });
+  if ((input.stdin?.byteLength ?? 0) > limits.input) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Git input exceeds the size limit.', { limitBytes: limits.input });
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['--no-pager', '--no-lazy-fetch', ...config.flatMap(value => ['-c', value]), ...input.args], {
       cwd: input.cwd, env, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
@@ -147,7 +148,7 @@ async function execute(input: GitProcessInput, env: NodeJS.ProcessEnv, config = 
     if (input.signal?.aborted) abort();
     const collect = (target: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > OUTPUT_LIMIT) terminate(new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Git output exceeds the size limit.', { limitBytes: OUTPUT_LIMIT }));
+      if (bytes > limits.output) terminate(new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Git output exceeds the size limit.', { limitBytes: limits.output }));
       else if (!failure) target.push(chunk);
     };
     child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk));
@@ -218,7 +219,23 @@ export async function runGit(input: GitProcessInput): Promise<GitProcessResult> 
   env.GIT_CONFIG_NOSYSTEM = '1';
   const args = ['diff-tree', 'diff-index'].includes(input.args[0] ?? '')
     ? [input.args[0]!, '--no-ext-diff', '--no-textconv', ...input.args.slice(1)] : input.args;
-  return execute({ ...input, args }, env);
+  // Only one full immutable object request gets the file-sized output budget.
+  // Other plumbing, arbitrary batch requests and diagnostics retain the small cap.
+  const singleObject = args.length === 2 && args[0] === 'cat-file' && args[1] === '--batch'
+    && (input.stdin?.byteLength === 41 || input.stdin?.byteLength === 65)
+    && /^(?:[a-f0-9]{40}|[a-f0-9]{64})\n$/u.test(Buffer.from(input.stdin ?? []).toString('utf8'));
+  const result = await execute({ ...input, args }, env, SAFE_CONFIG, {
+    input: args[0] === 'hash-object' ? PROJECT_GIT_FILE_LIMIT : OUTPUT_LIMIT,
+    output: singleObject ? PROJECT_GIT_FILE_LIMIT + 1024 : OUTPUT_LIMIT,
+  });
+  if (singleObject) {
+    const line = result.stdout.indexOf(10); const header = result.stdout.subarray(0, line).toString('utf8');
+    const match = /^(?:[a-f0-9]{40}|[a-f0-9]{64}) (?:blob|tree|commit|tag) (\d+)$/u.exec(header);
+    // Git's missing-object response remains available to ordinary callers.
+    if (match && Number(match[1]) > PROJECT_GIT_FILE_LIMIT) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413,
+      'Git object exceeds the project file size limit.', { limitBytes: PROJECT_GIT_FILE_LIMIT });
+  }
+  return result;
 }
 
 export interface GitTextMergeInput extends Pick<GitProcessInput, 'signal' | 'timeoutMs'> {

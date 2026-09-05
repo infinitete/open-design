@@ -7,8 +7,10 @@ import { isPrivateProjectGitPath } from './checkpoint.js';
 import { GitDomainError } from './errors.js';
 import { readBytes, sha256, within } from './recovery.js';
 import { validateTreeEntries } from './repository.js';
+import { isCanonicalRootIdentity } from './paths.js';
 
 export interface BindingCapture {
+  nativeLegacyRoot?: string;
   root: string; localBranch: string; repositoryProjectId: string; cloneId: string; basis: ProjectGitBasis;
   git: { root: string; commonDir: string; gitDir: string; branch: string | null; head: string | null } | null;
   entries: [string, string][]; sourceDigests: Record<string, string>; sourceModes: Record<string, string>;
@@ -24,7 +26,8 @@ const strings = (value: Record<string, unknown>, keys: string[]) => keys.every(k
 const oid = (value: unknown) => value === null || typeof value === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value);
 function validCapture(value: unknown): value is BindingCapture {
   if (!shape(value, ['root', 'localBranch', 'repositoryProjectId', 'cloneId', 'basis', 'git', 'entries', 'sourceDigests', 'sourceModes',
-    'inventory', 'digest', 'changes', 'dependencies'], ['availabilityDependencies', 'bindingTarget'])
+    'inventory', 'digest', 'changes', 'dependencies'], ['availabilityDependencies', 'bindingTarget', 'nativeLegacyRoot'])
+    || value.nativeLegacyRoot !== undefined && !isCanonicalRootIdentity(value.nativeLegacyRoot)
     || !strings(value, ['root', 'localBranch', 'repositoryProjectId', 'cloneId', 'digest'])
     || !/^[a-f0-9]{64}$/u.test(value.digest as string) || !ProjectGitPreviewSchema.shape.basis.safeParse(value.basis).success
     || !ProjectGitPreviewSchema.shape.changes.safeParse(value.changes).success

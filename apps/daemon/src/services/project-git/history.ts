@@ -2,7 +2,7 @@ import type { PortableSnapshot, ProjectGitCommit, ProjectGitHistoryPage } from '
 import { mimeFor } from '../../projects.js';
 import { isPrivateProjectGitPath } from './checkpoint.js';
 import { GitDomainError } from './errors.js';
-import { runGit } from './git-process.js';
+import { PROJECT_GIT_FILE_LIMIT, runGit } from './git-process.js';
 import { parsePortableEntries } from './portable.js';
 import { discoverObjectStore, discoverRepository, validateTreeEntries } from './repository.js';
 
@@ -44,9 +44,9 @@ async function tree(root: string, oid: string): Promise<TreeEntry[]> {
   return entries;
 }
 
-async function objectBytes(root: string, oid: string, type: 'blob' | 'commit'): Promise<Buffer> {
+async function objectBytes(root: string, oid: string, type: 'blob' | 'commit', limit = PROJECT_GIT_FILE_LIMIT): Promise<Buffer> {
   const size = Number((await runGit({ cwd: root, args: ['cat-file', '-s', oid] })).stdout.toString().trim());
-  if (!Number.isSafeInteger(size) || size < 0 || size > FILE_LIMIT) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Historical object exceeds the preview limit.', { limitBytes: FILE_LIMIT });
+  if (!Number.isSafeInteger(size) || size < 0 || size > limit) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'Historical object exceeds the size limit.', { limitBytes: limit });
   const output = (await runGit({ cwd: root, args: ['cat-file', '--batch'], stdin: Buffer.from(oid + '\n') })).stdout;
   const line = output.indexOf(10);
   if (output.subarray(0, line).toString() !== `${oid} ${type} ${size}` || output.length !== line + size + 2 || output.at(-1) !== 10) throw invalid();
@@ -74,7 +74,7 @@ export async function readCommitFile(root: string, oid: string, path: string): P
   assertHistoryPath(path); await assertHistoryCommit(root, oid);
   const entry = (await tree(root, oid)).find(item => item.path === path);
   if (!entry) throw new GitDomainError('NOT_FOUND', 404, 'Historical file not found.');
-  return { encoding: 'base64', content: (await objectBytes(root, entry.oid, 'blob')).toString('base64'), mediaType: mimeFor(path) };
+  return { encoding: 'base64', content: (await objectBytes(root, entry.oid, 'blob', FILE_LIMIT)).toString('base64'), mediaType: mimeFor(path) };
 }
 
 export async function readCommit(root: string, oid: string): Promise<ProjectGitCommit> {

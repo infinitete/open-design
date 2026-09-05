@@ -23,6 +23,7 @@ import { readPortableRecords } from './portable-db.js';
 import { getSnapshot } from '../../plugins/snapshots.js';
 import { emittedRenderableQuestionForm } from '../../question-form-detect.js';
 import { validateTreeEntries } from './repository.js';
+import { nativeHistoryRoot } from './paths.js';
 
 /** Canonical UTF-8 JSON: sorted object keys, semantic array order, exactly one LF. */
 export function canonicalJson(value: JsonValue): string {
@@ -285,9 +286,10 @@ function displayResourceRefs(context: PortableMessageContext, events: PortableDi
 
 export async function exportPortableProject(input: {
   db: Database.Database; projectId: string; repositoryProjectId: string; cloneId: string;
-  root: string; store: ProjectGitStore; readOwnedResource?: (reference: string) => Promise<Uint8Array | null>;
+  root: string; nativeLegacyRoot?: string; store: ProjectGitStore; readOwnedResource?: (reference: string) => Promise<Uint8Array | null>;
 }): Promise<{ snapshot: PortableSnapshot; entries: Map<string, Uint8Array> }> {
   const { db, projectId, repositoryProjectId: repo, cloneId, store, root } = input;
+  const legacyRoot = await nativeHistoryRoot(root, input.nativeLegacyRoot);
   store.assertDatabase(db);
   const projectRow = getProject(db, projectId);
   if (!projectRow) throw new GitDomainError('NOT_FOUND', 404, 'Project not found');
@@ -553,18 +555,18 @@ export async function exportPortableProject(input: {
   const legacy = async (relative: string) => {
     let children;
     try {
-      if (!(await lstat(path.join(root, relative))).isDirectory()) throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Legacy directory is unavailable', { paths: [relative] });
-      children = await readdir(path.join(root, relative), { withFileTypes: true });
+      if (!(await lstat(path.join(legacyRoot, relative))).isDirectory()) throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Legacy directory is unavailable', { paths: [relative] });
+      children = await readdir(path.join(legacyRoot, relative), { withFileTypes: true });
     }
     catch (error) { if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return; throw error; }
     for (const child of children.sort((a, b) => a.name < b.name ? -1 : 1)) {
       const file = `${relative}/${child.name}`;
       if (child.isDirectory()) await legacy(file);
       else {
-        const bytes = child.isFile() ? await readPortableResource(root, file) : null;
+        const bytes = child.isFile() ? await readPortableResource(legacyRoot, file) : null;
         if (!bytes) throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Required legacy content is unavailable', { paths: [file] });
         if (child.name === 'manifest.json') for (const member of legacyMemberPaths(file, bytes)) {
-          if (await readPortableResource(root, member)) continue;
+          if (await readPortableResource(legacyRoot, member)) continue;
           const archived = member.replace(/^\.file-versions\//, '.open-design/legacy-file-history/');
           const retained = previousResources.find(resource => resource.locations.some(location => location.path === archived && location.purpose === 'legacy-history'));
           if (retained) snapshot.project.contentRefs.push(await retain(retained.digest, repo));

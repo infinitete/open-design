@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createCrashFixture, fixtureCommit, fixtureGitEnv, openCrashFixture, portableSnapshot } from '../../helpers/project-git-crash-worker.js';
@@ -105,6 +105,7 @@ it('restores a plain commit as ordinary files while retaining current settings a
   const beforeSessions = f.db.prepare('SELECT * FROM agent_sessions').all();
   const preview = await service.previewRestore('project', plain, ctx);
   expect(preview.changes.historyMode).toBe('files_only');
+  expect(preview.changes).toMatchObject({ settingsChanged: 0, conversationsChanged: 0 });
   await service.restoreProject('project', preview.id, ctx);
   expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('old plain file');
   expect(await readFile(join(f.a, resourcePath))).toEqual(bytes);
@@ -118,15 +119,76 @@ it('managed legacy single-file restore preserves other dirty files, records and 
   const f = await fixture(); const old = await createProjectFileVersion(f.root, 'a', 'index.html', '<html>legacy</html>');
   const native = await f.git(f.a, 'ls-files', '--others', '--exclude-standard');
   expect(native).toContain('.file-versions/');
+  await mkdir(join(f.a, '.FILE-VERSIONS')); await writeFile(join(f.a, '.FILE-VERSIONS', 'local.txt'), 'case-normalized native evidence');
   await writeFile(join(f.a, 'other.txt'), 'keep dirty other');
   const records = f.db.prepare('SELECT * FROM projects').all();
   const preview = await f.service.previewFileRestore('project', 'index.html', { source: 'legacy', path: 'index.html', legacyId: old.id }, request());
+  expect(preview.changes).toMatchObject({ settingsChanged: 0, conversationsChanged: 0 });
   await f.service.restoreProject('project', preview.id, request());
   expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('<html>legacy</html>');
   expect(await readFile(join(f.a, 'other.txt'), 'utf8')).toBe('keep dirty other');
   expect((await readLegacyProjectFile(f.a, 'index.html', old.id)).content).toBe('<html>legacy</html>');
+  expect(await f.git(f.a, 'ls-files', '.file-versions')).toBe('');
+  expect(await f.git(f.a, 'ls-files', '.FILE-VERSIONS')).toBe('');
+  expect(await readFile(join(f.a, '.FILE-VERSIONS', 'local.txt'), 'utf8')).toBe('case-normalized native evidence');
   expect(f.db.prepare('SELECT name, metadata_json FROM projects').all()).toEqual(records.map(row => ({ name: (row as { name: string }).name, metadata_json: (row as { metadata_json: string }).metadata_json })));
   const op = f.store.listPendingOperations().filter(op => op.kind === 'restore'); expect(op).toHaveLength(0);
+});
+
+it('retains already tracked native history without altering or untracking it', async () => {
+  const f = await fixture(); const old = await createProjectFileVersion(f.root, 'a', 'index.html', 'tracked native history');
+  await f.git(f.a, 'add', '.file-versions'); await f.git(f.a, 'commit', '-m', 'existing tracked legacy');
+  f.store.adoptExternalHead('project', await f.input.readBasis(), await f.git(f.a, 'rev-parse', 'HEAD'));
+  const tracked = await f.git(f.a, 'ls-files', '.file-versions');
+  const preview = await f.service.previewRestore('project', f.head, request());
+  await f.service.restoreProject('project', preview.id, request());
+  expect(await f.git(f.a, 'ls-files', '.file-versions')).toBe(tracked);
+  expect((await readLegacyProjectFile(f.a, 'index.html', old.id)).content).toBe('tracked native history');
+});
+
+it.each(['noop', 'settings', 'message', 'added', 'deleted'] as const)('counts actual portable changes for %s restore preview', async change => {
+  const f = await createCrashFixture(); fixtures.push(f); await materializeProject(f.input);
+  if (change === 'settings') f.db.prepare('UPDATE projects SET name = ? WHERE id = ?').run('Edited setting', 'project');
+  if (change === 'message') f.db.prepare('UPDATE messages SET content = ?').run('Edited message');
+  if (change === 'added') for (const id of ['added-1', 'added-2']) f.db.prepare('INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(id, 'project', id, 1, 1);
+  if (change === 'deleted') f.db.prepare('DELETE FROM conversations WHERE project_id = ?').run('project');
+  const service = createProjectGitRestoreService({ db: f.db, store: f.store, operationRoot: f.input.operationDir, now: () => 1000,
+    requireProject: () => {}, resolveProject: () => ({ root: f.a, branch: 'main', gate: f.gate, gitEnv: fixtureGitEnv }), recoveryReady: Promise.resolve() });
+  const preview = await service.previewRestore('project', f.input.candidateOid, { ...request(), expectedProjectRevision: 1 });
+  expect(preview.changes.settingsChanged).toBe(change === 'settings' ? 1 : 0);
+  expect(preview.changes.conversationsChanged).toBe(change === 'added' ? 2 : ['message', 'deleted'].includes(change) ? 1 : 0);
+});
+
+it('restores ordinary files and portable attachments above the inline limit', async () => {
+  const f = await createCrashFixture(); fixtures.push(f); const snapshot = portableSnapshot('After');
+  const ordinary = Buffer.alloc(9 * 1024 * 1024, 65); const attachment = Buffer.alloc(17 * 1024 * 1024, 66);
+  const { sha256 } = await import('../../../src/services/project-git/recovery.js'); const digest = sha256(attachment);
+  const resourcePath = `.open-design/resources/${digest}/content`;
+  snapshot.manifest.resources.push({ digest, locations: [{ path: resourcePath, purpose: 'attachment' }], references: ['message'] });
+  snapshot.messages[0]!.resourceRefs.push(digest);
+  snapshot.messages[0]!.context.attachments = [{ resourceRef: digest, name: 'large.bin', kind: 'file' }];
+  const entries = serializePortableMetadata(snapshot); entries.set(resourcePath, attachment); entries.set('large.bin', ordinary);
+  const oid = await fixtureCommit(f.a, join(f.root, 'large.index'), entries, [f.head]);
+  await materializeProject({ ...f.input, candidateOid: oid, snapshot });
+  const service = createProjectGitRestoreService({ db: f.db, store: f.store, operationRoot: f.input.operationDir, now: () => 1000,
+    requireProject: () => {}, resolveProject: () => ({ root: f.a, branch: 'main', gate: f.gate, gitEnv: fixtureGitEnv }), recoveryReady: Promise.resolve() });
+  const { readCommit, readCommitFile } = await import('../../../src/services/project-git/history.js');
+  expect((await readCommit(f.a, oid)).snapshotKind).toBe('complete');
+  await expect(readCommitFile(f.a, oid, 'large.bin')).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+  const ctx = { ...request(), expectedProjectRevision: 1 }; const preview = await service.previewRestore('project', oid, ctx);
+  await service.restoreProject('project', preview.id, ctx);
+  expect((await readFile(join(f.a, 'large.bin'))).equals(ordinary)).toBe(true);
+  expect((await readFile(join(f.a, resourcePath))).equals(attachment)).toBe(true);
+  // An externally committed oversized object rejects before any preview candidate or journal is created.
+  await writeFile(join(f.a, 'over-cap.bin'), Buffer.alloc(200 * 1024 * 1024 + 1));
+  await f.git(f.a, 'add', 'over-cap.bin'); await f.git(f.a, 'commit', '-m', 'external oversized object');
+  const oversizedHead = await f.git(f.a, 'rev-parse', 'HEAD');
+  f.store.adoptExternalHead('project', await f.input.readBasis(), oversizedHead);
+  const artifacts = await readdir(f.input.operationDir); const journals = f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get();
+  await expect(service.previewRestore('project', oid, { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+  expect(await readdir(f.input.operationDir)).toEqual(artifacts);
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get()).toEqual(journals);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(oversizedHead);
 });
 
 it('blocks active runs and durable conflicts without canceling the run', async () => {
@@ -169,6 +231,26 @@ it('reopens the database and resumes a single-file restore without rewriting nat
     await recoverProjectOperations(reopened.recoveryInput);
     expect(reopened.store.getBinding('project')!.projectRevision).toBe(3);
     expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('legacy single file');
+  } finally { reopened.db.close(); }
+});
+
+it('freezes the native archive identity through confirmation and restart before exporter reads', async () => {
+  const f = await fixture(); let nativeLegacyRoot = f.a;
+  const input = { ...f.serviceInput, resolveProject: () => ({ ...f.serviceInput.resolveProject(), nativeLegacyRoot }) };
+  const service = createProjectGitRestoreService(input); const preview = await service.previewRestore('project', f.head, request());
+  nativeLegacyRoot = f.b;
+  await expect(service.restoreProject('project', preview.id, request())).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  nativeLegacyRoot = f.a;
+  const crashing = createProjectGitRestoreService({ ...input, afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('stop prepared'); } });
+  await expect(crashing.restoreProject('project', preview.id, request())).rejects.toThrow('stop prepared');
+  f.db.close(); const reopened = await openCrashFixture(f.root); let exports = 0;
+  try {
+    const wrong = { ...reopened.recoveryInput, resolveProject: () => ({ ...reopened.recoveryInput.resolveProject(), nativeLegacyRoot: f.b,
+      exportCurrentPortable: async () => { exports++; return new Map<string, Uint8Array>(); } }) };
+    await expect(recoverProjectOperations(wrong)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    expect(exports).toBe(0); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.v3);
+    await recoverProjectOperations(reopened.recoveryInput);
+    expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('before\n');
   } finally { reopened.db.close(); }
 });
 

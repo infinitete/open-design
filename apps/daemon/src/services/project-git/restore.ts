@@ -8,24 +8,26 @@ import { computeCheckpointContentDigest, isPrivateProjectGitPath } from './check
 import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import type { ProjectGate } from './gate.js';
-import { assertHistoryCommit, assertHistoryPath, readCommitFile, readHistoryEntries } from './history.js';
+import { assertHistoryCommit, assertHistoryPath, readHistoryEntries } from './history.js';
 import { readLegacyProjectFile, type ProjectFileHistoryId } from '../../project-file-versions.js';
 import { materializeProject, type MaterializeEffect, type MaterializePhase } from './materialize.js';
 import { canonicalJson, exportPortableProject, parsePortableEntries } from './portable.js';
 import { discoverRepository, validateTreeEntries } from './repository.js';
 import { durableDirectory, safeFile, sha256, within } from './recovery.js';
+import { isNativeProjectHistoryPath, nativeHistoryRoot, projectGitPaths } from './paths.js';
 
 export interface RestoreRequestContext { actorId: string; idempotencyKey: string; expectedProjectRevision?: number }
 export interface ProjectGitRestoreServiceInput {
   db: Database.Database; store: ProjectGitStore; operationRoot: string; recoveryReady: Promise<void>;
   now(): number;
   requireProject(actorId: string, projectId: string): void | Promise<void>;
-  resolveProject(projectId: string): { root: string; branch: string; gate: ProjectGate; gitEnv?: Record<string, string>;
+  resolveProject(projectId: string): { root: string; nativeLegacyRoot?: string; branch: string; gate: ProjectGate; gitEnv?: Record<string, string>;
     readOwnedResource?: (reference: string) => Promise<Uint8Array | null> };
   afterEffect?: (point: MaterializeEffect, path?: string) => Promise<void>;
   afterDurablePhase?: (phase: MaterializePhase) => Promise<void>;
 }
 interface Capture {
+  nativeLegacyRoot: string;
   recordsMode: 'replace' | 'preserve';
   file: { path: string; history: ProjectFileHistoryId } | null;
   targetOid: string; candidateOid: string; contentDigest: string; sourceDigests: Record<string, string>; sourceModes: Record<string, string>;
@@ -35,7 +37,6 @@ const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Restore 
 const invalid = () => new GitDomainError('VALIDATION_FAILED', 400, 'Invalid restore request.');
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const digest = (value: unknown): string => sha256(Buffer.from(canonicalJson(json(value))));
-const nativeHistoryPath = (path: string): boolean => path.split('/').some(part => part.normalize('NFC').toLowerCase() === '.file-versions');
 
 export function createProjectGitRestoreService(input: ProjectGitRestoreServiceInput) {
   const { db, store } = input; store.assertDatabase(db);
@@ -64,16 +65,19 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
     if ((await runGit({ cwd: project.root, args: ['diff-index', '--cached', '--raw', '-z', repository.head] })).stdout.length) throw new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'Staged changes require attention.');
-    const raw = (await runGit({ cwd: project.root, args: ['ls-files', '--cached', '--others', '--exclude-standard', '-z'] })).stdout;
-    const text = raw.toString(); if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw invalid();
-    const paths = [...new Set(text.split('\0').filter(Boolean))].sort();
+    const listed = await Promise.all([['ls-files', '--cached', '-z'], ['ls-files', '--others', '--exclude-standard', '-z']].map(async args => {
+      const raw = (await runGit({ cwd: project.root, args })).stdout; const text = raw.toString();
+      if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw invalid();
+      return text.split('\0').filter(Boolean);
+    }));
+    const paths = projectGitPaths(listed[0]!, listed[1]!);
     validateTreeEntries(paths.map(path => ({ path, mode: '100644' })));
     const index = await safeFile(repository.gitDir, 'index');
     return { paths, indexDigest: index.bytes ? sha256(index.bytes) : null };
   }
-  async function exported(id: string) {
+  async function exported(id: string, expectedRoot?: string) {
     const b = store.getBinding(id)!; const project = input.resolveProject(id);
-    return exportPortableProject({ db, store, projectId: id, root: project.root, repositoryProjectId: b.repositoryProjectId, cloneId: b.cloneId,
+    return exportPortableProject({ db, store, projectId: id, root: project.root, nativeLegacyRoot: await nativeHistoryRoot(project.root, project.nativeLegacyRoot, expectedRoot), repositoryProjectId: b.repositoryProjectId, cloneId: b.cloneId,
       ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
   }
   async function sources(root: string, paths: string[]) {
@@ -85,9 +89,10 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
   }
   async function verify(id: string, expected: ProjectGitBasis, captured: Capture) {
     const project = input.resolveProject(id); const current = await inspect(id, expected);
+    await nativeHistoryRoot(project.root, project.nativeLegacyRoot, captured.nativeLegacyRoot ?? project.root);
     if (!isDeepStrictEqual(current.paths, captured.paths) || current.indexDigest !== captured.indexDigest
       || !isDeepStrictEqual(await sources(project.root, Object.keys(captured.sourceDigests)), { sourceDigests: captured.sourceDigests, sourceModes: captured.sourceModes })
-      || !isDeepStrictEqual([...((await exported(id)).entries)].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')]), captured.portable)) throw changed();
+      || !isDeepStrictEqual([...((await exported(id, captured.nativeLegacyRoot ?? project.root)).entries)].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')]), captured.portable)) throw changed();
     if (!isDeepStrictEqual(basis(id), expected)) throw changed();
   }
   async function candidate(root: string, head: string, entries: Map<string, { bytes: Buffer; mode: string }>, targetOid: string, gitEnv?: Record<string, string>) {
@@ -110,17 +115,19 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     const project = await authorized(id, request);
     assertIdle(id, project);
     return project.gate.exclusive(async () => {
+      const nativeLegacyRoot = await nativeHistoryRoot(project.root, project.nativeLegacyRoot);
       const expected = basis(id); store.assertRevision(id, request.expectedProjectRevision);
       const current = await inspect(id, expected); await assertGitIdentity({ cwd: project.root, ...(project.gitEnv ? { env: project.gitEnv } : {}) });
       let target = await readHistoryEntries(project.root, targetOid);
       const base = await readHistoryEntries(project.root, expected.localHead!);
-      const portable = (await exported(id)).entries;
+      const portable = (await exported(id, nativeLegacyRoot)).entries;
       if (file) {
         assertHistoryPath(file.path);
-        if (nativeHistoryPath(file.path) || file.path.split('/').some(part => part.normalize('NFC').toLowerCase() === '.open-design')) throw invalid();
+        if (isNativeProjectHistoryPath(file.path) || file.path.split('/').some(part => part.normalize('NFC').toLowerCase() === '.open-design')) throw invalid();
         if (file.history.source === 'legacy' && file.history.path !== file.path) throw invalid();
-        const bytes = file.history.source === 'git' ? Buffer.from((await readCommitFile(project.root, file.history.oid, file.path)).content, 'base64')
-          : Buffer.from((await readLegacyProjectFile(project.root, file.path, file.history.legacyId)).content);
+        const bytes = file.history.source === 'git' ? (await readHistoryEntries(project.root, file.history.oid)).get(file.path)?.bytes
+          : Buffer.from((await readLegacyProjectFile(project.root, file.path, file.history.legacyId, nativeLegacyRoot)).content);
+        if (!bytes) throw new GitDomainError('NOT_FOUND', 404, 'Historical file not found.');
         target = new Map();
         for (const path of current.paths) {
           const value = await safeFile(project.root, path);
@@ -133,8 +140,8 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       if (snapshot.manifest.repositoryProjectId !== store.getBinding(id)!.repositoryProjectId) throw invalid();
       if (!hasMetadata) for (const [path, bytes] of portable) target.set(path, { bytes: Buffer.from(bytes), mode: (await safeFile(project.root, path)).mode === '100755' ? '100755' : '100644' });
       // Native single-file history is local evidence, never an historical restore destination.
-      for (const path of target.keys()) if (nativeHistoryPath(path)) target.delete(path);
-      for (const path of current.paths) if (nativeHistoryPath(path)) {
+      for (const path of target.keys()) if (isNativeProjectHistoryPath(path)) target.delete(path);
+      for (const path of current.paths) if (isNativeProjectHistoryPath(path)) {
         const value = await safeFile(project.root, path); if (value.bytes) target.set(path, { bytes: value.bytes, mode: value.mode });
       }
       const paths = [...new Set([...current.paths, ...base.keys(), ...target.keys(), ...portable.keys()])].sort();
@@ -145,7 +152,7 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       const removedPaths = [...base.keys()].filter(path => path.startsWith('.open-design/') && !portable.has(path));
       const contentDigest = computeCheckpointContentDigest({ ...source, portableDigests: Object.fromEntries([...portable].map(([path, bytes]) => [path, sha256(bytes)])), removedPaths });
       const candidateOid = await candidate(project.root, expected.localHead!, target, targetOid, project.gitEnv);
-      const captured: Capture = { file: file ?? null, recordsMode: hasMetadata ? 'replace' : 'preserve', targetOid, candidateOid, contentDigest, ...source, ...current, snapshot,
+      const captured: Capture = { nativeLegacyRoot, file: file ?? null, recordsMode: hasMetadata ? 'replace' : 'preserve', targetOid, candidateOid, contentDigest, ...source, ...current, snapshot,
         portable: [...portable].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')]) };
       await verify(id, expected, captured);
       const changes: ProjectGitChangeSummary = { addedPaths: [], modifiedPaths: [], deletedPaths: [], settingsChanged: 0, conversationsChanged: 0,
@@ -156,7 +163,15 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
         else if (previous === 'missing') changes.addedPaths.push(path);
         else if (previous !== sha256(next.bytes) || source.sourceModes[path] !== next.mode) changes.modifiedPaths.push(path);
       }
-      if (hasMetadata) { changes.settingsChanged = 1; changes.conversationsChanged = snapshot.conversations.length; }
+      if (hasMetadata) {
+        const currentSnapshot = parsePortableEntries(portable);
+        changes.settingsChanged = Number(!isDeepStrictEqual(currentSnapshot.project, snapshot.project));
+        const before = new Map(currentSnapshot.conversations.map(item => [item.id, item]));
+        const after = new Map(snapshot.conversations.map(item => [item.id, item]));
+        changes.conversationsChanged = [...new Set([...before.keys(), ...after.keys()])].filter(id =>
+          !isDeepStrictEqual(before.get(id), after.get(id)) || !isDeepStrictEqual(currentSnapshot.messages.filter(item => item.conversationId === id),
+            snapshot.messages.filter(item => item.conversationId === id))).length;
+      }
       const op = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
         requestDigest: digest({ targetOid, file: file ?? null }), payload: json({ captured, evidenceDigest: digest(captured) }) });
       const existing = store.getJournal(op.id)!;
@@ -201,8 +216,9 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     });
     assertIdle(id, project);
     await materializeProject({ recordsMode: prepared.captured.recordsMode, projectId: id, root: project.root, branch: project.branch, operationId: prepared.consumer.id, operationDir: input.operationRoot,
+      nativeLegacyRoot: await nativeHistoryRoot(input.resolveProject(id).root, input.resolveProject(id).nativeLegacyRoot, prepared.captured.nativeLegacyRoot ?? project.root),
       db, store, gate: project.gate, basis: prepared.expected, candidateOid: prepared.captured.candidateOid, snapshot: prepared.captured.snapshot,
-      previewContentDigest: prepared.captured.contentDigest, readBasis: () => basis(id), exportCurrentPortable: async () => (await exported(id)).entries,
+      previewContentDigest: prepared.captured.contentDigest, readBasis: () => basis(id), exportCurrentPortable: async () => (await exported(id, prepared.captured.nativeLegacyRoot ?? project.root)).entries,
       ...(project.gitEnv ? { gitEnv: project.gitEnv } : {}), ...(input.afterEffect ? { afterEffect: input.afterEffect } : {}),
       ...(input.afterDurablePhase ? { afterDurablePhase: input.afterDurablePhase } : {}) });
     return { operationId: prepared.consumer.id };

@@ -17,6 +17,7 @@ import { ensureMaterializationProtection, readRestoreMessage } from './materiali
 import type { MaterializeEffect, MaterializePhase } from './materialize.js';
 
 export interface RecoveryProject {
+  nativeLegacyRoot?: string;
   root: string; branch: string; gate: ProjectGate;
   readBasis(): ProjectGitBasis | Promise<ProjectGitBasis>;
   gitEnv?: Record<string, string>;

@@ -14,6 +14,7 @@ import { isSafeId, kindFor, mimeFor, resolveProjectDir, validateProjectPath } fr
 import { parsePortableEntries } from './services/project-git/portable.js';
 import { safeFile } from './services/project-git/recovery.js';
 import { assertHistoryPath } from './services/project-git/history.js';
+import { nativeHistoryRoot } from './services/project-git/paths.js';
 
 export type ProjectFileHistoryId = { source: 'git'; oid: string } | { source: 'legacy'; path: string; legacyId: string };
 
@@ -515,16 +516,17 @@ async function archivedLegacyState(root: string, fileName: string) {
 }
 
 /** Managed single-file restore reads the actual registered root, including imported-folder projects. */
-export async function readLegacyProjectFile(root: string, fileName: string, legacyId: string): Promise<{ version: ProjectFileVersion; content: string }> {
+export async function readLegacyProjectFile(root: string, fileName: string, legacyId: string, nativeLegacyRoot?: string): Promise<{ version: ProjectFileVersion; content: string }> {
   assertHistoryPath(fileName);
   if (!VERSION_ID_RE.test(legacyId) || isProjectFileVersionPath(fileName)) throw codedError('invalid legacy history target', 'EINVAL');
   const prefix = `.file-versions/${fileVersionKey(fileName)}`;
-  const manifest = await safeFile(root, `${prefix}/manifest.json`);
+  const legacyRoot = await nativeHistoryRoot(root, nativeLegacyRoot);
+  const manifest = await safeFile(legacyRoot, `${prefix}/manifest.json`);
   if (manifest.bytes) {
     const state = normalizeManifestState(JSON.parse(manifest.bytes.toString()), fileName);
     const entry = state.entries.find(item => item.id === legacyId);
     if (entry) {
-      const file = await safeFile(root, `${prefix}/${entry.contentPath}`);
+      const file = await safeFile(legacyRoot, `${prefix}/${entry.contentPath}`);
       if (!file.bytes) throw codedError('legacy bytes missing', 'ENOENT');
       return { version: publicVersion(entry, state.currentVersionId), content: new TextDecoder('utf-8', { fatal: true }).decode(file.bytes) };
     }

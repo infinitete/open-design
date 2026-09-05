@@ -21,6 +21,7 @@ import { bindingOwnerRef, createProjectGitRegistration } from './registration.js
 import { materializeProject } from './materialize.js';
 import { mergeFileTrees } from './merge.js';
 import { readBindingEvidence, rootInventory, type BindingCapture } from './binding-evidence.js';
+import { nativeHistoryRoot, projectGitPaths } from './paths.js';
 
 export interface BindingRequestContext { actorId: string; idempotencyKey: string; expectedProjectRevision?: number }
 export interface ProjectGitBindingServiceInput {
@@ -115,9 +116,15 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     await durableWrite(join(input.operationRoot, path), bytes); return { evidencePath: path, evidenceDigest: sha256(bytes) };
   }
   async function readEvidence(op: ProjectGitJournalRecord): Promise<BindingCapture> {
-    return readBindingEvidence(input.operationRoot, op);
+    const captured = await readBindingEvidence(input.operationRoot, op);
+    if (op.projectId) await legacyRoot(input.resolveProject(op.projectId), captured);
+    return captured;
   }
-  async function capture(id: string, project: ProjectGitSyncProject, identity?: Pick<BindingCapture, 'repositoryProjectId' | 'cloneId'>): Promise<BindingCapture> {
+  async function legacyRoot(project: ProjectGitSyncProject, captured?: Pick<BindingCapture, 'root' | 'nativeLegacyRoot'>) {
+    return nativeHistoryRoot(project.root, project.nativeLegacyRoot, captured ? captured.nativeLegacyRoot ?? captured.root : undefined);
+  }
+  async function capture(id: string, project: ProjectGitSyncProject, identity?: BindingCapture): Promise<BindingCapture> {
+    const nativeLegacyRoot = await legacyRoot(project, identity);
     const start = basis(id); let git: BindingCapture['git'];
     try { git = await discoverRepository(project.root); }
     catch (error) { if (!(error instanceof GitDomainError) || error.details?.reason !== 'not_repository') throw error; git = null; }
@@ -136,7 +143,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       }
       const staged = (await runGit({ cwd: project.root, args: git.head ? ['diff-index', '--cached', '--raw', '-z', git.head] : ['ls-files', '--stage', '-z'] })).stdout;
       if (staged.length) throw new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'User-staged changes must be preserved.');
-      eligible = nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--cached', '--others', '--exclude-standard', '-z'] })).stdout);
+      eligible = projectGitPaths(nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--cached', '-z'] })).stdout),
+        nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout));
     } else {
       const scratch = await mkdtemp(join(input.preparationRoot, 'binding-preview-'));
       await initializeRepository({ root: scratch, initialBranch: localBranch, objectFormat: 'sha1', ...(input.gitEnv ? { env: input.gitEnv } : {}) });
@@ -148,8 +156,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           await durableWrite(join(scratch, path), beforeRules.get(path) ?? Buffer.alloc(0));
         }
       }
-      eligible = nulPaths((await runGit({ cwd: scratch, args: ['ls-files', '--others', '--exclude-standard', '-z'],
-        ...(input.gitEnv ? { env: input.gitEnv } : {}) })).stdout);
+      eligible = projectGitPaths([], nulPaths((await runGit({ cwd: scratch, args: ['ls-files', '--others', '--exclude-standard', '-z'],
+        ...(input.gitEnv ? { env: input.gitEnv } : {}) })).stdout));
     }
     const changes = emptyChanges(); const dependencies: ProjectGitDependency[] = [];
     changes.privatePaths = [...new Set(eligible.filter(isPrivateProjectGitPath).map(path => path.replace(/\/od-private-placeholder$/u, '')))];
@@ -174,7 +182,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     const diskSnapshot = reserved.length ? parsePortableEntries(reservedEntries) : null;
     const repositoryProjectId = identity?.repositoryProjectId ?? store.getBinding(id)?.repositoryProjectId ?? diskSnapshot?.manifest.repositoryProjectId ?? input.newId();
     const cloneId = identity?.cloneId ?? store.getBinding(id)?.cloneId ?? input.newId();
-    const exported = await exportPortableProject({ db, store, projectId: id, repositoryProjectId, cloneId, root: project.root,
+    const exported = await exportPortableProject({ db, store, projectId: id, repositoryProjectId, cloneId, root: project.root, nativeLegacyRoot,
       ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
     const sourceDigests: Record<string, string> = {}; const sourceModes: Record<string, string> = {};
     const paths = [...new Set([...eligible.filter(path => !isPrivateProjectGitPath(path)), ...exported.entries.keys()])].sort();
@@ -190,7 +198,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       const file = await safeFile(project.root, path);
       if ((file.bytes === null ? 'missing' : sha256(file.bytes)) !== sourceDigests[path] || file.mode !== sourceModes[path]) throw stateChanged();
     }
-    const afterExport = await exportPortableProject({ db, store, projectId: id, repositoryProjectId, cloneId, root: project.root,
+    const afterExport = await exportPortableProject({ db, store, projectId: id, repositoryProjectId, cloneId, root: project.root, nativeLegacyRoot: await legacyRoot(input.resolveProject(id), { root: project.root, nativeLegacyRoot }),
       ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
     if (!isDeepStrictEqual(exported.entries, afterExport.entries) || (store.getBinding(id) && !isDeepStrictEqual(start, basis(id)))) throw stateChanged();
     if (git && !isDeepStrictEqual(git, await discoverRepository(project.root))) throw stateChanged();
@@ -198,7 +206,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     try { await assertGitIdentity({ cwd: project.root, ...(project.gitEnv ?? input.gitEnv ? { env: project.gitEnv ?? input.gitEnv } : {}) }); }
     catch (error) { if (!(error instanceof GitDomainError) || !['GIT_IDENTITY_REQUIRED', 'GIT_UNAVAILABLE'].includes(error.code)) throw error;
       dependencies.push({ kind: error.code === 'GIT_UNAVAILABLE' ? 'git' : 'identity', label: error.message, requiredForContent: false, nextStep: null }); }
-    return { root: project.root, localBranch, repositoryProjectId, cloneId, basis: start, git,
+    return { root: project.root, nativeLegacyRoot, localBranch, repositoryProjectId, cloneId, basis: start, git,
       entries: [...exported.entries].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')]), sourceDigests, sourceModes,
       inventory, digest: contentDigest, changes, dependencies };
   }
@@ -253,7 +261,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       await recoveryBarrier(project.gate, intent.executionOperationId).exclusive(async () => {
         if (!isDeepStrictEqual(basis(id), intent.executionBasis)) throw stateChanged();
         const current = await exportPortableProject({ db, store, projectId: id, repositoryProjectId: captured.repositoryProjectId,
-          cloneId: captured.cloneId, root: project.root, ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
+          cloneId: captured.cloneId, root: project.root, nativeLegacyRoot: await legacyRoot(input.resolveProject(id), captured), ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
         if (!isDeepStrictEqual([...current.entries].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')]), captured.entries)) throw stateChanged();
       });
       const candidate = await prepareCheckpoint({ root: project.root, operationDir: input.operationRoot, head: captured.basis.localHead,
@@ -278,7 +286,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
   }
   function sameCapture(current: BindingCapture, captured: BindingCapture) {
     const { bindingTarget: _target, availabilityDependencies: _availability, ...original } = captured;
-    return isDeepStrictEqual(current, original);
+    return isDeepStrictEqual(current, { ...original, nativeLegacyRoot: original.nativeLegacyRoot ?? original.root });
   }
   async function completeBindingOnly(id: string, user: ProjectGitJournalRecord, captured: BindingCapture) {
     const project = input.resolveProject(id); await registration.claimOwner(user.id);
@@ -335,7 +343,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         basis: intent.executionBasis, candidateOid: frozen.candidateOid, publicationMode: frozen.publicationMode, snapshot: inspected.snapshot,
         store, db, gate: project.gate, previewContentDigest: frozen.previewContentDigest, readBasis: () => basis(id),
         exportCurrentPortable: async () => (await exportPortableProject({ db, store, projectId: id, repositoryProjectId: captured.repositoryProjectId,
-          cloneId: captured.cloneId, root: project.root, ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) })).entries,
+          cloneId: captured.cloneId, root: project.root, nativeLegacyRoot: await legacyRoot(input.resolveProject(id), captured), ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) })).entries,
         prepareRegistrationCompletion: registration.prepareRegistrationCompletion, ...(project.gitEnv ?? input.gitEnv ? { gitEnv: project.gitEnv ?? input.gitEnv } : {}) });
     }
     return store.getOperation(user.id)!;

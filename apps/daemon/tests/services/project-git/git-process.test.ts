@@ -240,6 +240,20 @@ describe('controlled project Git', () => {
     await expect(runGit({ cwd: f.a, args: ['cat-file', 'blob', blob] })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
   });
 
+  it('allows file-sized immutable plumbing only for one full object and keeps a hard input cap', async () => {
+    const f = await fixture(); const bytes = Buffer.alloc(17 * 1024 * 1024, 65);
+    const oid = (await runGit({ cwd: f.a, args: ['hash-object', '-w', '--stdin'], stdin: bytes })).stdout.toString().trim();
+    const result = (await runGit({ cwd: f.a, args: ['cat-file', '--batch'], stdin: Buffer.from(oid + '\n') })).stdout;
+    expect(result.subarray(result.indexOf(10) + 1, -1).equals(bytes)).toBe(true);
+    await expect(runGit({ cwd: f.a, args: ['cat-file', '--batch'], stdin: Buffer.from(`${oid}\n${oid}\n`) })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+    await expect(runGit({ cwd: f.a, args: ['hash-object', '--stdin'], stdin: Buffer.alloc(200 * 1024 * 1024 + 1) })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE', details: { limitBytes: 200 * 1024 * 1024 } });
+    await writeFile(join(f.a, 'over-cap'), Buffer.alloc(200 * 1024 * 1024 + 1));
+    const tooLarge = await f.git(f.a, 'hash-object', '-w', '--no-filters', 'over-cap');
+    const outcome = await runGit({ cwd: f.a, args: ['cat-file', '--batch'], stdin: Buffer.from(tooLarge + '\n') })
+      .then(() => 'unexpected success', (error: { code: string }) => error.code);
+    expect(outcome).toBe('PAYLOAD_TOO_LARGE');
+  });
+
   it('reads trusted host identity and ignores the fixture repository identity', async () => {
     const f = await fixture();
     const config = join(f.root, 'identity.gitconfig');

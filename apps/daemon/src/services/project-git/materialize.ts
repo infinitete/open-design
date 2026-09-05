@@ -15,11 +15,13 @@ import { assertOperationBasis, durableDirectory, durableWrite, finishRecovery, g
   readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within, assertInitialImportRegistration } from './recovery.js';
 import type { MaterializationEvidence, MaterializationPath, RecoveryContext } from './recovery.js';
 import { assertHistoryCommit } from './history.js';
+import { nativeHistoryRoot, projectGitPaths } from './paths.js';
 
 export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'records_applied' | 'ref_published' | 'index_published' | 'complete';
 export type MaterializeEffect = 'file_applied' | 'before_records_commit' | 'after_records_commit' | 'before_ref_update'
   | 'after_ref_update' | 'before_index_rename' | 'after_index_rename' | 'index_lock_acquired' | 'index_lock_receipted';
 export interface MaterializeInput {
+  nativeLegacyRoot?: string;
   recordsMode?: 'replace' | 'preserve';
   publicationMode?: 'commit' | 'fast_forward' | 'initial_import';
   projectId: string; root: string; branch: string; operationId: string; operationDir: string;
@@ -37,7 +39,7 @@ const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The orig
 const busy = () => new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'External Git work requires attention.');
 
 /** Restore reason belongs to the consumed immutable preview, including after protection/restart. */
-export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | 'store' | 'root'>, operationId: string, candidateOid: string, recordsMode: 'replace' | 'preserve'): Promise<Buffer> {
+export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | 'store' | 'root' | 'nativeLegacyRoot'>, operationId: string, candidateOid: string, recordsMode: 'replace' | 'preserve'): Promise<Buffer> {
   const journal = context.store.getJournal(operationId)!;
   const payload = journal.payload as { previewId?: string; targetOid?: string; candidateOid?: string; previewContentDigest?: string };
   const pair = context.db.prepare('SELECT preview_operation_id AS previewId FROM project_git_preview_consumers WHERE consumer_operation_id = ?')
@@ -45,12 +47,13 @@ export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | '
   if (!pair || pair.previewId !== payload.previewId) throw recoveryRequired();
   context.store.consumePreview(pair.previewId, operationId);
   const preview = context.store.getJournal(pair.previewId)!;
-  const frozen = preview.payload as { captured?: { targetOid?: string; candidateOid?: string; contentDigest?: string; recordsMode?: string }; evidenceDigest?: string };
+  const frozen = preview.payload as { captured?: { nativeLegacyRoot?: string; targetOid?: string; candidateOid?: string; contentDigest?: string; recordsMode?: string }; evidenceDigest?: string };
   const captured = frozen.captured;
   if (!payload.targetOid || payload.targetOid !== preview.result!.preview!.targetOid || payload.targetOid !== captured?.targetOid
     || payload.candidateOid !== candidateOid || candidateOid !== captured?.candidateOid
     || payload.previewContentDigest !== captured?.contentDigest || captured?.recordsMode !== recordsMode
     || sha256(Buffer.from(canonicalJson(captured as import('@open-design/contracts').JsonValue))) !== frozen.evidenceDigest) throw recoveryRequired();
+  await nativeHistoryRoot(context.root, context.nativeLegacyRoot, captured.nativeLegacyRoot ?? context.root);
   await assertHistoryCommit(context.root, payload.targetOid);
   const output = (await runGit({ cwd: context.root, args: ['cat-file', '--batch'], stdin: Buffer.from(candidateOid + '\n') })).stdout;
   const line = output.indexOf(10); const [object, type, size] = output.subarray(0, line).toString().split(' ');
@@ -64,11 +67,11 @@ export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | '
 
 async function sourcePaths(root: string): Promise<string[]> {
   const outputs = await Promise.all([['ls-files', '--cached', '-z'], ['ls-files', '--others', '--exclude-standard', '-z']].map(args => runGit({ cwd: root, args })));
-  const paths = outputs.flatMap(({ stdout }) => {
+  const paths = outputs.map(({ stdout }) => {
     const text = stdout.toString('utf8'); if (!Buffer.from(text).equals(stdout) || (stdout.length && !text.endsWith('\0'))) throw recoveryRequired();
     return stdout.length ? text.slice(0, -1).split('\0') : [];
   });
-  const unique = [...new Set(paths)].sort(); validateTreeEntries(unique.map(path => ({ path, mode: '100644' }))); return unique;
+  const unique = projectGitPaths(paths[0]!, paths[1]!); validateTreeEntries(unique.map(path => ({ path, mode: '100644' }))); return unique;
 }
 async function capture(root: string, paths: string[]) {
   const sourceDigests: Record<string, string> = Object.create(null); const sourceModes: Record<string, string> = Object.create(null);
