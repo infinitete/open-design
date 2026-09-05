@@ -209,6 +209,42 @@ describe('portable project snapshot', () => {
     })).toThrow();
   });
 
+  it('requires globally unique portable record identities across record kinds', () => {
+    const base = validSnapshot();
+
+    expect(() => parsePortableSnapshot({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        repositoryProjectId: 'message-one',
+        resources: [{ ...base.manifest.resources[0], references: ['message-one'] }],
+      },
+      messages: [{ ...base.messages[0], resourceRefs: [] }],
+    })).toThrow();
+    expect(() => parsePortableSnapshot({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        repositoryProjectId: 'conversation-one',
+        resources: [{
+          ...base.manifest.resources[0],
+          references: ['conversation-one', 'message-one'],
+        }],
+      },
+    })).toThrow();
+    expect(() => parsePortableSnapshot({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        resources: [{
+          ...base.manifest.resources[0],
+          references: ['repo-one', 'conversation-one'],
+        }],
+      },
+      messages: [{ ...base.messages[0], id: 'conversation-one' }],
+    })).toThrow();
+  });
+
   it('rejects duplicate and invalid message graph identities', () => {
     const base = validSnapshot();
     const secondMessage = {

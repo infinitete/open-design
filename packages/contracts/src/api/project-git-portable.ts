@@ -294,6 +294,25 @@ const portableSnapshotSchema = z.object({
   const resourceDigests = new Set<string>();
   const resourcePaths = new Set<string>();
   const actualReferencesByDigest = new Map<string, Set<string>>();
+  const recordKindsById = new Map<string, 'project' | 'conversation' | 'message'>([
+    [snapshot.manifest.repositoryProjectId, 'project'],
+  ]);
+  const registerRecordIdentity = (
+    id: string,
+    kind: 'conversation' | 'message',
+    path: Array<string | number>,
+  ) => {
+    const existingKind = recordKindsById.get(id);
+    if (existingKind && existingKind !== kind) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path,
+        message: `portable record id is already used by a ${existingKind}`,
+      });
+      return;
+    }
+    recordKindsById.set(id, kind);
+  };
   for (const [index, resource] of snapshot.manifest.resources.entries()) {
     if (resourceDigests.has(resource.digest)) {
       context.addIssue({
@@ -316,6 +335,7 @@ const portableSnapshotSchema = z.object({
 
   const conversationIds = new Set<string>();
   for (const [index, conversation] of snapshot.conversations.entries()) {
+    registerRecordIdentity(conversation.id, 'conversation', ['conversations', index, 'id']);
     if (conversationIds.has(conversation.id)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -328,6 +348,7 @@ const portableSnapshotSchema = z.object({
 
   const messagesById = new Map<string, (typeof snapshot.messages)[number]>();
   for (const [index, message] of snapshot.messages.entries()) {
+    registerRecordIdentity(message.id, 'message', ['messages', index, 'id']);
     if (messagesById.has(message.id)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
