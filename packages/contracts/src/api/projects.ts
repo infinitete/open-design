@@ -5,6 +5,7 @@ import type {
   ProjectContextMcpServerRef,
   ProjectContextPluginRef,
 } from './context.js';
+import type { ProjectMutationRevision } from './project-git.js';
 
 export type ProjectKind =
   | 'prototype'
@@ -417,7 +418,7 @@ export interface CreateProjectRequest {
   skipDiscoveryBrief?: boolean;
 }
 
-export interface UpdateProjectRequest {
+export interface UpdateProjectRequest extends ProjectMutationRevision {
   name?: string;
   skillId?: string | null;
   designSystemId?: string | null;
@@ -434,7 +435,7 @@ export interface ProjectResponse {
   project: Project;
 }
 
-export interface RestoreProjectAutomaticScenarioRequest {
+export interface RestoreProjectAutomaticScenarioRequest extends ProjectMutationRevision {
   /** Compare-and-swap guard for the project pin the caller inspected. */
   expectedCurrentSnapshotId: string | null;
 }
@@ -572,7 +573,7 @@ export interface ImportFolderResponse {
   entryFile: string | null;
 }
 
-export interface ReplaceProjectWorkingDirRequest {
+export interface ReplaceProjectWorkingDirRequest extends ProjectMutationRevision {
   baseDir: string;
   orchestratorWorkspace?: OrchestratorWorkspace;
 }
@@ -591,7 +592,7 @@ export interface ConversationResponse {
   conversation: Conversation;
 }
 
-export interface CreateConversationRequest {
+export interface CreateConversationRequest extends ProjectMutationRevision {
   title?: string | null;
   sessionMode?: ChatSessionMode;
   /**
@@ -640,7 +641,7 @@ export interface CreateConversationRequest {
   seedMessages?: ChatMessage[];
 }
 
-export interface UpdateConversationRequest {
+export interface UpdateConversationRequest extends ProjectMutationRevision {
   title?: string | null;
   sessionMode?: ChatSessionMode;
 }

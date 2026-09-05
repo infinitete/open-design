@@ -30,6 +30,7 @@ import type {
 } from '../analytics/events.js';
 import type { StrategyTaskProjectionV2 } from '../plugins/strategy-v2.js';
 import type { OdNextRolloutDecision } from './strategy-rollout.js';
+import type { ProjectMutationRevision } from './project-git.js';
 
 // The daemon's run-failure taxonomy, re-exported under product-facing names so
 // the run-status/error surface can carry the specific cause the daemon already
@@ -77,7 +78,7 @@ export interface ByokMediaDefaults {
   speechVoice?: string;
 }
 
-export interface ChatRequest {
+export interface ChatRequest extends ProjectMutationRevision {
   agentId: string;
   message: string;
   /**
@@ -356,7 +357,7 @@ export interface ChatRunCreateRequest extends ChatRequest {
  * the daemon mints the pin and seeds the user message when the conversation
  * is bound and owned by `projectId`.
  */
-export interface McpRunCreateRequest {
+export interface McpRunCreateRequest extends ProjectMutationRevision {
   projectId: string;
   /** Optional bound conversation; when set without assistantMessageId the daemon mints a pin. */
   conversationId?: string;

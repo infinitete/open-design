@@ -71,6 +71,18 @@ export const API_ERROR_CODES = [
   'AGENT_RUNTIME_DEF_INVALID',
   'PROJECT_NOT_FOUND',
   'PROJECT_MATERIALIZATION_PENDING',
+  'GIT_UNAVAILABLE',
+  'GIT_IDENTITY_REQUIRED',
+  'GIT_AUTH_REQUIRED',
+  'GIT_PERMISSION_DENIED',
+  'GIT_CONFLICT',
+  'EXTERNAL_GIT_BUSY',
+  'PROJECT_BUSY',
+  'PROJECT_STATE_CHANGED',
+  'PREVIEW_STALE',
+  'PORTABLE_FORMAT_UNSUPPORTED',
+  'PORTABLE_RESOURCE_MISSING',
+  'RECOVERY_REQUIRED',
   // Handoff (`POST /api/projects/:id/handoff`): the requested conversation
   // is not in the project, or has no messages to synthesize a handoff from.
   'CONVERSATION_NOT_FOUND',
