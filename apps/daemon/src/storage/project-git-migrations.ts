@@ -2,7 +2,8 @@ import type Database from 'better-sqlite3';
 
 /** Additive, retryable domain schema; existing application records are never imported as history. */
 export function migrateProjectGit(db: Database.Database): void {
-  db.transaction(() => db.exec(`
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS project_git_bindings (
       project_id TEXT PRIMARY KEY,
       common_dir TEXT NOT NULL,
@@ -27,6 +28,8 @@ export function migrateProjectGit(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS project_git_portable_kind
       ON project_git_id_map(repository_project_id, portable_id, kind);
+    CREATE UNIQUE INDEX IF NOT EXISTS project_git_local_record
+      ON project_git_id_map(kind, local_id);
     CREATE TABLE IF NOT EXISTS project_git_operations (
       id TEXT PRIMARY KEY,
       actor_id TEXT NOT NULL,
@@ -57,5 +60,12 @@ export function migrateProjectGit(db: Database.Database): void {
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS project_git_push_due ON project_git_push_queue(next_attempt_at);
-  `)).immediate();
+    `);
+    const columns = db.prepare('PRAGMA table_info(project_git_operations)').all() as { name: string }[];
+    for (const name of ['records_transition_json', 'protection_json', 'owner_operation_id']) {
+      if (!columns.some(column => column.name === name)) {
+        db.exec(`ALTER TABLE project_git_operations ADD COLUMN ${name} TEXT`);
+      }
+    }
+  }).immediate();
 }

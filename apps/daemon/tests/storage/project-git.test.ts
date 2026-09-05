@@ -9,7 +9,9 @@ import { migrateProjectGit } from '../../src/storage/project-git-migrations.js';
 import {
   createProjectGitStore,
   type ProjectGitBindingRecord,
+  type ProjectGitJournalPhase,
   type ProjectGitRecoveryData,
+  type ProjectGitStore,
 } from '../../src/storage/project-git.js';
 
 describe('project Git durable store', () => {
@@ -38,16 +40,31 @@ describe('project Git durable store', () => {
       materializedHead: null, dirty: false };
   }
   function recovery(): ProjectGitRecoveryData {
-    return { operationRoot: join(root, 'operations/op1'), baseHead: 'base', publishHead: 'candidate',
+    return { operationRoot: join(root, 'operations/op1'), baseHead: null, publishHead: 'candidate',
+      previewContentDigest: 'preview-digest', candidateTreeOid: 'target-tree', publishBase: null, publicationParents: [],
       candidateOid: 'candidate', paths: [{ path: 'index.html', oldDigest: 'old', candidateDigest: 'new',
         backupPath: join(root, 'operations/op1/index.backup'), protected: false, applied: false }],
       index: { path: join(root, 'project/.git/index'), oldDigest: 'old-index', candidateDigest: 'new-index',
         backupPath: join(root, 'operations/op1/index'), ownerToken: 'owner-1', published: false },
-      records: { importMarker: 'import-1', applied: false }, refPublished: false };
+      records: null, refPublished: false };
   }
   function basis(b: ProjectGitBindingRecord) {
     return { bindingGeneration: b.generation, projectRevision: b.projectRevision,
       contentRevision: b.contentRevision, localHead: b.localHead, remoteHead: b.observedRemoteHead };
+  }
+  function finishPhase(store: ProjectGitStore, id: string, phase: Exclude<ProjectGitJournalPhase, 'complete'>, data: ProjectGitRecoveryData) {
+    if (phase !== 'records_applied') { store.completePhase(id, phase, data); return; }
+    const op = store.getJournal(id)!;
+    store.completeRecords(id, { basis: op.basis, importMarker: data.records?.importMarker ?? null,
+      advanceProjectRevision: op.kind !== 'checkpoint' }, () => undefined);
+    if (data.records) data.records.applied = true;
+  }
+  function changeExternalBasis(store: ProjectGitStore, kind: 'generation' | 'project' | 'content' | 'remote') {
+    const current = store.getBinding('p1')!;
+    if (kind === 'generation') store.saveBinding({ ...current, branch: 'external-branch' });
+    if (kind === 'project') store.bumpProject('p1', basis(current));
+    if (kind === 'content') store.bumpContent('p1', basis(current));
+    if (kind === 'remote') store.observeRemote('p1', current.generation, 'external-remote');
   }
 
   it('keeps one operation for a retried request across database reopen', () => {
@@ -113,6 +130,20 @@ describe('project Git durable store', () => {
   it('hooks the migration into the real database startup with an explicit data root', () => {
     const startup = openDatabase(root, { dataDir: join(root, 'startup') });
     expect(createProjectGitStore(startup).enqueueOperation(request).kind).toBe('open');
+  });
+
+  it('adds transition columns to the prior schema without inventing completed records effects', () => {
+    let store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = recovery(); data.paths[0]!.protected = true; data.paths[0]!.applied = true;
+    // A pre-fix database could only record the phase name/completion bit, not an owned revision transition.
+    db.prepare("UPDATE project_git_operations SET journal_phase = 'records_applied', phase_completed = 1, recovery_json = ? WHERE id = ?")
+      .run(JSON.stringify(data), op.id);
+    db.exec('ALTER TABLE project_git_operations DROP COLUMN records_transition_json; ALTER TABLE project_git_operations DROP COLUMN protection_json; ALTER TABLE project_git_operations DROP COLUMN owner_operation_id');
+    db.close(); db = new Database(file); migrateProjectGit(db); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getJournal(op.id)).toMatchObject({ recordsTransition: null, protection: null, ownerOperationId: null });
+    expect(() => store.setPhase(op.id, 'ref_published', data)).toThrowError(expect.objectContaining({ code: 'RECOVERY_REQUIRED' }));
+    expect(store.getBinding('p1')?.projectRevision).toBe(0);
   });
 
   it('increments content independently and rejects stale revision and generation mutations', () => {
@@ -203,6 +234,19 @@ describe('project Git durable store', () => {
     expect(() => store.attachId('r1', 'c1', 'conversation', 'portable-2', 'existing-row')).toThrow();
     expect(() => store.mapId('r1', 'c2', 'message', 'portable-1')).toThrow();
     expect(store.getPortableId('r1', 'c1', 'conversation', 'existing-row')).toBe('portable-1');
+  });
+
+  it('rejects attaching one physical local message to different clones while retaining exact retry', () => {
+    let store = createProjectGitStore(db);
+    expect(store.attachId('r1', 'c1', 'message', 'portable-message', 'local-message')).toBe('local-message');
+    expect(store.attachId('r1', 'c1', 'message', 'portable-message', 'local-message')).toBe('local-message');
+    expect(() => store.attachId('r1', 'c2', 'message', 'portable-message', 'local-message')).toThrow();
+    expect(() => store.attachId('r1', 'c2', 'message', 'different-portable', 'local-message')).toThrow();
+    expect(() => store.attachId('r2', 'c3', 'message', 'another-portable', 'local-message')).toThrow();
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.attachId('r1', 'c1', 'message', 'portable-message', 'local-message')).toBe('local-message');
+    expect(() => store.attachId('r1', 'c2', 'message', 'portable-message', 'local-message')).toThrow();
+    expect(store.mapId('r1', 'c2', 'message', 'portable-message')).not.toBe('local-message');
   });
 
   it('reopens pending pushes and only acknowledges the exact generation and target', () => {
@@ -305,7 +349,7 @@ describe('project Git durable store', () => {
     db.close(); db = new Database(file); migrateProjectGit(db);
     expect(createProjectGitStore(db).listRecoverable()[0]).toMatchObject({
       journalPhase: 'protected', phaseCompleted: true,
-      recoveryData: { baseHead: 'base', candidateOid: 'candidate', paths: [{ protected: true, applied: false }] },
+      recoveryData: { baseHead: null, candidateOid: 'candidate', paths: [{ protected: true, applied: false }] },
     });
   });
 
@@ -320,6 +364,211 @@ describe('project Git durable store', () => {
     expect(() => store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: null, error: null })).toThrow();
   });
 
+  it('commits imported records, ID map, marker and owned revision before refs, then resumes without a second import', () => {
+    let store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = recovery();
+    data.records = { importMarker: 'import-1', applied: false };
+    db.exec('CREATE TABLE imported_messages (id TEXT PRIMARY KEY, content TEXT NOT NULL)');
+    for (const phase of ['prepared', 'protected', 'files_applied'] as const) {
+      store.setPhase(op.id, phase, data);
+      if (phase === 'protected') data.paths[0]!.protected = true;
+      if (phase === 'files_applied') data.paths[0]!.applied = true;
+      finishPhase(store, op.id, phase, data);
+    }
+    const input = { basis: basis(b), importMarker: 'import-1', advanceProjectRevision: true };
+    expect(() => store.completeRecords(op.id, input, () => undefined)).toThrow();
+    store.setPhase(op.id, 'records_applied', data);
+    expect(() => store.completePhase(op.id, 'records_applied', { ...data, records: { importMarker: 'import-1', applied: true } })).toThrow();
+    expect(() => store.completeRecords(op.id, { ...input, importMarker: null }, () => undefined)).toThrow();
+    expect(() => store.completeRecords(op.id, input, () => {
+      store.attachId('r1', 'c1', 'message', 'portable-message', 'restored-message');
+      db.prepare('INSERT INTO imported_messages VALUES (?, ?)').run('restored-message', 'restored');
+      throw new Error('import failed');
+    })).toThrow('import failed');
+    expect(db.prepare('SELECT * FROM imported_messages').all()).toEqual([]);
+    expect(store.getPortableId('r1', 'c1', 'message', 'restored-message')).toBeNull();
+    expect(store.getBinding('p1')?.projectRevision).toBe(0);
+    expect(store.getJournal(op.id)).toMatchObject({ phaseCompleted: false, recordsTransition: null });
+    let imports = 0;
+    expect(store.completeRecords(op.id, input, () => {
+      imports++;
+      store.attachId('r1', 'c1', 'message', 'portable-message', 'restored-message');
+      db.prepare('INSERT INTO imported_messages VALUES (?, ?)').run('restored-message', 'restored');
+    })).toBe(1);
+    expect(store.getBinding('p1')?.projectRevision).toBe(1);
+    expect(store.getJournal(op.id)).toMatchObject({ basis: { projectRevision: 0 }, journalPhase: 'records_applied',
+      phaseCompleted: true, recordsTransition: { importMarker: 'import-1', projectRevision: 1 } });
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.completeRecords(op.id, input, () => { imports++; })).toBe(1);
+    expect(imports).toBe(1);
+    expect(db.prepare('SELECT * FROM imported_messages').all()).toEqual([{ id: 'restored-message', content: 'restored' }]);
+    const persisted = store.getJournal(op.id)!.recoveryData!;
+    store.setPhase(op.id, 'ref_published', persisted); persisted.refPublished = true;
+    store.completePhase(op.id, 'ref_published', persisted);
+    store.setPhase(op.id, 'index_published', persisted); persisted.index.published = true;
+    store.completePhase(op.id, 'index_published', persisted);
+    expect(store.completeMaterialization(op.id, { basis: basis(b), advanceProjectRevision: true })).toBe(1);
+    expect(store.getBinding('p1')?.projectRevision).toBe(1);
+    expect(store.getOperation(op.id)?.basis.projectRevision).toBe(0);
+    expect(store.completeRecords(op.id, input, () => { imports++; })).toBe(1);
+    expect(imports).toBe(1);
+  });
+
+  it.each([
+    { head: 'base', parents: ['base', 'remote'], want: ['protect', 'remote'] },
+    { head: 'base', parents: ['remote', 'base'], want: ['remote', 'protect'] },
+    { head: null, parents: [], want: ['protect'] },
+    { head: null, parents: ['remote'], want: ['protect', 'remote'] },
+  ])('persists owned protection and seals same-tree publication with original parents $parents', ({ head, parents, want }) => {
+    let store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), localHead: head });
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = { ...recovery(), baseHead: head, publishBase: head, publicationParents: parents };
+    store.setPhase(op.id, 'prepared', data); store.completePhase(op.id, 'prepared', data);
+    store.setPhase(op.id, 'protected', data);
+    const checkpoint = store.enqueueCheckpoint({ projectId: 'p1', actorId: 'daemon', basis: basis(b),
+      idempotencyKey: 'protect-checkpoint', requestDigest: 'protect-digest', payload: {}, ownerOperationId: op.id });
+    const checkpointData = { ...recovery(), operationRoot: join(root, 'operations/checkpoint'),
+      baseHead: head, publishBase: head, publicationParents: head ? [head] : [],
+      candidateOid: 'protect', publishHead: 'protect', candidateTreeOid: 'protected-tree', records: null };
+    store.setPhase(checkpoint.id, 'prepared', checkpointData); store.completePhase(checkpoint.id, 'prepared', checkpointData);
+    const intent = { basis: basis(b), checkpointOperationId: checkpoint.id, checkpointOid: 'protect' };
+    expect(() => store.completeProtection(op.id, intent)).toThrow();
+    expect(() => store.prepareProtection(op.id, { ...intent, checkpointOid: 'forged' })).toThrow();
+    store.prepareProtection(op.id, intent); store.prepareProtection(op.id, intent);
+    expect(() => store.completeProtection(op.id, intent)).toThrow();
+    for (const phase of ['protected', 'files_applied', 'records_applied', 'ref_published', 'index_published'] as const) {
+      store.setPhase(checkpoint.id, phase, checkpointData);
+      if (phase === 'protected') checkpointData.paths[0]!.protected = true;
+      if (phase === 'files_applied') checkpointData.paths[0]!.applied = true;
+      if (phase === 'ref_published') checkpointData.refPublished = true;
+      if (phase === 'index_published') checkpointData.index.published = true;
+      finishPhase(store, checkpoint.id, phase, checkpointData);
+    }
+    store.completeMaterialization(checkpoint.id, { basis: basis(b), advanceProjectRevision: false });
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getBinding('p1')).toMatchObject({ localHead: 'protect', projectRevision: 0, contentRevision: 0 });
+    expect(() => store.completeProtection(op.id, { ...intent, checkpointOid: 'forged' })).toThrow();
+    store.completeProtection(op.id, intent); store.completeProtection(op.id, intent);
+    expect(store.getJournal(op.id)).toMatchObject({ basis: { localHead: head }, recoveryData: { baseHead: head, candidateTreeOid: 'target-tree' },
+      protection: { completed: true, publishBase: 'protect' } });
+    const candidate = { previewContentDigest: 'preview-digest', candidateTreeOid: 'target-tree', publishBase: 'protect',
+      publicationParents: want, candidateOid: 'replacement', publishHead: 'replacement' };
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { ...candidate, previewContentDigest: 'changed' })).toThrow();
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { ...candidate, candidateTreeOid: 'changed-tree' })).toThrow();
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { ...candidate, publicationParents: ['protect', 'protect'] })).toThrow();
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { ...candidate, publicationParents: ['unrelated'] })).toThrow();
+    store.sealProtectedCandidate(op.id, basis(b), candidate);
+    store.sealProtectedCandidate(op.id, basis(b), candidate);
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { ...candidate, candidateOid: 'other', publishHead: 'other' })).toThrow();
+    expect(() => store.setPhase(op.id, 'protected', { ...data, publishBase: 'protect' })).toThrow();
+    data.paths[0]!.protected = true; store.completePhase(op.id, 'protected', data);
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    for (const phase of ['files_applied', 'records_applied', 'ref_published', 'index_published'] as const) {
+      store.setPhase(op.id, phase, data);
+      if (phase === 'files_applied') data.paths[0]!.applied = true;
+      if (phase === 'ref_published') data.refPublished = true;
+      if (phase === 'index_published') data.index.published = true;
+      finishPhase(store, op.id, phase, data);
+    }
+    expect(store.completeMaterialization(op.id, { basis: basis(b), advanceProjectRevision: true })).toBe(1);
+    expect(store.getBinding('p1')).toMatchObject({ localHead: 'replacement', projectRevision: 1, contentRevision: 0 });
+    expect(store.getJournal(op.id)?.protection?.sealedCandidate?.publicationParents).toEqual(want);
+    expect(store.getOperation(op.id)?.basis).toEqual(basis(b));
+  });
+
+  it.each(['restore', 'checkpoint'] as const)('does not invoke an import callback for a declared no-import $0', kind => {
+    const store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = kind === 'checkpoint' ? store.enqueueCheckpoint({ ...request, projectId: 'p1', basis: basis(b) })
+      : store.enqueueOperation({ ...request, kind, projectId: 'p1', basis: basis(b) });
+    const data = recovery();
+    for (const phase of ['prepared', 'protected', 'files_applied'] as const) {
+      store.setPhase(op.id, phase, data);
+      if (phase === 'protected') data.paths[0]!.protected = true;
+      if (phase === 'files_applied') data.paths[0]!.applied = true;
+      finishPhase(store, op.id, phase, data);
+    }
+    store.setPhase(op.id, 'records_applied', data);
+    const advance = kind !== 'checkpoint';
+    expect(() => store.completeRecords(op.id, { basis: basis(b), importMarker: 'invented', advanceProjectRevision: advance }, () => undefined)).toThrow();
+    let called = false;
+    expect(store.completeRecords(op.id, { basis: basis(b), importMarker: null, advanceProjectRevision: advance }, () => { called = true; })).toBe(advance ? 1 : 0);
+    expect(called).toBe(false);
+  });
+
+  it.each(['generation', 'project', 'content', 'remote'] as const)('rejects an unrelated $0 transition after records completion', change => {
+    const store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = recovery();
+    for (const phase of ['prepared', 'protected', 'files_applied', 'records_applied'] as const) {
+      store.setPhase(op.id, phase, data);
+      if (phase === 'protected') data.paths[0]!.protected = true;
+      if (phase === 'files_applied') data.paths[0]!.applied = true;
+      finishPhase(store, op.id, phase, data);
+    }
+    changeExternalBasis(store, change);
+    expect(() => store.setPhase(op.id, 'ref_published', data)).toThrowError(expect.objectContaining({ code: 'PROJECT_STATE_CHANGED' }));
+    expect(() => store.completeRecords(op.id, { basis: basis(store.getBinding('p1')!), importMarker: null, advanceProjectRevision: true }, () => undefined)).toThrow();
+    expect(store.getJournal(op.id)?.basis).toEqual(basis(b));
+    expect(store.getJournal(op.id)?.journalPhase).toBe('records_applied');
+  });
+
+  it.each(['generation', 'project', 'content', 'remote'] as const)('rejects external $0 changes after a protection receipt', change => {
+    const store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = recovery();
+    store.setPhase(op.id, 'prepared', data); store.completePhase(op.id, 'prepared', data);
+    store.setPhase(op.id, 'protected', data);
+    const checkpoint = store.enqueueCheckpoint({ projectId: 'p1', actorId: 'daemon', basis: basis(b),
+      idempotencyKey: 'owned', requestDigest: 'digest', payload: {}, ownerOperationId: op.id });
+    const protective = { ...recovery(), candidateOid: 'protect', publishHead: 'protect', candidateTreeOid: 'protected-tree' };
+    store.setPhase(checkpoint.id, 'prepared', protective); store.completePhase(checkpoint.id, 'prepared', protective);
+    const input = { basis: basis(b), checkpointOperationId: checkpoint.id, checkpointOid: 'protect' };
+    store.prepareProtection(op.id, input);
+    for (const phase of ['protected', 'files_applied', 'records_applied', 'ref_published', 'index_published'] as const) {
+      store.setPhase(checkpoint.id, phase, protective);
+      if (phase === 'protected') protective.paths[0]!.protected = true;
+      if (phase === 'files_applied') protective.paths[0]!.applied = true;
+      if (phase === 'ref_published') protective.refPublished = true;
+      if (phase === 'index_published') protective.index.published = true;
+      finishPhase(store, checkpoint.id, phase, protective);
+    }
+    store.completeMaterialization(checkpoint.id, { basis: basis(b), advanceProjectRevision: false });
+    expect(() => db.transaction(() => {
+      changeExternalBasis(store, change);
+      expect(() => store.completeProtection(op.id, input)).toThrowError(expect.objectContaining({ code: 'PROJECT_STATE_CHANGED' }));
+      expect(store.getJournal(op.id)?.protection?.completed).toBe(false);
+      throw new Error('rollback fixture mutation');
+    }).immediate()).toThrow('rollback fixture mutation');
+    store.completeProtection(op.id, input);
+    changeExternalBasis(store, change);
+    expect(() => store.completeProtection(op.id, input)).toThrowError(expect.objectContaining({ code: 'PROJECT_STATE_CHANGED' }));
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { previewContentDigest: 'preview-digest', candidateTreeOid: 'target-tree',
+      publishBase: 'protect', publicationParents: ['protect'], candidateOid: 'sealed', publishHead: 'sealed' }))
+      .toThrowError(expect.objectContaining({ code: 'PROJECT_STATE_CHANGED' }));
+    expect(store.getJournal(op.id)?.protection?.sealedCandidate).toBeNull();
+  });
+
+  it('refuses an unrelated checkpoint owner and requires protection intent before child publication', () => {
+    const store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const op = store.enqueueOperation({ ...request, kind: 'restore', projectId: 'p1', basis: basis(b) });
+    const data = recovery();
+    store.setPhase(op.id, 'prepared', data); store.completePhase(op.id, 'prepared', data);
+    store.setPhase(op.id, 'protected', data);
+    const unrelated = store.enqueueCheckpoint({ projectId: 'p1', actorId: 'daemon', basis: basis(b), idempotencyKey: 'unrelated', requestDigest: 'digest', payload: {} });
+    store.setPhase(unrelated.id, 'prepared', data);
+    expect(() => store.prepareProtection(op.id, { basis: basis(b), checkpointOperationId: unrelated.id, checkpointOid: 'candidate' })).toThrow();
+    const owned = store.enqueueCheckpoint({ projectId: 'p1', actorId: 'daemon', basis: basis(b), idempotencyKey: 'owned', requestDigest: 'digest', payload: {}, ownerOperationId: op.id });
+    for (const phase of ['prepared', 'protected', 'files_applied', 'records_applied'] as const) {
+      store.setPhase(owned.id, phase, data);
+      if (phase === 'protected') data.paths[0]!.protected = true;
+      if (phase === 'files_applied') data.paths[0]!.applied = true;
+      finishPhase(store, owned.id, phase, data);
+    }
+    expect(() => store.setPhase(owned.id, 'ref_published', data)).toThrowError(expect.objectContaining({ code: 'RECOVERY_REQUIRED' }));
+    expect(() => store.prepareProtection(op.id, { basis: basis(b), checkpointOperationId: owned.id, checkpointOid: 'candidate' })).toThrow();
+  });
+
   it('recovers ref publication before index replacement and atomically completes the matching binding', () => {
     let store = createProjectGitStore(db); const b = store.saveBinding(binding());
     const op = store.enqueueCheckpoint({ projectId: 'p1', actorId: 'daemon', idempotencyKey: 'checkpoint',
@@ -329,9 +578,8 @@ describe('project Git durable store', () => {
       store.setPhase(op.id, phase, data);
       if (phase === 'protected') data.paths[0]!.protected = true;
       if (phase === 'files_applied') data.paths[0]!.applied = true;
-      if (phase === 'records_applied') data.records!.applied = true;
       if (phase === 'ref_published') data.refPublished = true;
-      store.completePhase(op.id, phase, data);
+      finishPhase(store, op.id, phase, data);
     }
     store.updateOperation(op.id, { status: 'failed', phase: 'failed', result: null, error: null });
     db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
@@ -356,10 +604,9 @@ describe('project Git durable store', () => {
       store.setPhase(op.id, phase, data);
       if (phase === 'protected') data.paths[0]!.protected = true;
       if (phase === 'files_applied') data.paths[0]!.applied = true;
-      if (phase === 'records_applied') data.records!.applied = true;
       if (phase === 'ref_published') data.refPublished = true;
       if (phase === 'index_published') data.index!.published = true;
-      store.completePhase(op.id, phase, data);
+      finishPhase(store, op.id, phase, data);
     }
     const input = { basis: basis(b), advanceProjectRevision: true };
     const source = `import Database from 'better-sqlite3';
@@ -392,10 +639,9 @@ describe('project Git durable store', () => {
       store.setPhase(op.id, phase, data);
       if (phase === 'protected') data.paths[0]!.protected = true;
       if (phase === 'files_applied') data.paths[0]!.applied = true;
-      if (phase === 'records_applied') data.records!.applied = true;
       if (phase === 'ref_published') data.refPublished = true;
       if (phase === 'index_published') data.index!.published = true;
-      store.completePhase(op.id, phase, data);
+      finishPhase(store, op.id, phase, data);
     }
     store.queuePush('p1', 1, 'previous');
     const observerDb = new Database(file); const observer = createProjectGitStore(observerDb);
@@ -409,7 +655,7 @@ describe('project Git durable store', () => {
       }).immediate();
       expect(() => compose(true)).toThrow('transaction rollback');
       expect(store.getJournal(op.id)?.journalPhase).toBe('index_published');
-      expect(store.getBinding('p1')).toMatchObject({ generation: 1, projectRevision: 0 });
+      expect(store.getBinding('p1')).toMatchObject({ generation: 1, projectRevision: 1 });
       compose(false);
       expect(observer.listDuePushes(Date.now())).toMatchObject([{ generation: 2, targetOid: 'candidate' }]);
       expect(observer.getBinding('p1')).toMatchObject({ generation: 2, projectRevision: 1, remoteUrl: 'https://next.invalid/repo' });

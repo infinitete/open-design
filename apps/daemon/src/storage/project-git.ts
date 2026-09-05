@@ -45,6 +45,10 @@ export interface ProjectGitRecoveryPath {
 export interface ProjectGitRecoveryData {
   operationRoot: string;
   baseHead: string | null;
+  previewContentDigest: string;
+  candidateTreeOid: string;
+  publishBase: string | null;
+  publicationParents: string[];
   publishHead: string;
   candidateOid: string;
   paths: ProjectGitRecoveryPath[];
@@ -74,6 +78,42 @@ export interface ProjectGitOperationInput {
 export interface ProjectGitCheckpointInput extends Omit<ProjectGitOperationInput, 'kind' | 'projectId' | 'basis'> {
   projectId: string;
   basis: ProjectGitBasis;
+  ownerOperationId?: string;
+}
+
+export interface ProjectGitRecordsCompletion {
+  basis: ProjectGitBasis;
+  importMarker: string | null;
+  advanceProjectRevision: boolean;
+}
+
+export interface ProjectGitRecordsTransition {
+  importMarker: string | null;
+  advanceProjectRevision: boolean;
+  projectRevision: number;
+}
+
+export interface ProjectGitProtectionInput {
+  basis: ProjectGitBasis;
+  checkpointOperationId: string;
+  checkpointOid: string;
+}
+
+export interface ProjectGitProtectedCandidate {
+  previewContentDigest: string;
+  candidateTreeOid: string;
+  publishBase: string;
+  publicationParents: string[];
+  candidateOid: string;
+  publishHead: string;
+}
+
+export interface ProjectGitProtectionRecord {
+  checkpointOperationId: string;
+  checkpointOid: string;
+  completed: boolean;
+  publishBase: string | null;
+  sealedCandidate: ProjectGitProtectedCandidate | null;
 }
 
 /** Private journal, deliberately not assignable to the public operation DTO. */
@@ -88,6 +128,9 @@ export interface ProjectGitJournalRecord extends Omit<ProjectGitOperation, 'kind
   phaseCompleted: boolean;
   recoveryData: ProjectGitRecoveryData | null;
   completedProjectRevision: number | null;
+  ownerOperationId: string | null;
+  recordsTransition: ProjectGitRecordsTransition | null;
+  protection: ProjectGitProtectionRecord | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -110,7 +153,7 @@ export interface ProjectGitPushRecord {
 
 export interface ProjectGitMaterializationCompletion {
   basis: ProjectGitBasis;
-  /** Restore/import advances the baseline; a local checkpoint does not. */
+  /** Must match the prior records transition; final completion never increments the baseline. */
   advanceProjectRevision: boolean;
 }
 
@@ -149,6 +192,11 @@ export interface ProjectGitStore {
   /** Writes intent BEFORE the effect; completePhase separately records verified completion. */
   setPhase(id: string, phase: Exclude<ProjectGitJournalPhase, 'complete'>, recoveryData: ProjectGitRecoveryData): void;
   completePhase(id: string, phase: Exclude<ProjectGitJournalPhase, 'complete'>, recoveryData: ProjectGitRecoveryData): void;
+  /** Owns import + marker + revision atomically. The synchronous callback runs only for a declared non-null import. */
+  completeRecords(id: string, input: ProjectGitRecordsCompletion, applyRecords: () => undefined): number;
+  prepareProtection(id: string, input: ProjectGitProtectionInput): void;
+  completeProtection(id: string, input: ProjectGitProtectionInput): void;
+  sealProtectedCandidate(id: string, basis: ProjectGitBasis, candidate: ProjectGitProtectedCandidate): void;
   listRecoverable(): ProjectGitJournalRecord[];
   completeMaterialization(id: string, input: ProjectGitMaterializationCompletion): number;
   queuePush(projectId: string, generation: number, oid: string): ProjectGitPushRecord;
@@ -171,6 +219,7 @@ interface OperationRow {
   payload_json: string; status: ProjectGitOperationStatus; phase: ProjectGitPhase;
   result_json: string | null; error_json: string | null; journal_phase: ProjectGitJournalPhase | null;
   phase_completed: number; recovery_json: string | null; completed_project_revision: number | null; created_at: number; updated_at: number;
+  records_transition_json: string | null; protection_json: string | null; owner_operation_id: string | null;
 }
 const phases: ProjectGitJournalPhase[] = ['prepared', 'protected', 'files_applied', 'records_applied', 'ref_published', 'index_published', 'complete'];
 const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The project state changed. Refresh and retry.');
@@ -191,6 +240,9 @@ function journalFrom(row: OperationRow): ProjectGitJournalRecord {
     error: row.error_json === null ? null : JSON.parse(row.error_json), journalPhase: row.journal_phase,
     phaseCompleted: row.phase_completed === 1, recoveryData: row.recovery_json === null ? null : JSON.parse(row.recovery_json),
     completedProjectRevision: row.completed_project_revision,
+    ownerOperationId: row.owner_operation_id,
+    recordsTransition: row.records_transition_json === null ? null : JSON.parse(row.records_transition_json),
+    protection: row.protection_json === null ? null : JSON.parse(row.protection_json),
     createdAt: row.created_at, updatedAt: row.updated_at };
 }
 function publicOperation(record: ProjectGitJournalRecord): ProjectGitOperation | null {
@@ -210,6 +262,9 @@ function basisFor(b: ProjectGitBindingRecord): ProjectGitBasis {
 /** Completions may add facts, but must not erase facts or replace the prepared intent. */
 function validateRecovery(previous: ProjectGitRecoveryData | null, next: ProjectGitRecoveryData): void {
   if (!next.operationRoot || !next.candidateOid || !next.publishHead || !next.index.ownerToken
+    || !next.previewContentDigest || !next.candidateTreeOid || next.publishBase !== next.baseHead
+    || next.publishHead !== next.candidateOid || new Set(next.publicationParents).size !== next.publicationParents.length
+    || (next.baseHead !== null && next.publicationParents.filter(parent => parent === next.baseHead).length !== 1)
     || new Set(next.paths.map(p => p.path)).size !== next.paths.length
     || next.paths.some(p => p.oldDigest !== null && !p.backupPath)
     || (next.index.oldDigest !== null && !next.index.backupPath)) throw recoveryRequired();
@@ -239,6 +294,26 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     const b = requireGeneration(id, expected.bindingGeneration);
     if (!sameBasis(basisFor(b), expected)) throw changed(); return b;
   }
+  function ownedBasis(op: ProjectGitJournalRecord): ProjectGitBasis {
+    return { ...op.basis, projectRevision: op.recordsTransition?.projectRevision ?? op.basis.projectRevision,
+      localHead: op.protection?.completed ? op.protection.checkpointOid : op.basis.localHead };
+  }
+  function protectionPair(id: string, input: ProjectGitProtectionInput) {
+    const op = getJournal(id); const checkpoint = getJournal(input.checkpointOperationId);
+    if (!op?.projectId || !op.recoveryData || !sameBasis(op.basis, input.basis)) throw changed();
+    if (op.kind === 'checkpoint' || !checkpoint?.recoveryData || checkpoint.kind !== 'checkpoint'
+      || checkpoint.ownerOperationId !== op.id || checkpoint.projectId !== op.projectId
+      || !sameBasis(checkpoint.basis, op.basis) || checkpoint.recoveryData.publishHead !== input.checkpointOid
+      || checkpoint.recoveryData.candidateOid !== input.checkpointOid
+      || checkpoint.recoveryData.previewContentDigest !== op.recoveryData.previewContentDigest
+      || !isDeepStrictEqual(checkpoint.recoveryData.publicationParents, op.basis.localHead === null ? [] : [op.basis.localHead])) {
+      throw recoveryRequired();
+    }
+    return { op, checkpoint };
+  }
+  function writeProtection(id: string, protection: ProjectGitProtectionRecord): void {
+    db.prepare('UPDATE project_git_operations SET protection_json = ?, updated_at = ? WHERE id = ?').run(json(protection), Date.now(), id);
+  }
   function updateBindingData(b: ProjectGitBindingRecord): void {
     db.prepare('UPDATE project_git_bindings SET record_json = ? WHERE project_id = ? AND generation = ?')
       .run(json(b), b.projectId, b.generation);
@@ -254,22 +329,22 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         .get(repositoryProjectId, cloneId, portableId) as { local_id: string } | undefined;
       if (current) { if (localId && localId !== current.local_id) throw conflict(); return current.local_id; }
       const target = localId ?? randomUUID();
-      const reverse = db.prepare('SELECT 1 FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND kind = ? AND local_id = ?')
-        .get(repositoryProjectId, cloneId, kind, target);
+      const reverse = db.prepare('SELECT 1 FROM project_git_id_map WHERE kind = ? AND local_id = ?')
+        .get(kind, target);
       if (reverse) throw conflict();
       db.prepare('INSERT INTO project_git_id_map (repository_project_id, clone_id, kind, portable_id, local_id) VALUES (?, ?, ?, ?, ?)')
         .run(repositoryProjectId, cloneId, kind, portableId, target);
       return target;
     });
   }
-  function enqueue(input: Omit<ProjectGitOperationInput, 'kind'> & { kind: ProjectGitJournalRecord['kind'] }): ProjectGitJournalRecord {
+  function enqueue(input: Omit<ProjectGitOperationInput, 'kind'> & { kind: ProjectGitJournalRecord['kind']; ownerOperationId?: string }): ProjectGitJournalRecord {
     return transaction(() => {
       if (!input.actorId || !input.idempotencyKey || !input.requestDigest) throw conflict();
       const scope = input.projectId === null ? 'import' : `project:${input.projectId}`;
       const existing = db.prepare('SELECT * FROM project_git_operations WHERE actor_id = ? AND scope = ? AND kind = ? AND idempotency_key = ?')
         .get(input.actorId, scope, input.kind, input.idempotencyKey) as OperationRow | undefined;
       if (existing) {
-        if (existing.request_digest !== input.requestDigest) throw conflict();
+        if (existing.request_digest !== input.requestDigest || existing.owner_operation_id !== (input.ownerOperationId ?? null)) throw conflict();
         return journalFrom(existing);
       }
       const binding = input.projectId === null ? null : getBinding(input.projectId);
@@ -277,21 +352,35 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         if (!input.basis) throw changed(); requireBasis(binding.projectId, input.basis);
       } else if (input.kind === 'checkpoint') throw changed();
       const basis = input.basis ?? { projectRevision: 0, contentRevision: 0, bindingGeneration: 0, localHead: null, remoteHead: null };
+      if (input.ownerOperationId) {
+        const owner = getJournal(input.ownerOperationId);
+        if (input.kind !== 'checkpoint' || !owner || owner.kind === 'checkpoint'
+          || owner.projectId !== input.projectId || !sameBasis(owner.basis, basis)
+          || owner.journalPhase !== 'protected' || owner.phaseCompleted) throw recoveryRequired();
+      }
       const id = randomUUID(); const now = Date.now();
       db.prepare(`INSERT INTO project_git_operations
-        (id, actor_id, scope, kind, idempotency_key, request_digest, project_id, basis_json, payload_json, status, phase, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'waiting_idle', ?, ?)`)
+        (id, actor_id, scope, kind, idempotency_key, request_digest, project_id, basis_json, payload_json, status, phase, created_at, updated_at, owner_operation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'waiting_idle', ?, ?, ?)`)
         .run(id, input.actorId, scope, input.kind, input.idempotencyKey, input.requestDigest, input.projectId,
-          json(basis), json(input.payload), now, now);
+          json(basis), json(input.payload), now, now, input.ownerOperationId ?? null);
       return getJournal(id)!;
     });
   }
   function writePhase(id: string, phase: Exclude<ProjectGitJournalPhase, 'complete'>, data: ProjectGitRecoveryData, completed: boolean): void {
     transaction(() => {
       const op = getJournal(id); if (!op) throw recoveryRequired();
-      if (!completed && op.projectId !== null && op.basis.bindingGeneration > 0) requireBasis(op.projectId, op.basis);
+      if (!completed && op.projectId !== null && op.basis.bindingGeneration > 0) requireBasis(op.projectId, ownedBasis(op));
+      if (completed && phase === 'records_applied') throw recoveryRequired();
       validateRecovery(op.recoveryData, data);
+      if (op.recoveryData === null && data.baseHead !== op.basis.localHead) throw changed();
+      if (!completed && phase === 'ref_published' && op.ownerOperationId) {
+        const owner = getJournal(op.ownerOperationId);
+        if (owner?.protection?.checkpointOperationId !== op.id || owner.protection.checkpointOid !== data.publishHead
+          || owner.journalPhase !== 'protected' || owner.phaseCompleted) throw recoveryRequired();
+      }
       const index = phases.indexOf(phase); const previous = op.journalPhase === null ? -1 : phases.indexOf(op.journalPhase);
+      if (index >= 4 && !op.recordsTransition) throw recoveryRequired();
       // An intent write never adds completion facts; a completion write cannot pre-claim later effects.
       const permitted = completed ? index : previous;
       if ((permitted < 1 && data.paths.some(p => p.protected)) || (permitted < 2 && data.paths.some(p => p.applied))
@@ -303,6 +392,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         if ((index >= 1 && data.paths.some(p => !p.protected)) || (index >= 2 && data.paths.some(p => !p.applied))
           || (index >= 3 && data.records && !data.records.applied) || (index >= 4 && !data.refPublished)
           || (index >= 5 && !data.index.published)) throw recoveryRequired();
+        if (phase === 'protected' && op.protection && !op.protection.sealedCandidate) throw recoveryRequired();
       } else if (!(index === previous && !op.phaseCompleted)
         && !(index === previous + 1 && (previous === -1 || op.phaseCompleted))) throw recoveryRequired();
       db.prepare('UPDATE project_git_operations SET journal_phase = ?, phase_completed = ?, recovery_json = ?, updated_at = ? WHERE id = ?')
@@ -396,6 +486,74 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     listPendingOperations: () => (db.prepare("SELECT * FROM project_git_operations WHERE status IN ('queued', 'running', 'waiting') ORDER BY created_at, id").all() as OperationRow[]).map(journalFrom),
     setPhase: (id, phase, data) => writePhase(id, phase, data, false),
     completePhase: (id, phase, data) => writePhase(id, phase, data, true),
+    completeRecords: (id, input, applyRecords) => transaction(() => {
+      const op = getJournal(id);
+      if (!op?.projectId || !op.recoveryData || !sameBasis(op.basis, input.basis)) throw changed();
+      if (input.importMarker !== (op.recoveryData.records?.importMarker ?? null)
+        || input.advanceProjectRevision !== (op.kind !== 'checkpoint')
+        || (op.kind === 'checkpoint' && input.importMarker !== null)) throw recoveryRequired();
+      if (op.recordsTransition) {
+        if (op.recordsTransition.importMarker !== input.importMarker
+          || op.recordsTransition.advanceProjectRevision !== input.advanceProjectRevision) throw recoveryRequired();
+        return op.recordsTransition.projectRevision;
+      }
+      if (op.journalPhase !== 'records_applied' || op.phaseCompleted) throw recoveryRequired();
+      const b = requireBasis(op.projectId, ownedBasis(op));
+      if (input.importMarker !== null && applyRecords() !== undefined) throw recoveryRequired();
+      // The callback imports application rows/ID mappings synchronously in THIS transaction.
+      requireBasis(op.projectId, ownedBasis(op));
+      const transition: ProjectGitRecordsTransition = { importMarker: input.importMarker,
+        advanceProjectRevision: input.advanceProjectRevision, projectRevision: b.projectRevision + Number(input.advanceProjectRevision) };
+      db.prepare('UPDATE project_git_bindings SET project_revision = ? WHERE project_id = ?').run(transition.projectRevision, b.projectId);
+      const data = op.recoveryData;
+      if (data.records) data.records.applied = true;
+      db.prepare('UPDATE project_git_operations SET phase_completed = 1, records_transition_json = ?, recovery_json = ?, updated_at = ? WHERE id = ?')
+        .run(json(transition), json(data), Date.now(), id);
+      return transition.projectRevision;
+    }),
+    prepareProtection: (id, input) => transaction(() => {
+      const { op, checkpoint } = protectionPair(id, input);
+      if (op.protection) {
+        if (op.protection.checkpointOperationId !== input.checkpointOperationId || op.protection.checkpointOid !== input.checkpointOid) throw recoveryRequired();
+        return;
+      }
+      requireBasis(op.projectId!, op.basis);
+      if (op.journalPhase !== 'protected' || op.phaseCompleted || checkpoint.journalPhase !== 'prepared') throw recoveryRequired();
+      writeProtection(id, { checkpointOperationId: checkpoint.id, checkpointOid: input.checkpointOid,
+        completed: false, publishBase: null, sealedCandidate: null });
+    }),
+    completeProtection: (id, input) => transaction(() => {
+      const { op, checkpoint } = protectionPair(id, input); const protection = op.protection;
+      if (!protection || protection.checkpointOperationId !== checkpoint.id || protection.checkpointOid !== input.checkpointOid) throw recoveryRequired();
+      if (protection.completed) {
+        if (op.journalPhase !== 'complete') requireBasis(op.projectId!, ownedBasis(op));
+        return;
+      }
+      if (op.journalPhase !== 'protected' || op.phaseCompleted || checkpoint.journalPhase !== 'complete'
+        || !checkpoint.phaseCompleted || checkpoint.status !== 'succeeded'
+        || checkpoint.completedProjectRevision !== op.basis.projectRevision
+        || checkpoint.recordsTransition?.advanceProjectRevision !== false) throw recoveryRequired();
+      requireBasis(op.projectId!, { ...op.basis, localHead: input.checkpointOid });
+      writeProtection(id, { ...protection, completed: true, publishBase: input.checkpointOid });
+    }),
+    sealProtectedCandidate: (id, basis, candidate) => transaction(() => {
+      const op = getJournal(id); const protection = op?.protection; const data = op?.recoveryData;
+      if (!op?.projectId || !data || !sameBasis(op.basis, basis)) throw changed();
+      if (!protection?.completed) throw recoveryRequired();
+      if (op.journalPhase !== 'complete') requireBasis(op.projectId, ownedBasis(op));
+      if (protection.sealedCandidate) {
+        if (!isDeepStrictEqual(protection.sealedCandidate, candidate)) throw recoveryRequired();
+        return;
+      }
+      const parents = op.basis.localHead === null ? [protection.checkpointOid, ...data.publicationParents]
+        : data.publicationParents.map(parent => parent === op.basis.localHead ? protection.checkpointOid : parent);
+      if (op.journalPhase !== 'protected' || op.phaseCompleted || candidate.previewContentDigest !== data.previewContentDigest
+        || candidate.candidateTreeOid !== data.candidateTreeOid || candidate.publishBase !== protection.checkpointOid
+        || !candidate.candidateOid || candidate.publishHead !== candidate.candidateOid
+        || parents.includes(candidate.candidateOid) || new Set(parents).size !== parents.length
+        || !isDeepStrictEqual(candidate.publicationParents, parents)) throw recoveryRequired();
+      writeProtection(id, { ...protection, sealedCandidate: candidate });
+    }),
     listRecoverable: () => (db.prepare(`SELECT * FROM project_git_operations WHERE
       (journal_phase IS NOT NULL AND journal_phase != 'complete') OR (journal_phase IS NULL AND status IN ('queued', 'running', 'waiting'))
       ORDER BY created_at, id`).all() as OperationRow[]).map(journalFrom),
@@ -408,9 +566,9 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       }
       if (!op?.projectId || !op.recoveryData || op.journalPhase !== 'index_published' || !op.phaseCompleted) throw recoveryRequired();
       if (!sameBasis(op.basis, input.basis)) throw changed();
-      const b = requireBasis(op.projectId, input.basis); const head = op.recoveryData.publishHead;
-      db.prepare('UPDATE project_git_bindings SET project_revision = project_revision + ?, exported_content_revision = content_revision WHERE project_id = ?')
-        .run(Number(input.advanceProjectRevision), b.projectId);
+      if (!op.recordsTransition || op.recordsTransition.advanceProjectRevision !== input.advanceProjectRevision) throw recoveryRequired();
+      const b = requireBasis(op.projectId, ownedBasis(op)); const head = op.protection?.sealedCandidate?.publishHead ?? op.recoveryData.publishHead;
+      db.prepare('UPDATE project_git_bindings SET exported_content_revision = content_revision WHERE project_id = ?').run(b.projectId);
       updateBindingData({ ...b, localHead: head, materializedHead: head, dirty: false });
       // This transaction closes the local-commit/outbox gap, including paused bindings.
       if (b.remoteUrl !== null) store.queuePush(b.projectId, b.generation, head);
