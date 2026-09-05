@@ -1,8 +1,10 @@
 import { mkdir, readFile, writeFile, chmod, unlink } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -149,6 +151,32 @@ it('retains authentication advice across reopen and retries only an explicit one
   await f.sync('a', true); expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(local);
 });
 
+it('automatically retries transient external Git busy after the user finishes staging', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'remote.txt'), 'remote content'); await f.sync('a');
+  let staged = false;
+  const deps = { ...f.deps, fetchTarget: async (id: string) => {
+    const remote = await f.deps.fetchTarget(id);
+    if (!staged) { staged = true; await writeFile(join(f.b, 'user.txt'), 'user-staged content'); await f.git(f.b, 'add', 'user.txt'); }
+    return remote;
+  } };
+  await expect(syncProject({ projectId: 'b', oneShot: false, deps })).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  const index = await readFile(join(f.b, '.git/index'));
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toContainEqual(expect.objectContaining({ projectId: 'b', targetOid: f.head, nextAttemptAt: 105_000 }));
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'b', phase: 'external_git_busy' }));
+  f.reopen(); f.advance(600_000); await f.sync('b', false); f.advance(5000);
+  await expect(f.sync('b', false)).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(f.head);
+  // Only the fixture's external user unstages; automatic work must preserve these bytes.
+  await f.git(f.b, 'restore', '--staged', 'user.txt');
+  await f.sync('b', false); f.advance(5000); await f.sync('b', false);
+  const final = await f.git(f.b, 'rev-parse', 'HEAD'); expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(final);
+  expect(await f.git(f.b, 'show', 'HEAD:user.txt')).toBe('user-staged content');
+  expect(await f.git(f.b, 'show', 'HEAD:remote.txt')).toBe('remote content');
+  expect(f.store.getBinding('b')).toMatchObject({ autoSync: true, confirmedRemoteHead: final });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual([]);
+});
+
 it('conservatively saves five seconds after an observed change with no subscribers and no network', async () => {
   const f = await fixture(); f.store.saveBinding({ ...f.store.getBinding('a')!, autoSync: false });
   await f.deps.detect('a'); await writeFile(join(f.a, 'index.html'), 'background edit\n'); f.advance(1000); await f.deps.detect('a');
@@ -250,6 +278,70 @@ it('reports changed external metadata as a durable conflict and preserves databa
   await expect(f.deps.checkpoint('a')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'external_head_conflict' } });
   expect(f.db.prepare('SELECT name FROM projects WHERE id = ?').get('a')).toEqual({ name: 'Before' });
   expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'a', phase: 'conflict' }));
+});
+
+it.each(['edit', 'delete', 'mode', 'addition', 'ignored-addition'] as const)('reconciles uncommitted reserved-file %s without masking it with database exports', async change => {
+  const f = await fixture(); await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  const path = join(f.a, '.open-design/project.json'); const original = await readFile(path);
+  const external = Buffer.from(JSON.stringify({ ...JSON.parse(original.toString()), name: 'External edit' }) + '\n');
+  if (change === 'edit') await writeFile(path, external);
+  if (change === 'delete') await unlink(path);
+  if (change === 'mode') await chmod(path, 0o755);
+  if (change === 'ignored-addition') await writeFile(join(f.a, '.git/info/exclude'), '.open-design/external.json\n');
+  if (change === 'addition' || change === 'ignored-addition') await writeFile(join(f.a, '.open-design/external.json'), '{}');
+  const index = await readFile(join(f.a, '.git/index'));
+  await expect(f.deps.automaticReady('a')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'external_head_conflict' } });
+  f.advance(6000);
+  await expect(f.deps.checkpoint('a')).rejects.toMatchObject({ code: 'CONFLICT' });
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+  expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+  expect(f.db.prepare('SELECT name FROM projects WHERE id = ?').get('a')).toEqual({ name: 'Before' });
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'a', phase: 'conflict' }));
+  if (change === 'delete') await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  else expect(await readFile(path)).toEqual(change === 'edit' ? external : original);
+  if (change === 'mode') expect(await import('node:fs/promises').then(fs => fs.stat(path)).then(s => s.mode & 0o111)).not.toBe(0);
+  if (change === 'addition' || change === 'ignored-addition') expect(await readFile(join(f.a, '.open-design/external.json'), 'utf8')).toBe('{}');
+});
+
+it('still checkpoints ordinary database edits when reserved working files match the known head', async () => {
+  const f = await fixture(); await f.deps.detect('a');
+  f.db.prepare('UPDATE projects SET name = ? WHERE id = ?').run('Database edit', 'a');
+  await expect(f.deps.automaticReady('a')).resolves.toBe(false); f.advance(5000);
+  await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  expect(JSON.parse(await readFile(join(f.a, '.open-design/project.json'), 'utf8')).name).toBe('Database edit');
+});
+
+it.each(['file', 'path', 'index', 'head'] as const)('rejects a torn automatic %s observation and restarts the quiet proof', async boundary => {
+  const f = await fixture(); await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  const original = fs.readFile; let raced = false;
+  const hook = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+    const bytes = await original(...args);
+    if (!raced && args[0] === join(f.a, '.git/index')) {
+      raced = true;
+      if (boundary === 'file') await writeFile(join(f.a, 'index.html'), 'raced named file\n');
+      if (boundary === 'path') await writeFile(join(f.a, 'late.txt'), 'raced path\n');
+      if (boundary === 'index') { await writeFile(join(f.a, 'staged.txt'), 'user staging\n'); await f.git(f.a, 'add', 'staged.txt'); }
+      if (boundary === 'head') await f.git(f.a, 'commit', '--allow-empty', '-m', 'external head');
+    }
+    return bytes;
+  });
+  syncBuiltinESMExports();
+  try { const ready = await f.deps.automaticReady('a'); expect(raced).toBe(true); expect(ready).toBe(false); }
+  finally { hook.mockRestore(); syncBuiltinESMExports(); }
+  const head = await f.git(f.a, 'rev-parse', 'HEAD'); const index = await readFile(join(f.a, '.git/index'));
+  if (boundary === 'index') {
+    f.advance(6000); await expect(f.deps.automaticReady('a')).resolves.toBe(false);
+    expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+    await f.git(f.a, 'restore', '--staged', 'staged.txt');
+  }
+  await expect(f.deps.automaticReady('a')).resolves.toBe(false);
+  f.advance(4999); await expect(f.deps.automaticReady('a')).resolves.toBe(false);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(head);
+  f.advance(1); await expect(f.deps.automaticReady('a')).resolves.toBe(true);
+  if (boundary === 'file') expect(await f.git(f.a, 'show', 'HEAD:index.html')).toBe('raced named file');
+  if (boundary === 'path') expect(await f.git(f.a, 'show', 'HEAD:late.txt')).toBe('raced path');
+  if (boundary === 'index') expect(await f.git(f.a, 'show', 'HEAD:staged.txt')).toBe('user staging');
+  if (boundary === 'head') expect(f.store.getBinding('a')!.localHead).toBe(head);
 });
 
 it('keeps the outbox unacknowledged when the remote advances during confirmation', async () => {

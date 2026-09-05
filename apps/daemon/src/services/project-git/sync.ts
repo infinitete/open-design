@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { realpath, readFile, lstat } from 'node:fs/promises';
+import { realpath, readFile, lstat, readdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
@@ -80,7 +80,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
   let binding = store.getBinding(projectId);
   if (!binding?.localHead || !binding.remoteUrl || (!oneShot && !binding.autoSync)) return;
   const previous = networkOperations(store, projectId).filter(op => op.basis.bindingGeneration === binding!.generation);
-  if (!oneShot && previous.some(op => ['auth_required', 'conflict', 'external_git_busy'].includes(op.phase))) return;
+  if (!oneShot && previous.some(op => ['auth_required', 'conflict'].includes(op.phase))) return;
   const queued = store.queuePush(projectId, binding.generation, binding.localHead);
   if (!oneShot && queued.nextAttemptAt > deps.now()) return;
   const original = binding; const generation = binding.generation;
@@ -141,7 +141,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
     const phase = errorPhase(error);
     const queue = store.listDuePushes(Number.MAX_SAFE_INTEGER).find(item => item.projectId === projectId && item.generation === generation);
     if (queue?.targetOid === target) store.deferPush(projectId, generation, target,
-      ['auth_required', 'conflict', 'external_git_busy'].includes(phase) ? Number.MAX_SAFE_INTEGER : deps.now() + retryDelayMs(queue.attempts, deps.random));
+      ['auth_required', 'conflict'].includes(phase) ? Number.MAX_SAFE_INTEGER : deps.now() + retryDelayMs(queue.attempts, deps.random));
     store.updateOperation(operation.id, { status: 'waiting', phase, result: { head: target }, error: publicError(error) });
     throw error;
   }
@@ -190,6 +190,14 @@ export function createProjectGitSyncDeps(input: {
     const { b, project } = captured;
     const basis = basisFor(b);
     const entries = await project.gate.exclusive(async () => {
+      if (basis.localHead) {
+        const tree = await gitTree(project.root, basis.localHead);
+        const reserved = new Map<string, { bytes: Buffer | null; mode: string }>();
+        for (const path of await pathsAt(project.root)) {
+          if (path.startsWith('.open-design/') && !isPrivateProjectGitPath(path)) reserved.set(path, await safeFile(project.root, path));
+        }
+        assertReservedUnchanged(tree, reserved);
+      }
       unchanged(id, basis); const result = await exported(id, b, project); unchanged(id, basis); return result;
     });
     const candidate = await prepareCheckpoint({ root: project.root, operationDir: input.operationRoot,
@@ -230,7 +238,27 @@ export function createProjectGitSyncDeps(input: {
   async function pathsAt(root: string): Promise<string[]> {
     const raw = (await runGit({ cwd: root, args: ['ls-files', '--cached', '--others', '--exclude-standard', '-z'] })).stdout;
     const text = raw.toString(); if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw changed();
-    const paths = [...new Set(text.split('\0').filter(Boolean))].sort(); validateTreeEntries(paths.map(path => ({ path, mode: '100644' }))); return paths;
+    // Ignore rules cannot hide reserved files. Walk only this namespace, without
+    // following symlinks or reading private bytes; safeFile validates each leaf.
+    const reserved: string[] = [];
+    const visit = async (path: string): Promise<void> => {
+      if (isPrivateProjectGitPath(path)) return;
+      let info;
+      try { info = await lstat(join(root, path)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+      if (!info.isDirectory() || info.isSymbolicLink()) { reserved.push(path); return; }
+      for (const name of await readdir(join(root, path))) await visit(`${path}/${name}`);
+    };
+    await visit('.open-design');
+    const paths = [...new Set([...text.split('\0').filter(Boolean), ...reserved])].sort();
+    validateTreeEntries(paths.map(path => ({ path, mode: '100644' }))); return paths;
+  }
+  function assertReservedUnchanged(tree: Map<string, { bytes: Buffer; mode: string }>, files: Map<string, { bytes: Buffer | null; mode: string }>) {
+    const reserved = (entries: typeof files) => [...entries].filter(([path]) => path.startsWith('.open-design/') && !isPrivateProjectGitPath(path))
+      .map(([path, file]) => [path, file.mode, file.bytes === null ? null : sha256(file.bytes)]).sort(([a], [b]) => String(a).localeCompare(String(b)));
+    if (!isDeepStrictEqual(reserved(tree), reserved(files))) throw new GitDomainError('CONFLICT', 409,
+      'External portable files require reconciliation before exporting database content.',
+      { reason: 'external_head_conflict', nextStep: 'Review the reserved-file changes before resuming automatic versioning.' });
   }
   async function cleanNoop(id: string, project: ProjectGitSyncProject, basis: ProjectGitBasis, candidate: Awaited<ReturnType<typeof prepareCheckpoint>>) {
     await project.gate.exclusive(async () => {
@@ -256,20 +284,28 @@ export function createProjectGitSyncDeps(input: {
   const observations = new Map<string, { fingerprint: string; changedAt: number; saved: boolean }>();
   const detecting = new Map<string, Promise<void>>();
   async function fingerprint(id: string): Promise<{ fingerprint: string; clean: boolean }> {
-    const { b, project, repository } = await context(id);
+    await ready;
+    const project = input.resolveProject(id);
     return project.gate.exclusive(async () => {
+      const { b, repository } = await context(id); const basis = basisFor(b);
       const paths = await pathsAt(project.root);
       const hash = createHash('sha256').update(JSON.stringify([basisFor(b), repository.head, repository.branch]));
       const sourceDigests: Record<string, string> = Object.create(null); const sourceModes: Record<string, string> = Object.create(null);
+      const files = new Map<string, { bytes: Buffer | null; mode: string }>();
       for (const path of paths) {
         if (isPrivateProjectGitPath(path)) continue;
         const file = await safeFile(project.root, path); hash.update(JSON.stringify([path, file.mode]));
+        files.set(path, file);
         if (file.bytes) hash.update(file.bytes); hash.update('\0');
         sourceDigests[path] = file.bytes === null ? 'missing' : sha256(file.bytes); sourceModes[path] = file.mode;
       }
-      try { hash.update(await readFile(join(repository.gitDir, 'index'))); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      const readIndex = async () => {
+        try { return await readFile(join(repository.gitDir, 'index')); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null; }
+      };
+      const index = await readIndex(); if (index) hash.update(index);
       const tree = repository.head ? await gitTree(project.root, repository.head) : new Map<string, { bytes: Buffer; mode: string; oid: string }>();
+      if (repository.head) assertReservedUnchanged(tree, files);
       const entries = await exported(id, b, project);
       const portableDigests = Object.fromEntries([...entries].map(([path, bytes]) => [path, sha256(bytes)]));
       const semantic = computeCheckpointContentDigest({ sourceDigests, sourceModes, portableDigests,
@@ -278,7 +314,14 @@ export function createProjectGitSyncDeps(input: {
         sourceModes: Object.fromEntries([...tree].map(([path, file]) => [path, file.mode])), portableDigests: {}, removedPaths: [] });
       const staged = (await runGit({ cwd: project.root, args: repository.head ? ['diff-index', '--cached', '--raw', '-z', repository.head]
         : ['ls-files', '--stage', '-z'] })).stdout.length > 0;
-      hash.update(semantic); unchanged(id, basisFor(b));
+      // External writers do not acquire our gate. Re-read the complete captured state;
+      // a SQLite-only fence cannot turn old bytes into a coherent new observation.
+      for (const [path, file] of files) {
+        if (!isDeepStrictEqual(file, await safeFile(project.root, path))) throw changed();
+      }
+      if (!isDeepStrictEqual(paths, await pathsAt(project.root)) || !isDeepStrictEqual(index, await readIndex())
+        || !isDeepStrictEqual(repository, await discoverRepository(project.root))) throw changed();
+      hash.update(semantic); unchanged(id, basis);
       return { fingerprint: hash.digest('hex'), clean: repository.head === b.localHead && !b.dirty
         && !staged && b.contentRevision === b.exportedContentRevision && semantic === baseDigest };
     });
@@ -392,7 +435,11 @@ export function createProjectGitSyncDeps(input: {
         await deps.checkpoint(id);
         const after = await fingerprint(id);
         observations.set(id, { fingerprint: after.fingerprint, changedAt: input.now(), saved: after.clean });
-      } catch (error) { localStatus(id, error); throw error; } })().finally(() => { detecting.delete(id); });
+      } catch (error) {
+        observations.delete(id);
+        if (error instanceof GitDomainError && error.code === 'PROJECT_STATE_CHANGED') return;
+        localStatus(id, error); throw error;
+      } })().finally(() => { detecting.delete(id); });
       detecting.set(id, work); return work;
     },
     async automaticReady(id) { await deps.detect(id); return observations.get(id)?.saved === true; },
