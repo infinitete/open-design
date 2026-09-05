@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { writeFileSync as requireWrite } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, stat, utimes, unlink, rename, readdir, symlink } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,10 @@ import { getProjectGate } from '../../../src/services/project-git/gate.js';
 import * as gitProcess from '../../../src/services/project-git/git-process.js';
 import { prepareCheckpoint, publishCheckpoint, journalCheckpoint, readCheckpointPublication, computeCheckpointContentDigest } from '../../../src/services/project-git/checkpoint.js';
 import type { CheckpointCoordination } from '../../../src/services/project-git/checkpoint.js';
-import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+import { parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+
+// Keep actual filesystem behavior; the returned namespace permits focused directory-fsync fault injection.
+vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
 
 const nullConfig = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const gitEnv = { GIT_CONFIG_GLOBAL: nullConfig, GIT_CONFIG_SYSTEM: nullConfig,
@@ -28,6 +32,17 @@ function portable(chat = true, name = 'Project') {
 }
 async function writeEntries(root: string, entries: Map<string, Uint8Array>) {
   for (const [path, bytes] of entries) { await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), bytes); }
+}
+function observeDirectorySync(onSync: (path: string) => void): void {
+  const originalOpen = fs.open;
+  vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (typeof args[0] === 'string' && (await handle.stat()).isDirectory()) {
+      const path = args[0]; const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, 'sync').mockImplementation(async () => { onSync(path); await sync(); });
+    }
+    return handle;
+  });
 }
 
 async function fixture(initial = true, seed?: (f: Awaited<ReturnType<typeof createGitFixture>>) => Promise<void>) {
@@ -60,6 +75,98 @@ async function fixture(initial = true, seed?: (f: Awaited<ReturnType<typeof crea
 }
 
 describe('consistent project checkpoints', () => {
+  it.each(['tracked-change', 'missing-create'])('rejects ordinary supplied %s without granting writeback authority', async kind => {
+    const f = await fixture(); f.input.portableEntries = portable(false);
+    const path = kind === 'tracked-change' ? 'index.html' : 'new-user-file.html';
+    f.input.portableEntries.set(path, Buffer.from('Map replacement'));
+    const index = await readFile(join(f.a, '.git/index'));
+    await expect(prepareCheckpoint(f.input)).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED', details: { paths: [path] } });
+    expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('first');
+    await expect(readFile(join(f.a, 'new-user-file.html'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+    expect(f.store.listRecoverable()).toEqual([]);
+  });
+
+  it('preserves unchanged ordinary evidence and actual legal declared resource aliases', async () => {
+    const f = await fixture(); const bytes = Buffer.from('resource bytes'); const digest = createHash('sha256').update(bytes).digest('hex');
+    await writeFile(join(f.a, 'index.html'), 'current user edit');
+    const alias = `.open-design/resources/${digest}/content`;
+    const snapshot = parsePortableEntries(portable(false));
+    snapshot.manifest.resources = [{ digest, locations: [{ path: alias, purpose: 'attachment' }], references: ['r1'] }];
+    snapshot.project.contentRefs = [digest];
+    f.input.portableEntries = serializePortableMetadata(snapshot);
+    f.input.portableEntries.set(alias, bytes); f.input.portableEntries.set('index.html', Buffer.from('current user edit'));
+    const candidate = await prepareCheckpoint(f.input); const operationId = f.enqueue();
+    await publishCheckpoint({ root: f.a, branch: 'main', candidate, operationId, store: f.store });
+    expect(await readFile(join(f.a, alias))).toEqual(bytes);
+    expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('current user edit');
+    expect(f.store.getJournal(operationId)!.recoveryData!.paths.map(item => item.path)).not.toContain('index.html');
+    expect(await f.git(f.a, 'status', '--porcelain')).toBe('');
+  });
+
+  it('keeps shared resource-alias schema rejection for an outside declared alias', async () => {
+    const f = await fixture(); const entries = portable(false); const bytes = Buffer.from('replacement');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    entries.set('.open-design/manifest.json', Buffer.from(JSON.stringify({ schemaVersion: 1, repositoryProjectId: 'r1',
+      resources: [{ digest, locations: [{ path: 'index.html', purpose: 'attachment' }], references: ['project'] }] })));
+    entries.set('index.html', bytes);
+    await expect(prepareCheckpoint({ ...f.input, portableEntries: entries })).rejects.toBeDefined();
+    expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('first');
+  });
+
+  it('flushes every newly created operation-directory parent before prepared intent', async () => {
+    const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'changed');
+    f.input.operationDir = join(f.root, 'new-parent/operations');
+    const events: string[] = []; observeDirectorySync(path => { events.push(path); });
+    const candidate = await prepareCheckpoint(f.input);
+    const required = [f.root, join(f.root, 'new-parent'), f.input.operationDir];
+    let previous = -1;
+    for (const path of required) { const index = events.indexOf(path); expect(index).toBeGreaterThan(previous); previous = index; }
+    expect(events.indexOf(dirname(candidate.privateIndexPath))).toBeGreaterThan(previous);
+    const setPhase = f.store.setPhase;
+    vi.spyOn(f.store, 'setPhase').mockImplementation((id, phase, data) => {
+      if (phase === 'prepared') for (const path of required) expect(events).toContain(path);
+      setPhase(id, phase, data);
+    });
+    await journalCheckpoint({ root: f.a, branch: 'main', candidate, operationId: f.enqueue(), store: f.store });
+  });
+
+  it.each(['ancestor', 'operation-child'])('does not return a candidate when the %s directory linkage cannot be flushed', async fault => {
+    const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'changed');
+    f.input.operationDir = join(f.root, 'new-parent/operations');
+    observeDirectorySync(path => { if (path === (fault === 'ancestor' ? f.root : f.input.operationDir)) throw new Error('parent fsync failed'); });
+    await expect(prepareCheckpoint(f.input)).rejects.toThrow('parent fsync failed');
+    expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+    expect(f.store.listRecoverable()).toEqual([]);
+  });
+
+  it('flushes every new portable parent entry before completing files', async () => {
+    const f = await fixture(); f.input.portableEntries = portable(); const candidate = await prepareCheckpoint(f.input);
+    const events: string[] = []; observeDirectorySync(path => { events.push(path); });
+    const conversation = [...f.input.portableEntries.keys()].find(path => path.endsWith('/conversation.json'))!;
+    const required = [f.a, join(f.a, '.open-design'), join(f.a, '.open-design/conversations'), dirname(join(f.a, conversation))];
+    const complete = f.store.completePhase;
+    vi.spyOn(f.store, 'completePhase').mockImplementation((id, phase, data) => {
+      if (phase === 'files_applied') {
+        let previous = -1;
+        for (const path of required) { const index = events.indexOf(path); expect(index).toBeGreaterThan(previous); previous = index; }
+      }
+      complete(id, phase, data);
+    });
+    await publishCheckpoint({ root: f.a, branch: 'main', candidate, operationId: f.enqueue(), store: f.store });
+    expect(await f.git(f.a, 'status', '--porcelain')).toBe('');
+  });
+
+  it.each(['root', 'nested'])('keeps files intent and old HEAD/index if the portable %s parent flush fails', async fault => {
+    const f = await fixture(); f.input.portableEntries = portable(); const candidate = await prepareCheckpoint(f.input);
+    const index = await readFile(join(f.a, '.git/index')); const operationId = f.enqueue();
+    observeDirectorySync(path => { if (path === (fault === 'root' ? f.a : join(f.a, '.open-design/conversations'))) throw new Error('portable parent fsync failed'); });
+    await expect(publishCheckpoint({ root: f.a, branch: 'main', candidate, operationId, store: f.store })).rejects.toThrow('portable parent fsync failed');
+    expect(f.store.getJournal(operationId)).toMatchObject({ journalPhase: 'files_applied', phaseCompleted: false });
+    expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+    expect(await readFile(join(f.a, '.git/index'))).toEqual(index);
+  });
+
   it('uses the same semantic content digest before and after generated writeback and HEAD publication', async () => {
     const f = await fixture(); f.input.portableEntries = portable(); const candidate = await prepareCheckpoint(f.input);
     await publishCheckpoint({ root: f.a, branch: 'main', candidate, operationId: f.enqueue(), store: f.store });

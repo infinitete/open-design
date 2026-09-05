@@ -115,6 +115,24 @@ async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, 'r'); try { await handle.sync(); } finally { await handle.close(); }
 }
 
+/** Establish each new directory name in its parent before creating anything beneath it. */
+async function durableDirectory(path: string, mode: number): Promise<void> {
+  const parent = dirname(path);
+  try {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw recovery();
+  } catch (error) {
+    if (!missing(error) || parent === path) throw error;
+    await durableDirectory(parent, mode);
+    try { await mkdir(path, { mode }); }
+    catch (createError) { if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') throw createError; }
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw recovery();
+  }
+  // Also flush an existing boundary: a prior failed attempt may have created it before its parent sync failed.
+  if (parent !== path) await syncDirectory(parent);
+}
+
 function safePath(path: string): void {
   if (!path || isAbsolute(path) || path.includes('\\') || path.includes('\0')
     || Buffer.from(path).toString('utf8') !== path
@@ -238,11 +256,8 @@ async function portablePlan(root: string, head: string | null, entries: Map<stri
       if (entry && !base.has(location.path)) base.set(location.path, await blob(root, entry.oid));
     }
     parsePortableEntries(base);
-    // Resource aliases outside the reserved directory are ordinary user project files, never garbage-collected here.
+    // Only owned reserved snapshot paths participate in removal; ordinary source entries never do.
     for (const path of base.keys()) if (path.startsWith('.open-design/') && !entries.has(path)) obsolete.push(path);
-  }
-  for (const path of entries.keys()) {
-    const entry = tree.get(path); if (entry && !base.has(path)) base.set(path, await blob(root, entry.oid));
   }
   const reserved = await reservedPaths(root);
   const unknown = reserved.filter(path => !base.has(path) && !entries.has(path));
@@ -267,11 +282,12 @@ export async function prepareCheckpoint(input: {
     await assertGitIdentity({ cwd: root, ...(context.gitEnv ? { env: context.gitEnv } : {}) });
     const portable = await portablePlan(root, head, entries);
     const sourcePaths = [...new Set([...before.paths, ...portable.reserved, ...entries.keys()])].sort();
-    await mkdir(operationDir, { recursive: true, mode: 0o700 });
+    await durableDirectory(operationDir, 0o700);
     const parent = await realpath(operationDir);
     const location = relative(before.root, parent);
     if (!location || (!location.startsWith('../') && location !== '..' && !isAbsolute(location))) throw invalid();
     const operationRoot = await mkdtemp(join(parent, 'checkpoint-'));
+    await syncDirectory(parent);
     const privateIndexPath = join(operationRoot, 'candidate.index');
     const env = { ...context.gitEnv, GIT_INDEX_FILE: privateIndexPath };
     await runGit({ cwd: root, args: ['read-tree', head ?? '--empty'], env });
@@ -286,7 +302,11 @@ export async function prepareCheckpoint(input: {
       if (entries.has(path) || portable.obsolete.includes(path)) sourceBytes.set(path, bytes);
       else await add(path, mode, bytes);
     });
-    for (const path of [...new Set([...entries.keys(), ...portable.obsolete])].sort()) {
+    // Ordinary supplied bytes are captured evidence, never authority to create or overwrite user files.
+    for (const [path, bytes] of entries) if (!path.startsWith('.open-design/') && sources.digests[path] !== digest(bytes)) {
+      throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Ordinary supplied content must match the captured project file.', { paths: [path] });
+    }
+    for (const path of [...new Set([...entries.keys()].filter(path => path.startsWith('.open-design/')).concat(portable.obsolete))].sort()) {
       const old = sourceBytes.get(path); const next = entries.get(path); const oldDigest = old ? digest(old) : null; const candidateDigest = next ? digest(next) : null;
       if (oldDigest === candidateDigest) continue;
       if (oldDigest !== (portable.base.has(path) ? digest(portable.base.get(path)!) : null)) throw new GitDomainError('PROJECT_STATE_CHANGED', 409,
@@ -394,11 +414,11 @@ async function verifySources(state: Prepared, ownedLock?: string, filesApplied =
 
 async function applyPortableFiles(state: Prepared): Promise<void> {
   for (const item of state.evidence.portablePaths) {
+    if (!item.path.startsWith('.open-design/')) throw recovery();
     let parent = state.root;
     for (const segment of item.path.split('/').slice(0, -1)) {
       parent = join(parent, segment);
-      try { await mkdir(parent); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-      const info = await lstat(parent); if (!info.isDirectory() || info.isSymbolicLink()) throw recovery();
+      await durableDirectory(parent, 0o755);
     }
     const path = join(state.root, item.path); const old = await optionalBytes(path);
     if ((old === null ? null : digest(old)) !== item.oldDigest) throw changed();
@@ -464,7 +484,8 @@ export async function readCheckpointPublication(input: { root: string; operation
     if (originalIndexBytes !== null && digest(originalIndexBytes) !== data.index.oldDigest) throw recovery();
     if (evidence.portablePaths.length !== data.paths.length) throw recovery();
     for (const [index, path] of evidence.portablePaths.entries()) {
-      safePath(path.path); const stored = data.paths[index]!;
+      safePath(path.path); if (!path.path.startsWith('.open-design/')) throw recovery();
+      const stored = data.paths[index]!;
       const stem = join(data.operationRoot, digest(Buffer.from(path.path)));
       if (stored.path !== path.path || stored.oldDigest !== path.oldDigest || stored.candidateDigest !== path.candidateDigest
         || stored.backupPath !== path.backupPath || path.backupPath !== (path.oldDigest === null ? null : stem + '.backup')
