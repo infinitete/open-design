@@ -700,6 +700,8 @@ describe('project Git durable store', () => {
     store.completePhase(op.id, 'index_published', data);
     expect(() => store.completeMaterialization(op.id, { basis: { ...basis(b), bindingGeneration: 0 }, advanceProjectRevision: false })).toThrow();
     expect(store.getBinding('p1')?.localHead).toBeNull();
+    for (const remainingDirty of [false, true]) expect(() => store.completeMaterialization(op.id, { basis: basis(b), advanceProjectRevision: false, remainingDirty }))
+      .toThrowError(expect.objectContaining({ code: 'RECOVERY_REQUIRED' }));
     expect(store.completeMaterialization(op.id, { basis: basis(b), advanceProjectRevision: false })).toBe(0);
     expect(store.getBinding('p1')).toMatchObject({ localHead: 'candidate', materializedHead: 'candidate', projectRevision: 0 });
     expect(store.listDuePushes(Date.now())).toMatchObject([{ targetOid: 'candidate', generation: 1 }]);

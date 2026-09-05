@@ -2,7 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createGitFixture } from '../../helpers/project-git.js';
-import { fixtureCommit, portableSnapshot, writeFixtureEntries } from '../../helpers/project-git-crash-worker.js';
+import { fixtureCommit, fixtureGitEnv, portableSnapshot, writeFixtureEntries } from '../../helpers/project-git-crash-worker.js';
+import { runGit } from '../../../src/services/project-git/git-process.js';
 import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
 import { readHistory, readCommit, readCommitFile, readCommitConversations } from '../../../src/services/project-git/history.js';
 
@@ -89,4 +90,51 @@ it('rejects an oversized historical file before returning its contents', async (
   const f = await fixture(); const oid = await fixtureCommit(f.a, join(f.root, 'big.index'), new Map([['big.bin', Buffer.alloc(8 * 1024 * 1024 + 1)]]), []);
   await f.git(f.a, 'update-ref', 'refs/heads/main', oid);
   await expect(readCommitFile(f.a, oid, 'big.bin')).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+});
+
+it('bounds sparse history to 200 scanned commits and resumes a frozen empty page', async () => {
+  const f = await fixture();
+  const first = await fixtureCommit(f.a, join(f.root, 'sparse.index'), new Map([['rare.txt', Buffer.from('original')]]), []);
+  const tree = await f.git(f.a, 'rev-parse', `${first}^{tree}`); let head = first;
+  for (let i = 0; i < 205; i++) head = await f.git(f.a, 'commit-tree', tree, '-p', head, '-m', `unchanged ${i}`);
+  await f.git(f.a, 'update-ref', 'refs/heads/main', head);
+  const page = await readHistory(f.a, null, 'rare.txt');
+  expect(page.commits).toEqual([]); expect(page.nextCursor).not.toBeNull();
+  expect(JSON.parse(Buffer.from(page.nextCursor!, 'base64url').toString())).toMatchObject({ start: head, offset: 200, path: 'rare.txt' });
+  const next = await f.git(f.a, 'commit-tree', tree, '-p', head, '-m', 'concurrent'); await f.git(f.a, 'update-ref', 'refs/heads/main', next);
+  const last = await readHistory(f.a, page.nextCursor, 'rare.txt'); expect(last.commits.map(row => row.oid)).toEqual([first]); expect(last.nextCursor).toBeNull();
+});
+
+it('classifies declared oversized resources without reading bodies but content detail rejects', async () => {
+  const f = await fixture(); const snapshot = portableSnapshot('After');
+  const resourcePath = `.open-design/resources/${'a'.repeat(64)}/content`;
+  snapshot.manifest.resources.push({ digest: 'a'.repeat(64), locations: [{ path: resourcePath, purpose: 'attachment' }], references: ['message'] });
+  snapshot.messages[0]!.resourceRefs.push('a'.repeat(64));
+  const entries = serializePortableMetadata(snapshot); entries.set(resourcePath, Buffer.from('small invalid digest'));
+  await writeFixtureEntries(f.a, entries); await writeFile(join(f.a, resourcePath), Buffer.alloc(200 * 1024 * 1024 + 1));
+  await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'large declared resource'); const head = await f.git(f.a, 'rev-parse', 'HEAD');
+  expect((await readHistory(f.a)).commits[0]!.snapshotKind).toBe('complete');
+  expect((await readCommit(f.a, head)).snapshotKind).toBe('complete');
+  await expect(readCommitConversations(f.a, head)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+});
+
+it('includes tree layout bytes in the history metadata budget before parsing large inventories', async () => {
+  const f = await fixture(); const blob = (await runGit({ cwd: f.a, args: ['hash-object', '-w', '--stdin'], stdin: Buffer.from('x') })).stdout.toString().trim();
+  const records = Array.from({ length: 70_000 }, (_, i) => `100644 ${blob}\t${String(i).padStart(6, '0')}-${'x'.repeat(90)}\0`).join('');
+  await runGit({ cwd: f.a, args: ['update-index', '-z', '--index-info'], stdin: Buffer.from(records) });
+  const tree = (await runGit({ cwd: f.a, args: ['write-tree'] })).stdout.toString().trim();
+  const head = await f.git(f.a, 'commit-tree', tree, '-m', 'large tree'); await f.git(f.a, 'update-ref', 'refs/heads/main', head);
+  expect(await readCommit(f.a, head).then(() => 'unexpected success', (error: { code: string }) => error.code)).toBe('PAYLOAD_TOO_LARGE');
+});
+
+it('bounds individual metadata objects and aggregate commit metadata', async () => {
+  const f = await fixture(); const tree = await f.git(f.a, 'mktree'); let head: string | undefined;
+  for (let i = 0; i < 10; i++) head = (await runGit({ cwd: f.a, args: ['commit-tree', tree, ...(head ? ['-p', head] : [])],
+    env: fixtureGitEnv, stdin: Buffer.alloc(900 * 1024, 65 + i) })).stdout.toString().trim();
+  await f.git(f.a, 'update-ref', 'refs/heads/main', head!);
+  expect((await readCommit(f.a, head!)).oid).toBe(head);
+  await expect(readHistory(f.a)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+  const oversized = (await runGit({ cwd: f.a, args: ['commit-tree', tree, '-p', head!], env: fixtureGitEnv, stdin: Buffer.alloc(1024 * 1024 + 1, 65) })).stdout.toString().trim();
+  await f.git(f.a, 'update-ref', 'refs/heads/main', oversized);
+  await expect(readCommit(f.a, oversized)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
 });

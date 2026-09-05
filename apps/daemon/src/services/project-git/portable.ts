@@ -128,9 +128,13 @@ function legacyMemberPaths(manifestPath: string, bytes: Uint8Array): string[] {
   });
 }
 
-/** Pure candidate-tree decoder. Git tree modes are validated by the caller. */
-export function parsePortableEntries(entries: ReadonlyMap<string, Uint8Array>): PortableSnapshot {
-  validateTreeEntries([...entries.keys()].filter(file => file.startsWith('.open-design/')).map(file => ({ path: file, mode: '100644' })));
+export const isPortableMetadataPath = (file: string): boolean => file === '.open-design/manifest.json' || file === '.open-design/project.json'
+  || /^\.open-design\/conversations\/[^/]+\/(?:conversation\.json|messages\/[^/]+\.json)$/u.test(file);
+
+/** Metadata/layout classification only; resource integrity belongs to parsePortableEntries. */
+export function parsePortableMetadataEntries(entries: ReadonlyMap<string, Uint8Array>, availablePaths: ReadonlySet<string>): PortableSnapshot {
+  if ([...entries.keys()].some(file => !isPortableMetadataPath(file))) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Only portable metadata is accepted.');
+  validateTreeEntries([...availablePaths].filter(file => file.startsWith('.open-design/')).map(file => ({ path: file, mode: '100644' })));
   const decode = (file: string): unknown => {
     const bytes = entries.get(file);
     if (!bytes) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Required portable metadata is missing');
@@ -159,9 +163,19 @@ export function parsePortableEntries(entries: ReadonlyMap<string, Uint8Array>): 
     conversations: conversations.sort((a, b) => a.id < b.id ? -1 : 1),
     messages: messages.sort((a, b) => a.id < b.id ? -1 : 1) });
   const allowed = new Set([...metadataEntries(snapshot).keys(), ...manifest.resources.flatMap(resource => resource.locations.map(location => location.path))]);
-  for (const file of entries.keys()) {
+  for (const file of availablePaths) {
     if (file.startsWith('.open-design/') && !allowed.has(file)) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Unrecognized portable layout');
   }
+  const missing = [...allowed].filter(file => !availablePaths.has(file));
+  if (missing.length) throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Declared portable paths are missing', { paths: missing });
+  return snapshot;
+}
+
+/** Pure candidate-tree decoder. Git tree modes are validated by the caller. */
+export function parsePortableEntries(entries: ReadonlyMap<string, Uint8Array>): PortableSnapshot {
+  const snapshot = parsePortableMetadataEntries(new Map([...entries].filter(([file]) => isPortableMetadataPath(file))), new Set(entries.keys()));
+  const { manifest } = snapshot;
+  const allowed = new Set([...metadataEntries(snapshot).keys(), ...manifest.resources.flatMap(resource => resource.locations.map(location => location.path))]);
   const missing = manifest.resources.flatMap(resource => resource.locations.filter(location => {
     const bytes = entries.get(location.path);
     return !bytes || createHash('sha256').update(bytes).digest('hex') !== resource.digest;

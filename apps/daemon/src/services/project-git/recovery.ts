@@ -14,6 +14,7 @@ import { computeCheckpointContentDigest, readCheckpointPublication } from './che
 import { parsePortableEntries, portableImportMarker } from './portable.js';
 import { importPortableRecords, readPortableRecords } from './portable-db.js';
 import { ensureMaterializationProtection, readRestoreMessage } from './materialize.js';
+import { projectGitPaths } from './paths.js';
 import type { MaterializeEffect, MaterializePhase } from './materialize.js';
 
 export interface RecoveryProject {
@@ -478,8 +479,22 @@ export async function replayOperation(context: RecoveryContext, operationId: str
         if (!current || portableImportMarker(current) !== journal.recoveryData!.records!.importMarker) throw recoveryRequired();
       }
     }
+    let remainingDirty: boolean | undefined;
+    if (journal.kind === 'restore') {
+      // A restored ignore rule can expose previously ignored bytes. Preserve them,
+      // but do not claim a clean terminal baseline while they are Git-visible.
+      const raw = (await runGit({ cwd: context.root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout;
+      const text = raw.toString('utf8'); if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw recoveryRequired();
+      const visible = projectGitPaths([], text.split('\0').filter(Boolean));
+      validateTreeEntries(visible.map(path => ({ path, mode: '100644' })));
+      remainingDirty = visible.length > 0;
+      await checkFiles(true);
+      if ((await discoverRepository(context.root)).head !== publication.publishHead
+        || sha256(await readBytes(data.index.path) ?? Buffer.alloc(0)) !== data.index.candidateDigest) throw recoveryRequired();
+    }
     if (completeRegistration) completeRegistration.completeMaterialization();
-    else context.store.completeMaterialization(operationId, { basis: journal.basis, advanceProjectRevision: journal.kind !== 'checkpoint' });
+    else context.store.completeMaterialization(operationId, { basis: journal.basis, advanceProjectRevision: journal.kind !== 'checkpoint',
+      ...(remainingDirty === undefined ? {} : { remainingDirty }) });
     return publication.publishHead;
   } finally { await handle?.close(); }
 }

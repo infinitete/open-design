@@ -40,16 +40,19 @@ const busy = () => new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'External Git wo
 
 /** Restore reason belongs to the consumed immutable preview, including after protection/restart. */
 export async function readRestoreMessage(context: Pick<RecoveryContext, 'db' | 'store' | 'root' | 'nativeLegacyRoot'>, operationId: string, candidateOid: string, recordsMode: 'replace' | 'preserve'): Promise<Buffer> {
-  const journal = context.store.getJournal(operationId)!;
+  const journal = context.store.getJournal(operationId);
+  if (!journal || journal.kind !== 'restore' || !journal.payload || typeof journal.payload !== 'object' || Array.isArray(journal.payload)) throw recoveryRequired();
   const payload = journal.payload as { previewId?: string; targetOid?: string; candidateOid?: string; previewContentDigest?: string };
   const pair = context.db.prepare('SELECT preview_operation_id AS previewId FROM project_git_preview_consumers WHERE consumer_operation_id = ?')
     .get(operationId) as { previewId: string } | undefined;
   if (!pair || pair.previewId !== payload.previewId) throw recoveryRequired();
-  context.store.consumePreview(pair.previewId, operationId);
-  const preview = context.store.getJournal(pair.previewId)!;
+  const preview = context.store.getJournal(pair.previewId);
+  if (!preview || preview.kind !== 'restore_preview' || !preview.result?.preview || !preview.payload || typeof preview.payload !== 'object' || Array.isArray(preview.payload)) throw recoveryRequired();
+  try { context.store.consumePreview(pair.previewId, operationId); } catch { throw recoveryRequired(); }
   const frozen = preview.payload as { captured?: { nativeLegacyRoot?: string; targetOid?: string; candidateOid?: string; contentDigest?: string; recordsMode?: string }; evidenceDigest?: string };
   const captured = frozen.captured;
-  if (!payload.targetOid || payload.targetOid !== preview.result!.preview!.targetOid || payload.targetOid !== captured?.targetOid
+  if (!captured || typeof captured !== 'object' || Array.isArray(captured) || typeof payload.targetOid !== 'string'
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(payload.targetOid) || payload.targetOid !== preview.result.preview.targetOid || payload.targetOid !== captured.targetOid
     || payload.candidateOid !== candidateOid || candidateOid !== captured?.candidateOid
     || payload.previewContentDigest !== captured?.contentDigest || captured?.recordsMode !== recordsMode
     || sha256(Buffer.from(canonicalJson(captured as import('@open-design/contracts').JsonValue))) !== frozen.evidenceDigest) throw recoveryRequired();
@@ -150,8 +153,10 @@ async function prepare(input: MaterializeInput): Promise<void> {
   if (operationParent !== input.operationDir || operationParent === repository.root || within(repository.root, operationParent)) throw recoveryRequired();
   const operationRoot = await mkdtemp(join(operationParent, 'materialize-')); await syncDirectory(operationParent);
   const ownerToken = randomUUID(); const paths: MaterializationPath[] = [];
-  // Original tracked, explicit target and current portable paths only. Other untracked files remain untouched.
-  for (const path of [...new Set([...base.keys(), ...target.keys(), ...portable.keys()])].sort()) {
+  // Restore protects then reconciles every frozen eligible current path. Single-file
+  // restore candidates explicitly retain those paths; generic sync semantics stay unchanged.
+  const restorePaths = journal.kind === 'restore' ? beforePaths : [];
+  for (const path of [...new Set([...base.keys(), ...target.keys(), ...portable.keys(), ...restorePaths])].sort()) {
     const old = source.bytes.get(path); const next = target.get(path); const oldDigest = old === undefined ? null : sha256(old);
     const candidateDigest = next ? sha256(next.bytes) : null;
     const protectedDigest = path.startsWith('.open-design/') ? portableDigests[path] ?? null : oldDigest;

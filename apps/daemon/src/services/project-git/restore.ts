@@ -125,15 +125,16 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
         assertHistoryPath(file.path);
         if (isNativeProjectHistoryPath(file.path) || file.path.split('/').some(part => part.normalize('NFC').toLowerCase() === '.open-design')) throw invalid();
         if (file.history.source === 'legacy' && file.history.path !== file.path) throw invalid();
-        const bytes = file.history.source === 'git' ? (await readHistoryEntries(project.root, file.history.oid)).get(file.path)?.bytes
-          : Buffer.from((await readLegacyProjectFile(project.root, file.path, file.history.legacyId, nativeLegacyRoot)).content);
-        if (!bytes) throw new GitDomainError('NOT_FOUND', 404, 'Historical file not found.');
+        const historical = file.history.source === 'git' ? target.get(file.path)
+          : { bytes: Buffer.from((await readLegacyProjectFile(project.root, file.path, file.history.legacyId, nativeLegacyRoot)).content),
+            mode: (await safeFile(project.root, file.path)).mode === '100755' ? '100755' : '100644' };
+        if (!historical) throw new GitDomainError('NOT_FOUND', 404, 'Historical file not found.');
         target = new Map();
         for (const path of current.paths) {
           const value = await safeFile(project.root, path);
           if (value.bytes && !path.startsWith('.open-design/')) target.set(path, { bytes: value.bytes, mode: value.mode });
         }
-        target.set(file.path, { bytes, mode: (await safeFile(project.root, file.path)).mode === '100755' ? '100755' : '100644' });
+        target.set(file.path, historical);
       }
       const hasMetadata = !file && [...target.keys()].some(path => path.split('/')[0]!.normalize('NFC').toLowerCase() === '.open-design');
       const snapshot = hasMetadata ? parsePortableEntries(new Map([...target].map(([path, item]) => [path, item.bytes]))) : parsePortableEntries(portable);
@@ -157,7 +158,7 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       await verify(id, expected, captured);
       const changes: ProjectGitChangeSummary = { addedPaths: [], modifiedPaths: [], deletedPaths: [], settingsChanged: 0, conversationsChanged: 0,
         ignoredPaths: [], privatePaths: [], missingPaths: [], collisions: [], historyMode: hasMetadata ? 'complete' : 'files_only' };
-      for (const path of new Set([...base.keys(), ...target.keys()])) {
+      for (const path of new Set([...current.paths, ...base.keys(), ...target.keys()])) {
         const next = target.get(path); const previous = source.sourceDigests[path];
         if (!next) changes.deletedPaths.push(path);
         else if (previous === 'missing') changes.addedPaths.push(path);
@@ -172,12 +173,14 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
           !isDeepStrictEqual(before.get(id), after.get(id)) || !isDeepStrictEqual(currentSnapshot.messages.filter(item => item.conversationId === id),
             snapshot.messages.filter(item => item.conversationId === id))).length;
       }
-      const op = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
-        requestDigest: digest({ targetOid, file: file ?? null }), payload: json({ captured, evidenceDigest: digest(captured) }) });
-      const existing = store.getJournal(op.id)!;
-      if (existing.result?.preview) return existing.result.preview;
-      const preview: ProjectGitPreview = { id: op.id, kind: 'restore', basis: expected, targetOid, expiresAt: input.now() + 5 * 60_000, changes, dependencies: [] };
-      store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: { preview }, error: null }); return preview;
+      return db.transaction(() => {
+        const op = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
+          requestDigest: digest({ targetOid, file: file ?? null }), payload: json({ captured, evidenceDigest: digest(captured) }) });
+        const existing = store.getJournal(op.id)!;
+        if (existing.result?.preview) return existing.result.preview;
+        const preview: ProjectGitPreview = { id: op.id, kind: 'restore', basis: expected, targetOid, expiresAt: input.now() + 5 * 60_000, changes, dependencies: [] };
+        store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: { preview }, error: null }); return preview;
+      }).immediate();
     });
   }
   async function previewRestore(id: string, targetOid: string, request: RestoreRequestContext): Promise<ProjectGitPreview> {

@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createCrashFixture, fixtureCommit, fixtureGitEnv, openCrashFixture, portableSnapshot } from '../../helpers/project-git-crash-worker.js';
 import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
-import { materializeProject } from '../../../src/services/project-git/materialize.js';
+import { materializeProject, readRestoreMessage } from '../../../src/services/project-git/materialize.js';
 import { createProjectGitRestoreService } from '../../../src/services/project-git/restore.js';
 import { recoverProjectOperations } from '../../../src/services/project-git/recovery.js';
 import { createProjectFileVersion, readLegacyProjectFile } from '../../../src/project-file-versions.js';
@@ -44,6 +44,62 @@ it.each([false, true])('restores V1 as a child of protected V3 and preserves att
   expect(f.db.prepare('SELECT name FROM projects WHERE id = ?').get('project')).toEqual({ name: 'Before' });
   expect(f.store.getBinding('project')).toMatchObject({ cloneId: 'clone', repositoryProjectId: 'repository', projectRevision: 3 });
   if (dirty) expect(await f.git(f.a, 'show', `${parent}:index.html`)).toBe('unsaved V3');
+});
+
+it.each([false, true])('full restore deletes protected current-only files and reports them (plain=%s)', async plain => {
+  const f = await fixture(); let target = f.head;
+  if (plain) {
+    target = await fixtureCommit(f.a, join(f.root, 'plain-target.index'), new Map([['index.html', Buffer.from('plain')]]), [f.head]);
+    const current = await fixtureCommit(f.a, join(f.root, 'attach-plain.index'), serializePortableMetadata(portableSnapshot('V3')), [f.v3, target]);
+    await f.git(f.a, 'update-ref', 'refs/heads/main', current); await f.git(f.a, 'read-tree', current);
+    f.store.adoptExternalHead('project', await f.input.readBasis(), current);
+  }
+  await writeFile(join(f.a, 'dirty-new.txt'), 'unsaved-new');
+  // Repository-private ignore rules remain independent of the selected historical tree.
+  await writeFile(join(f.a, '.git/info/exclude'), 'ignored-local.txt\nignored.txt\n'); await writeFile(join(f.a, 'ignored-local.txt'), 'ignored');
+  const ctx = { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision };
+  const preview = await f.service.previewRestore('project', target, ctx);
+  expect(preview.changes.deletedPaths).toContain('dirty-new.txt');
+  const accepted = await f.service.restoreProject('project', preview.id, { ...ctx, idempotencyKey: randomUUID() });
+  const journal = f.store.getJournal(accepted.operationId)!;
+  expect(await f.git(f.a, 'show', `${journal.protection!.checkpointOid}:dirty-new.txt`)).toBe('unsaved-new');
+  await expect(access(join(f.a, 'dirty-new.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(join(f.a, 'ignored-local.txt'), 'utf8')).toBe('ignored');
+  expect(await f.git(f.a, 'status', '--porcelain')).toBe('');
+  expect(f.store.getBinding('project')!.dirty).toBe(false);
+});
+
+it('Git single-file restores same bytes with historical executable mode and reports modification', async () => {
+  const f = await fixture();
+  await writeFile(join(f.a, 'tool.sh'), 'same bytes'); await chmod(join(f.a, 'tool.sh'), 0o755);
+  await f.git(f.a, 'add', 'tool.sh'); await f.git(f.a, 'commit', '-m', 'executable version'); const target = await f.git(f.a, 'rev-parse', 'HEAD');
+  await chmod(join(f.a, 'tool.sh'), 0o644); await f.git(f.a, 'add', 'tool.sh'); await f.git(f.a, 'commit', '-m', 'nonexecutable version');
+  f.store.adoptExternalHead('project', await f.input.readBasis(), await f.git(f.a, 'rev-parse', 'HEAD'));
+  const ctx = { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision };
+  const preview = await f.service.previewFileRestore('project', 'tool.sh', { source: 'git', oid: target }, ctx);
+  expect(preview.changes.modifiedPaths).toContain('tool.sh');
+  await f.service.restoreProject('project', preview.id, { ...ctx, idempotencyKey: randomUUID() });
+  expect(await f.git(f.a, 'ls-tree', 'HEAD', 'tool.sh')).toMatch(/^100755 blob /u);
+  expect((await stat(join(f.a, 'tool.sh'))).mode & 0o111).toBe(0o111);
+});
+
+it('atomically rolls back preview enqueue when successful result persistence fails', async () => {
+  const f = await fixture(); const ctx = request();
+  const update = vi.spyOn(f.store, 'updateOperation').mockImplementationOnce(() => { throw new Error('result persistence failure'); });
+  await expect(f.service.previewRestore('project', f.head, ctx)).rejects.toThrow('result persistence failure'); update.mockRestore();
+  expect(f.store.findOperation({ projectId: 'project', kind: 'restore_preview', ...ctx })).toBeNull();
+});
+
+it.each(['result', 'payload', 'capture'])('quarantines malformed persisted restore preview %s with a domain error', async field => {
+  const f = await fixture();
+  const service = createProjectGitRestoreService({ ...f.serviceInput, afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('stop'); } });
+  const preview = await service.previewRestore('project', f.head, request()); const ctx = request();
+  await expect(service.restoreProject('project', preview.id, ctx)).rejects.toThrow('stop');
+  const op = f.store.findOperation({ projectId: 'project', kind: 'restore', ...ctx })!;
+  const captured = (f.store.getJournal(preview.id)!.payload as { captured: { candidateOid: string } }).captured;
+  if (field === 'result') f.db.prepare('UPDATE project_git_operations SET result_json = NULL WHERE id = ?').run(preview.id);
+  else f.db.prepare('UPDATE project_git_operations SET payload_json = ? WHERE id = ?').run(field === 'payload' ? 'null' : '{"captured":null}', preview.id);
+  await expect(readRestoreMessage(f.input, op.id, captured.candidateOid, 'replace')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
 });
 
 it('rejects expired, edited, remote-changed, unauthorized and reused previews before protection', async () => {
@@ -189,6 +245,60 @@ it('restores ordinary files and portable attachments above the inline limit', as
   expect(await readdir(f.input.operationDir)).toEqual(artifacts);
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get()).toEqual(journals);
   expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(oversizedHead);
+  await writeFile(join(f.a, 'over-cap.bin'), 'ordinary within limit'); await writeFile(join(f.a, resourcePath), Buffer.alloc(200 * 1024 * 1024 + 1));
+  await f.git(f.a, 'add', 'over-cap.bin', resourcePath); await f.git(f.a, 'commit', '-m', 'external oversized resource');
+  const resourceHead = await f.git(f.a, 'rev-parse', 'HEAD'); f.store.adoptExternalHead('project', await f.input.readBasis(), resourceHead);
+  expect((await readCommit(f.a, resourceHead)).snapshotKind).toBe('complete');
+  const { readCommitConversations } = await import('../../../src/services/project-git/history.js');
+  await expect(readCommitConversations(f.a, resourceHead)).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+  await expect(service.previewRestore('project', resourceHead, { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
+  expect(await readdir(f.input.operationDir)).toEqual(artifacts);
+});
+
+it('replays deletion of a protected current-only file after reopening the database', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'dirty-new.txt'), 'protected before delete');
+  const service = createProjectGitRestoreService({ ...f.serviceInput, afterDurablePhase: async phase => { if (phase === 'protected') throw new Error('stop protected'); } });
+  const preview = await service.previewRestore('project', f.head, request()); const ctx = request();
+  await expect(service.restoreProject('project', preview.id, ctx)).rejects.toThrow('stop protected');
+  const operation = f.store.findOperation({ projectId: 'project', kind: 'restore', ...ctx })!;
+  expect(operation.recoveryData!.paths.find(path => path.path === 'dirty-new.txt')).toMatchObject({ candidateDigest: null });
+  f.db.close(); const reopened = await openCrashFixture(f.root);
+  try {
+    await recoverProjectOperations(reopened.recoveryInput);
+    await expect(access(join(f.a, 'dirty-new.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await f.git(f.a, 'show', `${operation.protection!.checkpointOid}:dirty-new.txt`)).toBe('protected before delete');
+    expect(await f.git(f.a, 'status', '--porcelain')).toBe('');
+  } finally { reopened.db.close(); }
+});
+
+it.each([false, true])('keeps newly visible ignored bytes and terminal dirty state when target removes ignore rules (restart=%s)', async restart => {
+  const f = await fixture();
+  const { readHistoryEntries } = await import('../../../src/services/project-git/history.js');
+  const target = await fixtureCommit(f.a, join(f.root, 'ignore-target.index'), new Map([['index.html', Buffer.from('plain target')]]), [f.head]);
+  const entries = new Map([...(await readHistoryEntries(f.a, f.v3))].map(([path, item]) => [path, item.bytes]));
+  const current = await fixtureCommit(f.a, join(f.root, 'ignore-current.index'), entries, [f.v3, target]);
+  await f.git(f.a, 'update-ref', 'refs/heads/main', current); await f.git(f.a, 'read-tree', current);
+  f.store.adoptExternalHead('project', await f.input.readBasis(), current);
+  const original = await readFile(join(f.a, 'ignored.txt'));
+  const service = createProjectGitRestoreService({ ...f.serviceInput, afterDurablePhase: async phase => { if (restart && phase === 'index_published') throw new Error('stop index'); } });
+  const ctx = { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision };
+  const preview = await service.previewRestore('project', target, ctx);
+  expect(preview.changes.deletedPaths).not.toContain('ignored.txt');
+  let reopened: Awaited<ReturnType<typeof openCrashFixture>> | undefined;
+  try {
+    if (restart) {
+      await expect(service.restoreProject('project', preview.id, ctx)).rejects.toThrow('stop index');
+      f.db.close(); reopened = await openCrashFixture(f.root); await recoverProjectOperations(reopened.recoveryInput);
+    } else await service.restoreProject('project', preview.id, ctx);
+    const store = reopened?.store ?? f.store;
+    expect((await readFile(join(f.a, 'ignored.txt'))).equals(original)).toBe(true);
+    expect(await f.git(f.a, 'status', '--porcelain')).toBe('?? ignored.txt');
+    expect(store.getBinding('project')).toMatchObject({ dirty: true, projectRevision: ctx.expectedProjectRevision + 1, contentRevision: 0, exportedContentRevision: 0 });
+    const completed = store.findOperation({ projectId: 'project', kind: 'restore', ...ctx })!;
+    store.completeMaterialization(completed.id, { basis: completed.basis, advanceProjectRevision: true, remainingDirty: false });
+    expect(store.getBinding('project')!.dirty).toBe(true);
+    if (reopened) { await recoverProjectOperations(reopened.recoveryInput); expect(store.getBinding('project')!.dirty).toBe(true); }
+  } finally { reopened?.db.close(); }
 });
 
 it('blocks active runs and durable conflicts without canceling the run', async () => {

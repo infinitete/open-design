@@ -185,6 +185,8 @@ export interface ProjectGitPushRecord {
 }
 
 export interface ProjectGitMaterializationCompletion {
+  /** Trusted terminal inventory observation, supported only by restore journals. */
+  remainingDirty?: boolean;
   basis: ProjectGitBasis;
   /** Must match the prior records transition; final completion never increments the baseline. */
   advanceProjectRevision: boolean;
@@ -856,6 +858,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       ORDER BY created_at, id`).all() as OperationRow[]).map(journalFrom),
     completeMaterialization: (id, input) => transaction(() => {
       const op = getJournal(id);
+      if (input.remainingDirty !== undefined && (op?.kind !== 'restore' || typeof input.remainingDirty !== 'boolean')) throw recoveryRequired();
       if (op?.journalPhase === 'complete' && op.completedProjectRevision !== null) {
         if (!sameBasis(op.basis, input.basis)
           || op.completedProjectRevision !== input.basis.projectRevision + Number(input.advanceProjectRevision)) throw changed();
@@ -866,7 +869,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       if (!op.recordsTransition || op.recordsTransition.advanceProjectRevision !== input.advanceProjectRevision) throw recoveryRequired();
       const b = requireBasis(op.projectId, ownedBasis(op)); const head = op.protection?.sealedCandidate?.publishHead ?? op.recoveryData.publishHead;
       db.prepare('UPDATE project_git_bindings SET exported_content_revision = content_revision WHERE project_id = ?').run(b.projectId);
-      updateBindingData({ ...b, localHead: head, materializedHead: head, dirty: false });
+      updateBindingData({ ...b, localHead: head, materializedHead: head, dirty: input.remainingDirty ?? false });
       // This transaction closes the local-commit/outbox gap, including paused bindings.
       if (b.remoteUrl !== null) store.queuePush(b.projectId, b.generation, head);
       const revision = getBinding(b.projectId)!.projectRevision;

@@ -3,11 +3,14 @@ import { mimeFor } from '../../projects.js';
 import { isPrivateProjectGitPath } from './checkpoint.js';
 import { GitDomainError } from './errors.js';
 import { PROJECT_GIT_FILE_LIMIT, runGit } from './git-process.js';
-import { parsePortableEntries } from './portable.js';
+import { isPortableMetadataPath, parsePortableEntries, parsePortableMetadataEntries } from './portable.js';
 import { discoverObjectStore, discoverRepository, validateTreeEntries } from './repository.js';
 
 const PAGE_SIZE = 50;
 const FILE_LIMIT = 8 * 1024 * 1024;
+const SCAN_LIMIT = 200;
+const METADATA_OBJECT_LIMIT = 1024 * 1024;
+const METADATA_TOTAL_LIMIT = 8 * 1024 * 1024;
 const invalid = () => new GitDomainError('VALIDATION_FAILED', 400, 'Invalid or unavailable project history target.');
 type TreeEntry = { path: string; mode: string; oid: string };
 
@@ -30,8 +33,9 @@ export async function assertHistoryCommit(root: string, oid: string): Promise<vo
   }
 }
 
-async function tree(root: string, oid: string): Promise<TreeEntry[]> {
+async function tree(root: string, oid: string, consume?: (bytes: number) => void): Promise<TreeEntry[]> {
   const raw = (await runGit({ cwd: root, args: ['ls-tree', '-r', '-z', oid] })).stdout;
+  consume?.(raw.length);
   const text = raw.toString('utf8');
   if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw invalid();
   const entries = text.split('\0').filter(Boolean).map(record => {
@@ -79,24 +83,49 @@ export async function readCommitFile(root: string, oid: string, path: string): P
 
 export async function readCommit(root: string, oid: string): Promise<ProjectGitCommit> {
   await assertHistoryCommit(root, oid);
-  const raw = (await objectBytes(root, oid, 'commit')).toString('utf8'); const separator = raw.indexOf('\n\n');
-  if (separator < 0) throw invalid();
-  const headers = raw.slice(0, separator).split('\n'); const message = raw.slice(separator + 2);
-  const parents = headers.filter(line => line.startsWith('parent ')).map(line => line.slice(7));
-  const author = /^author (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/u.exec(headers.find(line => line.startsWith('author ')) ?? '');
-  if (!author || parents.some(parent => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(parent))) throw invalid();
-  const current = new Map((await tree(root, oid)).map(entry => [entry.path, entry]));
-  const before = new Map((parents[0] ? await tree(root, parents[0]) : []).map(entry => [entry.path, entry]));
-  const changedPaths: ProjectGitCommit['changedPaths'] = { added: [], modified: [], deleted: [] };
-  for (const [path, entry] of current) {
-    const old = before.get(path);
-    if (!old) changedPaths.added.push(path);
-    else if (old.oid !== entry.oid || old.mode !== entry.mode) changedPaths.modified.push(path);
+  return metadataReader(root)(oid);
+}
+
+/** One request shares checked trees/metadata and a total budget; never loads resource bodies. */
+function metadataReader(root: string) {
+  const trees = new Map<string, TreeEntry[]>(); const objects = new Map<string, Buffer>(); let remaining = METADATA_TOTAL_LIMIT;
+  function consume(bytes: number) {
+    if (bytes > remaining) throw new GitDomainError('PAYLOAD_TOO_LARGE', 413, 'History metadata exceeds the request limit.', { limitBytes: METADATA_TOTAL_LIMIT });
+    remaining -= bytes;
   }
-  for (const path of before.keys()) if (!current.has(path)) changedPaths.deleted.push(path);
-  const snapshot = await readCommitConversations(root, oid);
-  return { oid, parents, author: { name: author[1]!, email: author[2] || null }, authoredAt: Number(author[3]) * 1000,
-    message, source: message.startsWith('Open Design ') ? 'open-design' : 'external', snapshotKind: snapshot ? 'complete' : 'files_only', changedPaths };
+  async function readTree(oid: string) {
+    let entries = trees.get(oid); if (!entries) { entries = await tree(root, oid, consume); trees.set(oid, entries); } return entries;
+  }
+  async function readObject(oid: string, type: 'blob' | 'commit') {
+    let bytes = objects.get(oid);
+    if (!bytes) { bytes = await objectBytes(root, oid, type, Math.min(METADATA_OBJECT_LIMIT, remaining)); consume(bytes.length); objects.set(oid, bytes); }
+    return bytes;
+  }
+  return async (oid: string): Promise<ProjectGitCommit> => {
+    const raw = (await readObject(oid, 'commit')).toString('utf8'); const separator = raw.indexOf('\n\n');
+    if (separator < 0) throw invalid();
+    const headers = raw.slice(0, separator).split('\n'); const message = raw.slice(separator + 2);
+    const parents = headers.filter(line => line.startsWith('parent ')).map(line => line.slice(7));
+    const author = /^author (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/u.exec(headers.find(line => line.startsWith('author ')) ?? '');
+    if (!author || parents.some(parent => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(parent))) throw invalid();
+    const current = new Map((await readTree(oid)).map(entry => [entry.path, entry]));
+    const before = new Map((parents[0] ? await readTree(parents[0]) : []).map(entry => [entry.path, entry]));
+    const changedPaths: ProjectGitCommit['changedPaths'] = { added: [], modified: [], deleted: [] };
+    for (const [path, entry] of current) {
+      const old = before.get(path);
+      if (!old) changedPaths.added.push(path);
+      else if (old.oid !== entry.oid || old.mode !== entry.mode) changedPaths.modified.push(path);
+    }
+    for (const path of before.keys()) if (!current.has(path)) changedPaths.deleted.push(path);
+    const reserved = [...current.keys()].some(path => path.split('/')[0]!.normalize('NFC').toLowerCase() === '.open-design');
+    if (reserved) {
+      const metadata = new Map<string, Uint8Array>();
+      for (const [path, entry] of current) if (isPortableMetadataPath(path)) metadata.set(path, await readObject(entry.oid, 'blob'));
+      parsePortableMetadataEntries(metadata, new Set(current.keys()));
+    }
+    return { oid, parents, author: { name: author[1]!, email: author[2] || null }, authoredAt: Number(author[3]) * 1000,
+      message, source: message.startsWith('Open Design ') ? 'open-design' : 'external', snapshotKind: reserved ? 'complete' : 'files_only', changedPaths };
+  };
 }
 
 interface Cursor { version: 1; start: string; last: string; offset: number; path: string | null }
@@ -118,21 +147,13 @@ export async function readHistory(root: string, cursor: string | null = null, pa
   }
   if (!start) return { commits: [], nextCursor: null };
   await assertHistoryCommit(root, start);
-  const commits: ProjectGitCommit[] = []; let last = '';
-  // Scan fixed-size chunks so a sparse path page still advances through the frozen graph.
-  while (commits.length < PAGE_SIZE) {
-    const oids = (await runGit({ cwd: root, args: ['rev-list', '--topo-order', `--max-count=${PAGE_SIZE + 1}`, `--skip=${offset}`, start] })).stdout.toString().trim().split('\n').filter(Boolean);
-    if (!oids.length) return { commits, nextCursor: null };
-    for (const oid of oids.slice(0, PAGE_SIZE)) {
-      const commit = await readCommit(root, oid); offset++; last = oid;
-      if (path === undefined || Object.values(commit.changedPaths).some(paths => paths.includes(path))) commits.push(commit);
-      if (commits.length === PAGE_SIZE) break;
-    }
-    if (commits.length < PAGE_SIZE && oids.length <= PAGE_SIZE) return { commits, nextCursor: null };
-    if (commits.length === PAGE_SIZE) {
-      const remaining = (await runGit({ cwd: root, args: ['rev-list', '--topo-order', '--max-count=1', `--skip=${offset}`, start] })).stdout.length;
-      return { commits, nextCursor: remaining ? Buffer.from(JSON.stringify({ version: 1, start, last, offset, path: path ?? null } satisfies Cursor)).toString('base64url') : null };
-    }
+  const commits: ProjectGitCommit[] = []; let last = ''; let scanned = 0; const read = metadataReader(root);
+  // A graph proven reachable from start needs no repeated per-row reachability walk.
+  const oids = (await runGit({ cwd: root, args: ['rev-list', '--topo-order', `--max-count=${SCAN_LIMIT + 1}`, `--skip=${offset}`, start] })).stdout.toString().trim().split('\n').filter(Boolean);
+  for (const oid of oids.slice(0, SCAN_LIMIT)) {
+    const commit = await read(oid); offset++; scanned++; last = oid;
+    if (path === undefined || Object.values(commit.changedPaths).some(paths => paths.includes(path))) commits.push(commit);
+    if (commits.length === PAGE_SIZE) break;
   }
-  return { commits, nextCursor: null };
+  return { commits, nextCursor: oids.length > scanned ? Buffer.from(JSON.stringify({ version: 1, start, last, offset, path: path ?? null } satisfies Cursor)).toString('base64url') : null };
 }
