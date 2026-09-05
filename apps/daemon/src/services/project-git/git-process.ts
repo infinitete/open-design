@@ -164,8 +164,10 @@ async function execute(input: GitProcessInput, env: NodeJS.ProcessEnv, config = 
       if (failure) { reject(failure); return; }
       if (code !== 0) {
         const diagnostic = Buffer.concat(stderr).toString('utf8');
+        const explicitAuth = /authentication|permission denied|could not read Username|could not read Password/iu.test(diagnostic);
+        const explicitNetwork = /could not resolve (?:host|hostname)|connection refused|network (?:is )?unreachable|connection timed out|failed to connect/iu.test(diagnostic);
         const errorCode = /mismatched algorithms|object format|hash algorithm/iu.test(diagnostic) ? 'PORTABLE_FORMAT_UNSUPPORTED'
-          : /authentication|permission denied|could not read Username|could not read Password|could not read from remote repository/iu.test(diagnostic) ? 'GIT_AUTH_REQUIRED'
+          : explicitAuth || (!explicitNetwork && /could not read from remote repository/iu.test(diagnostic)) ? 'GIT_AUTH_REQUIRED'
           : /unable to create.*\.lock|index\.lock.*exists|cannot lock ref/iu.test(diagnostic) ? 'EXTERNAL_GIT_BUSY' : 'CONFLICT';
         reject(new GitDomainError(errorCode, 409, 'Git operation failed.', { exitCode: code,
           ...(/not a git repository/iu.test(diagnostic) ? { reason: 'not_repository' } : {}),

@@ -30,6 +30,7 @@ export interface MaterializationPath extends ProjectGitRecoveryPath {
   candidatePath: string | null; mode: string; oldMode: string; temporaryPath: string | null; temporaryReceiptPath: string | null;
 }
 export interface MaterializationEvidence {
+  publicationMode?: 'commit' | 'fast_forward';
   operationId: string; projectId: string; treeOid: string; candidateOid: string;
   sourceDigests: Record<string, string>; sourceModes: Record<string, string>;
   portableDigests: Record<string, string>; removedPaths: string[];
@@ -143,7 +144,10 @@ export async function readMaterialization(context: RecoveryContext, operationId:
   await assertArtifactBoundary(context, journal); if (!data) throw recoveryRequired();
   const bytes = await readBytes(join(data.operationRoot, 'materialization.json')); if (!bytes) throw recoveryRequired();
   const evidence = JSON.parse(bytes.toString()) as MaterializationEvidence;
-  if (evidence.operationId !== journal.id || evidence.projectId !== journal.projectId || evidence.treeOid !== data.candidateTreeOid
+  const mode = data.publicationMode ?? 'commit';
+  if (!['commit', 'fast_forward'].includes(mode) || mode !== (evidence.publicationMode ?? 'commit')
+    || (mode === 'fast_forward' && (evidence.protectionRequired || journal.protection))
+    || evidence.operationId !== journal.id || evidence.projectId !== journal.projectId || evidence.treeOid !== data.candidateTreeOid
     || evidence.candidateOid !== data.candidateOid || computeCheckpointContentDigest(evidence) !== data.previewContentDigest
     || evidence.previewContentDigest !== data.previewContentDigest || !Array.isArray(evidence.paths) || evidence.paths.length !== data.paths.length
     || typeof evidence.protectionRequired !== 'boolean' || !Array.isArray(evidence.currentPortable)) throw recoveryRequired();
@@ -189,6 +193,12 @@ async function actualCommit(context: RecoveryContext, journal: ProjectGitJournal
   const tree = (await runGit({ cwd: context.root, args: ['rev-parse', '--verify', `${data.candidateOid}^{tree}`] })).stdout.toString().trim();
   const ancestry = (await runGit({ cwd: context.root, args: ['rev-list', '--parents', '--max-count=1', data.candidateOid] })).stdout.toString().trim().split(' ');
   if (tree !== data.candidateTreeOid || !isDeepStrictEqual(ancestry, [data.candidateOid, ...data.publicationParents])) throw recoveryRequired();
+  const mode = journal.recoveryData!.publicationMode ?? 'commit';
+  if (mode === 'fast_forward') {
+    if (!data.publishBase || journal.protection || data.publishBase === data.candidateOid) throw recoveryRequired();
+    try { await runGit({ cwd: context.root, args: ['merge-base', '--is-ancestor', data.publishBase, data.candidateOid] }); }
+    catch { throw recoveryRequired(); }
+  } else if (mode !== 'commit' || (data.publishBase && data.publicationParents.filter(parent => parent === data.publishBase).length !== 1)) throw recoveryRequired();
 }
 const phaseOrder: MaterializePhase[] = ['prepared', 'protected', 'files_applied', 'records_applied', 'ref_published', 'index_published', 'complete'];
 

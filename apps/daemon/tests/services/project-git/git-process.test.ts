@@ -14,6 +14,13 @@ const nullConfig = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const hostConfig = { GIT_CONFIG_GLOBAL: nullConfig, GIT_CONFIG_SYSTEM: nullConfig };
 async function executable(path: string, content: string) { await writeFile(path, content); await chmod(path, 0o700); }
 
+it('keeps explicit SSH connectivity failures retryable despite the generic remote-read trailer', async () => {
+  const f = await fixture(); const bin = join(f.root, 'offline-bin'); await mkdir(bin);
+  await executable(join(bin, 'ssh'), '#!/bin/sh\necho "ssh: connect to host example.invalid port 22: Connection refused" >&2\nexit 1\n');
+  await expect(runGitTransport({ preparationRoot: f.root, args: ['ls-remote', 'ssh://git@example.invalid/repo', 'refs/heads/main'],
+    env: { ...hostConfig, PATH: `${bin}:${process.env.PATH}` } })).rejects.toMatchObject({ code: 'CONFLICT' });
+});
+
 describe('controlled project Git', () => {
   it('checks trusted identity without creating an index or commit object', async () => {
     const f = await fixture();

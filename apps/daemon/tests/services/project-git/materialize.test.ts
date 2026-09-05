@@ -15,6 +15,23 @@ const fixtures: (Awaited<ReturnType<typeof createCrashFixture>> | Awaited<Return
 afterEach(async () => { vi.restoreAllMocks(); for (const f of fixtures.splice(0)) { if (f.db.open) f.db.close(); await f.close(); } });
 async function fixture() { const f = await createCrashFixture(); fixtures.push(f); return f; }
 
+it('fast-forwards a multi-hop descendant to the exact candidate without an integration commit', async () => {
+  const f = await fixture();
+  const descendant = await fixtureCommit(f.a, join(f.root, 'descendant.index'), f.target, [f.input.candidateOid]);
+  await expect(materializeProject({ ...f.input, candidateOid: descendant, publicationMode: 'fast_forward' })).resolves.toBe(descendant);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(descendant);
+  expect(f.store.getJournal(f.input.operationId)!.recoveryData).toMatchObject({ publicationMode: 'fast_forward', publicationParents: [f.input.candidateOid] });
+  expect(f.store.getJournal(f.input.operationId)!.protection).toBeNull();
+});
+
+it('rejects dirty fast-forward capture before journal intent or protection', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'dirty before fast-forward\n');
+  const previewContentDigest = await captureFixturePreview(f.input);
+  await expect(materializeProject({ ...f.input, publicationMode: 'fast_forward', previewContentDigest })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(f.store.getJournal(f.input.operationId)!.recoveryData).toBeNull();
+  expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('dirty before fast-forward\n');
+});
+
 it('materializes real files and portable records once in durable phase order', async () => {
   const f = await fixture(); const phases: string[] = [];
   const oid = await materializeProject({ ...f.input, afterDurablePhase: async phase => { phases.push(phase); } });

@@ -1,0 +1,372 @@
+import { mkdir, readFile, writeFile, chmod, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { afterEach, expect, it, vi } from 'vitest';
+import { chooseSyncAction, retryDelayMs, createProjectGitSyncDeps, syncProject } from '../../../src/services/project-git/sync.js';
+import { createGitFixture } from '../../helpers/project-git.js';
+import { fixtureGitEnv, portableSnapshot, writeFixtureEntries, createCrashFixture } from '../../helpers/project-git-crash-worker.js';
+import { closeDatabase, insertProject, insertConversation, openDatabase } from '../../../src/db.js';
+import { createProjectGitStore } from '../../../src/storage/project-git.js';
+import { getProjectGate } from '../../../src/services/project-git/gate.js';
+import { getRepositoryOwnerDomain } from '../../../src/services/project-git/repository-lease.js';
+import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+import { materializeProject } from '../../../src/services/project-git/materialize.js';
+import { createProjectGitScheduler } from '../../../src/services/project-git/scheduler.js';
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
+
+async function fixture(withMessage = false) {
+  const f = await createGitFixture(); let db: Database.Database | undefined;
+  cleanups.push(async () => { if (db?.open) db.close(); await f.close(); });
+  const snapshot = portableSnapshot(withMessage ? 'After' : 'Before');
+  const entries = serializePortableMetadata(snapshot);
+  entries.set('index.html', Buffer.from('first\nmiddle\nlast\n'));
+  await writeFixtureEntries(f.a, entries);
+  await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'base'); await f.git(f.a, 'push', 'origin', 'HEAD:refs/heads/main');
+  await f.git(f.b, 'pull', '--ff-only', 'origin', 'main');
+  const head = await f.git(f.a, 'rev-parse', 'HEAD');
+  const data = join(f.root, 'data'); const operationRoot = join(data, 'operations'); const preparationRoot = join(data, 'transport');
+  await mkdir(operationRoot, { recursive: true }); await mkdir(preparationRoot);
+  openDatabase(data, { dataDir: data }); closeDatabase(); db = new Database(join(data, 'app.sqlite'));
+  let store = createProjectGitStore(db);
+  const bin = join(f.root, 'bin'); await mkdir(bin);
+  await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\nif test -e '${f.root}/offline'; then echo 'ssh: connect to host example.invalid port 22: Connection refused' >&2; exit 1; fi\nif test -e '${f.root}/auth'; then echo 'Permission denied' >&2; exit 1; fi\nprintf '%s\\n' "$*" >> '${f.root}/network.log'\ncase "$*" in *git-receive-pack*) exec git receive-pack '${f.remote}';; *) exec git upload-pack '${f.remote}';; esac\n`);
+  await chmod(join(bin, 'ssh'), 0o700);
+  const gitEnv = { ...fixtureGitEnv, PATH: `${bin}:${process.env.PATH}` };
+  const gates = new Map();
+  for (const id of ['a', 'b'] as const) {
+    insertProject(db, { id, name: snapshot.project.name, createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype' } });
+    store.saveBinding({ projectId: id, cloneId: id, repositoryProjectId: 'repository', canonicalRoot: f[id], commonDir: join(f[id], '.git'), branch: 'main',
+      remoteUrl: 'ssh://git@example.invalid/repo', generation: 0, autoSync: true, localHead: head, observedRemoteHead: head, confirmedRemoteHead: head,
+      projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, materializedHead: head, dirty: false });
+    const generation = store.getBinding(id)!.generation;
+    store.observeRemote(id, generation, head); store.queuePush(id, generation, head); store.ackPush(id, generation, head);
+    if (withMessage) {
+      insertConversation(db, { id: `${id}-conversation`, projectId: id, title: 'Restored chat', sessionMode: 'design', createdAt: 1, updatedAt: 1 });
+      db.prepare('INSERT INTO messages (id, conversation_id, role, content, position, created_at) VALUES (?, ?, ?, ?, 0, 2)')
+        .run(`${id}-message`, `${id}-conversation`, 'user', 'materialized message');
+      store.attachId('repository', id, 'conversation', 'conversation', `${id}-conversation`);
+      store.attachId('repository', id, 'message', 'message', `${id}-message`);
+      store.attachId('repository', id, 'turn', 'turn', `message:${id}-message`);
+    }
+    gates.set(id, await getProjectGate({ root: f[id], instanceId: 'sync-fixture', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: data }));
+  }
+  let now = 100_000;
+  const compose = () => createProjectGitSyncDeps({ db: db!, store, operationRoot, preparationRoot, now: () => now, random: () => 0.5,
+    resolveProject: (id: string) => ({ root: id === 'a' ? f.a : f.b, branch: 'main', gate: gates.get(id)!, gitEnv }) });
+  let deps = compose();
+  return { ...f, head, operationRoot, preparationRoot, gitEnv, gates, get db() { return db!; }, get store() { return store; }, get deps() { return deps; },
+    advance: (ms: number) => { now += ms; },
+    reopen() { db!.close(); db = new Database(join(data, 'app.sqlite')); store = createProjectGitStore(db); deps = compose(); },
+    sync: (projectId: string, oneShot = true) => syncProject({ projectId, oneShot, deps }),
+  };
+}
+
+it('distinguishes equality, ancestry, divergence and remote rewrites', () => {
+  const input = { local: 'a', remote: 'b', localIsAncestor: false, remoteIsAncestor: false, remoteWasRewritten: false };
+  expect(chooseSyncAction(input)).toBe('merge');
+  expect(chooseSyncAction({ ...input, remote: 'a' })).toBe('equal');
+  expect(chooseSyncAction({ ...input, remote: null })).toBe('push');
+  expect(chooseSyncAction({ ...input, localIsAncestor: true })).toBe('fast_forward');
+  expect(chooseSyncAction({ ...input, remoteIsAncestor: true })).toBe('push');
+  expect(chooseSyncAction({ ...input, remoteWasRewritten: true })).toBe('remote_rewritten');
+  expect(chooseSyncAction({ ...input, remote: null, remoteWasRewritten: true })).toBe('remote_rewritten');
+});
+
+it('retains a same-message conflict without materializing remote records or changing the current worktree', async () => {
+  const f = await fixture(true);
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'a-message'); await f.sync('a');
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('remote message', 'b-message'); await f.deps.checkpoint('b');
+  const head = await f.git(f.b, 'rev-parse', 'HEAD'); const index = await readFile(join(f.b, '.git/index'));
+  const messageFile = (await f.git(f.b, 'ls-files', '.open-design')).split('\n').find(path => path.includes('/messages/'))!;
+  const bytes = await readFile(join(f.b, messageFile));
+  await expect(f.sync('b')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'merge_conflict' } });
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(head);
+  expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
+  expect(await readFile(join(f.b, messageFile))).toEqual(bytes);
+  expect(f.db.prepare('SELECT content FROM messages WHERE id = ?').get('b-message')).toEqual({ content: 'remote message' });
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'b', phase: 'conflict' }));
+});
+
+it('persists the approved backoff schedule with final jitter capped at five minutes', () => {
+  expect([0, 1, 2, 3, 4].map(n => retryDelayMs(n, () => 0.5))).toEqual([5000, 30000, 120000, 300000, 300000]);
+  expect(retryDelayMs(0, () => 0)).toBe(4000);
+  expect(retryDelayMs(0, () => 1)).toBe(6000);
+  expect(retryDelayMs(3, () => 0)).toBe(240000);
+  expect(retryDelayMs(4, () => 1)).toBe(300000);
+});
+
+it('saves local content while paused and performs one confirmed sync without changing autoSync', async () => {
+  const f = await fixture(); f.store.saveBinding({ ...f.store.getBinding('a')!, autoSync: false });
+  await writeFile(join(f.a, 'index.html'), 'local while paused\n');
+  await f.deps.detect('a'); f.advance(5000); await f.deps.detect('a'); await f.sync('a', false);
+  const local = await f.git(f.a, 'rev-parse', 'HEAD'); expect(local).not.toBe(f.head);
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toContainEqual(expect.objectContaining({ projectId: 'a', targetOid: local }));
+  await f.sync('a', true);
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(local);
+  expect(f.store.getBinding('a')).toMatchObject({ autoSync: false, confirmedRemoteHead: local });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual([]);
+});
+
+it('merges two real clone histories with two parents and retains both nonoverlapping edits', async () => {
+  const f = await fixture();
+  await writeFile(join(f.a, 'index.html'), 'LOCAL\nmiddle\nlast\n'); await f.sync('a');
+  const local = await f.git(f.a, 'rev-parse', 'HEAD');
+  await writeFile(join(f.b, 'index.html'), 'first\nmiddle\nREMOTE\n'); const b = await f.deps.checkpoint('b');
+  await f.sync('b'); const merged = await f.git(f.b, 'rev-parse', 'HEAD');
+  expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', merged)).toBe(`${merged} ${b} ${local}`);
+  expect(await readFile(join(f.b, 'index.html'), 'utf8')).toBe('LOCAL\nmiddle\nREMOTE\n');
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(merged);
+  expect(f.store.getBinding('b')!.confirmedRemoteHead).toBe(merged);
+});
+
+it('persists offline retry timing across reopen and confirms an already pushed OID idempotently', async () => {
+  const f = await fixture(); await writeFile(join(f.root, 'offline'), '1');
+  await writeFile(join(f.a, 'index.html'), 'offline bytes\n'); await expect(f.sync('a')).rejects.toBeDefined();
+  const queued = f.store.listDuePushes(Number.MAX_SAFE_INTEGER).find(push => push.projectId === 'a')!;
+  expect(queued).toMatchObject({ attempts: 1, nextAttemptAt: 105_000 });
+  f.reopen(); expect(f.store.listDuePushes(104_999)).toEqual([]);
+  await f.git(f.a, 'push', 'origin', `${queued.targetOid}:refs/heads/main`);
+  // Reopen models a daemon dying after server-side push success but before its ACK.
+  await unlink(join(f.root, 'offline')); f.advance(5000); f.reopen();
+  await f.sync('a');
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual([]);
+  expect(f.store.getBinding('a')!.confirmedRemoteHead).toBe(queued.targetOid);
+});
+
+it('retains authentication advice across reopen and retries only an explicit oneShot request', async () => {
+  const f = await fixture(); await writeFile(join(f.root, 'auth'), '1'); await writeFile(join(f.a, 'new.txt'), 'saved before auth\n');
+  await expect(f.sync('a')).rejects.toMatchObject({ code: 'GIT_AUTH_REQUIRED' });
+  const local = await f.git(f.a, 'rev-parse', 'HEAD'); f.reopen(); await unlink(join(f.root, 'auth')); f.advance(600_000);
+  await f.sync('a', false); expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ phase: 'auth_required', error: expect.objectContaining({ code: 'GIT_AUTH_REQUIRED' }) }));
+  await f.sync('a', true); expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(local);
+});
+
+it('conservatively saves five seconds after an observed change with no subscribers and no network', async () => {
+  const f = await fixture(); f.store.saveBinding({ ...f.store.getBinding('a')!, autoSync: false });
+  await f.deps.detect('a'); await writeFile(join(f.a, 'index.html'), 'background edit\n'); f.advance(1000); await f.deps.detect('a');
+  f.advance(4999); await f.deps.detect('a'); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+  f.advance(1); await f.deps.detect('a'); const saved = await f.git(f.a, 'rev-parse', 'HEAD'); expect(saved).not.toBe(f.head);
+  f.advance(60_000); await f.deps.detect('a'); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(saved);
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+});
+
+it('refuses noncanonical preparation roots before network or retained artifacts', async () => {
+  const f = await fixture();
+  const deps = createProjectGitSyncDeps({ db: f.db, store: f.store, operationRoot: f.operationRoot + '/.', preparationRoot: f.preparationRoot,
+    now: () => 0, random: () => 0.5, resolveProject: () => ({ root: f.a, branch: 'main', gate: f.gates.get('a')!, gitEnv: f.gitEnv }) });
+  await expect(deps.checkpoint('a')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+});
+
+it('does not overwrite or defer a newer local outbox target after a delayed fetch', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'index.html'), 'first checkpoint\n');
+  let newer: string | null = null;
+  const deps = { ...f.deps, fetchTarget: async (id: string) => {
+    const remote = await f.deps.fetchTarget(id);
+    await writeFile(join(f.a, 'index.html'), 'second checkpoint\n'); newer = await f.deps.checkpoint('a'); return remote;
+  } };
+  await expect(syncProject({ projectId: 'a', oneShot: true, deps })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toContainEqual(expect.objectContaining({ projectId: 'a', targetOid: newer, attempts: 0, nextAttemptAt: 0 }));
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+});
+
+it('fast-forwards alternating real clones across multiple remote commits without synthetic history', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'one.txt'), 'one'); await f.sync('a');
+  await writeFile(join(f.a, 'two.txt'), 'two'); await f.sync('a'); const remote = await f.git(f.a, 'rev-parse', 'HEAD');
+  await f.sync('b'); expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(remote);
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(remote);
+  await writeFile(join(f.b, 'three.txt'), 'three'); await f.sync('b'); const final = await f.git(f.b, 'rev-parse', 'HEAD');
+  await f.sync('a'); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(final);
+});
+
+it('adopts ordinary descendant editor commits without advancing the epoch or losing database edits', async () => {
+  const f = await fixture(); const before = f.store.getBinding('a')!;
+  f.db.prepare('UPDATE projects SET name = ? WHERE id = ?').run('Unsaved database edit', 'a');
+  f.store.bumpContent('a', { bindingGeneration: before.generation, projectRevision: 0, contentRevision: 0, localHead: before.localHead, remoteHead: before.observedRemoteHead });
+  await writeFile(join(f.a, 'external.txt'), 'editor commit'); await f.git(f.a, 'add', 'external.txt'); await f.git(f.a, 'commit', '-m', 'external');
+  const external = await f.git(f.a, 'rev-parse', 'HEAD'); await f.deps.checkpoint('a');
+  const saved = await f.git(f.a, 'rev-parse', 'HEAD');
+  expect(await f.git(f.a, 'rev-list', '--parents', '--max-count=1', saved)).toBe(`${saved} ${external}`);
+  expect(f.store.getBinding('a')).toMatchObject({ projectRevision: 0, contentRevision: 1, dirty: false });
+  expect(JSON.parse(await readFile(join(f.a, '.open-design/project.json'), 'utf8')).name).toBe('Unsaved database edit');
+});
+
+it('clears a no-op adopted editor checkpoint without changing epoch, materialized provenance, or its outbox', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'external.txt'), 'external bytes');
+  await f.git(f.a, 'add', 'external.txt'); await f.git(f.a, 'commit', '-m', 'external'); const external = await f.git(f.a, 'rev-parse', 'HEAD');
+  await f.deps.checkpoint('a'); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(external);
+  expect(f.store.getBinding('a')).toMatchObject({ projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, dirty: false, materializedHead: f.head });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toContainEqual(expect.objectContaining({ projectId: 'a', targetOid: external }));
+});
+
+it('seeds recovery holds before admitting factory work and resumes the original materialization first', async () => {
+  const f = await createCrashFixture(); cleanups.push(async () => { if (f.db.open) f.db.close(); await f.close(); });
+  await expect(materializeProject({ ...f.input, afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('interrupted'); } })).rejects.toThrow('interrupted');
+  const prep = join(f.root, 'transport'); await mkdir(prep);
+  const deps = createProjectGitSyncDeps({ db: f.db, store: f.store, operationRoot: f.input.operationDir, preparationRoot: prep,
+    now: Date.now, random: () => 0.5, resolveProject: () => ({ root: f.a, branch: 'main', gate: f.gate, gitEnv: fixtureGitEnv }) });
+  await expect(f.gate.exclusive(async () => 'fresh')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await deps.checkpoint('project');
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.input.candidateOid);
+  expect(f.store.getBinding('project')!.projectRevision).toBe(1);
+  expect(f.db.prepare('SELECT count(*) AS n FROM fixture_imports').get()).toEqual({ n: 1 });
+});
+
+it('retries a raced no-op capture with new content instead of clearing an external edit as saved', async () => {
+  const f = await fixture(); const update = f.store.updateOperation; let raced = false;
+  vi.spyOn(f.store, 'updateOperation').mockImplementation((id, value) => {
+    update(id, value);
+    if (!raced && value.status === 'succeeded' && f.store.getJournal(id)?.kind === 'checkpoint') {
+      raced = true;
+      // Synchronous external writer at the publication/return seam, with unchanged contentRevision.
+      writeFileSync(join(f.a, 'index.html'), 'raced external bytes\n');
+    }
+  });
+  const saved = await f.deps.checkpoint('a'); expect(saved).not.toBe(f.head);
+  expect(await f.git(f.a, 'show', 'HEAD:index.html')).toBe('raced external bytes');
+  expect(f.store.getBinding('a')!.dirty).toBe(false);
+});
+
+it('leaves clean periodic probes free of checkpoint journals and artifacts', async () => {
+  const f = await fixture(); await f.deps.detect('a');
+  const before = f.db.prepare('SELECT count(*) AS n FROM project_git_operations').get();
+  for (let i = 0; i < 3; i++) { f.advance(60_000); await f.deps.detect('a'); }
+  expect(f.db.prepare('SELECT count(*) AS n FROM project_git_operations').get()).toEqual(before);
+  expect(await import('node:fs/promises').then(fs => fs.readdir(f.operationRoot))).toEqual([]);
+});
+
+it('reports changed external metadata as a durable conflict and preserves database content', async () => {
+  const f = await fixture(); const path = join(f.a, '.open-design/project.json');
+  const project = JSON.parse(await readFile(path, 'utf8')); project.name = 'Changed externally'; await writeFile(path, JSON.stringify(project) + '\n');
+  await f.git(f.a, 'add', '.open-design/project.json'); await f.git(f.a, 'commit', '-m', 'external metadata');
+  await expect(f.deps.checkpoint('a')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'external_head_conflict' } });
+  expect(f.db.prepare('SELECT name FROM projects WHERE id = ?').get('a')).toEqual({ name: 'Before' });
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'a', phase: 'conflict' }));
+});
+
+it('keeps the outbox unacknowledged when the remote advances during confirmation', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'local.txt'), 'local');
+  let advanced = '';
+  const deps = { ...f.deps, confirmTarget: async (id: string) => {
+    await f.git(f.b, 'pull', '--ff-only', 'origin', 'main'); await writeFile(join(f.b, 'remote.txt'), 'remote');
+    await f.git(f.b, 'add', 'remote.txt'); await f.git(f.b, 'commit', '-m', 'remote advanced'); await f.git(f.b, 'push', 'origin', 'HEAD:refs/heads/main');
+    advanced = await f.git(f.b, 'rev-parse', 'HEAD'); return f.deps.confirmTarget(id);
+  } };
+  await expect(syncProject({ projectId: 'a', oneShot: true, deps })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(f.store.getBinding('a')!.confirmedRemoteHead).toBe(f.head);
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER).find(item => item.projectId === 'a')!.attempts).toBe(1);
+  f.advance(5000); await f.sync('a'); expect(f.store.getBinding('a')!.confirmedRemoteHead).toBe(advanced);
+});
+
+it('refetches a real non-fast-forward rejection before scheduling a new merge attempt', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'local.txt'), 'local'); let fetches = 0;
+  const deps = { ...f.deps, fetchTarget: async (id: string) => { fetches++; return f.deps.fetchTarget(id); },
+    pushTarget: async (id: string, oid: string, generation: number) => {
+      await writeFile(join(f.b, 'other.txt'), 'competing push'); await f.git(f.b, 'add', 'other.txt'); await f.git(f.b, 'commit', '-m', 'competitor');
+      await f.git(f.b, 'push', 'origin', 'HEAD:refs/heads/main'); await f.deps.pushTarget(id, oid, generation);
+    } };
+  await expect(syncProject({ projectId: 'a', oneShot: true, deps })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(fetches).toBe(2); expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(await f.git(f.b, 'rev-parse', 'HEAD'));
+  f.advance(5000); await f.sync('a'); expect(await readFile(join(f.a, 'other.txt'), 'utf8')).toBe('competing push');
+});
+
+it('stops further automatic network work when pause arrives during a fetch and keeps its outbox', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'local.txt'), 'local');
+  await f.deps.checkpoint('a');
+  const deps = { ...f.deps, fetchTarget: async (id: string) => {
+    const remote = await f.deps.fetchTarget(id); f.store.saveBinding({ ...f.store.getBinding(id)!, autoSync: false }); return remote;
+  } };
+  await syncProject({ projectId: 'a', oneShot: false, deps });
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'a', phase: 'paused', status: 'waiting' }));
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toHaveLength(1);
+});
+
+it('performs clean automatic remote checks without creating no-op checkpoint journals', async () => {
+  const f = await fixture(); await f.sync('a', false);
+  expect(f.db.prepare("SELECT count(*) AS n FROM project_git_operations WHERE kind = 'checkpoint'").get()).toEqual({ n: 0 });
+});
+
+it('keeps real scheduler startup and later remote-due ticks behind the same five-second observation clock', async () => {
+  const f = await fixture(); f.store.saveBinding({ ...f.store.getBinding('b')!, autoSync: false });
+  await writeFile(join(f.a, 'manual.txt'), 'startup manual edit');
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); let probes = 0; let networkPasses = 0;
+  const scheduler = createProjectGitScheduler({ store: f.store, now: f.deps.now, random: () => 0.5,
+    detect: async id => { await f.deps.detect(id); if (id === 'a') probes++; },
+    sync: async (projectId, oneShot) => { await syncProject({ projectId, oneShot, deps: f.deps }); networkPasses++; } });
+  const until = async (condition: () => boolean) => {
+    const deadline = Date.now() + 10_000;
+    while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(condition()).toBe(true);
+  };
+  const tick = async () => { const before = probes; f.advance(1000); await vi.advanceTimersByTimeAsync(1000); await until(() => probes > before); };
+  try {
+    scheduler.start(); scheduler.start(); await until(() => probes > 0 && networkPasses > 0);
+    expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+    for (let i = 0; i < 4; i++) await tick(); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+    await tick(); const saved = await f.git(f.a, 'rev-parse', 'HEAD'); expect(saved).not.toBe(f.head);
+    await tick(); await until(() => networkPasses >= 2);
+    await writeFile(join(f.a, 'manual.txt'), 'later manual edit'); f.advance(60000); await tick();
+    expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(saved);
+    for (let i = 0; i < 5; i++) await tick();
+    expect(await f.git(f.a, 'rev-parse', 'HEAD')).not.toBe(saved);
+  } finally { await scheduler.stop(); vi.useRealTimers(); }
+});
+
+it('does not acknowledge or defer another binding generation after a fetch callback returns late', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'local.txt'), 'local'); let generation = 0;
+  const deps = { ...f.deps, fetchTarget: async (id: string) => {
+    const remote = await f.deps.fetchTarget(id); const next = f.store.saveBinding({ ...f.store.getBinding(id)!, branch: 'new-target' }); generation = next.generation;
+    f.store.queuePush(id, generation, next.localHead!); return remote;
+  } };
+  await expect(syncProject({ projectId: 'a', oneShot: true, deps })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toContainEqual(expect.objectContaining({ projectId: 'a', generation, attempts: 0, nextAttemptAt: 0 }));
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+});
+
+it('confirms and ACKs after a real daemon process exits following successful push', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'local.txt'), 'durable local content'); await f.deps.checkpoint('a');
+  const local = await f.git(f.a, 'rev-parse', 'HEAD');
+  const modulePath = fileURLToPath(new URL('../../../src/services/project-git/sync.ts', import.meta.url));
+  const script = `import Database from 'better-sqlite3';
+    import { createProjectGitStore } from './src/storage/project-git.ts';
+    import { getProjectGate } from './src/services/project-git/gate.ts';
+    import { getRepositoryOwnerDomain } from './src/services/project-git/repository-lease.ts';
+    import { createProjectGitSyncDeps, syncProject } from ${JSON.stringify(modulePath)};
+    const settings = JSON.parse(process.argv[1]); const db = new Database(settings.database); const store = createProjectGitStore(db);
+    const gate = await getProjectGate({ root: settings.root, instanceId: 'sync-child', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: settings.data });
+    const deps = createProjectGitSyncDeps({ db, store, operationRoot: settings.operationRoot, preparationRoot: settings.preparationRoot,
+      now: Date.now, random: () => 0.5, resolveProject: () => ({ root: settings.root, branch: 'main', gate, gitEnv: settings.gitEnv }) });
+    const confirm = deps.confirmTarget; let calls = 0;
+    deps.confirmTarget = async id => { if (++calls === 2) process.exit(73); return confirm(id); };
+    await syncProject({ projectId: 'a', oneShot: true, deps }); process.exit(1);`;
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script,
+    JSON.stringify({ database: join(f.root, 'data/app.sqlite'), data: join(f.root, 'data'), root: f.a, operationRoot: f.operationRoot,
+      preparationRoot: f.preparationRoot, gitEnv: f.gitEnv })], { cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; child.stderr.on('data', bytes => { stderr += String(bytes); });
+  try { expect(await once(child, 'exit')).toEqual([73, null]); expect(stderr).toBe(''); }
+  finally { if (child.exitCode === null) child.kill('SIGKILL'); }
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(local);
+  f.reopen(); expect(f.store.getBinding('a')!.confirmedRemoteHead).toBe(f.head);
+  await f.sync('a', true); expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual([]);
+  expect(f.store.getBinding('a')!.confirmedRemoteHead).toBe(local);
+});
+
+it('detects a deleted or rewritten remote branch and never replaces it automatically', async () => {
+  const f = await fixture(); await writeFile(join(f.a, 'new.txt'), 'new\n'); await f.sync('a');
+  const before = await f.git(f.a, 'rev-parse', 'HEAD');
+  await f.git(f.remote, 'update-ref', 'refs/heads/main', f.head, before);
+  await expect(f.sync('a')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'remote_rewritten' } });
+  expect(await f.git(f.remote, 'rev-parse', 'main')).toBe(f.head);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(before);
+  expect(f.store.getBinding('a')!.observedRemoteHead).toBe(before);
+});

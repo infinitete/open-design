@@ -67,6 +67,31 @@ describe('project Git durable store', () => {
     if (kind === 'remote') store.observeRemote('p1', current.generation, 'external-remote');
   }
 
+  it('adopts an external HEAD with exact basis CAS, keeps revisions and export provenance, and queues the OID atomically', () => {
+    const store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40), materializedHead: 'a'.repeat(40) });
+    store.adoptExternalHead('p1', basis(b), 'b'.repeat(40));
+    expect(store.getBinding('p1')).toMatchObject({ localHead: 'b'.repeat(40), materializedHead: b.materializedHead,
+      dirty: true, projectRevision: 0, contentRevision: 0, exportedContentRevision: 0 });
+    expect(store.listDuePushes(0)).toContainEqual(expect.objectContaining({ targetOid: 'b'.repeat(40), generation: b.generation }));
+    expect(() => store.adoptExternalHead('p1', basis(b), 'c'.repeat(40))).toThrowError();
+    db.close(); db = new Database(file);
+    expect(createProjectGitStore(db).getBinding('p1')!.localHead).toBe('b'.repeat(40));
+  });
+
+  it('keeps publication mode immutable and refuses fast-forward protection and external adoption during prepared recovery', () => {
+    const store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const op = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync', basis: basis(b) });
+    const data = { ...recovery(), publicationMode: 'fast_forward' as const, baseHead: b.localHead, publishBase: b.localHead, publicationParents: ['intermediate'] };
+    store.setPhase(op.id, 'prepared', data);
+    expect(() => store.adoptExternalHead('p1', basis(b), 'b'.repeat(40))).toThrowError();
+    expect(() => store.completePhase(op.id, 'prepared', { ...data, publicationMode: 'commit', publicationParents: [b.localHead!] })).toThrowError();
+    store.completePhase(op.id, 'prepared', data); store.setPhase(op.id, 'protected', data);
+    expect(() => store.prepareProtection(op.id, { basis: basis(b), checkpointOperationId: 'child', checkpointOid: 'child-oid' })).toThrowError();
+    expect(() => store.sealProtectedCandidate(op.id, basis(b), { previewContentDigest: 'digest', candidateTreeOid: 'tree', publishBase: 'child', publicationParents: ['child'], candidateOid: 'oid', publishHead: 'oid' })).toThrowError();
+    expect(store.getBinding('p1')!.localHead).toBe(b.localHead);
+    expect(store.getJournal(op.id)!.recoveryData!.publicationMode).toBe('fast_forward');
+  });
+
   it('keeps one operation for a retried request across database reopen', () => {
     const first = createProjectGitStore(db).enqueueOperation(request);
     db.close(); db = new Database(file); migrateProjectGit(db);

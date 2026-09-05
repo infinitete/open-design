@@ -43,6 +43,8 @@ export interface ProjectGitRecoveryPath {
 
 /** Server supplies all machine-local paths. Intent identity is immutable once prepared. */
 export interface ProjectGitRecoveryData {
+  /** Missing on older journals means the original direct-parent commit protocol. */
+  publicationMode?: 'commit' | 'fast_forward';
   operationRoot: string;
   baseHead: string | null;
   previewContentDigest: string;
@@ -177,6 +179,8 @@ export interface ProjectGitStore {
   bumpContent(projectId: string, expected: ProjectGitBasis): number;
   bumpProject(projectId: string, expected: ProjectGitBasis): number;
   markExported(projectId: string, expected: Pick<ProjectGitBasis, 'bindingGeneration' | 'projectRevision'>, contentRevision: number): void;
+  /** Trusted caller proves idle descendant HEAD and unchanged portable tree under the registered gate. */
+  adoptExternalHead(projectId: string, expected: ProjectGitBasis, oid: string): void;
   observeRemote(projectId: string, generation: number, oid: string | null): void;
   /** Full local registration invalidation. HTTP remote unbind instead saves remoteUrl:null, retaining management. */
   invalidateBinding(projectId: string, expected: ProjectGitBasis): number;
@@ -263,10 +267,12 @@ function basisFor(b: ProjectGitBindingRecord): ProjectGitBasis {
 
 /** Completions may add facts, but must not erase facts or replace the prepared intent. */
 function validateRecovery(previous: ProjectGitRecoveryData | null, next: ProjectGitRecoveryData): void {
-  if (!next.operationRoot || !next.candidateOid || !next.publishHead || !next.index.ownerToken
+  const mode = next.publicationMode ?? 'commit';
+  if (!['commit', 'fast_forward'].includes(mode) || (mode === 'fast_forward' && next.baseHead === null)
+    || !next.operationRoot || !next.candidateOid || !next.publishHead || !next.index.ownerToken
     || !next.previewContentDigest || !next.candidateTreeOid || next.publishBase !== next.baseHead
     || next.publishHead !== next.candidateOid || new Set(next.publicationParents).size !== next.publicationParents.length
-    || (next.baseHead !== null && next.publicationParents.filter(parent => parent === next.baseHead).length !== 1)
+    || (mode === 'commit' && next.baseHead !== null && next.publicationParents.filter(parent => parent === next.baseHead).length !== 1)
     || new Set(next.paths.map(p => p.path)).size !== next.paths.length
     || next.paths.some(p => p.oldDigest !== null && !p.backupPath)
     || (next.index.oldDigest !== null && !next.index.backupPath)) throw recoveryRequired();
@@ -303,6 +309,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   function protectionPair(id: string, input: ProjectGitProtectionInput) {
     const op = getJournal(id); const checkpoint = getJournal(input.checkpointOperationId);
     if (!op?.projectId || !op.recoveryData || !sameBasis(op.basis, input.basis)) throw changed();
+    if (op.recoveryData.publicationMode === 'fast_forward') throw recoveryRequired();
     if (op.kind === 'checkpoint' || !checkpoint?.recoveryData || checkpoint.kind !== 'checkpoint'
       || checkpoint.ownerOperationId !== op.id || checkpoint.projectId !== op.projectId
       || !sameBasis(checkpoint.basis, op.basis) || checkpoint.recoveryData.publishHead !== input.checkpointOid
@@ -449,6 +456,13 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       db.prepare('UPDATE project_git_bindings SET exported_content_revision = ? WHERE project_id = ?').run(revision, id);
       updateBindingData({ ...b, exportedContentRevision: revision, dirty: revision !== b.contentRevision });
     }),
+    adoptExternalHead: (id, expected, oid) => transaction(() => {
+      const b = requireBasis(id, expected);
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(oid)) throw changed();
+      if (store.listRecoverable().some(op => op.projectId === id && op.recoveryData !== null)) throw recoveryRequired();
+      updateBindingData({ ...b, localHead: oid, dirty: true });
+      if (b.remoteUrl !== null) store.queuePush(id, b.generation, oid);
+    }),
     observeRemote: (id, generation, oid) => transaction(() => {
       updateBindingData({ ...requireGeneration(id, generation), observedRemoteHead: oid });
     }),
@@ -542,6 +556,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     sealProtectedCandidate: (id, basis, candidate) => transaction(() => {
       const op = getJournal(id); const protection = op?.protection; const data = op?.recoveryData;
       if (!op?.projectId || !data || !sameBasis(op.basis, basis)) throw changed();
+      if (data.publicationMode === 'fast_forward') throw recoveryRequired();
       if (!protection?.completed) throw recoveryRequired();
       if (op.journalPhase !== 'complete') requireBasis(op.projectId, ownedBasis(op));
       if (protection.sealedCandidate) {

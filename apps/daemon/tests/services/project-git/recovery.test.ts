@@ -8,7 +8,7 @@ import type { ProjectGitOperation } from '@open-design/contracts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { recoverProjectOperations } from '../../../src/services/project-git/recovery.js';
 import { materializeProject } from '../../../src/services/project-git/materialize.js';
-import { createCrashFixture, openCrashFixture } from '../../helpers/project-git-crash-worker.js';
+import { createCrashFixture, openCrashFixture, fixtureCommit } from '../../helpers/project-git-crash-worker.js';
 
 const fixtures: Awaited<ReturnType<typeof createCrashFixture>>[] = [];
 const reopened: Awaited<ReturnType<typeof openCrashFixture>>[] = [];
@@ -28,6 +28,46 @@ async function crash(phase: string, kill = false) {
   const restarted = await openCrashFixture(f.root); reopened.push(restarted);
   return { f, restarted };
 }
+
+it('recovers the exact multi-hop fast-forward OID after a real process exits between ref and index publication', async () => {
+  const f = await createCrashFixture(); fixtures.push(f);
+  const candidateOid = await fixtureCommit(f.a, join(f.root, 'descendant.index'), f.target, [f.input.candidateOid]);
+  await writeFile(join(f.root, 'fixture.json'), JSON.stringify({ ...f.description, candidateOid, publicationMode: 'fast_forward' }));
+  f.db.close();
+  const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../../helpers/project-git-crash-worker.ts', import.meta.url)), f.root, 'after_ref_update', 'exit'],
+    { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  children.push(child); let stderr = ''; child.stderr.on('data', bytes => { stderr += String(bytes); });
+  expect(await once(child, 'exit')).toEqual([73, null]); expect(stderr).toBe('');
+  const restarted = await openCrashFixture(f.root); reopened.push(restarted);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(candidateOid);
+  await recoverProjectOperations(restarted.recoveryInput); await recoverProjectOperations(restarted.recoveryInput);
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(candidateOid);
+  expect(await f.git(f.a, 'diff', '--cached', '--name-only')).toBe('');
+  expect(restarted.store.getBinding('project')!.projectRevision).toBe(1);
+  expect(restarted.store.getJournal(f.input.operationId)!.protection).toBeNull();
+});
+
+it.each(['mode', 'ancestry', 'protection'] as const)('rejects forged fast-forward %s evidence on restart', async forged => {
+  const f = await createCrashFixture(); fixtures.push(f);
+  const unrelated = await fixtureCommit(f.a, join(f.root, 'unrelated.index'), f.target, []);
+  await expect(materializeProject({ ...f.input, publicationMode: 'fast_forward', candidateOid: unrelated })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  expect(f.store.getJournal(f.input.operationId)!.recoveryData).toBeNull();
+  await expect(materializeProject({ ...f.input, publicationMode: 'fast_forward', afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('retained'); } })).rejects.toThrow('retained');
+  const journal = f.store.getJournal(f.input.operationId)!;
+  const path = join(journal.recoveryData!.operationRoot, 'materialization.json');
+  const evidence = JSON.parse(await readFile(path, 'utf8'));
+  if (forged === 'mode') evidence.publicationMode = 'commit';
+  if (forged === 'ancestry') {
+    evidence.candidateOid = unrelated;
+    f.db.prepare('UPDATE project_git_operations SET recovery_json = ? WHERE id = ?').run(JSON.stringify({ ...journal.recoveryData,
+      candidateOid: unrelated, publishHead: unrelated, publicationParents: [] }), journal.id);
+  }
+  if (forged === 'protection') evidence.protectionRequired = true;
+  await writeFile(path, JSON.stringify(evidence));
+  await expect(recoverProjectOperations(f.recoveryInput)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+  await expect(f.gate.read(async () => 'unsafe', 10)).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+});
 
 async function runCrashCase(phase: string): Promise<{ operation: ProjectGitOperation; fileBytes: Uint8Array; portableBytes: Uint8Array; databaseImportCount: number }> {
   const { f, restarted } = await crash(phase, phase === 'after_ref_update');

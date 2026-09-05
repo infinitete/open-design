@@ -19,6 +19,7 @@ export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'rec
 export type MaterializeEffect = 'file_applied' | 'before_records_commit' | 'after_records_commit' | 'before_ref_update'
   | 'after_ref_update' | 'before_index_rename' | 'after_index_rename' | 'index_lock_acquired' | 'index_lock_receipted';
 export interface MaterializeInput {
+  publicationMode?: 'commit' | 'fast_forward';
   projectId: string; root: string; branch: string; operationId: string; operationDir: string;
   basis: ProjectGitBasis; candidateOid: string; snapshot: PortableSnapshot; store: ProjectGitStore; db: Database.Database; gate: ProjectGate;
   /** Frozen caller-captured semantic content identity, never refreshed for an old request. */
@@ -75,7 +76,13 @@ async function prepare(input: MaterializeInput): Promise<void> {
   if (portableImportMarker(snapshot) !== portableImportMarker(input.snapshot) || snapshot.manifest.repositoryProjectId !== binding.repositoryProjectId) throw changed();
   const treeOid = (await runGit({ cwd: input.root, args: ['rev-parse', '--verify', `${input.candidateOid}^{tree}`] })).stdout.toString().trim();
   const parents = (await runGit({ cwd: input.root, args: ['rev-list', '--parents', '--max-count=1', input.candidateOid] })).stdout.toString().trim().split(' ').slice(1);
-  if (new Set(parents).size !== parents.length || (repository.head && parents.filter(parent => parent === repository.head).length !== 1)) throw changed();
+  const publicationMode = input.publicationMode ?? 'commit';
+  if (!['commit', 'fast_forward'].includes(publicationMode) || new Set(parents).size !== parents.length) throw changed();
+  if (publicationMode === 'fast_forward') {
+    if (!repository.head || repository.head === input.candidateOid) throw changed();
+    try { await runGit({ cwd: input.root, args: ['merge-base', '--is-ancestor', repository.head, input.candidateOid] }); }
+    catch { throw changed(); }
+  } else if (repository.head && parents.filter(parent => parent === repository.head).length !== 1) throw changed();
   const base = repository.head ? await gitTree(input.root, repository.head) : new Map<string, { bytes: Buffer; mode: string }>();
   const portable = new Map([...await input.exportCurrentPortable()].map(([path, bytes]) => [path, Buffer.from(bytes)]));
   parsePortableEntries(portable);
@@ -96,6 +103,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   const baseDigests = Object.fromEntries([...base].map(([path, item]) => [path, sha256(item.bytes)]));
   const baseModes = Object.fromEntries([...base].map(([path, item]) => [path, item.mode]));
   const protectionRequired = computeCheckpointContentDigest({ sourceDigests: baseDigests, sourceModes: baseModes, portableDigests: {}, removedPaths: [] }) !== previewContentDigest;
+  if (publicationMode === 'fast_forward' && protectionRequired) throw changed();
   if (!isAbsolute(input.operationDir)) throw recoveryRequired();
   await durableDirectory(input.operationDir); const operationParent = await realpath(input.operationDir);
   if (operationParent !== input.operationDir || operationParent === repository.root || within(repository.root, operationParent)) throw recoveryRequired();
@@ -121,7 +129,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
   await runGit({ cwd: input.root, args: ['read-tree', input.candidateOid], env: { ...input.gitEnv, GIT_INDEX_FILE: privateIndex } });
   const candidateIndex = await readBytes(privateIndex); if (!candidateIndex) throw recoveryRequired();
   const indexHandle = await open(privateIndex, 'r'); try { await indexHandle.sync(); } finally { await indexHandle.close(); }
-  const evidence: MaterializationEvidence = { operationId: input.operationId, projectId: input.projectId, treeOid, candidateOid: input.candidateOid,
+  const evidence: MaterializationEvidence = { publicationMode, operationId: input.operationId, projectId: input.projectId, treeOid, candidateOid: input.candidateOid,
     sourceDigests: source.sourceDigests, sourceModes: source.sourceModes, portableDigests, removedPaths, previewContentDigest, protectionRequired,
     currentPortable: [...portable].map(([path, bytes]) => [path, bytes.toString('base64')]), paths };
   await durableWrite(join(operationRoot, 'materialization.json'), Buffer.from(JSON.stringify(evidence)));
@@ -129,7 +137,7 @@ async function prepare(input: MaterializeInput): Promise<void> {
     || !isDeepStrictEqual(source, await capture(input.root, allPaths)) || !isDeepStrictEqual(input.basis, await input.readBasis())
     || (await discoverRepository(input.root)).head !== input.basis.localHead
     || !isDeepStrictEqual(originalIndex, await readBytes(indexPath))) throw changed();
-  const data: ProjectGitRecoveryData = { operationRoot, baseHead: input.basis.localHead, previewContentDigest, candidateTreeOid: treeOid,
+  const data: ProjectGitRecoveryData = { publicationMode, operationRoot, baseHead: input.basis.localHead, previewContentDigest, candidateTreeOid: treeOid,
     publishBase: input.basis.localHead, publicationParents: parents, publishHead: input.candidateOid, candidateOid: input.candidateOid,
     paths: paths.map(({ candidatePath: _candidate, mode: _mode, oldMode: _oldMode, temporaryPath: _temporary, temporaryReceiptPath: _receipt, ...path }) => path),
     index: { path: indexPath, oldDigest: originalIndex === null ? null : sha256(originalIndex), candidateDigest: sha256(candidateIndex),
@@ -162,6 +170,7 @@ export async function ensureMaterializationProtection(context: RecoveryContext, 
     evidence = await readMaterialization(context, operationId);
     if (journal.journalPhase === 'prepared') context.store.setPhase(operationId, 'protected', journal.recoveryData!);
   });
+  if (journal.recoveryData?.publicationMode === 'fast_forward' && (evidence.protectionRequired || journal.protection)) throw recoveryRequired();
   if (!evidence.protectionRequired) return;
   let child = context.store.listRecoverable().find(op => op.ownerOperationId === operationId);
   journal = context.store.getJournal(operationId)!;
