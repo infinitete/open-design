@@ -12,7 +12,9 @@ import { acquireRepositoryLease, getRepositoryOwnerDomain } from '../../../src/s
 import { runGit } from '../../../src/services/project-git/git-process.js';
 import { closeDatabase, getProject, listProjects, openDatabase } from '../../../src/db.js';
 import { fixtureCommit, fixtureGitEnv, portableSnapshot } from '../../helpers/project-git-crash-worker.js';
-import { serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+import { canonicalJson, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+import { inspectBindingCommit } from '../../../src/services/project-git/binding.js';
+import { sha256 } from '../../../src/services/project-git/recovery.js';
 import { computeCheckpointContentDigest, prepareCheckpoint, publishCheckpoint } from '../../../src/services/project-git/checkpoint.js';
 import { materializeProject } from '../../../src/services/project-git/materialize.js';
 import { recoverProjectOperations } from '../../../src/services/project-git/recovery.js';
@@ -40,10 +42,19 @@ async function owners() {
     const basis = { bindingGeneration: b.generation, projectRevision: 0, contentRevision: 0, localHead: enable?.head ?? null, remoteHead: null };
     const kind = enable ? 'enable' as const : initialCandidate ? 'open' as const : 'bind' as const;
     const op = enable ? store.enqueueCheckpoint({ projectId, actorId: 'fixture', basis, idempotencyKey: 'checkpoint', requestDigest: 'checkpoint',
-      payload: { previewContentDigest: enable.previewDigest } }) : store.enqueueOperation({ projectId, actorId: 'fixture', kind, basis, idempotencyKey: 'bind', requestDigest: 'bind', payload: {} });
+      payload: { previewContentDigest: enable.previewDigest } }) : store.enqueueOperation({ projectId: initialCandidate ? null : projectId, actorId: 'fixture', kind,
+        ...(initialCandidate ? {} : { basis }), idempotencyKey: 'bind', requestDigest: 'bind', payload: initialCandidate
+          ? { url: 'https://fixture.invalid/repo', branch: targetBranch, reservedProjectId: projectId, cloneId: projectId, plainRepositoryProjectId: 'repository', createdAt: 1 } : {} });
     const blob = { dataRootId, projectId, canonicalRoot: f.a, localBranch: 'main', generation: 2 };
     const oid = (await runGit({ cwd: f.a, args: ['hash-object', '-w', '--stdin'], stdin: Buffer.from(JSON.stringify(blob)) })).stdout.toString().trim();
     const rootInfo = await lstat(f.a);
+    if (initialCandidate) {
+      const snapshot = (await inspectBindingCommit(f.a, initialCandidate)).snapshot!; const canonicalSnapshotJson = canonicalJson(JSON.parse(JSON.stringify(snapshot)));
+      store.freezeOpenRemote(op.id, { head: initialCandidate, objectFormat: 'sha1' });
+      store.freezeOpenPreparation(op.id, { root: { dev: String(rootInfo.dev), ino: String(rootInfo.ino) },
+        candidate: { candidateOid: initialCandidate, repositoryProjectId: snapshot.manifest.repositoryProjectId, canonicalSnapshotJson, snapshotDigest: sha256(Buffer.from(canonicalSnapshotJson)) } });
+      store.attachOperationProject(op.id, projectId, basis);
+    }
     const intent: ProjectGitRegistrationIntent = { kind, completion: enable ? 'checkpoint' : initialCandidate ? 'materialization' : 'binding_only', userOperationId: user?.id ?? op.id, executionOperationId: op.id,
       projectId, cloneId: projectId, repositoryProjectId: 'repository', dataRootId, canonicalRoot: f.a, commonDir: join(f.a, '.git'),
       localBranch: 'main', targetBranch, remoteUrl: 'https://fixture.invalid/repo', autoSync: true, hidden: !!initialCandidate,
@@ -58,7 +69,7 @@ async function owners() {
           localHead: current.localHead, remoteHead: current.observedRemoteHead };
       } });
     const registry = createProjectGitRegistration({ db, store, dataRootId, resolveProject });
-    return { db, store, registry, intent, gate, op, resolveProject, operationRoot };
+    return { db, store, registry, intent, gate, op: initialCandidate ? store.getOperation(op.id)! : op, resolveProject, operationRoot };
   }
   return { f, owner };
 }

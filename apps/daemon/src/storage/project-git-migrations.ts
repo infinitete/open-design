@@ -68,6 +68,12 @@ export function migrateProjectGit(db: Database.Database): void {
       head TEXT,
       object_format TEXT NOT NULL CHECK (object_format IN ('sha1', 'sha256'))
     );
+    CREATE TABLE IF NOT EXISTS project_git_preparations (
+      operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
+      root_json TEXT,
+      candidate_json TEXT,
+      initialization_json TEXT
+    );
     CREATE INDEX IF NOT EXISTS project_git_push_due ON project_git_push_queue(next_attempt_at);
     CREATE TABLE IF NOT EXISTS project_git_portable_records (
       project_id TEXT NOT NULL,

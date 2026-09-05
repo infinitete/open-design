@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstatSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { JsonValue } from '@open-design/contracts';
+import type { JsonValue, PortableSnapshot } from '@open-design/contracts';
 import { canonicalJson, exportProjectPreferences, exportPortableProject, portableImportMarker, portableIdSegment, parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
 import { importPortableRecords, readPortableRecords } from '../../../src/services/project-git/portable-db.js';
 import { appendMessageAgentEvent, closeDatabase, getProject, listProjects, insertConversation, insertProject, listMessages,
@@ -69,18 +71,30 @@ describe('portable database roundtrip', () => {
     db.pragma('foreign_keys = ON');
     return { db, root, store: createProjectGitStore(db) };
   }
-  function recordsOperation(store: ProjectGitStore, root: string, projectId: string, marker: string, hidden = false) {
+  function recordsOperation(store: ProjectGitStore, root: string, projectId: string, marker: string, hidden = false, snapshot?: PortableSnapshot) {
     const binding = store.saveBinding({ projectId, cloneId: 'clone-two', repositoryProjectId: 'repository',
       canonicalRoot: root, commonDir: join(root, '.git'), branch: 'main', remoteUrl: null,
       generation: 0, autoSync: false, localHead: null, observedRemoteHead: null, confirmedRemoteHead: null,
       projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, materializedHead: null, dirty: false });
     const basis = { bindingGeneration: binding.generation, projectRevision: 0, contentRevision: 0,
       localHead: null, remoteHead: null };
-    const op = store.enqueueOperation({ projectId, actorId: 'local', kind: 'open', basis,
-      idempotencyKey: 'import-once', requestDigest: marker, payload: {} });
+    const op = store.enqueueOperation({ projectId: hidden ? null : projectId, actorId: 'local', kind: 'open', ...(hidden ? {} : { basis }),
+      idempotencyKey: 'import-once', requestDigest: marker, payload: hidden ? { url: 'https://fixture.invalid/repo', branch: 'main',
+        reservedProjectId: projectId, cloneId: 'clone-two', plainRepositoryProjectId: 'repository', createdAt: 1 } : {} });
+    const info = lstatSync(root);
+    if (hidden) {
+      if (!snapshot) throw new Error('Hidden import requires its strict snapshot fixture');
+      const canonicalSnapshotJson = canonicalJson(JSON.parse(JSON.stringify(snapshot)));
+      store.freezeOpenRemote(op.id, { head: 'a'.repeat(40), objectFormat: 'sha1' });
+      store.freezeOpenPreparation(op.id, { root: { dev: String(info.dev), ino: String(info.ino) }, candidate: {
+        candidateOid: 'a'.repeat(40), repositoryProjectId: 'repository', canonicalSnapshotJson,
+        snapshotDigest: createHash('sha256').update(canonicalSnapshotJson).digest('hex') } });
+      store.attachOperationProject(op.id, projectId, basis);
+    }
     if (hidden) store.prepareRegistration({ kind: 'open', completion: 'materialization', userOperationId: op.id, executionOperationId: op.id,
       projectId, cloneId: 'clone-two', repositoryProjectId: 'repository', dataRootId: root, canonicalRoot: root, commonDir: join(root, '.git'),
-      localBranch: 'main', targetBranch: 'main', remoteUrl: null, autoSync: true, originalUserBasis: basis, executionBasis: basis,
+      localBranch: 'main', targetBranch: 'main', remoteUrl: 'https://fixture.invalid/repo', autoSync: true, originalUserBasis: basis, executionBasis: basis,
+      initialImport: { candidateOid: 'a'.repeat(40), rootDev: String(info.dev), rootIno: String(info.ino) },
       hidden: true, previousOwner: null, targetOwner: { ref: 'refs/open-design/bindings/fixture', expectedOid: null, oid: 'a'.repeat(40), generation: 1 } });
     const data: ProjectGitRecoveryData = { operationRoot: join(root, 'operation'), baseHead: null,
       previewContentDigest: marker, candidateTreeOid: 'tree', publishBase: null, publicationParents: [],
@@ -99,7 +113,7 @@ describe('portable database roundtrip', () => {
     const snapshot = { manifest: { schemaVersion: 1 as const, repositoryProjectId: 'repository', resources: [] },
       project: { schemaVersion: 1 as const, name: 'Hidden import', kind: 'prototype' as const, createdAt: 1, preferences: {}, contentRefs: [], linkedFolderRequirements: [] },
       conversations: [], messages: [] };
-    const operationId = recordsOperation(target.store, target.root, 'pending-project', portableImportMarker(snapshot), true);
+    const operationId = recordsOperation(target.store, target.root, 'pending-project', portableImportMarker(snapshot), true, snapshot);
     importPortableRecords({ ...target, projectId: 'pending-project', cloneId: 'clone-two', snapshot, operationId });
     expect(getProject(target.db, 'pending-project')).toBeNull();
     expect(listProjects(target.db)).toEqual([]);

@@ -123,11 +123,19 @@ export async function createUnbornCrashFixture(): Promise<Fixture & { head: null
 
 async function registrationWorker(root: string, window: string): Promise<void> {
   const config = JSON.parse(await readFile(join(root, 'binding-fixture.json'), 'utf8')) as Pick<ProjectGitBindingServiceInput,
-    'operationRoot' | 'preparationRoot' | 'ownedProjectsRoot' | 'ownership' | 'gitEnv'> & { data: string };
+    'operationRoot' | 'preparationRoot' | 'ownedProjectsRoot' | 'ownership' | 'gitEnv'> & { data: string; enableProject?: { id: string; root: string; previewId: string } };
   const db = new Database(join(config.data, 'app.sqlite')); const store = createProjectGitStore(db);
   const projects = new Map<string, ProjectGitSyncProject>();
   for (const b of store.listBindings()) projects.set(b.projectId, { root: b.canonicalRoot, branch: b.localBranch ?? b.branch,
     gate: await getProjectGate({ root: b.canonicalRoot, ...config.ownership }), ...(config.gitEnv ? { gitEnv: config.gitEnv } : {}) });
+  if (config.enableProject && !projects.has(config.enableProject.id)) {
+    const { getUnmanagedProjectGate, resumeInitializedProjectGate } = await import('../../src/services/project-git/gate.js');
+    const prior = store.findOperation({ projectId: config.enableProject.id, actorId: 'local', kind: 'enable', idempotencyKey: 'process-enable' });
+    const gate = prior && store.getEnableInitialization(prior.id)
+      ? await resumeInitializedProjectGate({ root: config.enableProject.root, ...config.ownership, store, operationRoot: config.operationRoot, operationId: prior.id })
+      : await getUnmanagedProjectGate({ root: config.enableProject.root, ...config.ownership });
+    projects.set(config.enableProject.id, { root: config.enableProject.root, branch: 'main', gate, ...(config.gitEnv ? { gitEnv: config.gitEnv } : {}) });
+  }
   let service!: ReturnType<typeof createProjectGitBindingService>;
   const resolveProject = (id: string): ProjectGitSyncProject => {
     const project = projects.get(id); if (!project) throw new Error('Missing trusted fixture registration');
@@ -137,7 +145,7 @@ async function registrationWorker(root: string, window: string): Promise<void> {
   const scheduler = createProjectGitScheduler({ store, now: deps.now, random: deps.random, detect: deps.detect,
     sync: (projectId, oneShot) => syncProject({ projectId, oneShot, deps }) });
   service = createProjectGitBindingService({ ...config, db, store, scheduler, checkpointCurrent: deps.checkpoint, recoveryReady: deps.recoveryReady,
-    resolveProject, now: deps.now, newId: randomUUID,
+    resolveProject, now: deps.now, newId: randomUUID, resolveAvailability: async () => true,
     requireCreate: actor => { if (actor !== 'local') throw new Error('Fixture authorization failed'); },
     requireProject: (actor, id) => { if (actor !== 'local' || !getProject(db, id)) throw new Error('Fixture authorization failed'); },
     reserveProject: ({ projectId, root: projectRoot, localBranch, gate }) => {
@@ -166,7 +174,14 @@ async function registrationWorker(root: string, window: string): Promise<void> {
     const original = store.completeRegistration;
     store.completeRegistration = intent => { const result = original(intent); process.exit(73); return result; };
   }
-  await service.openRepository({ url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'process-open' });
+  if (window === 'candidate') {
+    const freeze = store.freezeOpenPreparation;
+    store.freezeOpenPreparation = (id, preparation) => { freeze(id, preparation); if (preparation.candidate) process.exit(73); };
+  }
+  if (window === 'enable-init') store.prepareRegistration = () => { process.exit(73); };
+  if (config.enableProject) await service.enable(config.enableProject.id, config.enableProject.previewId,
+    { actorId: 'local', idempotencyKey: 'process-enable', expectedProjectRevision: 0 });
+  else await service.openRepository({ url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'process-open' });
   await scheduler.stop(); db.close();
 }
 

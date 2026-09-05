@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { parsePortableSnapshot, ProjectGitDependencySchema } from '@open-design/contracts';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import type {
-  ApiError, JsonValue, ProjectGitAction, ProjectGitBasis, ProjectGitOperation,
+  ApiError, JsonValue, ProjectGitAction, ProjectGitBasis, ProjectGitDependency, ProjectGitOperation,
   ProjectGitOperationResult, ProjectGitOperationStatus, ProjectGitPhase,
 } from '@open-design/contracts';
 import { GitDomainError } from '../services/project-git/errors.js';
@@ -44,9 +45,18 @@ export interface ProjectGitRegistrationIntent {
   initialImport?: { candidateOid: string; rootDev: string; rootIno: string };
   materialization?: { candidateOid: string; publicationMode: 'commit' | 'fast_forward'; previewContentDigest: string };
   existingProjectIds?: string[];
+  dependencies?: ProjectGitDependency[];
 }
 export interface ProjectGitRegistrationRecord extends ProjectGitRegistrationIntent {
   state: 'pending' | 'complete' | 'aborted';
+}
+export interface ProjectGitOpenPreparation {
+  root?: { dev: string; ino: string };
+  candidate?: { candidateOid: string; repositoryProjectId: string; canonicalSnapshotJson: string; snapshotDigest: string };
+}
+export interface ProjectGitEnableInitialization {
+  projectId: string; canonicalRoot: string; dev: string; ino: string; branch: string; objectFormat: 'sha1' | 'sha256';
+  previewId: string; previewEvidenceDigest: string; basis: ProjectGitBasis;
 }
 
 export type ProjectGitIdKind = 'project' | 'conversation' | 'message' | 'turn';
@@ -187,6 +197,10 @@ export interface ProjectGitBindingTombstone {
 }
 
 export interface ProjectGitStore {
+  freezeOpenPreparation(operationId: string, preparation: ProjectGitOpenPreparation): void;
+  getOpenPreparation(operationId: string): ProjectGitOpenPreparation | null;
+  freezeEnableInitialization(operationId: string, initialization: ProjectGitEnableInitialization): void;
+  getEnableInitialization(operationId: string): ProjectGitEnableInitialization | null;
   freezeOpenRemote(operationId: string, remote: { head: string | null; objectFormat: 'sha1' | 'sha256' }): void;
   getOpenRemote(operationId: string): { head: string | null; objectFormat: 'sha1' | 'sha256' } | null;
   consumePreview(previewOperationId: string, consumerOperationId: string): void;
@@ -263,6 +277,11 @@ const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The proj
 const conflict = () => new GitDomainError('CONFLICT', 409, 'The durable operation conflicts with existing state.');
 const recoveryRequired = () => new GitDomainError('RECOVERY_REQUIRED', 409, 'The journal requires recovery before completion.');
 const json = (value: unknown) => JSON.stringify(value);
+function canonicalPayloadJson(value: JsonValue): string {
+  const normalize = (item: JsonValue): JsonValue => Array.isArray(item) ? item.map(normalize)
+    : item !== null && typeof item === 'object' ? Object.fromEntries(Object.keys(item).sort().map(key => [key, normalize(item[key]!)])) : item;
+  return JSON.stringify(normalize(value)) + '\n';
+}
 
 function bindingFrom(row: BindingRow): ProjectGitBindingRecord {
   return { ...JSON.parse(row.record_json) as ProjectGitBindingRecord, generation: row.generation,
@@ -465,11 +484,72 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   }
   const pushColumns = 'q.project_id AS projectId, q.binding_generation AS generation, q.target_oid AS targetOid, q.attempts, q.next_attempt_at AS nextAttemptAt';
   const store: ProjectGitStore = {
+    getOpenPreparation: id => {
+      const row = db.prepare('SELECT root_json, candidate_json FROM project_git_preparations WHERE operation_id = ?').get(id) as
+        { root_json: string | null; candidate_json: string | null } | undefined;
+      return row ? { ...(row.root_json ? { root: JSON.parse(row.root_json) } : {}), ...(row.candidate_json ? { candidate: JSON.parse(row.candidate_json) } : {}) } : null;
+    },
+    freezeOpenPreparation: (id, preparation) => transaction(() => {
+      const op = getJournal(id); const current = store.getOpenPreparation(id);
+      if (!op || op.kind !== 'open' || op.scope !== 'import' || op.journalPhase !== null || getRegistration(id)
+        || Object.keys(preparation).some(key => !['root', 'candidate'].includes(key))) throw recoveryRequired();
+      const payload = op.payload as { url?: string; branch?: string; reservedProjectId?: string; cloneId?: string; plainRepositoryProjectId?: string; createdAt?: number };
+      if (!payload || Object.keys(payload).sort().join(',') !== 'branch,cloneId,createdAt,plainRepositoryProjectId,reservedProjectId,url'
+        || ![payload.reservedProjectId, payload.cloneId, payload.plainRepositoryProjectId].every(value => typeof value === 'string' && /^[a-zA-Z0-9-]+$/u.test(value))
+        || typeof payload.url !== 'string' || typeof payload.branch !== 'string' || !Number.isSafeInteger(payload.createdAt)) throw recoveryRequired();
+      if (preparation.root && (Object.keys(preparation.root).sort().join(',') !== 'dev,ino'
+        || !/^\d+$/u.test(preparation.root.dev) || !/^\d+$/u.test(preparation.root.ino))) throw recoveryRequired();
+      if (preparation.candidate) {
+        const c = preparation.candidate; const remote = store.getOpenRemote(id);
+        if (!remote || !(current?.root ?? preparation.root) || Object.keys(c).sort().join(',') !== 'candidateOid,canonicalSnapshotJson,repositoryProjectId,snapshotDigest'
+          || !(remote.objectFormat === 'sha1' ? /^[a-f0-9]{40}$/u : /^[a-f0-9]{64}$/u).test(c.candidateOid)
+          || createHash('sha256').update(c.canonicalSnapshotJson).digest('hex') !== c.snapshotDigest
+          || parsePortableSnapshot(JSON.parse(c.canonicalSnapshotJson)).manifest.repositoryProjectId !== c.repositoryProjectId) throw recoveryRequired();
+        const snapshot = parsePortableSnapshot(JSON.parse(c.canonicalSnapshotJson));
+        if (canonicalPayloadJson(JSON.parse(c.canonicalSnapshotJson) as JsonValue) !== c.canonicalSnapshotJson) throw recoveryRequired();
+        if (c.candidateOid !== remote.head && (c.repositoryProjectId !== payload.plainRepositoryProjectId || snapshot.project.createdAt !== payload.createdAt)) throw recoveryRequired();
+      }
+      for (const key of ['root', 'candidate'] as const) if (current?.[key] && preparation[key] && !isDeepStrictEqual(current[key], preparation[key])) throw changed();
+      const next = { ...current, ...preparation };
+      db.prepare(`INSERT INTO project_git_preparations(operation_id,root_json,candidate_json) VALUES (?,?,?)
+        ON CONFLICT(operation_id) DO UPDATE SET root_json=excluded.root_json,candidate_json=excluded.candidate_json`)
+        .run(id, next.root ? json(next.root) : null, next.candidate ? json(next.candidate) : null);
+    }),
+    getEnableInitialization: id => {
+      const row = db.prepare('SELECT initialization_json FROM project_git_preparations WHERE operation_id=?').get(id) as { initialization_json: string | null } | undefined;
+      if (!row?.initialization_json) return null;
+      const value = JSON.parse(row.initialization_json) as ProjectGitEnableInitialization;
+      if (!db.prepare('SELECT 1 FROM project_git_preview_consumers WHERE preview_operation_id=? AND consumer_operation_id=?').get(value.previewId, id)) throw recoveryRequired();
+      return value;
+    },
+    freezeEnableInitialization: (id, initialization) => transaction(() => {
+      const op = getJournal(id); const preview = getJournal(initialization.previewId);
+      const payload = preview?.payload as { evidenceDigest?: string } | undefined;
+      if (!op || op.kind !== 'enable' || op.projectId !== initialization.projectId || op.journalPhase !== null || getRegistration(id)
+        || !sameBasis(op.basis, initialization.basis) || !preview || preview.kind !== 'enable_preview' || preview.actorId !== op.actorId
+        || preview.projectId !== op.projectId || payload?.evidenceDigest !== initialization.previewEvidenceDigest
+        || !db.prepare('SELECT 1 FROM project_git_preview_consumers WHERE preview_operation_id=? AND consumer_operation_id=?').get(initialization.previewId, id)
+        || !/^\d+$/u.test(initialization.dev) || !/^\d+$/u.test(initialization.ino) || !['sha1', 'sha256'].includes(initialization.objectFormat)) throw recoveryRequired();
+      const prior = store.getEnableInitialization(id);
+      if (prior) { if (!isDeepStrictEqual(prior, initialization)) throw changed(); return; }
+      db.prepare('INSERT INTO project_git_preparations(operation_id,initialization_json) VALUES (?,?)').run(id, json(initialization));
+    }),
     getRegistration,
     listPendingRegistrations: () => (db.prepare("SELECT execution_operation_id FROM project_git_registrations WHERE state = 'pending' ORDER BY execution_operation_id").all() as
       { execution_operation_id: string }[]).map(row => getRegistration(row.execution_operation_id)!),
     prepareRegistration: intent => transaction(() => {
       if (getRegistration(intent.executionOperationId)) { requireRegistration(intent); return; }
+      if (intent.dependencies !== undefined) {
+        if (intent.kind !== 'open' || !Array.isArray(intent.dependencies)) throw recoveryRequired();
+        let previous = '';
+        for (const dependency of intent.dependencies) {
+          if (!ProjectGitDependencySchema.safeParse(dependency).success || !['agent', 'model', 'plugin'].includes(dependency.kind)
+            || dependency.requiredForContent || dependency.nextStep?.action !== 'install_dependency'
+            || dependency.nextStep.label !== dependency.label || !dependency.label
+            || /^(?:\/|~|[a-zA-Z]:[\\/])|[\u0000-\u001f\u007f]/u.test(dependency.label)) throw recoveryRequired();
+          const key = JSON.stringify([dependency.kind, dependency.label]); if (key <= previous) throw recoveryRequired(); previous = key;
+        }
+      }
       if (visibleExistingProjects(intent).length !== (intent.existingProjectIds?.length ?? 0)) throw recoveryRequired();
       const user = getJournal(intent.userOperationId); const execution = getJournal(intent.executionOperationId);
       if (!user || !execution || user.kind !== intent.kind || execution.projectId !== intent.projectId
@@ -479,6 +559,25 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         || (intent.initialImport && (!intent.hidden || intent.completion !== 'materialization' || intent.executionBasis.localHead !== null))
         || (intent.completion === 'checkpoint' ? intent.kind !== 'enable' || execution.kind !== 'checkpoint' || user.id === execution.id
           : user.id !== execution.id)) throw recoveryRequired();
+      if (intent.kind === 'open') {
+        const preparation = store.getOpenPreparation(user.id); const remote = store.getOpenRemote(user.id);
+        const payload = user.payload as { url?: string; branch?: string; reservedProjectId?: string; cloneId?: string };
+        if (user.scope !== 'import' || !preparation?.candidate || !preparation.root || !remote || !intent.initialImport
+          || intent.projectId !== payload.reservedProjectId || intent.cloneId !== payload.cloneId
+          || intent.remoteUrl !== payload.url || intent.targetBranch !== payload.branch || intent.localBranch !== payload.branch
+          || intent.initialImport.candidateOid !== preparation.candidate.candidateOid
+          || intent.repositoryProjectId !== preparation.candidate.repositoryProjectId
+          || intent.initialImport.rootDev !== preparation.root.dev || intent.initialImport.rootIno !== preparation.root.ino) throw recoveryRequired();
+        const snapshot = parsePortableSnapshot(JSON.parse(preparation.candidate.canonicalSnapshotJson)); const logical = new Set<string>();
+        for (const preferences of [snapshot.project.preferences, ...snapshot.conversations.map(item => item.preferences)]) {
+          if (preferences?.agentId) logical.add(json(['agent', preferences.agentId]));
+          if (preferences?.model) logical.add(json(['model', preferences.model]));
+        }
+        for (const resource of snapshot.manifest.resources) if (snapshot.project.contentRefs.includes(resource.digest)) {
+          for (const location of resource.locations) if (location.purpose === 'plugin' && location.sourceLabel) logical.add(json(['plugin', location.sourceLabel]));
+        }
+        if (intent.dependencies?.some(item => !logical.has(json([item.kind, item.label])))) throw recoveryRequired();
+      }
       const b = requireBasis(intent.projectId, intent.executionBasis);
       if (intent.materialization) {
         const candidate = intent.materialization; const payload = user.payload as { previewId?: unknown; previewContentDigest?: unknown };
@@ -529,7 +628,8 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         }
         db.prepare("UPDATE project_git_registrations SET state = 'complete' WHERE execution_operation_id = ?").run(intent.executionOperationId);
         const result: ProjectGitOperationResult = { projectId: next.projectId, ...(next.localHead ? { head: next.localHead } : {}),
-          ...(intent.existingProjectIds === undefined ? {} : { existingProjectIds: visibleExistingProjects(intent) }) };
+          ...(intent.existingProjectIds === undefined ? {} : { existingProjectIds: visibleExistingProjects(intent) }),
+          ...(intent.dependencies === undefined ? {} : { dependencies: intent.dependencies }) };
         db.prepare("UPDATE project_git_operations SET status = 'succeeded', phase = 'local_saved', result_json = ?, error_json = NULL, updated_at = ? WHERE id = ?")
           .run(json(result), Date.now(), intent.userOperationId);
         return next;

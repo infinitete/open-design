@@ -4,7 +4,7 @@ import { chmod, mkdir, writeFile, access, symlink } from 'node:fs/promises';
 import * as fs from 'node:fs/promises';
 import { GitDomainError } from '../../../src/services/project-git/errors.js';
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,8 @@ const cleanups: (() => Promise<void>)[] = [];
 vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
-async function serviceFixture(transport: 'writable' | 'readonly' | 'denied' = 'writable') {
+async function serviceFixture(transport: 'writable' | 'readonly' | 'denied' = 'writable',
+  resolveAvailability: (request: { actorId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string }) => Promise<boolean> = async () => true) {
   const f = await createGitFixture();
   const data = join(f.root, 'data'); const operationRoot = join(data, 'operations');
   const preparationRoot = join(data, 'preparation'); const ownedProjectsRoot = join(data, 'projects');
@@ -43,7 +44,7 @@ async function serviceFixture(transport: 'writable' | 'readonly' | 'denied' = 'w
   const scheduler = createProjectGitScheduler({ store, now: deps.now, random: deps.random, detect: deps.detect,
     sync: (projectId, oneShot) => syncProject({ projectId, oneShot, deps }) });
   const service = createProjectGitBindingService({ db, store, operationRoot, preparationRoot, ownedProjectsRoot, ownership, scheduler,
-    checkpointCurrent: deps.checkpoint, recoveryReady: deps.recoveryReady,
+    checkpointCurrent: deps.checkpoint, recoveryReady: deps.recoveryReady, resolveAvailability,
     resolveProject, requireProject: (actor: string, id: string) => { if (actor !== 'local' || deniedProjects.has(id) || !getProject(db, id)) throw new Error('Not authorized'); },
     requireCreate: (actor: string) => { if (actor !== 'local') throw new Error('Not authorized'); },
     reserveProject: ({ projectId, root, localBranch, gate }: { projectId: string; root: string; localBranch: string; gate: ProjectGitSyncProject['gate'] }) => {
@@ -77,6 +78,35 @@ it('previews without initializing the user root, then enables the same captured 
   expect(await service.enable('existing', preview.result!.preview!.id, { actorId: 'local', idempotencyKey: 'enable', expectedProjectRevision: 0 })).toEqual(operation);
 });
 
+it('previews the selected remote deletion before applying that exact tree', async () => {
+  const { f, service, existing } = await serviceFixture(); const root = await existing();
+  await writeFile(join(root, 'obsolete.txt'), 'old'); const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const p = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'p' });
+  await service.enable('existing', p.id, { ...ctx, idempotencyKey: 'e' });
+  await f.git(root, 'push', f.remote, 'HEAD:main'); await f.git(f.a, 'pull', '--ff-only', 'origin', 'main');
+  await f.git(f.a, 'rm', 'obsolete.txt'); await f.git(f.a, 'commit', '-m', 'delete'); await f.git(f.a, 'push', 'origin', 'HEAD:main');
+  const preview = await service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', { ...ctx, idempotencyKey: 'p-bind' });
+  expect(preview.result!.preview!.changes).toMatchObject({ addedPaths: [], modifiedPaths: [], deletedPaths: ['obsolete.txt'], settingsChanged: 0, conversationsChanged: 0 });
+  expect(await service.bind('existing', preview.id, { ...ctx, idempotencyKey: 'b' })).toMatchObject({ status: 'succeeded' });
+  await expect(access(join(root, 'obsolete.txt'))).rejects.toBeDefined();
+});
+
+it('offers both explicit metadata sources for equal portable heads above a genuine plain merge base', async () => {
+  const { f, service, existing } = await serviceFixture(); const root = await existing(true);
+  await f.git(root, 'add', '.'); await f.git(root, 'commit', '-m', 'plain base');
+  await f.git(root, 'push', f.remote, 'HEAD:main'); await f.git(f.b, 'pull', '--ff-only', 'origin', 'main');
+  const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const p = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'p' });
+  await service.enable('existing', p.id, { ...ctx, idempotencyKey: 'e' });
+  await fs.cp(join(root, '.open-design'), join(f.b, '.open-design'), { recursive: true });
+  await writeFile(join(f.b, 'remote.html'), 'remote'); await f.git(f.b, 'add', '.'); await f.git(f.b, 'commit', '-m', 'equal metadata');
+  await f.git(f.b, 'push', 'origin', 'HEAD:main');
+  const preview = await service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', { ...ctx, idempotencyKey: 'p-bind' });
+  expect(preview.result!.preview!.binding!.metadataSources).toEqual(['local', 'remote']);
+  await expect(service.bind('existing', preview.id, { ...ctx, idempotencyKey: 'implicit' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  expect(await service.bind('existing', preview.id, { ...ctx, idempotencyKey: 'explicit', confirmation: { metadataSource: 'local' } })).toMatchObject({ status: 'succeeded' });
+});
+
 it('reports a private directory without traversing it or reading its bytes', async () => {
   const { service, existing } = await serviceFixture(); const root = await existing();
   await mkdir(join(root, '.ssh')); await writeFile(join(root, '.ssh', 'key'), 'FIXTURE_PRIVATE_ONLY');
@@ -93,6 +123,69 @@ it('reports a private directory without traversing it or reading its bytes', asy
   expect(op.result!.preview!.changes.privatePaths).toEqual(['.ssh']);
   await expect(service.enable('existing', op.id, { actorId: 'local', idempotencyKey: 'confirm' })).rejects.toBeDefined();
   await expect(access(join(root, '.git'))).rejects.toBeDefined();
+});
+
+it('rolls back first-enable admission before registration and converges the original consumer on retry', async () => {
+  const { service, store, existing, registry } = await serviceFixture(); await existing();
+  const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const preview = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'p' });
+  const fault = vi.spyOn(store, 'prepareRegistration').mockImplementationOnce(() => { throw new Error('before registration'); });
+  const request = { ...ctx, idempotencyKey: 'e' };
+  await expect(service.enable('existing', preview.id, request)).rejects.toThrow('before registration'); fault.mockRestore();
+  expect(store.getBinding('existing')).toBeNull(); expect(store.listPendingRegistrations()).toEqual([]);
+  expect(await registry.get('existing')!.gate.mutate(async () => 'editable')).toBe('editable');
+  const original = store.findOperation({ actorId: 'local', projectId: 'existing', kind: 'enable', idempotencyKey: 'e' })!;
+  expect(await service.enable('existing', preview.id, request)).toMatchObject({ id: original.id, status: 'succeeded' });
+});
+
+it('coalesces identical concurrent enable calls into the same durable result', async () => {
+  const { service, existing, store } = await serviceFixture(); await existing();
+  const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const preview = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'p' });
+  const request = { ...ctx, idempotencyKey: 'e' };
+  const results = await Promise.all([service.enable('existing', preview.id, request), service.enable('existing', preview.id, request)]);
+  expect(results[0]).toEqual(results[1]); expect(results[0]!.status).toBe('succeeded');
+  expect(store.listBindings()).toHaveLength(1);
+});
+
+it('keeps ordinary unmanaged mutations available when Git disappears after registration of the stable gate', async () => {
+  const { service, existing, registry, f } = await serviceFixture(); const root = await existing();
+  const noGit = join(f.root, 'no-git'); await mkdir(noGit); const oldPath = process.env.PATH;
+  try {
+    process.env.PATH = noGit;
+    const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'git-missing' });
+    expect(preview.result!.preview!.dependencies).toContainEqual(expect.objectContaining({ kind: 'git', requiredForContent: false }));
+    await registry.get('existing')!.gate.mutate(() => writeFile(join(root, 'edited.html'), 'ordinary edit'));
+    expect(await fs.readFile(join(root, 'edited.html'), 'utf8')).toBe('ordinary edit');
+    await mkdir(join(root, '.git'));
+    await expect(registry.get('existing')!.gate.mutate(async () => {})).rejects.toMatchObject({ code: 'EXTERNAL_GIT_BUSY' });
+  } finally { process.env.PATH = oldPath; }
+});
+
+it('admits identical concurrent opens before allocating exactly one owned root', async () => {
+  const { service, configuration, store } = await serviceFixture();
+  const request = { actorId: 'local', idempotencyKey: 'open', url: 'ssh://git@example.invalid/repo', branch: 'main' };
+  const results = await Promise.all([service.openRepository(request), service.openRepository(request)]);
+  expect(results[0]).toEqual(results[1]); expect(results[0]!.status).toBe('succeeded');
+  expect(await fs.readdir(configuration.ownedProjectsRoot)).toEqual([results[0]!.result!.projectId]);
+  expect(store.listBindings()).toHaveLength(1);
+});
+
+it.each(['plain', 'empty'])('freezes the %s open identity and candidate across pre-registration retries', async mode => {
+  const { f, service, store } = await serviceFixture();
+  if (mode === 'plain') { await writeFile(join(f.a, 'index.html'), 'plain'); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'plain'); await f.git(f.a, 'push', 'origin', 'HEAD:main'); }
+  const candidates: string[] = []; const identities: string[] = []; const clones: string[] = [];
+  const fault = vi.spyOn(store, 'prepareRegistration').mockImplementation(intent => {
+    candidates.push(intent.initialImport!.candidateOid); identities.push(intent.repositoryProjectId); clones.push(intent.cloneId);
+    throw new Error('before registration');
+  });
+  const request = { actorId: 'local', idempotencyKey: 'open', url: 'ssh://git@example.invalid/repo', branch: 'main' };
+  await expect(service.openRepository(request)).rejects.toThrow('before registration');
+  await expect(service.openRepository(request)).rejects.toThrow('before registration'); fault.mockRestore();
+  expect(candidates[0]).toBe(candidates[1]); expect(identities[0]).toBe(identities[1]); expect(clones[0]).toBe(clones[1]);
+  const complete = await service.openRepository(request);
+  expect(complete).toMatchObject({ status: 'succeeded', result: { head: candidates[0] } });
+  expect(store.getBinding(complete.result!.projectId!)!).toMatchObject({ repositoryProjectId: identities[0], cloneId: clones[0] });
 });
 
 it('rejects a private reserved resource by path before the exporter can read its bytes', async () => {
@@ -161,6 +254,71 @@ it('opens a validated portable remote at its exact tip with one visible project 
   expect(store.getBinding(operation.result!.projectId!)!.localHead).toBe(tip);
   expect(await service.openRepository(request)).toEqual(operation);
   expect(listProjects(db)).toHaveLength(1);
+});
+
+it.each((['agent', 'model', 'plugin', 'linked_folder'] as const).flatMap(kind => [[kind, false], [kind, true]] as const))('reports %s availability with resolver error=%s before visible registration', async (kind, failed) => {
+  const resolver = vi.fn(async () => { if (failed) throw new Error('/private/runtime/diagnostic'); return false; });
+  const { f, service, db, store, configuration } = await serviceFixture('writable', resolver);
+  const snapshot = portableSnapshot('After');
+  const label = 'logical-fixture'; const bytes = Buffer.from('portable plugin'); const digest = createHash('sha256').update(bytes).digest('hex');
+  if (kind === 'agent') { snapshot.project.preferences.agentId = label; snapshot.conversations[0]!.preferences = { agentId: label }; }
+  if (kind === 'model') { snapshot.project.preferences.model = label; snapshot.conversations[0]!.preferences = { model: label }; }
+  if (kind === 'linked_folder') snapshot.project.linkedFolderRequirements = [{ label, purpose: 'reference' }];
+  if (kind === 'plugin') { snapshot.project.contentRefs = [digest]; snapshot.manifest.resources = [{ digest,
+    locations: [{ path: `.open-design/resources/${digest}/plugin.txt`, purpose: 'plugin', sourceLabel: label }], references: ['repository'] }]; }
+  const entries = serializePortableMetadata(snapshot); if (kind === 'plugin') entries.set(`.open-design/resources/${digest}/plugin.txt`, bytes);
+  await writeFixtureEntries(f.a, entries); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'dependencies');
+  await f.git(f.a, 'push', 'origin', 'HEAD:main');
+  const request = { actorId: 'local', idempotencyKey: 'availability', url: 'ssh://git@example.invalid/repo', branch: 'main' };
+  const operation = await service.openRepository(request);
+  expect(resolver).toHaveBeenCalledExactlyOnceWith({ actorId: 'local', kind, id: label });
+  expect(operation.result!.dependencies).toEqual([{ kind, label, requiredForContent: kind === 'linked_folder',
+    nextStep: { action: failed ? 'retry' : kind === 'linked_folder' ? 'locate_folder' : 'install_dependency', label } }]);
+  expect(operation.status).toBe(kind === 'linked_folder' || failed ? 'failed' : 'succeeded');
+  expect(listProjects(db)).toHaveLength(operation.status === 'succeeded' ? 1 : 0);
+  expect(JSON.stringify(operation)).not.toContain('/private/');
+  if (operation.status === 'succeeded') {
+    expect(store.getRegistration(operation.id)!.dependencies).toEqual(operation.result!.dependencies);
+    expect(await service.openRepository(request)).toEqual(operation); expect(resolver).toHaveBeenCalledOnce();
+    const reopened = new Database(join(configuration.data, 'app.sqlite')); const restored = createProjectGitStore(reopened);
+    const { state: _state, ...intent } = restored.getRegistration(operation.id)!;
+    reopened.transaction(() => restored.completeRegistration(intent)).immediate();
+    expect(restored.getOperation(operation.id)).toEqual(operation); reopened.close();
+  } else expect(store.getRegistration(operation.id)).toBeNull();
+});
+
+it('freezes full deterministic dependency lists from project and conversation preferences in previews', async () => {
+  const resolver = vi.fn(async () => false); const { service, db, existing } = await serviceFixture('writable', resolver); const root = await existing();
+  db.prepare('UPDATE projects SET metadata_json=? WHERE id=?').run(JSON.stringify({ kind: 'prototype', baseDir: root,
+    agentId: 'z-agent', model: 'a-model', linkedDirs: ['/original-machine/folder-label'] }), 'existing');
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'dependencies' });
+  expect(preview.result!.preview!.dependencies.map(item => [item.kind, item.label])).toEqual([
+    ['agent', 'z-agent'], ['linked_folder', 'folder-label'], ['model', 'a-model'],
+  ]);
+  expect(JSON.stringify(preview)).not.toContain('/original-machine/');
+});
+
+it('rejects registration fields inconsistent with the durable open candidate and receipt', async () => {
+  const { service, store } = await serviceFixture(); const prepare = store.prepareRegistration;
+  const freeze = store.freezeOpenPreparation;
+  vi.spyOn(store, 'freezeOpenPreparation').mockImplementation((id, preparation) => {
+    if (preparation.candidate) {
+      const candidate = preparation.candidate; const canonicalSnapshotJson = JSON.stringify(JSON.parse(candidate.canonicalSnapshotJson), null, 2);
+      expect(() => freeze(id, { candidate: { ...candidate, canonicalSnapshotJson,
+        snapshotDigest: createHash('sha256').update(canonicalSnapshotJson).digest('hex') } })).toThrow();
+    }
+    freeze(id, preparation);
+  });
+  const checked = vi.spyOn(store, 'prepareRegistration').mockImplementation(intent => {
+    expect(() => prepare({ ...intent, initialImport: { ...intent.initialImport!, candidateOid: 'a'.repeat(40) } })).toThrow();
+    expect(() => prepare({ ...intent, initialImport: { ...intent.initialImport!, rootIno: '0' } })).toThrow();
+    expect(() => prepare({ ...intent, dependencies: [{ kind: 'linked_folder', label: 'folder', requiredForContent: true, nextStep: { action: 'locate_folder', label: 'folder' } }] })).toThrow();
+    expect(() => prepare({ ...intent, dependencies: [{ kind: 'agent', label: 'not-in-snapshot', requiredForContent: false,
+      nextStep: { action: 'install_dependency', label: 'not-in-snapshot' } }] })).toThrow();
+    prepare(intent);
+  });
+  expect(await service.openRepository({ actorId: 'local', idempotencyKey: 'integrity', url: 'ssh://git@example.invalid/repo', branch: 'main' })).toMatchObject({ status: 'succeeded' });
+  expect(checked).toHaveBeenCalledOnce();
 });
 
 it('adds complete portable metadata to a plain remote as a real child of its original tip', async () => {
@@ -242,7 +400,7 @@ it('opens a readable remote without claiming push authorization and retains loca
 it('retains an authentication failure as an operation without exposing an imported project', async () => {
   const { service, store, db } = await serviceFixture('denied');
   await expect(service.openRepository({ url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'denied' }))
-    .rejects.toMatchObject({ code: 'GIT_AUTH_REQUIRED' });
+    .resolves.toMatchObject({ kind: 'open', status: 'failed', error: { code: 'GIT_AUTH_REQUIRED' } });
   expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]);
   expect(store.findOperation({ actorId: 'local', projectId: null, kind: 'open', idempotencyKey: 'denied' }))
     .toMatchObject({ status: 'failed', error: { code: 'GIT_AUTH_REQUIRED' } });
@@ -295,7 +453,7 @@ it.each(['private', 'lfs', 'submodule', 'unknown-schema', 'missing-resource'])('
     if (args.args[0] === 'cat-file' && args.args[1] !== '-t') blobReads++;
     return original(args);
   });
-  await expect(service.openRepository(request)).rejects.toBeDefined();
+  await expect(service.openRepository(request)).resolves.toMatchObject({ kind: 'open', status: 'failed' });
   expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]);
   const op = store.findOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'unsafe' })!;
   expect(op.status).toBe('failed');
@@ -335,10 +493,10 @@ it('keeps the first observed remote tip across a pre-registration dependency ret
   await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'missing payload'); await f.git(f.a, 'push', 'origin', 'HEAD:refs/heads/main');
   const originalTip = await f.git(f.a, 'rev-parse', 'HEAD');
   const request = { url: 'ssh://git@example.invalid/repo', branch: 'main', actorId: 'local', idempotencyKey: 'frozen-failure' };
-  await expect(service.openRepository(request)).rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING' });
+  await expect(service.openRepository(request)).resolves.toMatchObject({ status: 'failed', error: { code: 'PORTABLE_RESOURCE_MISSING' } });
   await writeFile(join(f.a, 'index.html'), 'later actual bytes'); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'later'); await f.git(f.a, 'push', 'origin', 'HEAD:refs/heads/main');
   const network = vi.spyOn(gitProcess, 'runGitTransport');
-  await expect(service.openRepository(request)).rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING' });
+  await expect(service.openRepository(request)).resolves.toMatchObject({ status: 'failed', error: { code: 'PORTABLE_RESOURCE_MISSING' } });
   expect(network).not.toHaveBeenCalled(); expect(listProjects(db)).toEqual([]);
   const op = store.findOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'frozen-failure' })!;
   expect(store.getOpenRemote(op.id)).toEqual({ head: originalTip, objectFormat: 'sha1' });
@@ -417,6 +575,22 @@ it('waits the same scheduler admitted real push result before unbind advances ge
   expect(store.getBinding('existing')!.generation).toBe(2);
   release();
   expect((await unbind).status).toBe('succeeded'); expect(store.getBinding('existing')!.generation).toBe(3);
+});
+
+it('rejects stale unbind revision after waiting for an already admitted real gate mutation', async () => {
+  const { service, existing, store, registry } = await serviceFixture(); await existing(); const ctx = { actorId: 'local', expectedProjectRevision: 0 };
+  const preview = await service.previewEnable('existing', { ...ctx, idempotencyKey: 'p' });
+  await service.enable('existing', preview.id, { ...ctx, idempotencyKey: 'e' });
+  const b = store.getBinding('existing')!; let release!: () => void; const paused = new Promise<void>(resolve => { release = resolve; });
+  const ongoing = registry.get('existing')!.gate.exclusive(async () => {
+    await paused; store.bumpProject('existing', { bindingGeneration: b.generation, projectRevision: b.projectRevision,
+      contentRevision: b.contentRevision, localHead: b.localHead, remoteHead: b.observedRemoteHead });
+  });
+  const assert = store.assertRevision; const check = vi.spyOn(store, 'assertRevision').mockImplementation((id, revision) => { assert(id, revision); release(); });
+  await expect(service.unbind('existing', { ...ctx, idempotencyKey: 'stale' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  check.mockRestore(); await ongoing;
+  expect(store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'unbind', idempotencyKey: 'stale' })).toBeNull();
+  expect(store.listPendingRegistrations()).toEqual([]);
 });
 
 it('does not refresh a persisted unbind capture after pre-registration interruption and external editing', async () => {
@@ -521,6 +695,62 @@ it.each(['owner', 'records', 'index', 'terminal'])('restarts the same open after
   const reopened = new Database(join(configuration.data, 'app.sqlite')); const restored = createProjectGitStore(reopened);
   expect(restored.getOperation(original.id)).toMatchObject({ status: 'succeeded', result: { head: tip } });
   expect(listProjects(reopened)).toHaveLength(1); expect(reopened.prepare('SELECT count(*) AS n FROM messages').get()).toEqual({ n: 1 }); reopened.close();
+});
+
+async function registrationChild(root: string, window: string) {
+  const worker = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../../helpers/project-git-crash-worker.ts', import.meta.url)),
+    root, `registration:${window}`, 'exit'], { env: { ...process.env, ...fixtureGitEnv, GIT_CONFIG_NOSYSTEM: '1' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; worker.stderr.on('data', bytes => { stderr += String(bytes); });
+  const result = await once(worker, 'exit'); return { result, stderr };
+}
+
+it.each(['plain', 'empty'])('reuses the frozen %s candidate after an actual process exits before registration', async mode => {
+  const { f, db, configuration } = await serviceFixture();
+  if (mode === 'plain') { await writeFile(join(f.a, 'index.html'), 'plain'); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'plain'); await f.git(f.a, 'push', 'origin', 'HEAD:main'); }
+  await writeFile(join(f.root, 'binding-fixture.json'), JSON.stringify(configuration)); db.close();
+  expect(await registrationChild(f.root, 'candidate')).toEqual({ result: [73, null], stderr: '' });
+  const interrupted = new Database(join(configuration.data, 'app.sqlite')); const store = createProjectGitStore(interrupted);
+  const operation = store.findOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'process-open' })!;
+  const frozen = store.getOpenPreparation(operation.id)!; expect(frozen.candidate).toBeDefined(); expect(store.listBindings()).toEqual([]); interrupted.close();
+  expect(await registrationChild(f.root, 'resume')).toEqual({ result: [0, null], stderr: '' });
+  const reopened = new Database(join(configuration.data, 'app.sqlite')); const restored = createProjectGitStore(reopened);
+  expect(restored.getOpenPreparation(operation.id)).toEqual(frozen);
+  expect(restored.getOperation(operation.id)).toMatchObject({ status: 'succeeded', result: { head: frozen.candidate!.candidateOid } }); reopened.close();
+});
+
+it.each(['exact', 'file', 'index', 'ref', 'extra-ref', 'git-symlink', 'evidence-path', 'evidence-digest', 'live-owner', 'reused-pid', 'foreign-owner', 'unknown-owner', 'malformed-owner'])('handles %s first-enable restart after actual initialization and process exit', async fault => {
+  const { f, service, db, existing, configuration } = await serviceFixture(); const root = await existing();
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'process-preview', expectedProjectRevision: 0 });
+  await writeFile(join(f.root, 'binding-fixture.json'), JSON.stringify({ ...configuration, enableProject: { id: 'existing', root, previewId: preview.id } })); db.close();
+  expect(await registrationChild(f.root, 'enable-init')).toEqual({ result: [73, null], stderr: '' });
+  const interrupted = new Database(join(configuration.data, 'app.sqlite')); const store = createProjectGitStore(interrupted);
+  const operation = store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'enable', idempotencyKey: 'process-enable' })!;
+  expect(store.getEnableInitialization(operation.id)).not.toBeNull(); expect(store.listBindings()).toEqual([]);
+  if (fault === 'git-symlink') { const relocated = join(f.root, 'relocated-git'); await fs.rename(join(root, '.git'), relocated); await symlink(relocated, join(root, '.git')); }
+  if (fault === 'file') await writeFile(join(root, 'index.html'), 'external');
+  if (fault === 'index') await f.git(root, 'add', 'index.html');
+  if (fault === 'ref') { await f.git(root, 'add', '.'); await f.git(root, 'commit', '-m', 'external'); }
+  if (fault === 'extra-ref') await f.git(root, 'update-ref', 'refs/external/evidence', await f.git(root, 'rev-parse', 'refs/open-design/locks/repository'));
+  if (fault.endsWith('-owner') || fault === 'reused-pid') {
+    const owner = JSON.parse(await f.git(root, 'cat-file', 'blob', 'refs/open-design/locks/repository')) as Record<string, unknown>;
+    if (fault === 'live-owner' || fault === 'reused-pid') owner.pid = process.pid;
+    if (fault === 'foreign-owner') owner.dataRootId = 'foreign';
+    if (fault === 'unknown-owner') owner.ownerDomain = 'unknown';
+    const bytes = Buffer.from(fault === 'malformed-owner' ? 'malformed' : JSON.stringify(owner));
+    const oid = (await gitProcess.runGit({ cwd: root, args: ['hash-object', '-w', '--stdin'], stdin: bytes })).stdout.toString().trim();
+    await f.git(root, 'update-ref', 'refs/open-design/locks/repository', oid);
+  }
+  if (fault.startsWith('evidence-')) {
+    const payload = store.getJournal(preview.id)!.payload as Record<string, unknown>;
+    if (fault === 'evidence-path') payload.evidencePath = '../outside.json'; else payload.evidenceDigest = '0'.repeat(64);
+    interrupted.prepare('UPDATE project_git_operations SET payload_json=? WHERE id=?').run(JSON.stringify(payload), preview.id);
+  }
+  interrupted.close(); const resumed = await registrationChild(f.root, 'resume');
+  if (fault === 'exact') expect(resumed).toEqual({ result: [0, null], stderr: '' }); else expect(resumed.result[0]).not.toBe(0);
+  if (fault === 'extra-ref') expect(await f.git(root, 'rev-parse', 'refs/external/evidence')).toMatch(/^[a-f0-9]{40}$/u);
+  const reopened = new Database(join(configuration.data, 'app.sqlite')); const restored = createProjectGitStore(reopened);
+  expect(restored.listBindings()).toHaveLength(fault === 'exact' ? 1 : 0);
+  expect(restored.getOperation(operation.id)!.status === 'succeeded').toBe(fault === 'exact'); reopened.close();
 });
 
 it('constructs explicitly selected independent history with both original parents and preserves the working tree', async () => {
