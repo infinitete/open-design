@@ -109,6 +109,20 @@ describe('project Git durable store', () => {
     }
     expect(store.reconcileInterruptedAdmissions()).toEqual([]);
   });
+
+  it('does not mistake an unowned structured waiting-idle admission for a completed retry', () => {
+    const store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), autoSync: false });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'structured-admission', basis: basis(b), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: { head: 'a'.repeat(40) },
+      error: { code: 'RECOVERY_REQUIRED', message: 'A worker reported an error without retry provenance.',
+        details: { reason: 'project_root_unavailable' } } });
+
+    expect(store.getRetryAttempt(operation.id)).toBeNull();
+    expect(store.reconcileInterruptedAdmissions(new Set([operation.id]))).toEqual([operation.id]);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed', result: null,
+      error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_admission' } } });
+  });
   function binding(): ProjectGitBindingRecord {
     return { projectId: 'p1', cloneId: 'c1', repositoryProjectId: 'r1',
       canonicalRoot: join(root, 'project'), commonDir: join(root, 'project/.git'),

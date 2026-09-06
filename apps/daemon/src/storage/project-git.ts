@@ -1108,7 +1108,8 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       for (const op of store.listPendingOperations()) {
         const payload = op.payload !== null && typeof op.payload === 'object' && !Array.isArray(op.payload)
           ? op.payload as Record<string, JsonValue> : null;
-        const retainedWaiting = op.status === 'waiting' && op.phase !== 'waiting_idle';
+        const retainedWaiting = op.status === 'waiting' && (op.phase !== 'waiting_idle'
+          || isCompletedRetryWaitingResult(op) && getRetryAttempt(op.id)?.state === 'settled');
         const quarantine = op.actorId === 'project-git-background' && op.kind === 'sync' && payload?.lane === 'quarantine';
         if ((operationIds && !operationIds.has(op.id)) || op.kind === 'checkpoint' || op.ownerOperationId !== null
           || op.journalPhase !== null || op.recoveryData !== null || getRegistration(op.id)?.state === 'pending'

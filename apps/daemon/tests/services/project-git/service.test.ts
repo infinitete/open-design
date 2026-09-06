@@ -489,6 +489,103 @@ it('keeps a completed retry conflict pollable, fenced, and resolvable across rep
   expect(f.store.getOperation(completed.id)).toMatchObject({ status: 'succeeded', phase: 'local_saved' });
 });
 
+it('preserves a current started retry that completed in structured waiting-idle across repeated service startup', async () => {
+  const instanceId = 'completed-retry-waiting-idle-instance';
+  const f = await fixture({ instanceId });
+  f.store.saveBinding({ ...f.store.getBinding('project')!, autoSync: false });
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const operation = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync',
+    idempotencyKey: 'completed-waiting-idle-target', requestDigest: 'completed-waiting-idle-target', basis,
+    payload: { lane: 'network' } });
+  f.store.updateOperation(operation.id, { status: 'failed', phase: 'auth_required', result: { head: binding.localHead! },
+    error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure repository authentication.' } });
+  expect(f.store.claimOperationRequest({ actorId: 'local', projectId: 'project', action: 'retry',
+    idempotencyKey: 'completed-waiting-idle-retry', requestDigest: createHash('sha256').update(JSON.stringify({
+      action: { kind: 'retry', operationId: operation.id }, expectedProjectRevision: null,
+    })).digest('hex'), operationId: operation.id })).toMatchObject({ admitted: true, attempt: 1 });
+  expect(f.store.startRetryAttempt(operation.id, 1)).toBe(true);
+  f.store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: { head: binding.localHead! },
+    error: { code: 'RECOVERY_REQUIRED', message: 'The managed project repository is unavailable.',
+      details: { reason: 'project_root_unavailable', nextStep: 'Restore the managed project folder and retry.' } } });
+  const completed = f.store.getJournal(operation.id)!;
+  const completedPublic = f.store.getOperation(operation.id)!;
+  await f.service.stop();
+
+  const firstEvents: ProjectGitEvent[] = [];
+  const restarted = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: (_projectId, event) => { firstEvents.push(event); }, gitEnv: f.gitEnv, instanceId });
+  await restarted.service.start();
+  expect(f.store.getJournal(operation.id)).toEqual(completed);
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  expect(firstEvents.filter(event => event.type === 'project-git-operation' && event.operation.id === operation.id)).toEqual([]);
+  await restarted.service.stop();
+
+  const secondEvents: ProjectGitEvent[] = [];
+  const second = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: (_projectId, event) => { secondEvents.push(event); }, gitEnv: f.gitEnv, instanceId });
+  cleanups.unshift(() => second.service.stop());
+  await second.service.start();
+  expect(f.store.getJournal(operation.id)).toEqual(completed);
+  await expect(second.service.getOperation(operation.id)).resolves.toEqual(completedPublic);
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  expect(secondEvents.filter(event => event.type === 'project-git-operation' && event.operation.id === operation.id)).toEqual([]);
+
+  const retried = await second.service.execute({ kind: 'retry', operationId: operation.id }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'completed-waiting-idle-retry',
+  });
+  expect(retried.operationId).toBe(operation.id);
+  expect(await terminal(f.store, operation.id)).toMatchObject({ status: 'succeeded', phase: 'synced', error: null });
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 2, state: 'settled' });
+  expect(secondEvents.some(event => event.type === 'project-git-operation' && event.operation.id === operation.id)).toBe(true);
+});
+
+it('preserves a legacy receipt-only structured waiting-idle retry across repeated service startup', async () => {
+  const instanceId = 'legacy-retry-waiting-idle-instance';
+  const f = await fixture({ instanceId });
+  f.store.saveBinding({ ...f.store.getBinding('project')!, autoSync: false });
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const operation = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync',
+    idempotencyKey: 'legacy-waiting-idle-target', requestDigest: 'legacy-waiting-idle-target', basis,
+    payload: { lane: 'network' } });
+  f.store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: { head: binding.localHead! },
+    error: { code: 'RECOVERY_REQUIRED', message: 'The managed project repository is unavailable.',
+      details: { reason: 'project_root_unavailable', nextStep: 'Restore the managed project folder and retry.' } } });
+  const retryDigest = createHash('sha256').update(JSON.stringify({
+    action: { kind: 'retry', operationId: operation.id }, expectedProjectRevision: null,
+  })).digest('hex');
+  f.db.prepare(`INSERT INTO project_git_operation_requests
+    (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+    VALUES ('local', 'project:project', 'retry', 'legacy-waiting-idle-retry', ?, ?, ?)`).run(retryDigest, operation.id, Date.now());
+  f.db.prepare('DELETE FROM project_git_retry_attempts WHERE operation_id = ?').run(operation.id);
+  const completed = f.store.getJournal(operation.id)!;
+  await f.service.stop();
+  migrateProjectGit(f.db);
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled',
+    priorStatus: 'waiting', priorPhase: 'waiting_idle' });
+
+  const restarted = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: () => {}, gitEnv: f.gitEnv, instanceId });
+  await restarted.service.start();
+  expect(f.store.getJournal(operation.id)).toEqual(completed);
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  await restarted.service.stop();
+
+  const second = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: () => {}, gitEnv: f.gitEnv, instanceId });
+  cleanups.unshift(() => second.service.stop());
+  await second.service.start();
+  expect(f.store.getJournal(operation.id)).toEqual(completed);
+  expect(f.store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+});
+
 it('returns a durably claimed resolution before materialization completes and drains it on stop', async () => {
   let releaseMaterialization!: () => void;
   const materializationBlocked = new Promise<void>(resolve => { releaseMaterialization = resolve; });
