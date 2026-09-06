@@ -376,6 +376,7 @@ async function reconcileProjectTerminalLocals(
         pendingClaimKnown = false;
       }
     }
+    if (pendingExecutionAttempt !== undefined && !pendingClaimKnown) continue;
     if (state.pendingManualResumeAttemptCount !== undefined
       && (pendingExecutionAttempt === undefined || (pendingClaimKnown && !pendingClaimActive))) {
       delete state.pendingManualResumeAttemptCount;

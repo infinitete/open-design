@@ -126,6 +126,134 @@ describe('durable run terminal reconciliation', () => {
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
+  it('defers an unknown resumed-run claim without consuming its pending attempt', async () => {
+    const { epoch, run, statePath, store } = seedReservedRunWithCleanAttemptZero();
+    expect(pinAssistantMessageOnRunCreate(db, run, { status: 'queued' })).toEqual({ ok: true });
+    const messageBeforeRecovery = db.prepare(`SELECT run_status AS status, ended_at AS endedAt,
+      events_json AS eventsJson FROM messages WHERE id = 'm-resume'`).get();
+
+    const gate = createProjectGate();
+    const notify = vi.fn();
+    const runtime = createProjectGitRuntimeAdapter({
+      recoveryReady: Promise.resolve(), store, gateFor: () => gate, notify, permits: new Map(),
+    });
+    const reconcileGroups = vi.fn(async (...args: Parameters<typeof runtime.reconcileTerminalsWithLocalRepair>) => {
+      await runtime.reconcileTerminalsWithLocalRepair(...args);
+    });
+    const reconcile = () => beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => epoch,
+      reconcileTerminalsWithLocalRepair: reconcileGroups,
+      reportLangfuse: vi.fn(),
+    }).localReady;
+    const prepare = db.prepare.bind(db);
+    let rejectExactClaimEvidence = true;
+    vi.spyOn(db, 'prepare').mockImplementation(((source: string) => {
+      if (rejectExactClaimEvidence && source.includes('SELECT 1 FROM messages')) {
+        rejectExactClaimEvidence = false;
+        throw new Error('one-shot pending claim evidence fault');
+      }
+      return prepare(source);
+    }) as typeof db.prepare);
+
+    const first = await reconcile();
+    expect(first.messagesReconciled).toBe(0);
+    expect(reconcileGroups).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT run_status AS status, ended_at AS endedAt,
+      events_json AS eventsJson FROM messages WHERE id = 'm-resume'`).get())
+      .toEqual(messageBeforeRecovery);
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
+    expect(notify).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
+      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([{ attempt: 0 }]);
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      pendingManualResumeAttemptCount: 1,
+    });
+
+    const second = await reconcile();
+    expect(second.messagesReconciled).toBe(1);
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'failed' });
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 2, dirty: true });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
+      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
+      { attempt: 0 }, { attempt: 1 },
+    ]);
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      manualResumeAttemptCount: 1,
+    });
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')))
+      .not.toHaveProperty('pendingManualResumeAttemptCount');
+
+    const third = await reconcile();
+    expect(third.messagesReconciled).toBe(0);
+    expect(store.getBinding('p1')?.contentRevision).toBe(2);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
+      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
+      { attempt: 0 }, { attempt: 1 },
+    ]);
+  });
+
+  it('continues other durable runs while one pending claim remains unknown', async () => {
+    const states = [
+      { id: 'run-deferred', messageId: 'm-deferred', pendingAttempt: 1 },
+      { id: 'run-provable', messageId: 'm-provable' },
+    ];
+    for (const state of states) {
+      const runDir = path.join(tmpDir, state.id);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+        schemaVersion: 1,
+        id: state.id,
+        projectId: 'p1',
+        conversationId: `c-${state.id}`,
+        assistantMessageId: state.messageId,
+        agentId: 'codex',
+        status: 'failed',
+        createdAt: 1,
+        updatedAt: 2,
+        expectedProjectRevision: 7,
+        projectGitBindingGeneration: 3,
+        ...(state.pendingAttempt === undefined
+          ? {}
+          : { pendingManualResumeAttemptCount: state.pendingAttempt }),
+      }));
+      db.prepare('INSERT INTO conversations (id, project_id) VALUES (?, ?)')
+        .run(`c-${state.id}`, 'p1');
+      db.prepare(`INSERT INTO messages (id, conversation_id, run_id, run_status, events_json)
+        VALUES (?, ?, ?, 'running', '[]')`).run(state.messageId, `c-${state.id}`, state.id);
+    }
+    const prepare = db.prepare.bind(db);
+    let rejectExactClaimEvidence = true;
+    vi.spyOn(db, 'prepare').mockImplementation(((source: string) => {
+      if (rejectExactClaimEvidence && source.includes('SELECT 1 FROM messages')) {
+        rejectExactClaimEvidence = false;
+        throw new Error('one-shot pending claim evidence fault');
+      }
+      return prepare(source);
+    }) as typeof db.prepare);
+    const groups: string[][] = [];
+
+    const result = await beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => ({ bindingGeneration: 3, projectRevision: 7 }),
+      reconcileTerminalsWithLocalRepair: async (group, repair) => {
+        groups.push(group.terminals.map(terminal => terminal.runId));
+        await repair();
+      },
+      reportLangfuse: vi.fn(),
+    }).localReady;
+
+    expect(result.messagesReconciled).toBe(1);
+    expect(groups).toEqual([['run-provable']]);
+    expect(db.prepare('SELECT id, run_status AS status FROM messages ORDER BY id').all()).toEqual([
+      { id: 'm-deferred', status: 'running' },
+      { id: 'm-provable', status: 'failed' },
+    ]);
+  });
+
   it('ignores a pre-claim attempt reservation without an active exact message', async () => {
     const { epoch, statePath, store } = seedReservedRunWithCleanAttemptZero();
     const notify = vi.fn();
