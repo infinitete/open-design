@@ -74,11 +74,23 @@ export function migrateProjectGit(db: Database.Database): void {
       conflict_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
       resolve_operation_id TEXT NOT NULL UNIQUE REFERENCES project_git_operations(id)
     );
+    DELETE FROM project_git_conflict_resolutions
+      WHERE resolve_operation_id IN (SELECT id FROM project_git_operations WHERE status = 'failed')
+        AND EXISTS (
+          SELECT 1 FROM project_git_operations AS candidate
+          WHERE candidate.kind = 'resolve' AND candidate.status != 'failed'
+            AND json_extract(candidate.payload_json, '$.conflictOperationId') = project_git_conflict_resolutions.conflict_operation_id
+        );
     INSERT OR IGNORE INTO project_git_conflict_resolutions (conflict_operation_id, resolve_operation_id)
-      SELECT json_extract(payload_json, '$.conflictOperationId'), id
-      FROM project_git_operations
-      WHERE kind = 'resolve' AND json_type(payload_json, '$.conflictOperationId') = 'text'
-      ORDER BY created_at, id;
+      SELECT conflict_operation_id, id FROM (
+        SELECT json_extract(payload_json, '$.conflictOperationId') AS conflict_operation_id, id,
+          row_number() OVER (
+            PARTITION BY json_extract(payload_json, '$.conflictOperationId')
+            ORDER BY CASE WHEN status = 'failed' THEN 1 ELSE 0 END, created_at, id
+          ) AS rank
+        FROM project_git_operations
+        WHERE kind = 'resolve' AND json_type(payload_json, '$.conflictOperationId') = 'text'
+      ) WHERE rank = 1;
     CREATE TABLE IF NOT EXISTS project_git_run_terminals (
       run_id TEXT NOT NULL,
       execution_attempt INTEGER NOT NULL CHECK (execution_attempt >= 0),

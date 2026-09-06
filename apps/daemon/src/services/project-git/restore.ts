@@ -111,9 +111,20 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     return (await runGit({ cwd: root, args: ['commit-tree', tree, '-p', head], env,
       stdin: Buffer.from(`Open Design restore\n\nrestoreTarget: ${targetOid}\n`) })).stdout.toString().trim();
   }
+  async function admitRestorePreview(id: string, targetOid: string, request: RestoreRequestContext,
+    file: { path: string; history: ProjectFileHistoryId } | null = null): Promise<ProjectGitAccepted> {
+    const project = await authorized(id, request); assertIdle(id, project);
+    const expected = basis(id); store.assertRevision(id, request.expectedProjectRevision);
+    await assertHistoryCommit(project.root, targetOid);
+    const operation = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
+      requestDigest: digest({ targetOid, file }), payload: json({ targetOid, file }) });
+    return { operationId: operation.id };
+  }
   async function capturePreview(id: string, targetOid: string, request: RestoreRequestContext, file?: { path: string; history: ProjectFileHistoryId }): Promise<ProjectGitPreview> {
-    const project = await authorized(id, request);
-    assertIdle(id, project);
+    const admission = await admitRestorePreview(id, targetOid, request, file ?? null);
+    const admitted = store.getJournal(admission.operationId)!;
+    if (admitted.status !== 'queued' && admitted.result?.preview) return admitted.result.preview;
+    const project = input.resolveProject(id); assertIdle(id, project);
     return project.gate.exclusive(async () => {
       const nativeLegacyRoot = await nativeHistoryRoot(project.root, project.nativeLegacyRoot);
       const expected = basis(id); store.assertRevision(id, request.expectedProjectRevision);
@@ -178,6 +189,7 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
           requestDigest: digest({ targetOid, file: file ?? null }), payload: json({ captured, evidenceDigest: digest(captured) }) });
         const existing = store.getJournal(op.id)!;
         if (existing.result?.preview) return existing.result.preview;
+        store.replaceAdmittedOperationPayload(op.id, json({ captured, evidenceDigest: digest(captured) }));
         const preview: ProjectGitPreview = { id: op.id, kind: 'restore', basis: expected, targetOid, expiresAt: input.now() + 5 * 60_000, changes, dependencies: [] };
         store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: { preview }, error: null }); return preview;
       }).immediate();
@@ -192,30 +204,38 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     const head = basis(id).localHead; if (!head) throw changed();
     return capturePreview(id, history.source === 'git' ? history.oid : head, request, { path, history });
   }
-  async function restoreProject(id: string, previewId: string, request: RestoreRequestContext): Promise<ProjectGitAccepted> {
+  async function admitRestore(id: string, previewId: string, request: RestoreRequestContext): Promise<ProjectGitAccepted> {
     const project = await authorized(id, request); const requestDigest = digest({ previewId });
     const prior = store.findOperation({ projectId: id, kind: 'restore', ...request });
     if (prior) {
       if (prior.requestDigest !== requestDigest) throw new GitDomainError('CONFLICT', 409, 'Restore idempotency key was already used.');
-      if (prior.status === 'succeeded' || prior.recoveryData) return { operationId: prior.id };
+      return { operationId: prior.id };
     }
     assertIdle(id, project);
+    const op = store.getJournal(previewId); const preview = op?.result?.preview;
+    const payload = op?.payload as { captured?: Capture; evidenceDigest?: string } | undefined;
+    if (!op || op.kind !== 'restore_preview' || op.actorId !== request.actorId || op.projectId !== id || op.scope !== `project:${id}`
+      || op.status !== 'succeeded' || !preview || preview.id !== previewId || preview.kind !== 'restore'
+      || preview.expiresAt <= input.now() || !isDeepStrictEqual(preview.basis, op.basis) || !isDeepStrictEqual(basis(id), op.basis)
+      || !payload?.captured || payload.evidenceDigest !== digest(payload.captured) || payload.captured.targetOid !== preview.targetOid) throw changed();
+    store.assertRevision(id, request.expectedProjectRevision);
+    const consumer = db.transaction(() => {
+      const accepted = store.enqueueOperation({ projectId: id, kind: 'restore', ...request, basis: op.basis, requestDigest,
+        payload: json({ previewId, targetOid: preview.targetOid, candidateOid: payload.captured!.candidateOid, previewContentDigest: payload.captured!.contentDigest }) });
+      store.consumePreview(previewId, accepted.id); return accepted;
+    }).immediate();
+    return { operationId: consumer.id };
+  }
+  async function restoreProject(id: string, previewId: string, request: RestoreRequestContext): Promise<ProjectGitAccepted> {
+    const admission = await admitRestore(id, previewId, request);
+    const admitted = store.getJournal(admission.operationId)!;
+    if (admitted.status === 'succeeded' || admitted.recoveryData) return admission;
+    const project = input.resolveProject(id); assertIdle(id, project);
     const prepared = await project.gate.exclusive(async () => {
-      const op = store.getJournal(previewId); const preview = op?.result?.preview;
-      const payload = op?.payload as { captured?: Capture; evidenceDigest?: string } | undefined;
-      if (!op || op.kind !== 'restore_preview' || op.actorId !== request.actorId || op.projectId !== id || op.scope !== `project:${id}`
-        || op.status !== 'succeeded' || !preview || preview.id !== previewId || preview.kind !== 'restore'
-        || preview.expiresAt <= input.now() || !isDeepStrictEqual(preview.basis, op.basis) || !isDeepStrictEqual(basis(id), op.basis)
-        || !payload?.captured || payload.evidenceDigest !== digest(payload.captured) || payload.captured.targetOid !== preview.targetOid) throw changed();
-      store.assertRevision(id, request.expectedProjectRevision); await assertHistoryCommit(project.root, payload.captured.targetOid);
+      const op = store.getJournal(previewId)!; const payload = op.payload as unknown as { captured: Capture };
+      await assertHistoryCommit(project.root, payload.captured.targetOid);
       await verify(id, op.basis, payload.captured);
-      if (preview.expiresAt <= input.now()) throw changed();
-      const consumer = db.transaction(() => {
-        const accepted = store.enqueueOperation({ projectId: id, kind: 'restore', ...request, basis: op.basis, requestDigest,
-          payload: json({ previewId, targetOid: preview.targetOid, candidateOid: payload.captured!.candidateOid, previewContentDigest: payload.captured!.contentDigest }) });
-        store.consumePreview(previewId, accepted.id); return accepted;
-      }).immediate();
-      return { consumer, expected: op.basis, captured: payload.captured };
+      return { consumer: admitted, expected: op.basis, captured: payload.captured };
     });
     assertIdle(id, project);
     await materializeProject({ recordsMode: prepared.captured.recordsMode, projectId: id, root: project.root, branch: project.branch, operationId: prepared.consumer.id, operationDir: input.operationRoot,
@@ -226,5 +246,5 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       ...(input.afterDurablePhase ? { afterDurablePhase: input.afterDurablePhase } : {}) });
     return { operationId: prepared.consumer.id };
   }
-  return { previewRestore, previewFileRestore, restoreProject };
+  return { admitRestorePreview, admitRestore, previewRestore, previewFileRestore, restoreProject };
 }

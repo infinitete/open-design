@@ -49,6 +49,46 @@ describe('project Git durable store', () => {
       expect(() => store.consumePreview(preview.id, other.id)).toThrow();
     }
   });
+
+  it('backfills a conflict resolver link to a viable legacy attempt instead of an earlier failed row', () => {
+    let store = createProjectGitStore(db); const b = store.saveBinding(binding()); const current = basis(b);
+    const conflict = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync', idempotencyKey: 'legacy-conflict', basis: current,
+      payload: { lane: 'network' } });
+    store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+      error: { code: 'CONFLICT', message: 'Retained conflict.' } });
+    const failed = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'resolve', idempotencyKey: 'legacy-failed', basis: current,
+      payload: { conflictOperationId: conflict.id } });
+    store.updateOperation(failed.id, { status: 'failed', phase: 'failed', result: null, error: { code: 'CONFLICT', message: 'Failed.' } });
+    db.prepare('DELETE FROM project_git_conflict_resolutions').run();
+    const viable = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'resolve', idempotencyKey: 'legacy-viable', basis: current,
+      payload: { conflictOperationId: conflict.id } });
+    db.prepare('DELETE FROM project_git_conflict_resolutions').run();
+    db.prepare('INSERT INTO project_git_conflict_resolutions VALUES (?, ?)').run(conflict.id, failed.id);
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(db.prepare('SELECT resolve_operation_id AS id FROM project_git_conflict_resolutions WHERE conflict_operation_id = ?')
+      .get(conflict.id)).toEqual({ id: viable.id });
+    expect(store.getJournal(failed.id)?.status).toBe('failed');
+  });
+
+  it('centrally settles only unowned admitted work and preserves terminal and recoverable journals', () => {
+    let store = createProjectGitStore(db); const b = store.saveBinding(binding());
+    const admitted = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'restore', idempotencyKey: 'admitted-failure', basis: basis(b) });
+    store.settleAdmittedOperationFailure(admitted.id, { code: 'INTERNAL_ERROR', message: 'Project versioning operation failed.' });
+    expect(store.getOperation(admitted.id)).toMatchObject({ status: 'failed', phase: 'failed', error: { code: 'INTERNAL_ERROR' } });
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getOperation(admitted.id)).toMatchObject({ status: 'failed', phase: 'failed', error: { code: 'INTERNAL_ERROR' } });
+
+    const terminal = store.enqueueOperation({ ...request, idempotencyKey: 'terminal' });
+    store.updateOperation(terminal.id, { status: 'succeeded', phase: 'local_saved', result: null, error: null });
+    store.settleAdmittedOperationFailure(terminal.id, { code: 'INTERNAL_ERROR', message: 'ignored' });
+    expect(store.getOperation(terminal.id)).toMatchObject({ status: 'succeeded', error: null });
+
+    const recoverable = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'restore', idempotencyKey: 'recoverable', basis: basis(b) });
+    store.setPhase(recoverable.id, 'prepared', recovery());
+    store.settleAdmittedOperationFailure(recoverable.id, { code: 'INTERNAL_ERROR', message: 'ignored' });
+    expect(store.getJournal(recoverable.id)).toMatchObject({ status: 'queued', journalPhase: 'prepared', recoveryData: expect.any(Object) });
+  });
   function binding(): ProjectGitBindingRecord {
     return { projectId: 'p1', cloneId: 'c1', repositoryProjectId: 'r1',
       canonicalRoot: join(root, 'project'), commonDir: join(root, 'project/.git'),

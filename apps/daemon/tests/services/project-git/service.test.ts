@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { access, chmod, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import type { ProjectGitEvent } from '@open-design/contracts';
 import { createProjectGitServiceComposition } from '../../../src/services/project-git/service.js';
 import { discoverRepository } from '../../../src/services/project-git/repository.js';
 import { migrateProjectGit } from '../../../src/storage/project-git-migrations.js';
@@ -23,6 +24,7 @@ async function fixture(options: {
   requireProject?: (actorId: string, projectId: string) => Promise<void>;
   resolveAvailability?: (request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }) => Promise<boolean>;
   subscribeProject?: (projectId: string, onChange: () => void) => { ready: Promise<void>; unsubscribe(): Promise<void> };
+  emit?: (projectId: string, event: ProjectGitEvent) => void;
 } = {}) {
   const git = await createGitFixture();
   await writeFile(join(git.a, 'index.html'), 'initial');
@@ -35,10 +37,11 @@ async function fixture(options: {
   const bin = join(data, 'bin'); await mkdir(bin);
   const denyPush = join(data, 'deny-push');
   const blockPush = join(data, 'block-push'); const pushEntered = join(data, 'push-entered');
-  await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) touch '${pushEntered}'; while [ -f '${blockPush}' ]; do sleep 0.01; done; if [ -f '${denyPush}' ]; then echo 'Permission denied' >&2; exit 1; fi; exec git receive-pack '${git.remote}';; *) exec git upload-pack '${git.remote}';; esac\n`);
+  const blockFetch = join(data, 'block-fetch'); const fetchEntered = join(data, 'fetch-entered');
+  await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) touch '${pushEntered}'; while [ -f '${blockPush}' ]; do sleep 0.01; done; if [ -f '${denyPush}' ]; then echo 'Permission denied' >&2; exit 1; fi; exec git receive-pack '${git.remote}';; *) touch '${fetchEntered}'; while [ -f '${blockFetch}' ]; do sleep 0.01; done; exec git upload-pack '${git.remote}';; esac\n`);
   await chmod(join(bin, 'ssh'), 0o700);
   const composition = await createProjectGitServiceComposition({ db, store, operationRoot,
-    resolveProjectRoot: async id => id === 'project' ? git.a : id === 'unmanaged' ? unmanaged : join(data, 'missing'), emit: () => {},
+    resolveProjectRoot: async id => id === 'project' ? git.a : id === 'unmanaged' ? unmanaged : join(data, 'missing'), emit: options.emit ?? (() => {}),
     gitEnv: { ...fixtureGitEnv, PATH: `${bin}:${process.env.PATH}` },
     ...(options.requireProject ? { requireProject: options.requireProject } : {}),
     ...(options.resolveAvailability ? { resolveAvailability: options.resolveAvailability } : {}),
@@ -50,7 +53,7 @@ async function fixture(options: {
     branch: 'main', remoteUrl: 'ssh://git@example.invalid/repo', generation: 0, autoSync: true, localHead: await git.git(git.a, 'rev-parse', 'HEAD'),
     observedRemoteHead: null, confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, materializedHead: null, dirty: false });
   cleanups.push(async () => { await composition.service.stop(); db.close(); await git.close(); await rm(data, { recursive: true, force: true }); });
-  return { ...composition, db, store, operationRoot, git, data, denyPush, blockPush, pushEntered, unmanaged };
+  return { ...composition, db, store, operationRoot, git, data, denyPush, blockPush, pushEntered, blockFetch, fetchEntered, unmanaged };
 }
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(value)))).digest('hex');
@@ -63,6 +66,16 @@ async function terminal(store: ReturnType<typeof createProjectGitStore>, operati
     if (Date.now() >= deadline) throw new Error(`operation ${operationId} did not terminate`);
     await new Promise(resolve => setTimeout(resolve, 5));
   }
+}
+
+async function settledWithin(store: ReturnType<typeof createProjectGitStore>, operationId: string, timeoutMs = 750) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const operation = store.getJournal(operationId)!;
+    if (['succeeded', 'failed'].includes(operation.status)) return operation;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  return store.getJournal(operationId)!;
 }
 
 it('derives state from current dirty facts instead of a stale successful operation', async () => {
@@ -111,6 +124,235 @@ it('returns an admitted pollable operation before a blocked Git worker completes
   await expect(f.service.execute({ kind: 'sync' }, {
     actorId: 'local', projectId: 'project', idempotencyKey: 'async-sync', expectedProjectRevision: 0,
   })).resolves.toEqual(admitted);
+});
+
+it('durably admits binding preview before remote transport starts', async () => {
+  const f = await fixture();
+  const binding = f.store.getBinding('project')!;
+  f.store.saveBinding({ ...binding, remoteUrl: null, autoSync: false });
+  await writeFile(f.blockFetch, 'block');
+  const executing = f.service.execute({
+    kind: 'binding_preview', url: 'ssh://git@example.invalid/repo', branch: 'main',
+  }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'async-binding-preview', expectedProjectRevision: 0,
+  });
+  try {
+    const deadline = Date.now() + 5_000;
+    while (true) {
+      try { await access(f.fetchEntered); break; }
+      catch { if (Date.now() >= deadline) throw new Error('fetch did not start'); await new Promise(resolve => setTimeout(resolve, 5)); }
+    }
+    const admitted = await Promise.race([
+      executing,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+    ]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({
+      kind: 'binding_preview', status: expect.stringMatching(/queued|running/),
+    });
+  } finally {
+    await rm(f.blockFetch, { force: true });
+    await executing.catch(() => undefined);
+  }
+});
+
+it('durably admits restore preview before full current-content capture', async () => {
+  const f = await fixture();
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const admittedMutation = new Promise<void>(resolve => { entered = resolve; });
+  const mutation = f.coordination.withProjectRead('project', async () => {
+    entered(); await blocked;
+  });
+  await admittedMutation;
+  const executing = f.service.execute({ kind: 'restore_preview', oid: f.store.getBinding('project')!.localHead! }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'async-restore-preview', expectedProjectRevision: 0,
+  });
+  try {
+    const admitted = await Promise.race([executing, new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: 'restore_preview', status: 'queued' });
+  } finally {
+    release(); await mutation; await executing.catch(() => undefined);
+  }
+});
+
+it('durably admits restore confirmation before candidate revalidation and materialization', async () => {
+  const f = await fixture();
+  const preview = await f.service.execute({ kind: 'restore_preview', oid: f.store.getBinding('project')!.localHead! }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'restore-confirm-preview', expectedProjectRevision: 0,
+  });
+  await terminal(f.store, preview.operationId);
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const admittedMutation = new Promise<void>(resolve => { entered = resolve; });
+  const mutation = f.coordination.withProjectRead('project', async () => {
+    entered(); await blocked;
+  });
+  await admittedMutation;
+  const executing = f.service.execute({ kind: 'restore', previewId: preview.operationId }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'async-restore-confirm', expectedProjectRevision: 0,
+  });
+  try {
+    const admitted = await Promise.race([executing, new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: 'restore', status: 'queued' });
+  } finally {
+    release(); await mutation; await executing.catch(() => undefined);
+  }
+});
+
+it('durably admits enable preview before full project capture', async () => {
+  const f = await fixture();
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const admittedRead = new Promise<void>(resolve => { entered = resolve; });
+  const read = f.coordination.withProjectRead('unmanaged', async () => { entered(); await blocked; });
+  await admittedRead;
+  const executing = f.service.execute({ kind: 'enable_preview' }, {
+    actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'async-enable-preview', expectedProjectRevision: 0,
+  });
+  try {
+    const admitted = await Promise.race([executing, new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: 'enable_preview', status: 'queued' });
+  } finally {
+    release(); await read; await executing.catch(() => undefined);
+  }
+});
+
+it('durably admits open before remote transport starts and exactly replays the active request', async () => {
+  const f = await fixture(); await writeFile(f.blockFetch, 'block');
+  const context = { actorId: 'local', projectId: null, idempotencyKey: 'async-open' } as const;
+  const action = { kind: 'open', url: 'ssh://git@example.invalid/repo', branch: 'main' } as const;
+  const executing = f.service.execute(action, context);
+  try {
+    const deadline = Date.now() + 5_000;
+    while (true) {
+      try { await access(f.fetchEntered); break; }
+      catch { if (Date.now() >= deadline) throw new Error('open fetch did not start'); await new Promise(resolve => setTimeout(resolve, 5)); }
+    }
+    const admitted = await Promise.race([executing, new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: 'open', status: 'queued' });
+    await expect(f.service.execute(action, context)).resolves.toEqual(admitted);
+    await expect(f.service.execute({ ...action, branch: 'other' }, context)).rejects.toMatchObject({ code: 'CONFLICT' });
+  } finally {
+    await rm(f.blockFetch, { force: true }); await executing.catch(() => undefined);
+  }
+});
+
+it.each([
+  { action: 'enable' as const, projectId: 'unmanaged' },
+  { action: 'bind' as const, projectId: 'project' },
+  { action: 'unbind' as const, projectId: 'project' },
+])('durably admits $action before its exclusive project work', async ({ action, projectId }) => {
+  const f = await fixture();
+  let previewId: string | undefined;
+  if (action === 'enable') {
+    const preview = await f.service.execute({ kind: 'enable_preview' }, {
+      actorId: 'local', projectId, idempotencyKey: 'admission-enable-preview', expectedProjectRevision: 0,
+    });
+    expect(await terminal(f.store, preview.operationId)).toMatchObject({ status: 'succeeded' }); previewId = preview.operationId;
+  } else if (action === 'bind') {
+    const binding = f.store.getBinding(projectId)!; f.store.saveBinding({ ...binding, remoteUrl: null, autoSync: false });
+    const preview = await f.service.execute({ kind: 'binding_preview', url: 'ssh://git@example.invalid/repo', branch: 'main' }, {
+      actorId: 'local', projectId, idempotencyKey: 'admission-bind-preview', expectedProjectRevision: 0,
+    });
+    expect(await terminal(f.store, preview.operationId)).toMatchObject({ status: 'succeeded' }); previewId = preview.operationId;
+    const journal = f.store.getJournal(preview.operationId)!; const current = f.store.getBinding(projectId)!;
+    expect({ basis: journal.basis, dependencies: journal.result?.preview?.dependencies }).toEqual({
+      basis: { bindingGeneration: current.generation, projectRevision: current.projectRevision, contentRevision: current.contentRevision,
+        localHead: current.localHead, remoteHead: current.observedRemoteHead }, dependencies: [],
+    });
+  }
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const admittedRead = new Promise<void>(resolve => { entered = resolve; });
+  const read = f.coordination.withProjectRead(projectId, async () => { entered(); await blocked; }); await admittedRead;
+  const request = action === 'enable' ? { kind: action, previewId: previewId! } as const
+    : action === 'bind' ? { kind: action, previewId: previewId! } as const : { kind: action } as const;
+  const executing = f.service.execute(request, {
+    actorId: 'local', projectId, idempotencyKey: `async-${action}`, expectedProjectRevision: 0,
+  });
+  try {
+    const admitted = await Promise.race([executing, new Promise<null>(resolve => setTimeout(() => resolve(null), 100))]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: action, status: 'queued' });
+  } finally {
+    release(); await read; await executing.catch(() => undefined);
+  }
+});
+
+it.each(['enable', 'bind'] as const)('centrally settles a pre-intent %s worker failure after durable admission', async action => {
+  const events: ProjectGitEvent[] = [];
+  const f = await fixture({ emit: (_projectId, event) => events.push(event) }); let previewId: string;
+  if (action === 'enable') {
+    const preview = await f.service.execute({ kind: 'enable_preview' }, {
+      actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'settle-enable-preview', expectedProjectRevision: 0,
+    });
+    const journal = await terminal(f.store, preview.operationId); previewId = preview.operationId;
+    const evidencePath = (journal.payload as { evidencePath: string }).evidencePath; await rm(join(f.operationRoot, evidencePath));
+  } else {
+    const binding = f.store.getBinding('project')!; f.store.saveBinding({ ...binding, remoteUrl: null, autoSync: false });
+    const preview = await f.service.execute({ kind: 'binding_preview', url: 'ssh://git@example.invalid/repo', branch: 'main' }, {
+      actorId: 'local', projectId: 'project', idempotencyKey: 'settle-bind-preview', expectedProjectRevision: 0,
+    });
+    const journal = await terminal(f.store, preview.operationId); previewId = preview.operationId;
+    const evidencePath = (journal.payload as { evidencePath: string }).evidencePath; await rm(join(f.operationRoot, evidencePath));
+  }
+  const projectId = action === 'enable' ? 'unmanaged' : 'project';
+  const admitted = await f.service.execute({ kind: action, previewId }, {
+    actorId: 'local', projectId, idempotencyKey: `settle-${action}`, expectedProjectRevision: 0,
+  });
+  const failed = await settledWithin(f.store, admitted.operationId);
+  expect(failed).toMatchObject({
+    status: 'failed', phase: 'failed', error: { code: expect.any(String), message: expect.not.stringContaining(f.operationRoot) },
+  });
+  expect(events).toContainEqual(expect.objectContaining({ type: 'project-git-operation',
+    operation: expect.objectContaining({ id: admitted.operationId, status: 'failed', phase: 'failed' }) }));
+  expect(events).toContainEqual(expect.objectContaining({ type: 'project-git-state',
+    state: expect.objectContaining({ operationId: admitted.operationId, phase: 'failed' }) }));
+});
+
+it('replays a failed admission without worker work, then explicitly retries its original consumer after the dependency recovers', async () => {
+  const f = await fixture();
+  const previewRequest = { actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'recover-preview', expectedProjectRevision: 0 } as const;
+  const previewAccepted = await f.service.execute({ kind: 'enable_preview' }, previewRequest);
+  const preview = await terminal(f.store, previewAccepted.operationId);
+  const evidencePath = (preview.payload as { evidencePath: string }).evidencePath;
+  const evidence = await readFile(join(f.operationRoot, evidencePath)); await rm(join(f.operationRoot, evidencePath));
+  const confirmRequest = { actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'recover-enable', expectedProjectRevision: 0 } as const;
+  const accepted = await f.service.execute({ kind: 'enable', previewId: preview.id }, confirmRequest);
+  expect(await settledWithin(f.store, accepted.operationId)).toMatchObject({ status: 'failed', payload: { previewId: preview.id } });
+
+  await writeFile(join(f.operationRoot, evidencePath), evidence);
+  const refine = vi.spyOn(f.store, 'replaceAdmittedOperationPayload');
+  expect(await f.service.execute({ kind: 'enable', previewId: preview.id }, confirmRequest)).toEqual(accepted);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(refine).not.toHaveBeenCalled(); refine.mockRestore();
+  expect(f.store.getJournal(accepted.operationId)).toMatchObject({ status: 'failed', payload: { previewId: preview.id } });
+
+  const retried = await f.service.execute({ kind: 'retry', operationId: accepted.operationId }, {
+    actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'recover-enable-retry', expectedProjectRevision: 0,
+  });
+  expect(retried).toEqual(accepted);
+  expect(await terminal(f.store, accepted.operationId)).toMatchObject({ status: 'succeeded', actorId: 'local', scope: 'project:unmanaged' });
+});
+
+it('centrally settles a pre-intent restore verification failure and keeps its original retry identity', async () => {
+  const f = await fixture();
+  const preview = await f.service.execute({ kind: 'restore_preview', oid: f.store.getBinding('project')!.localHead! }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'settle-restore-preview', expectedProjectRevision: 0,
+  });
+  await terminal(f.store, preview.operationId);
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const admittedRead = new Promise<void>(resolve => { entered = resolve; });
+  const read = f.coordination.withProjectRead('project', async () => { entered(); await blocked; }); await admittedRead;
+  const admitted = await f.service.execute({ kind: 'restore', previewId: preview.operationId }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'settle-restore', expectedProjectRevision: 0,
+  });
+  await writeFile(join(f.git.a, 'index.html'), 'changed outside the daemon gate'); release(); await read;
+  const failed = await settledWithin(f.store, admitted.operationId);
+  expect(failed).toMatchObject({ status: 'failed', phase: 'failed', error: { code: 'PROJECT_STATE_CHANGED' } });
+  expect(f.store.findOperation({ actorId: 'local', projectId: 'project', kind: 'restore', idempotencyKey: 'settle-restore' })?.id)
+    .toBe(admitted.operationId);
 });
 
 it('never reuses an existing idempotency key before the delayed request digest is validated', async () => {
@@ -164,6 +406,29 @@ it('reads conflicts only from digest-verified private evidence', async () => {
   await expect(f.service.conflicts('project')).resolves.toEqual([conflict]);
   await writeFile(join(f.operationRoot, path), '{}');
   await expect(f.service.conflicts('project')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+});
+
+it('durably admits manual conflict recomputation while the sync worker keeps an unchanged conflict off the network', async () => {
+  const f = await fixture();
+  const baseline = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'conflict-baseline', expectedProjectRevision: 0,
+  });
+  await terminal(f.store, baseline.operationId);
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'retained-service-conflict', requestDigest: 'retained-service-conflict', basis, payload: { lane: 'network' } });
+  f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve the retained conflict.', details: { reason: 'merge_conflict' } } });
+  const networkBefore = await readFile(join(f.data, 'network.log')).catch(() => Buffer.alloc(0));
+
+  const accepted = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'recompute-conflict', expectedProjectRevision: binding.projectRevision,
+  });
+  expect(await settledWithin(f.store, accepted.operationId)).toMatchObject({ status: 'failed', error: { code: 'CONFLICT' } });
+  expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  expect(await readFile(join(f.data, 'network.log')).catch(() => Buffer.alloc(0))).toEqual(networkBefore);
 });
 
 it.each(['remote_rewritten', 'external_head_conflict', 'portable_resource'])(
@@ -281,6 +546,9 @@ it('quarantines a missing managed root without blocking unrelated project startu
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   expect(f.store.getJournal(quarantine.id)).toMatchObject({ status: 'waiting', error: { code: 'RECOVERY_REQUIRED' } });
+  await expect(restarted.service.execute({ kind: 'retry', operationId: quarantine.id }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'different-retry-quarantine', expectedProjectRevision: 0,
+  })).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
   await rename(missing, f.git.a);
   const retried = await restarted.service.execute({ kind: 'retry', operationId: quarantine.id }, {
     actorId: 'local', projectId: 'project', idempotencyKey: 'retry-quarantine', expectedProjectRevision: 0,
@@ -300,6 +568,19 @@ it('owns one project watcher subscription from start through stop', async () => 
   expect(subscribed).toEqual(['project']);
   await f.service.stop();
   expect(unsubscribed).toEqual(['project']);
+});
+
+it('serializes start with stop so a delayed startup cannot leak a watcher after shutdown', async () => {
+  const subscribed: string[] = []; const unsubscribed: string[] = [];
+  const f = await fixture({ subscribeProject: projectId => { subscribed.push(projectId); return {
+      ready: Promise.resolve(), unsubscribe: async () => { unsubscribed.push(projectId); },
+    }; } });
+  const starting = f.service.start(); const stopping = f.service.stop();
+  await Promise.all([starting, stopping]);
+  expect(unsubscribed).toEqual(subscribed);
+  await expect(f.service.execute({ kind: 'pause' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'after-stop', expectedProjectRevision: 0,
+  })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
 });
 
 it('quarantines corrupt repositories and unavailable Git as project-local state', async () => {
@@ -434,7 +715,7 @@ it('resumes a retained enable under its original preview, actor, scope, and oper
   const f = await fixture();
   const accepted = await f.service.execute({ kind: 'enable_preview' },
     { actorId: 'local', projectId: 'unmanaged', idempotencyKey: 'enable-preview' });
-  const preview = f.store.getJournal(accepted.operationId)!;
+  const preview = await terminal(f.store, accepted.operationId);
   const captured = await readBindingEvidence(f.operationRoot, preview);
   const requestDigest = digest({ kind: 'enable', id: 'unmanaged', previewId: preview.id, expectedProjectRevision: 0 });
   const operation = f.store.enqueueOperation({ projectId: 'unmanaged', actorId: 'local', kind: 'enable', idempotencyKey: 'retained-enable',
@@ -458,7 +739,7 @@ it('resumes a retained bind under its original preview confirmation and operatio
   await f.git.git(f.git.a, 'update-ref', bindingOwnerRef('main'), ownerOid);
   const accepted = await f.service.execute({ kind: 'binding_preview', url: 'ssh://git@example.invalid/repo', branch: 'main' },
     { actorId: 'local', projectId: 'project', idempotencyKey: 'bind-preview', expectedProjectRevision: 0 });
-  const preview = f.store.getJournal(accepted.operationId)!; const captured = await readBindingEvidence(f.operationRoot, preview);
+  const preview = await terminal(f.store, accepted.operationId); const captured = await readBindingEvidence(f.operationRoot, preview);
   const requestDigest = digest({ kind: 'bind', id: 'project', previewId: preview.id, confirmation: {}, expectedProjectRevision: 0 });
   const operation = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'bind', idempotencyKey: 'retained-bind',
     requestDigest, basis: preview.basis, payload: { previewId: preview.id, confirmation: {}, previewContentDigest: captured.digest } });
@@ -475,7 +756,7 @@ it('resumes a retained restore under its original frozen candidate and operation
   const f = await fixture(); const binding = f.store.getBinding('project')!;
   const accepted = await f.service.execute({ kind: 'restore_preview', oid: binding.localHead! },
     { actorId: 'local', projectId: 'project', idempotencyKey: 'restore-preview', expectedProjectRevision: 0 });
-  const preview = f.store.getJournal(accepted.operationId)!;
+  const preview = await terminal(f.store, accepted.operationId);
   const captured = (preview.payload as { captured: { targetOid: string; candidateOid: string; contentDigest: string } }).captured;
   const operation = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'restore', idempotencyKey: 'retained-restore',
     requestDigest: digest({ previewId: preview.id }), basis: preview.basis,

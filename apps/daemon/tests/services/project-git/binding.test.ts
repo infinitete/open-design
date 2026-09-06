@@ -560,7 +560,9 @@ it.each(['local', 'remote'])('rejects %s edits after the binding preview before 
   if (side === 'local') await writeFile(join(root, 'index.html'), 'external edit');
   else { await writeFile(join(f.a, 'remote.html'), 'new remote'); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'remote changed'); await f.git(f.a, 'push', 'origin', 'HEAD:main'); }
   await expect(service.bind('existing', preview.id, { ...ctx, idempotencyKey: 'b' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
-  expect(store.findOperation({ actorId: 'local', projectId: 'existing', kind: 'bind', idempotencyKey: 'b' })).toBeNull();
+  expect(store.findOperation({ actorId: 'local', projectId: 'existing', kind: 'bind', idempotencyKey: 'b' })).toMatchObject({
+    status: 'queued', phase: 'waiting_idle', payload: { previewId: preview.id, confirmation: {} },
+  });
   expect(await f.git(root, 'show-ref')).toBe(refs); expect(store.getBinding('existing')!.generation).toBe(1);
 });
 
@@ -641,10 +643,12 @@ it('rejects an unauthorized preview before reading the project binding and rejec
   const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'stale' });
   await writeFile(join(root, 'index.html'), 'external changed bytes');
   await expect(service.enable('existing', preview.id, { actorId: 'local', idempotencyKey: 'confirm' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
-  expect(store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'enable', idempotencyKey: 'confirm' })).toBeNull();
+  expect(store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'enable', idempotencyKey: 'confirm' })).toMatchObject({
+    status: 'queued', phase: 'waiting_idle', payload: { previewId: preview.id },
+  });
   await expect(access(join(root, '.git'))).rejects.toBeDefined();
   await writeFile(join(root, 'index.html'), 'user file');
-  expect((await service.enable('existing', preview.id, { actorId: 'local', idempotencyKey: 'confirm', expectedProjectRevision: 0 })).status).toBe('succeeded');
+  expect((await service.enable('existing', preview.id, { actorId: 'local', idempotencyKey: 'confirm' })).status).toBe('succeeded');
 });
 
 it('resumes the original enable consumer after owner claim without refreshing the generation-zero preview', async () => {
@@ -684,6 +688,38 @@ it('binds an empty remote from a frozen preview and unbinds only the remote whil
   expect(store.listBindings()).toHaveLength(1);
 });
 
+it('fences binding preview, bind, and unbind behind a retained conflict without changing Git or durable queues', async () => {
+  const { service, existing, store, f } = await serviceFixture(); const root = await existing();
+  const request = { actorId: 'local', expectedProjectRevision: 0 };
+  const enablePreview = await service.previewEnable('existing', { ...request, idempotencyKey: 'fence-enable-preview' });
+  await service.enable('existing', enablePreview.id, { ...request, idempotencyKey: 'fence-enable' });
+  const binding = store.getBinding('existing')!; store.saveBinding({ ...binding, remoteUrl: null, autoSync: false });
+  const bindPreview = await service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', {
+    ...request, idempotencyKey: 'fence-bind-preview-before-conflict',
+  });
+  const current = store.getBinding('existing')!;
+  const conflict = store.enqueueOperation({ projectId: 'existing', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'retained-conflict', requestDigest: 'retained-conflict', basis: {
+      bindingGeneration: current.generation, projectRevision: current.projectRevision, contentRevision: current.contentRevision,
+      localHead: current.localHead, remoteHead: current.observedRemoteHead,
+    }, payload: { lane: 'network' } });
+  store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.', details: { reason: 'merge_conflict' } } });
+  const before = { head: await f.git(root, 'rev-parse', 'HEAD'), pushes: store.listDuePushes(Number.MAX_SAFE_INTEGER),
+    operations: store.listPendingOperations().map(operation => operation.id) };
+
+  await expect(service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', {
+    ...request, idempotencyKey: 'fence-bind-preview-after-conflict',
+  })).rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  await expect(service.bind('existing', bindPreview.id, { ...request, idempotencyKey: 'fence-bind' }))
+    .rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  await expect(service.unbind('existing', { ...request, idempotencyKey: 'fence-unbind' }))
+    .rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  expect(await f.git(root, 'rev-parse', 'HEAD')).toBe(before.head);
+  expect(store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual(before.pushes);
+  expect(store.listPendingOperations().map(operation => operation.id)).toEqual(before.operations);
+});
+
 it('waits the same scheduler admitted real push result before unbind advances generation', async () => {
   const { service, existing, store, scheduler, f } = await serviceFixture(); const root = await existing();
   const ctx = { actorId: 'local', expectedProjectRevision: 0 };
@@ -720,7 +756,9 @@ it('rejects stale unbind revision after waiting for an already admitted real gat
   const assert = store.assertRevision; const check = vi.spyOn(store, 'assertRevision').mockImplementation((id, revision) => { assert(id, revision); release(); });
   await expect(service.unbind('existing', { ...ctx, idempotencyKey: 'stale' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
   check.mockRestore(); await ongoing;
-  expect(store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'unbind', idempotencyKey: 'stale' })).toBeNull();
+  expect(store.findOperation({ projectId: 'existing', actorId: 'local', kind: 'unbind', idempotencyKey: 'stale' })).toMatchObject({
+    status: 'queued', phase: 'waiting_idle', payload: {},
+  });
   expect(store.listPendingRegistrations()).toEqual([]);
 });
 

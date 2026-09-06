@@ -302,9 +302,13 @@ export async function createProjectGitServiceComposition(
 
   function state(projectId: string): ProjectGitState {
     const binding = input.store.getBinding(projectId);
-    if (!binding) return {
+    if (!binding) {
+      const pending = input.store.listPendingOperations().filter(operation => operation.projectId === projectId).at(-1);
+      const latest = input.store.getLatestProjectOperation(projectId);
+      const operation = pending ?? (latest?.status === 'failed' ? latest : null);
+      return {
       enabled: false,
-      phase: 'enable_pending',
+      phase: pending?.phase ?? (latest?.status === 'failed' ? 'failed' : 'enable_pending'),
       localHead: null,
       observedRemoteHead: null,
       confirmedRemoteHead: null,
@@ -314,11 +318,12 @@ export async function createProjectGitServiceComposition(
       dirty: false,
       pendingPush: false,
       autoSync: false,
-      operationId: null,
-      error: null,
+      operationId: operation?.id ?? null,
+      error: operation?.error ?? null,
       binding: { remoteConfigured: false, remoteLabel: null, branch: null },
-      dependencies: [],
-    };
+      dependencies: operation?.result?.dependencies ?? [],
+      };
+    }
     const operations = input.store.listPendingOperations().filter(operation => operation.projectId === projectId);
     const conflict = operations.filter(operation => operation.phase === 'conflict').at(-1);
     const active = conflict ?? operations.at(-1);
@@ -420,7 +425,7 @@ export async function createProjectGitServiceComposition(
       }
       const retryableSync = target.kind === 'sync' && ['failed', 'waiting'].includes(target.status)
         && ['auth_required', 'pending_push', 'external_git_busy', 'waiting_idle', 'failed'].includes(target.phase);
-      if (!(target.status === 'failed' && ['enable', 'bind', 'open', 'restore'].includes(target.kind)) && !retryableSync) {
+      if (!(target.status === 'failed' && ['enable', 'bind', 'open', 'restore', 'resolve'].includes(target.kind)) && !retryableSync) {
         throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely. Create a new preview.');
       }
       const payload = target.payload;
@@ -471,6 +476,14 @@ export async function createProjectGitServiceComposition(
         const url = payload.url; const branch = payload.branch;
         return resume(() => bindingService.openRepository({ actorId: original.actorId, idempotencyKey: original.idempotencyKey,
           url, branch }));
+      }
+      if (target.kind === 'resolve') {
+        if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
+          || typeof payload.conflictOperationId !== 'string') {
+          throw new GitDomainError('PREVIEW_STALE', 409, 'The original conflict resolution is no longer current.');
+        }
+        await resolveRuntime(target.projectId); claim();
+        return syncRuntime.retryConflictResolution(target.id);
       }
       if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
         || typeof payload.previewId !== 'string') throw new GitDomainError('PREVIEW_STALE', 409, 'The original operation is no longer current.');
@@ -530,7 +543,7 @@ export async function createProjectGitServiceComposition(
     return input.store.getOperation(operation.id)!;
   }
 
-  async function manualSync(context: ProjectGitRequestContext): Promise<ProjectGitOperation> {
+  async function admitManualSync(context: ProjectGitRequestContext): Promise<ProjectGitOperation> {
     if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
     await input.requireProject?.(context.actorId, context.projectId);
     await resolveRuntime(context.projectId);
@@ -543,6 +556,13 @@ export async function createProjectGitServiceComposition(
     }
     if (!input.store.getBinding(context.projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Managed project not found.');
     input.store.assertRevision(context.projectId, context.expectedProjectRevision);
+    return input.store.getOperation(input.store.enqueueOperation({ projectId: context.projectId, actorId: context.actorId, kind: 'sync',
+      idempotencyKey: context.idempotencyKey, requestDigest: digest, basis: basis(context.projectId), payload: { lane: 'network' } }).id)!;
+  }
+
+  async function manualSync(context: ProjectGitRequestContext): Promise<ProjectGitOperation> {
+    if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
+    const digest = requestDigest({ kind: 'sync', expectedProjectRevision: context.expectedProjectRevision ?? null });
     try {
       const operation = await syncProject({ projectId: context.projectId, oneShot: true, deps: syncRuntime,
         request: { actorId: context.actorId, idempotencyKey: context.idempotencyKey, requestDigest: digest } });
@@ -560,6 +580,7 @@ export async function createProjectGitServiceComposition(
   let stopping = false;
   let stopped = false;
   let stopPromise: Promise<void> | null = null;
+  let startPromise: Promise<void> | null = null;
   const inFlight = new Set<Promise<unknown>>();
   const track = <T>(promise: Promise<T>): Promise<T> => {
     inFlight.add(promise);
@@ -594,7 +615,8 @@ export async function createProjectGitServiceComposition(
         await priorAdmission;
         await recoveryReady;
         const fingerprint = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
-        const shareWorker = ['pause', 'resume', 'sync', 'resolve', 'retry'].includes(action.kind);
+        const shareWorker = ['enable_preview', 'enable', 'binding_preview', 'bind', 'unbind', 'open', 'restore_preview', 'restore',
+          'pause', 'resume', 'sync', 'resolve', 'retry'].includes(action.kind);
         const activeWorker = shareWorker ? requestWorkers.get(requestKey) : undefined;
         if (activeWorker) {
           if (activeWorker.fingerprint !== fingerprint) {
@@ -605,9 +627,26 @@ export async function createProjectGitServiceComposition(
           const operation = await activeWorker.promise;
           return accepted(operation);
         }
-        const operationAtAdmission = operationForRequest(action, context);
+        const request = contextRequest(context);
+        let operationAtAdmission: ProjectGitOperation | null = null;
+        switch (action.kind) {
+          case 'enable_preview': operationAtAdmission = await bindingService.admitPreviewEnable(context.projectId!, request); break;
+          case 'enable': operationAtAdmission = await bindingService.admitEnable(context.projectId!, action.previewId, request); break;
+          case 'binding_preview': operationAtAdmission = await bindingService.admitPreviewBinding(context.projectId!, action.url, action.branch, request); break;
+          case 'bind': operationAtAdmission = await bindingService.admitBind(context.projectId!, action.previewId,
+            { ...request, ...(action.confirmation ? { confirmation: action.confirmation } : {}) }); break;
+          case 'unbind': operationAtAdmission = await bindingService.admitUnbind(context.projectId!, request); break;
+          case 'open': operationAtAdmission = await bindingService.admitOpenRepository({ ...request, url: action.url, branch: action.branch }); break;
+          case 'restore_preview': operationAtAdmission = input.store.getOperation((await restoreService.admitRestorePreview(
+            context.projectId!, action.oid, request)).operationId); break;
+          case 'restore': operationAtAdmission = input.store.getOperation((await restoreService.admitRestore(
+            context.projectId!, action.previewId, request)).operationId); break;
+          case 'sync': operationAtAdmission = await admitManualSync(context); break;
+        }
+        if (operationAtAdmission && operationAtAdmission.status !== 'queued') {
+          return accepted(operationAtAdmission);
+        }
         const worker = track((async (): Promise<ProjectGitOperation> => {
-          const request = contextRequest(context);
           switch (action.kind) {
             case 'enable_preview': return bindingService.previewEnable(context.projectId!, request);
             case 'enable': return bindingService.enable(context.projectId!, action.previewId, request);
@@ -640,24 +679,18 @@ export async function createProjectGitServiceComposition(
           return { ok: true as const, operation };
         }, async error => {
           const operation = operationForRequest(action, context);
-          if (operation) await accepted(operation);
+          if (operation) {
+            input.store.settleAdmittedOperationFailure(operation.id, publicError(error));
+            await accepted(input.store.getOperation(operation.id)!);
+          }
           return { ok: false as const, error };
         });
         if (operationAtAdmission) {
-          const result = await completed;
-          if (result.ok) return { operationId: result.operation.id };
-          throw result.error;
+          return accepted(operationAtAdmission);
         }
-        while (true) {
-          const result = await Promise.race([
-            completed,
-            new Promise<null>(resolve => setTimeout(() => resolve(null), 1)),
-          ]);
-          if (result?.ok) return { operationId: result.operation.id };
-          if (result && !result.ok) throw result.error;
-          const operation = operationForRequest(action, context);
-          if (operation) return accepted(operation);
-        }
+        const result = await completed;
+        if (result.ok) return { operationId: result.operation.id };
+        throw result.error;
       });
       const admissionSettled = execution.then(() => {}, () => {});
       requestAdmissions.set(requestKey, admissionSettled);
@@ -702,20 +735,30 @@ export async function createProjectGitServiceComposition(
       }
       return conflicts;
     }); },
-    async start() {
-      if (started || stopping || stopped) return;
-      await recoveryReady;
-      scheduler.start();
-      for (const binding of input.store.listBindings()) {
-        try { await resolveRuntime(binding.projectId); ensureWatcher(binding.projectId); }
-        catch (error) { quarantine(binding, error); }
-      }
-      started = true;
+    start() {
+      if (started || stopping || stopped) return Promise.resolve();
+      if (startPromise) return startPromise;
+      startPromise = (async () => {
+        await recoveryReady;
+        if (stopping || stopped) return;
+        scheduler.start();
+        for (const binding of input.store.listBindings()) {
+          if (stopping || stopped) break;
+          try {
+            await resolveRuntime(binding.projectId);
+            if (stopping || stopped) break;
+            ensureWatcher(binding.projectId);
+          } catch (error) { quarantine(binding, error); }
+        }
+        if (!stopping && !stopped) started = true;
+      })();
+      return startPromise;
     },
     async stop() {
       if (stopPromise) return stopPromise;
       stopping = true;
       stopPromise = (async () => {
+        if (startPromise) await Promise.allSettled([startPromise]);
         while (inFlight.size) await Promise.allSettled([...inFlight]);
         await Promise.allSettled([...watchers.values()].map(watcher => Promise.resolve(watcher.unsubscribe())));
         watchers.clear();

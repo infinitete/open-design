@@ -110,6 +110,11 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     if (op && op.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
     return op;
   }
+  function assertNoRetainedConflict(id: string): void {
+    if (store.listPendingOperations().some(operation => operation.projectId === id && operation.phase === 'conflict')) {
+      throw new GitDomainError('GIT_CONFLICT', 409, 'Resolve the current project conflict first.');
+    }
+  }
   async function evidence(value: unknown) {
     const name = input.newId(); if (!/^[a-zA-Z0-9-]+$/u.test(name)) throw validation();
     const path = `binding-${name}.json`; const bytes = Buffer.from(canonicalJson(jsonValue(value)));
@@ -350,28 +355,106 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     }
     return store.getOperation(user.id)!;
   }
+  async function admitPreviewBinding(id: string, rawUrl: string, rawBranch: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
+    await authorizeRequest(id, request);
+    const url = validateRemote(rawUrl); const branch = await validateBranch(rawBranch);
+    const digest = requestHash({ kind: 'binding_preview', id, url, branch, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = existing(id, 'binding_preview', request, digest); if (prior) return store.getOperation(prior.id)!;
+    store.assertRevision(id, request.expectedProjectRevision); await resolveAuthorized(id);
+    const b = store.getBinding(id);
+    if (!b || (b.remoteUrl !== null && b.autoSync)) throw new GitDomainError('CONFLICT', 409, 'Pause automatic synchronization before rebinding.');
+    assertNoRetainedConflict(id);
+    return store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'binding_preview', basis: basis(id),
+      idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: { url, branch } });
+  }
+  async function admitPreviewEnable(id: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
+    await authorizeRequest(id, request);
+    const digest = requestHash({ kind: 'enable_preview', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = existing(id, 'enable_preview', request, digest); if (prior) return store.getOperation(prior.id)!;
+    store.assertRevision(id, request.expectedProjectRevision); await resolveAuthorized(id);
+    if (store.getBinding(id)) throw new GitDomainError('CONFLICT', 409, 'The project already has versioning enabled.');
+    return store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable_preview', idempotencyKey: request.idempotencyKey,
+      requestDigest: digest, basis: basis(id), payload: {} });
+  }
+  async function admitEnable(id: string, previewId: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
+    await authorizeRequest(id, request);
+    const digest = requestHash({ kind: 'enable', id, previewId, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = existing(id, 'enable', request, digest); if (prior) return store.getOperation(prior.id)!;
+    store.assertRevision(id, request.expectedProjectRevision); await resolveAuthorized(id);
+    const preview = store.getJournal(previewId);
+    if (!preview || preview.actorId !== request.actorId || preview.projectId !== id || preview.kind !== 'enable_preview'
+      || preview.status !== 'succeeded' || preview.result?.preview?.id !== previewId || preview.result.preview.expiresAt <= input.now()
+      || !isDeepStrictEqual(preview.basis, basis(id))
+      || preview.result.preview.dependencies.some(item => item.requiredForContent || item.nextStep?.action === 'retry' || ['git', 'identity'].includes(item.kind))) throw stateChanged();
+    return db.transaction(() => {
+      const operation = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable', basis: preview.basis,
+        idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: { previewId } });
+      store.consumePreview(previewId, operation.id); return store.getOperation(operation.id)!;
+    }).immediate();
+  }
+  async function admitBind(id: string, previewId: string, request: BindingRequestContext & { confirmation?: ProjectGitBindConfirmation }): Promise<ProjectGitOperation> {
+    await authorizeRequest(id, request);
+    const confirmation = request.confirmation ?? {};
+    const digest = requestHash({ kind: 'bind', id, previewId, confirmation, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = existing(id, 'bind', request, digest); if (prior) return store.getOperation(prior.id)!;
+    store.assertRevision(id, request.expectedProjectRevision); await resolveAuthorized(id);
+    assertNoRetainedConflict(id);
+    const preview = store.getJournal(previewId); const summary = preview?.result?.preview;
+    if (!preview || preview.actorId !== request.actorId || preview.projectId !== id || preview.kind !== 'binding_preview'
+      || preview.status !== 'succeeded' || summary?.id !== previewId || summary.expiresAt <= input.now()
+      || !isDeepStrictEqual(preview.basis, basis(id)) || !summary.binding
+      || summary.dependencies.some(item => item.requiredForContent || item.nextStep?.action === 'retry')) throw stateChanged();
+    validateBindingConfirmation(summary.binding, confirmation);
+    return db.transaction(() => {
+      const operation = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'bind', basis: preview.basis,
+        idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: { previewId, confirmation: jsonValue(confirmation) } });
+      store.consumePreview(previewId, operation.id); return store.getOperation(operation.id)!;
+    }).immediate();
+  }
+  async function admitUnbind(id: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
+    await authorizeRequest(id, request);
+    const digest = requestHash({ kind: 'unbind', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = existing(id, 'unbind', request, digest); if (prior) return store.getOperation(prior.id)!;
+    store.assertRevision(id, request.expectedProjectRevision); await resolveAuthorized(id);
+    assertNoRetainedConflict(id);
+    if (!store.getBinding(id)) throw stateChanged();
+    return store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'unbind', basis: basis(id),
+      idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: {} });
+  }
+  async function admitOpenRepository(request: BindingRequestContext & { url: string; branch: string }): Promise<ProjectGitOperation> {
+    if (!request.actorId || !request.idempotencyKey) throw validation();
+    await input.requireCreate(request.actorId); await input.recoveryReady;
+    const url = validateRemote(request.url); const branch = await validateBranch(request.branch);
+    const digest = requestHash({ kind: 'open', url, branch });
+    const prior = existing(null, 'open', request, digest); if (prior) return store.getOperation(prior.id)!;
+    return store.enqueueOperation({ projectId: null, actorId: request.actorId, kind: 'open', idempotencyKey: request.idempotencyKey,
+      requestDigest: digest, payload: { url, branch, reservedProjectId: input.newId(), cloneId: input.newId(),
+        plainRepositoryProjectId: input.newId(), createdAt: input.now() } });
+  }
   const service = {
     /** Constructor/bootstrap port only; never a public action or serialized capability. */
     prepareRegistrationCompletion: registration.prepareRegistrationCompletion,
     async previewEnable(id: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
-      await authorizeRequest(id, request); const digest = requestHash({ kind: 'enable_preview', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
-      const prior = existing(id, 'enable_preview', request, digest); if (prior) return store.getOperation(prior.id)!;
-      store.assertRevision(id, request.expectedProjectRevision); const project = await resolveAuthorized(id);
-      if (store.getBinding(id)) throw new GitDomainError('CONFLICT', 409, 'The project already has versioning enabled.');
+      const admitted = await admitPreviewEnable(id, request); if (admitted.status !== 'queued') return admitted;
+      const digest = requestHash({ kind: 'enable_preview', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
+      const project = await resolveAuthorized(id);
       return project.gate.exclusive(async () => {
-        const current = existing(id, 'enable_preview', request, digest); if (current) return store.getOperation(current.id)!;
+        const current = existing(id, 'enable_preview', request, digest);
+        if (!current || current.id !== admitted.id) throw stateChanged();
+        if (current.status !== 'queued') return store.getOperation(current.id)!;
         const captured = await capture(id, project);
         captured.availabilityDependencies = await availability(id, request.actorId, parsePortableEntries(unpack(captured)));
         const payload = await evidence(captured);
         const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable_preview', idempotencyKey: request.idempotencyKey,
           requestDigest: digest, basis: captured.basis, payload });
+        store.replaceAdmittedOperationPayload(op.id, payload);
         const preview: ProjectGitPreview = { id: op.id, kind: 'enable', basis: captured.basis, targetOid: null, expiresAt: input.now() + 15 * 60_000,
           changes: captured.changes, dependencies: [...captured.dependencies, ...captured.availabilityDependencies] };
         store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: { preview }, error: null }); return store.getOperation(op.id)!;
       }).catch(error => {
         if (!(error instanceof GitDomainError) || error.code !== 'GIT_UNAVAILABLE') throw error;
-        const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable_preview', idempotencyKey: request.idempotencyKey,
-          requestDigest: digest, basis: basis(id), payload: { blockedDependency: 'git' } });
+        const op = store.getOperation(admitted.id)!;
+        store.replaceAdmittedOperationPayload(op.id, { blockedDependency: 'git' });
         const preview: ProjectGitPreview = { id: op.id, kind: 'enable', basis: op.basis, targetOid: null, expiresAt: input.now() + 15 * 60_000,
           changes: emptyChanges(), dependencies: [{ kind: 'git', label: error.message, requiredForContent: false, nextStep: null }] };
         store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', result: { preview }, error: null });
@@ -379,9 +462,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       });
     },
     async enable(id: string, previewId: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
-      await authorizeRequest(id, request); const digest = requestHash({ kind: 'enable', id, previewId, expectedProjectRevision: request.expectedProjectRevision ?? null });
-      let prior = existing(id, 'enable', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
-      if (!prior) store.assertRevision(id, request.expectedProjectRevision);
+      const admitted = await admitEnable(id, previewId, request);
+      const digest = requestHash({ kind: 'enable', id, previewId, expectedProjectRevision: request.expectedProjectRevision ?? null });
+      let prior: ProjectGitJournalRecord | null = store.getJournal(admitted.id)!; if (prior.status === 'succeeded') return store.getOperation(prior.id)!;
       const project = await resolveAuthorized(id);
       return input.scheduler.withNetworkPaused(id, async () => {
         prior = existing(id, 'enable', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
@@ -410,7 +493,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           if (!sameCapture(current, captured) || captured.dependencies.length || captured.changes.privatePaths.length) throw stateChanged();
           const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable', basis: preview.basis,
             idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: { previewId, previewContentDigest: captured.digest } });
-          consumer = store.getJournal(op.id)!; store.consumePreview(previewId, consumer.id);
+          store.replaceAdmittedOperationPayload(op.id, { previewId, previewContentDigest: captured.digest });
+          consumer = store.getJournal(op.id)!;
           if (captured.git === null) {
             const info = await lstat(project.root);
             store.freezeEnableInitialization(consumer.id, { projectId: id, canonicalRoot: project.root, dev: String(info.dev), ino: String(info.ino),
@@ -439,13 +523,15 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       });
     },
     async previewBinding(id: string, rawUrl: string, rawBranch: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
-      await authorizeRequest(id, request); const url = validateRemote(rawUrl); const branch = await validateBranch(rawBranch);
+      const admitted = await admitPreviewBinding(id, rawUrl, rawBranch, request);
+      if (admitted.status !== 'queued') return admitted;
+      const url = validateRemote(rawUrl); const branch = await validateBranch(rawBranch);
       const digest = requestHash({ kind: 'binding_preview', id, url, branch, expectedProjectRevision: request.expectedProjectRevision ?? null });
-      const prior = existing(id, 'binding_preview', request, digest); if (prior) return store.getOperation(prior.id)!;
-      store.assertRevision(id, request.expectedProjectRevision); const project = await resolveAuthorized(id);
-      const b = store.getBinding(id); if (!b || (b.remoteUrl !== null && b.autoSync)) throw new GitDomainError('CONFLICT', 409, 'Pause automatic synchronization before rebinding.');
+      const project = await resolveAuthorized(id);
       return input.scheduler.withNetworkPaused(id, async () => {
-        const winner = existing(id, 'binding_preview', request, digest); if (winner) return store.getOperation(winner.id)!;
+        const winner = existing(id, 'binding_preview', request, digest);
+        if (!winner || winner.id !== admitted.id) throw stateChanged();
+        if (winner.status !== 'queued') return store.getOperation(winner.id)!;
         store.assertRevision(id, request.expectedProjectRevision);
         await input.checkpointCurrent(id);
         const remoteHead = await targetHead(project.root, url, branch);
@@ -494,6 +580,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           const payload = await evidence(captured);
           const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'binding_preview', basis: captured.basis,
             idempotencyKey: request.idempotencyKey, requestDigest: digest, payload });
+          store.replaceAdmittedOperationPayload(op.id, payload, captured.basis);
           store.updateOperation(op.id, { status: 'succeeded', phase: 'local_saved', error: null, result: { preview: {
             id: op.id, kind: 'bind', basis: captured.basis, targetOid: remoteHead, expiresAt: input.now() + 15 * 60_000,
             changes, dependencies: [...captured.dependencies, ...captured.availabilityDependencies], binding: preview } } });
@@ -502,10 +589,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       });
     },
     async bind(id: string, previewId: string, request: BindingRequestContext & { confirmation?: ProjectGitBindConfirmation }): Promise<ProjectGitOperation> {
-      await authorizeRequest(id, request);
+      const admitted = await admitBind(id, previewId, request);
       const digest = requestHash({ kind: 'bind', id, previewId, confirmation: request.confirmation ?? {}, expectedProjectRevision: request.expectedProjectRevision ?? null });
-      let prior = existing(id, 'bind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
-      if (!prior) store.assertRevision(id, request.expectedProjectRevision);
+      let prior: ProjectGitJournalRecord | null = store.getJournal(admitted.id)!; if (prior.status === 'succeeded') return store.getOperation(prior.id)!;
       const project = await resolveAuthorized(id);
       return input.scheduler.withNetworkPaused(id, async () => {
         prior = existing(id, 'bind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
@@ -525,7 +611,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           if (!sameCapture(await capture(id, project, captured), captured)) throw stateChanged();
           const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'bind', basis: preview.basis,
             idempotencyKey: request.idempotencyKey, requestDigest: digest, payload: { previewId, confirmation: jsonValue(request.confirmation ?? {}), previewContentDigest: captured.digest } });
-          user = store.getJournal(op.id)!; store.consumePreview(previewId, user.id);
+          store.replaceAdmittedOperationPayload(op.id, { previewId, confirmation: jsonValue(request.confirmation ?? {}), previewContentDigest: captured.digest });
+          user = store.getJournal(op.id)!;
           await prepareIntent(id, user, captured, candidate ? 'materialization' : 'binding_only', target.url, target.branch,
             candidate?.candidateOid, undefined, candidate?.publicationMode);
         });
@@ -533,9 +620,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       });
     },
     async unbind(id: string, request: BindingRequestContext): Promise<ProjectGitOperation> {
-      await authorizeRequest(id, request); const digest = requestHash({ kind: 'unbind', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
-      let prior = existing(id, 'unbind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
-      if (!prior) store.assertRevision(id, request.expectedProjectRevision);
+      const admitted = await admitUnbind(id, request);
+      const digest = requestHash({ kind: 'unbind', id, expectedProjectRevision: request.expectedProjectRevision ?? null });
+      let prior: ProjectGitJournalRecord | null = store.getJournal(admitted.id)!; if (prior.status === 'succeeded') return store.getOperation(prior.id)!;
       const project = await resolveAuthorized(id);
       return input.scheduler.withNetworkPaused(id, async () => {
         prior = existing(id, 'unbind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
@@ -543,31 +630,28 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         let captured: BindingCapture; let user: ProjectGitJournalRecord;
         await project.gate.exclusive(async () => {
           if (!prior) store.assertRevision(id, request.expectedProjectRevision);
-          captured = prior ? await readEvidence(prior) : await capture(id, project);
-          if (prior && !sameCapture(await capture(id, project, captured), captured)) throw stateChanged();
-          const payload = prior?.payload ?? await evidence(captured);
+          const frozen = prior && typeof (prior.payload as { evidencePath?: unknown }).evidencePath === 'string' ? prior : null;
+          captured = frozen ? await readEvidence(frozen) : await capture(id, project);
+          if (prior && (!(prior.basis.bindingGeneration === captured.basis.bindingGeneration
+            && prior.basis.projectRevision === captured.basis.projectRevision
+            && prior.basis.contentRevision === captured.basis.contentRevision
+            && prior.basis.localHead === captured.basis.localHead)
+            || frozen && !sameCapture(await capture(id, project, captured), captured))) throw stateChanged();
+          const payload = frozen ? frozen.payload : await evidence(captured);
           const b = store.getBinding(id); if (!b) throw stateChanged();
           const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'unbind', basis: captured.basis,
             idempotencyKey: request.idempotencyKey, requestDigest: digest, payload });
+          store.replaceAdmittedOperationPayload(op.id, payload, captured.basis);
           user = store.getJournal(op.id)!; await prepareIntent(id, user, captured, 'binding_only', null, b.branch);
         });
         return completeBindingOnly(id, user!, captured!);
       });
     },
     async openRepository(request: BindingRequestContext & { url: string; branch: string }): Promise<ProjectGitOperation> {
-      if (!request.actorId || !request.idempotencyKey) throw validation();
-      await input.requireCreate(request.actorId); await input.recoveryReady;
+      let user = store.getJournal((await admitOpenRepository(request)).id)!;
       const url = validateRemote(request.url); const branch = await validateBranch(request.branch);
-      const digest = requestHash({ kind: 'open', url, branch });
-      let user = existing(null, 'open', request, digest);
       if (user?.status === 'succeeded') return store.getOperation(user.id)!;
       await roots();
-      if (!user) {
-        const queued = store.enqueueOperation({ projectId: null, actorId: request.actorId, kind: 'open', idempotencyKey: request.idempotencyKey,
-          requestDigest: digest, payload: { url, branch, reservedProjectId: input.newId(), cloneId: input.newId(),
-            plainRepositoryProjectId: input.newId(), createdAt: input.now() } });
-        user = store.getJournal(queued.id)!;
-      }
       const immutable = user.payload as { reservedProjectId: string; cloneId: string; plainRepositoryProjectId: string; createdAt: number };
       const id = immutable.reservedProjectId;
       if (![id, immutable.cloneId, immutable.plainRepositoryProjectId].every(value => typeof value === 'string' && /^[a-zA-Z0-9-]+$/u.test(value))
@@ -726,6 +810,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     try { return await promise; } finally { if (inFlight.get(key)?.promise === promise) inFlight.delete(key); }
   }
   return { ...service,
+    admitPreviewEnable, admitEnable, admitPreviewBinding, admitBind, admitUnbind, admitOpenRepository,
     previewEnable: (id: string, request: BindingRequestContext) => share(id, 'enable_preview', request,
       { expectedProjectRevision: request.expectedProjectRevision ?? null }, () => service.previewEnable(id, request)),
     enable: (id: string, previewId: string, request: BindingRequestContext) => share(id, 'enable', request,

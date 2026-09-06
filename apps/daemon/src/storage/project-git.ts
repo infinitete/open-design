@@ -248,6 +248,9 @@ export interface ProjectGitStore {
   getLatestProjectOperation(projectId: string): ProjectGitOperation | null;
   /** Freezes a private conflict artifact reference without exposing it through the public operation DTO. */
   freezeConflictEvidence(operationId: string, basis: ProjectGitBasis, evidence: { path: string; digest: string }): void;
+  markRetainedConflictStale(operationId: string): void;
+  supersedeRetainedConflict(staleOperationId: string, replacementOperationId: string,
+    replacement: Pick<ProjectGitOperationUpdate, 'result' | 'error'>): void;
   findOperation(input: Pick<ProjectGitOperationInput, 'actorId' | 'projectId' | 'kind' | 'idempotencyKey'>): ProjectGitJournalRecord | null;
   findOperationRequest(input: { actorId: string; projectId: string | null; action: 'retry'; idempotencyKey: string }):
     { operationId: string; requestDigest: string } | null;
@@ -256,6 +259,10 @@ export interface ProjectGitStore {
   getJournal(id: string): ProjectGitJournalRecord | null;
   /** Associate a reserved import ID before prepared; does not create or expose an application project row. */
   attachOperationProject(id: string, projectId: string, basis: ProjectGitBasis): void;
+  /** Replaces admission-only request payload before any recovery phase or terminal settlement exists. */
+  replaceAdmittedOperationPayload(id: string, payload: JsonValue, basis?: ProjectGitBasis): void;
+  /** Closes a worker that failed before it established an owned recovery/registration intent. */
+  settleAdmittedOperationFailure(id: string, error: ApiError): void;
   updateOperation(id: string, update: ProjectGitOperationUpdate): void;
   listPendingOperations(): ProjectGitJournalRecord[];
   /** Writes intent BEFORE the effect; completePhase separately records verified completion. */
@@ -872,6 +879,30 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       db.prepare('UPDATE project_git_operations SET basis_json = ?, payload_json = ?, updated_at = ? WHERE id = ?')
         .run(json(basis), canonicalPayloadJson(next), Date.now(), id);
     }),
+    markRetainedConflictStale: id => transaction(() => {
+      const op = getJournal(id);
+      if (!op || op.kind !== 'sync' || op.status !== 'waiting' || op.phase !== 'conflict' || op.journalPhase !== null
+        || op.payload === null || typeof op.payload !== 'object' || Array.isArray(op.payload)
+        || op.payload.lane !== 'network') throw conflict();
+      db.prepare('UPDATE project_git_operations SET payload_json = ?, updated_at = ? WHERE id = ?')
+        .run(canonicalPayloadJson({ ...op.payload, stale: true }), Date.now(), id);
+    }),
+    supersedeRetainedConflict: (staleId, replacementId, replacement) => transaction(() => {
+      const stale = getJournal(staleId); const next = getJournal(replacementId);
+      if (!stale || !next || stale.id === next.id || stale.kind !== 'sync' || next.kind !== 'sync'
+        || stale.projectId === null || stale.projectId !== next.projectId || stale.status !== 'waiting' || stale.phase !== 'conflict'
+        || stale.journalPhase !== null || next.status !== 'running' || next.journalPhase !== null
+        || next.payload === null || typeof next.payload !== 'object' || Array.isArray(next.payload)
+        || next.payload.lane !== 'network' || next.payload.conflictEvidence === undefined
+        || (isDeepStrictEqual(stale.basis, next.basis)
+          && !(stale.payload !== null && typeof stale.payload === 'object' && !Array.isArray(stale.payload) && stale.payload.stale === true))) throw conflict();
+      requireBasis(stale.projectId, next.basis);
+      const now = Date.now();
+      db.prepare("UPDATE project_git_operations SET status = 'succeeded', phase = 'local_saved', error_json = NULL, updated_at = ? WHERE id = ?")
+        .run(now, staleId);
+      db.prepare("UPDATE project_git_operations SET status = 'waiting', phase = 'conflict', result_json = ?, error_json = ?, updated_at = ? WHERE id = ?")
+        .run(replacement.result === null ? null : json(replacement.result), replacement.error === null ? null : json(replacement.error), now, replacementId);
+    }),
     findOperation: input => {
       const row = db.prepare('SELECT * FROM project_git_operations WHERE actor_id = ? AND scope = ? AND kind = ? AND idempotency_key = ?')
         .get(input.actorId, input.projectId === null ? 'import' : `project:${input.projectId}`, input.kind, input.idempotencyKey) as OperationRow | undefined;
@@ -886,6 +917,12 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     },
     claimOperationRequest: input => transaction(() => {
       const scope = input.projectId === null ? 'import' : `project:${input.projectId}`;
+      const owner = db.prepare(`SELECT actor_id AS actorId, scope, action, idempotency_key AS idempotencyKey,
+        request_digest AS requestDigest, operation_id AS operationId
+        FROM project_git_operation_requests WHERE operation_id = ?`).get(input.operationId) as
+        { actorId: string; scope: string; action: string; idempotencyKey: string; requestDigest: string; operationId: string } | undefined;
+      if (owner && (owner.actorId !== input.actorId || owner.scope !== scope || owner.action !== input.action
+        || owner.idempotencyKey !== input.idempotencyKey || owner.requestDigest !== input.requestDigest)) throw conflict();
       const inserted = db.prepare(`INSERT INTO project_git_operation_requests
         (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(actor_id, scope, action, idempotency_key) DO NOTHING`)
@@ -906,6 +943,36 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       requireBasis(projectId, basis);
       db.prepare('UPDATE project_git_operations SET project_id = ?, basis_json = ?, updated_at = ? WHERE id = ?')
         .run(projectId, json(basis), Date.now(), id);
+    }),
+    replaceAdmittedOperationPayload: (id, payload, nextBasis) => transaction(() => {
+      const op = getJournal(id);
+      if (op && op.journalPhase === null && op.recoveryData === null && isDeepStrictEqual(op.payload, payload)
+        && (!nextBasis || isDeepStrictEqual(op.basis, nextBasis))) return;
+      const admission = op?.payload && typeof op.payload === 'object' && !Array.isArray(op.payload)
+        ? op.payload as Record<string, JsonValue> : null;
+      const refinable = !!op && !!admission && (
+        (op.kind === 'enable_preview' && Object.keys(admission).length === 0)
+        || (op.kind === 'enable' && typeof admission.previewId === 'string' && !('previewContentDigest' in admission))
+        || (op.kind === 'binding_preview' && typeof admission.url === 'string' && typeof admission.branch === 'string'
+          && !('evidencePath' in admission))
+        || (op.kind === 'bind' && typeof admission.previewId === 'string' && 'confirmation' in admission
+          && !('previewContentDigest' in admission))
+        || (op.kind === 'unbind' && Object.keys(admission).length === 0)
+        || (op.kind === 'restore_preview' && typeof admission.targetOid === 'string' && 'file' in admission && !('captured' in admission))
+        || (op.kind === 'sync' && admission.lane === 'network')
+      );
+      if (!op || !['queued', 'running'].includes(op.status) || op.phase !== 'waiting_idle' || op.journalPhase !== null
+        || op.recoveryData !== null || op.result !== null || op.error !== null || !refinable) throw conflict();
+      if (nextBasis && op.projectId !== null) requireBasis(op.projectId, nextBasis);
+      db.prepare('UPDATE project_git_operations SET basis_json = ?, payload_json = ?, updated_at = ? WHERE id = ?')
+        .run(json(nextBasis ?? op.basis), json(payload), Date.now(), id);
+    }),
+    settleAdmittedOperationFailure: (id, error) => transaction(() => {
+      const op = getJournal(id);
+      if (!op || !['queued', 'running'].includes(op.status) || op.journalPhase !== null || op.recoveryData !== null
+        || getRegistration(id)?.state === 'pending') return;
+      db.prepare("UPDATE project_git_operations SET status = 'failed', phase = 'failed', error_json = ?, updated_at = ? WHERE id = ?")
+        .run(json(error), Date.now(), id);
     }),
     updateOperation: (id, update) => transaction(() => {
       const op = getJournal(id); if (!op) throw conflict();

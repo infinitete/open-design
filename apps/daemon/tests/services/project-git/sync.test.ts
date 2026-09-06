@@ -276,6 +276,47 @@ it.each(['file', 'head', 'content', 'project', 'generation', 'remote'] as const)
   },
 );
 
+it('recomputes a retained conflict after a permitted local checkpoint and resolves the new two-parent proposal', async () => {
+  const f = await fixture(true); const retained = await retainedMessageConflict(f);
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('recomputed local message', 'b-message');
+  await f.deps.checkpoint('b');
+
+  await expect(f.sync('b')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'merge_conflict' } });
+  const pending = f.store.listPendingOperations().filter(operation => operation.projectId === 'b' && operation.phase === 'conflict');
+  expect(pending).toHaveLength(1); expect(pending[0]!.id).not.toBe(retained.operation.id);
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'succeeded', error: null });
+  const evidence = await readProjectGitConflictEvidence(f.operationRoot, pending[0]!);
+  const messageConflict = evidence.conflicts.find(item => item.kind === 'message')!;
+  const resolved = await f.deps.resolveConflict({
+    projectId: 'b', conflictOperationId: pending[0]!.id, actorId: 'local-daemon', idempotencyKey: 'resolve-recomputed',
+    requestDigest: '5'.repeat(64), basis: pending[0]!.basis,
+    resolutions: [{ conflictId: messageConflict.id, kind: 'select', selectedSide: 'local' }],
+  });
+  expect(resolved).toMatchObject({ status: 'succeeded', kind: 'resolve' });
+  const head = await f.git(f.b, 'rev-parse', 'HEAD');
+  expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', head)).toBe(`${head} ${evidence.local} ${evidence.remote}`);
+});
+
+it('requires a fresh empty confirmation when a stale conflict recomputes to a clean merge', async () => {
+  const f = await fixture(true); const retained = await retainedMessageConflict(f);
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'b-message');
+  await f.deps.checkpoint('b'); const checkpoint = await f.git(f.b, 'rev-parse', 'HEAD');
+
+  await expect(f.sync('b')).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'merge_conflict' } });
+  const pending = f.store.listPendingOperations().filter(operation => operation.projectId === 'b' && operation.phase === 'conflict');
+  expect(pending).toHaveLength(1); expect(pending[0]!.id).not.toBe(retained.operation.id);
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(checkpoint);
+  const evidence = await readProjectGitConflictEvidence(f.operationRoot, pending[0]!);
+  expect(evidence.conflicts).toEqual([]);
+
+  const resolved = await f.deps.resolveConflict({ projectId: 'b', conflictOperationId: pending[0]!.id,
+    actorId: 'local-daemon', idempotencyKey: 'confirm-clean-recompute', requestDigest: '6'.repeat(64),
+    basis: pending[0]!.basis, resolutions: [] });
+  expect(resolved).toMatchObject({ status: 'succeeded', kind: 'resolve' });
+  const head = await f.git(f.b, 'rev-parse', 'HEAD');
+  expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', head)).toBe(`${head} ${evidence.local} ${evidence.remote}`);
+});
+
 it('replays an interrupted resolve and atomically closes both durable operations after reopen', async () => {
   const f = await fixture(true); const retained = await retainedMessageConflict(f); f.interruptAfterPrepared();
   await expect(f.deps.resolveConflict({
@@ -313,6 +354,17 @@ it('terminalizes a resolve operation when candidate creation fails before recove
   expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
   expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(head);
   expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
+
+  expect((await f.deps.resolveConflict({
+    projectId: 'b', conflictOperationId: retained.operation.id, actorId: 'project-git-background',
+    idempotencyKey: 'resolve-candidate-failure', requestDigest: '4'.repeat(64), basis: retained.operation.basis,
+    resolutions: [retained.resolution],
+  })).id).toBe(resolve.id);
+  delete (f.gitEnv as Record<string, string>).GIT_AUTHOR_DATE;
+  f.reopen(); await f.deps.recoveryReady;
+  const retried = await f.deps.retryConflictResolution(resolve.id);
+  expect(retried).toMatchObject({ id: resolve.id, status: 'succeeded', kind: 'resolve' });
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'succeeded', error: null });
 });
 
 it('persists the approved backoff schedule with final jitter capped at five minutes', () => {

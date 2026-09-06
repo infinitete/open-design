@@ -102,11 +102,13 @@ it('Git single-file restores same bytes with historical executable mode and repo
   expect((await stat(join(f.a, 'tool.sh'))).mode & 0o111).toBe(0o111);
 });
 
-it('atomically rolls back preview enqueue when successful result persistence fails', async () => {
+it('retains durable preview admission when successful result persistence fails', async () => {
   const f = await fixture(); const ctx = request();
   const update = vi.spyOn(f.store, 'updateOperation').mockImplementationOnce(() => { throw new Error('result persistence failure'); });
   await expect(f.service.previewRestore('project', f.head, ctx)).rejects.toThrow('result persistence failure'); update.mockRestore();
-  expect(f.store.findOperation({ projectId: 'project', kind: 'restore_preview', ...ctx })).toBeNull();
+  expect(f.store.findOperation({ projectId: 'project', kind: 'restore_preview', ...ctx })).toMatchObject({
+    status: 'queued', phase: 'waiting_idle', payload: { targetOid: f.head, file: null },
+  });
 });
 
 it.each(['result', 'payload', 'capture'])('quarantines malformed persisted restore preview %s with a domain error', async field => {
@@ -262,7 +264,7 @@ it('restores ordinary files and portable attachments above the inline limit', as
   const artifacts = await readdir(f.input.operationDir); const journals = f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get();
   await expect(service.previewRestore('project', oid, { ...request(), expectedProjectRevision: f.store.getBinding('project')!.projectRevision })).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
   expect(await readdir(f.input.operationDir)).toEqual(artifacts);
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get()).toEqual(journals);
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM project_git_operations').get()).toEqual({ count: (journals as { count: number }).count + 1 });
   expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(oversizedHead);
   await writeFile(join(f.a, 'over-cap.bin'), 'ordinary within limit'); await writeFile(join(f.a, resourcePath), Buffer.alloc(200 * 1024 * 1024 + 1));
   await f.git(f.a, 'add', 'over-cap.bin', resourcePath); await f.git(f.a, 'commit', '-m', 'external oversized resource');
@@ -367,11 +369,12 @@ it('freezes the native archive identity through confirmation and restart before 
   const f = await fixture(); let nativeLegacyRoot = f.a;
   const input = { ...f.serviceInput, resolveProject: () => ({ ...f.serviceInput.resolveProject(), nativeLegacyRoot }) };
   const service = createProjectGitRestoreService(input); const preview = await service.previewRestore('project', f.head, request());
+  const restoreRequest = request();
   nativeLegacyRoot = f.b;
-  await expect(service.restoreProject('project', preview.id, request())).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+  await expect(service.restoreProject('project', preview.id, restoreRequest)).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
   nativeLegacyRoot = f.a;
   const crashing = createProjectGitRestoreService({ ...input, afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('stop prepared'); } });
-  await expect(crashing.restoreProject('project', preview.id, request())).rejects.toThrow('stop prepared');
+  await expect(crashing.restoreProject('project', preview.id, restoreRequest)).rejects.toThrow('stop prepared');
   f.db.close(); const reopened = await openCrashFixture(f.root); let exports = 0;
   try {
     const wrong = { ...reopened.recoveryInput, resolveProject: () => ({ ...reopened.recoveryInput.resolveProject(), nativeLegacyRoot: f.b,

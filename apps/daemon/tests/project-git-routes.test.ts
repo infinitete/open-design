@@ -243,10 +243,15 @@ describe('project Git routes', () => {
         method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({ mode: 'preview' }),
       });
       expect(response.status, await response.clone().text()).toBe(202);
-      while (!text.includes('event: project-git-operation') || !text.includes('event: project-git-state')) {
+      const admitted = await response.json() as ProjectGitAccepted;
+      const terminal = await waitForOperation(admitted.operationId);
+      while (!text.includes('event: project-git-operation') || !text.includes('event: project-git-state')
+        || !text.includes(`\"id\":\"${admitted.operationId}\"`) || !text.includes('\"status\":\"succeeded\"')) {
         const next = await reader.read(); if (next.done) break; text += decoder.decode(next.value, { stream: true });
       }
       expect(text).toContain('event: project-git-operation'); expect(text).toContain('event: project-git-state');
+      expect(text).toContain(`\"id\":\"${admitted.operationId}\"`); expect(text).toContain('\"status\":\"succeeded\"');
+      expect(await fetch(`${baseUrl}/api/project-git-operations/${admitted.operationId}`).then(result => result.json())).toEqual(terminal);
       expect(await fetch(`${baseUrl}/api/projects/${projectId}/git`).then(result => result.json())).toMatchObject({ enabled: false, phase: 'enable_pending' });
     } finally { controller.abort(); await reader.cancel().catch(() => {}); }
   });
@@ -401,6 +406,23 @@ describe('project Git route registrar matrix', () => {
       const response = await request(path); expect(response.status, path).toBe(200);
       expect(target).toHaveBeenCalledWith(...args);
     }
+  });
+
+  it('returns a centrally settled operation unchanged through the polling endpoint', async () => {
+    const response = await request('/api/project-git-operations/op');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(operation('op', 'project'));
+  });
+
+  it('maps a losing different-key retry claim to a redacted domain conflict', async () => {
+    vi.mocked(service.execute).mockRejectedValueOnce(new GitDomainError('CONFLICT', 409, 'The operation already belongs to another retry request.'));
+    const response = await request('/api/project-git-operations/op/retry', {
+      method: 'POST', body: JSON.stringify({ operationId: 'op', expectedProjectRevision: 7 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: {
+      code: 'CONFLICT', message: 'The operation already belongs to another retry request.',
+    } });
   });
 
   it('returns safe errors for invalid input on every route', async () => {
