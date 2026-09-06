@@ -30,7 +30,7 @@ it('drains the admitted network operation and rejects new requests while local d
     });
     expect(scheduler.requestSync('project', true)).toBe(false);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(events).toEqual(['issued']); expect(probes).toBe(2);
+    expect(events).toEqual(['issued']); expect(probes).toBe(1);
     expect(store.getBinding('project')!.generation).toBe(1);
     release(); expect(await hold).toBe('complete'); await vi.advanceTimersByTimeAsync(0);
     expect(events).toEqual(['issued', 'settled', 'transition']);
@@ -96,19 +96,25 @@ it('detects managed projects without page subscriptions, deduplicates start, and
   try {
     scheduler.start(); scheduler.start(); await vi.advanceTimersByTimeAsync(0);
     expect(detections).toBe(1);
-    await vi.advanceTimersByTimeAsync(1000); expect(detections).toBe(2); expect(networks).toBe(0);
+    await vi.advanceTimersByTimeAsync(1000); expect(detections).toBe(1); expect(networks).toBe(0);
+    await vi.advanceTimersByTimeAsync(4_000); expect(detections).toBe(2); expect(networks).toBe(0);
+    await vi.advanceTimersByTimeAsync(55_000); expect(detections).toBe(3); expect(networks).toBe(0);
     await scheduler.stop(); const stopped = detections;
     await vi.advanceTimersByTimeAsync(120000); expect(detections).toBe(stopped);
   } finally { await scheduler.stop(); db.close(); }
 });
 
-it('probes notifications promptly so the detector alone owns the five-second quiet period', async () => {
+it('coalesces a watcher burst into one prompt probe and one five-second quiet probe', async () => {
   vi.useFakeTimers(); const db = new Database(':memory:'); migrateProjectGit(db); const store = createProjectGitStore(db);
   let probes = 0;
   const scheduler = createProjectGitScheduler({ store, now: Date.now, random: () => 0.5, detect: async () => { probes++; }, sync: async () => {} });
   try {
     scheduler.start(); scheduler.notify('project'); scheduler.notify('project'); await vi.advanceTimersByTimeAsync(0);
     expect(probes).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_999); expect(probes).toBe(1);
+    scheduler.notify('project');
+    await vi.advanceTimersByTimeAsync(4_999); expect(probes).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); expect(probes).toBe(2);
   } finally { await scheduler.stop(); db.close(); }
 });
 

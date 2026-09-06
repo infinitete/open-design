@@ -95,7 +95,7 @@ describe('raw file endpoint CORS', () => {
 });
 
 describe('local daemon mutation revision CORS', () => {
-  it('allows the project revision request header', () => {
+  it('allows project Git PATCH and idempotency headers', () => {
     const headers = new Map<string, string>();
     let nextCalled = false;
     requireLocalDaemonRequest(
@@ -116,6 +116,8 @@ describe('local daemon mutation revision CORS', () => {
     );
 
     expect(nextCalled).toBe(true);
+    expect(headers.get('access-control-allow-methods')).toContain('PATCH');
     expect(headers.get('access-control-allow-headers')).toContain('X-OD-Project-Revision');
+    expect(headers.get('access-control-allow-headers')).toContain('Idempotency-Key');
   });
 });

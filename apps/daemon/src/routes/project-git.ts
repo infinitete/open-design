@@ -203,7 +203,8 @@ export function registerProjectGitRoutes(app: Express, ctx: RegisterProjectGitRo
 
   const authorizeOperation = async (req: Request, res: Response, write: boolean) => {
     const journal = ctx.projectGitStore.getJournal(param(req.params.id));
-    if (!journal || journal.kind === 'checkpoint' || journal.actorId !== ctx.resolveProjectGitActor(req)) {
+    if (!journal || journal.kind === 'checkpoint'
+      || journal.projectId === null && journal.actorId !== ctx.resolveProjectGitActor(req)) {
       ctx.http.sendApiError(res, 404, 'NOT_FOUND', 'Project Git operation not found.');
       return null;
     }

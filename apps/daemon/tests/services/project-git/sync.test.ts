@@ -104,6 +104,15 @@ it('exposes the same constructor recovery readiness promise without starting ano
   expect(await f.deps.checkpoint('a')).toBe(f.store.getBinding('a')!.localHead);
 });
 
+it('reuses one private fetch ref per managed project', async () => {
+  const f = await fixture();
+  await f.deps.fetchTarget('a');
+  await f.deps.fetchTarget('a');
+  await f.deps.fetchTarget('a');
+  const refs = (await f.git(f.a, 'for-each-ref', '--format=%(refname)', 'refs/open-design/fetch/')).split('\n').filter(Boolean);
+  expect(refs).toHaveLength(1);
+});
+
 it('checkpoints and imports on the actual local branch while transporting a different remote target', async () => {
   const f = await fixture();
   for (const id of ['a', 'b']) f.store.saveBinding({ ...f.store.getBinding(id)!, localBranch: 'main', branch: 'release' });
@@ -171,7 +180,7 @@ it('retains a same-message conflict without materializing remote records or chan
   await expect(readProjectGitConflictEvidence(f.operationRoot, conflict!)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
 });
 
-it('resolves a retained message conflict through a distinct two-parent operation and atomically closes the conflict', async () => {
+it('lets the current project writer resolve a background conflict through a distinct two-parent operation and atomically closes it', async () => {
   const f = await fixture(true);
   f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'a-message'); await f.sync('a');
   f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('remote message', 'b-message'); await f.deps.checkpoint('b');
@@ -180,23 +189,62 @@ it('resolves a retained message conflict through a distinct two-parent operation
   const evidence = await readProjectGitConflictEvidence(f.operationRoot, conflict);
   const messageConflict = evidence.conflicts.find(item => item.kind === 'message')!;
 
-  const resolved = await (f.deps.resolveConflict as (input: unknown) => Promise<import('@open-design/contracts').ProjectGitOperation>)({
+  const resolution = {
     projectId: 'b',
     conflictOperationId: conflict.id,
-    actorId: 'project-git-background',
+    actorId: 'local-daemon',
     idempotencyKey: 'resolve-message',
     requestDigest: '1'.repeat(64),
     basis: conflict.basis,
     resolutions: [{ conflictId: messageConflict.id, kind: 'select', selectedSide: 'local' }],
-  });
+  } as const;
+  const [resolved, concurrent] = await Promise.all([
+    f.deps.resolveConflict(resolution),
+    f.deps.resolveConflict(resolution),
+  ]);
 
   expect(resolved).toMatchObject({ kind: 'resolve', status: 'succeeded', projectId: 'b', basis: conflict.basis });
+  expect(concurrent.id).toBe(resolved.id);
   expect(resolved.id).not.toBe(conflict.id);
   expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'succeeded', error: null });
   const merged = await f.git(f.b, 'rev-parse', 'HEAD');
   expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', merged)).toBe(`${merged} ${evidence.local} ${evidence.remote}`);
   expect(f.db.prepare('SELECT content FROM messages WHERE id = ?').get('b-message')).toEqual({ content: 'remote message' });
   expect(f.store.listPendingOperations().filter(operation => operation.projectId === 'b' && operation.phase === 'conflict')).toEqual([]);
+
+  const repeated = await f.deps.resolveConflict(resolution);
+  expect(repeated.id).toBe(resolved.id);
+});
+
+it('keeps every one-shot network effect paused behind retained conflict evidence', async () => {
+  const f = await fixture(true);
+  const retained = await retainedMessageConflict(f);
+  const before = {
+    head: await f.git(f.b, 'rev-parse', 'HEAD'),
+    remote: await f.git(f.remote, 'rev-parse', 'refs/heads/main'),
+    network: await readFile(join(f.root, 'network.log'), 'utf8'),
+    pushes: f.store.listDuePushes(Number.MAX_SAFE_INTEGER),
+    evidence: await readFile(join(f.operationRoot,
+      (retained.operation.payload as { conflictEvidence: { path: string } }).conflictEvidence.path)),
+    networkOperations: f.db.prepare("SELECT COUNT(*) AS count FROM project_git_operations WHERE kind = 'sync' AND json_extract(payload_json, '$.lane') = 'network'").get(),
+  };
+
+  await expect(syncProject({
+    projectId: 'b',
+    oneShot: true,
+    deps: f.deps,
+    request: { actorId: 'local-daemon', idempotencyKey: 'manual-after-conflict', requestDigest: '2'.repeat(64) },
+  })).rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'merge_conflict' } });
+
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(before.head);
+  expect(await f.git(f.remote, 'rev-parse', 'refs/heads/main')).toBe(before.remote);
+  expect(await readFile(join(f.root, 'network.log'), 'utf8')).toBe(before.network);
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual(before.pushes);
+  expect(await readFile(join(f.operationRoot,
+    (retained.operation.payload as { conflictEvidence: { path: string } }).conflictEvidence.path))).toEqual(before.evidence);
+  expect(f.store.getJournal(retained.operation.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM project_git_operations WHERE kind = 'sync' AND json_extract(payload_json, '$.lane') = 'network'").get())
+    .toEqual(before.networkOperations);
 });
 
 it.each(['file', 'head', 'content', 'project', 'generation', 'remote'] as const)(
@@ -610,26 +658,28 @@ it('performs clean automatic remote checks without creating no-op checkpoint jou
 it('keeps real scheduler startup and later remote-due ticks behind the same five-second observation clock', async () => {
   const f = await fixture(); f.store.saveBinding({ ...f.store.getBinding('b')!, autoSync: false });
   await writeFile(join(f.a, 'manual.txt'), 'startup manual edit');
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); let probes = 0; let networkPasses = 0;
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] }); let probes = 0; let networkPasses = 0;
   const scheduler = createProjectGitScheduler({ store: f.store, now: f.deps.now, random: () => 0.5,
     detect: async id => { await f.deps.detect(id); if (id === 'a') probes++; },
     sync: async (projectId, oneShot) => { await syncProject({ projectId, oneShot, deps: f.deps }); networkPasses++; } });
-  const until = async (condition: () => boolean) => {
+  const until = async (condition: () => boolean | Promise<boolean>) => {
     const deadline = Date.now() + 10_000;
-    while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
-    expect(condition()).toBe(true);
+    while (!(await condition()) && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve));
+    expect(await condition()).toBe(true);
   };
-  const tick = async () => { const before = probes; f.advance(1000); await vi.advanceTimersByTimeAsync(1000); await until(() => probes > before); };
+  const advance = async (milliseconds: number) => { f.advance(milliseconds); await vi.advanceTimersByTimeAsync(milliseconds); };
   try {
     scheduler.start(); scheduler.start(); await until(() => probes > 0 && networkPasses > 0);
     expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
-    for (let i = 0; i < 4; i++) await tick(); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
-    await tick(); const saved = await f.git(f.a, 'rev-parse', 'HEAD'); expect(saved).not.toBe(f.head);
-    await tick(); await until(() => networkPasses >= 2);
-    await writeFile(join(f.a, 'manual.txt'), 'later manual edit'); f.advance(60000); await tick();
+    await advance(4_999); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(f.head);
+    await advance(1); await until(async () => (await f.git(f.a, 'rev-parse', 'HEAD')) !== f.head);
+    const saved = await f.git(f.a, 'rev-parse', 'HEAD');
+    await advance(55_000); await until(() => networkPasses >= 2);
+    await writeFile(join(f.a, 'manual.txt'), 'later manual edit'); const beforeWatcher = probes; scheduler.notify('a');
+    await until(() => probes > beforeWatcher);
     expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(saved);
-    for (let i = 0; i < 5; i++) await tick();
-    expect(await f.git(f.a, 'rev-parse', 'HEAD')).not.toBe(saved);
+    await advance(4_999); expect(await f.git(f.a, 'rev-parse', 'HEAD')).toBe(saved);
+    await advance(1); await until(async () => (await f.git(f.a, 'rev-parse', 'HEAD')) !== saved);
   } finally { await scheduler.stop(); vi.useRealTimers(); }
 });
 

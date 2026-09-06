@@ -21,18 +21,40 @@ export function createProjectGitScheduler(input: {
   let running = false;
   let stopped = false;
   const detection = new Map<string, Promise<void>>();
+  const detectionPending = new Set<string>();
   const network = new Map<string, Promise<void>>();
   const oneShots = new Set<string>();
   const remoteDue = new Map<string, number>();
+  const auditDue = new Map<string, number>();
+  const quietTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const watcherBursts = new Set<string>();
   const pending = new Map<string, boolean>();
   const holds = new Map<string, number>();
   const transitions = new Map<string, Promise<void>>();
   const transitionContext = new AsyncLocalStorage<boolean>();
   const remoteDelay = () => Math.round(60_000 * (0.8 + input.random() * 0.4));
   function detect(id: string): void {
-    if (!running || detection.has(id)) return;
-    const work = Promise.resolve().then(() => input.detect(id)).catch(() => {}).finally(() => { detection.delete(id); });
+    if (!running) return;
+    if (detection.has(id)) { detectionPending.add(id); return; }
+    const work = Promise.resolve().then(() => input.detect(id)).catch(() => {}).finally(() => {
+      detection.delete(id);
+      if (detectionPending.delete(id)) detect(id);
+    });
     detection.set(id, work);
+  }
+  function scheduleQuietDetection(id: string, prompt: boolean): void {
+    const current = quietTimers.get(id);
+    if (current) clearTimeout(current);
+    if (prompt && !watcherBursts.has(id)) {
+      watcherBursts.add(id);
+      detect(id);
+    }
+    const quiet = setTimeout(() => {
+      quietTimers.delete(id);
+      watcherBursts.delete(id);
+      detect(id);
+    }, 5_000);
+    quiet.unref?.(); quietTimers.set(id, quiet);
   }
   function requestSync(id: string, oneShot: boolean): boolean {
     if (!running || holds.has(id)) return false;
@@ -69,19 +91,29 @@ export function createProjectGitScheduler(input: {
   function tick(): void {
     const due = new Set(input.store.listDuePushes(input.now()).map(push => push.projectId));
     for (const binding of input.store.listBindings()) {
-      detect(binding.projectId);
+      const audit = auditDue.get(binding.projectId);
+      if (audit === undefined || audit <= input.now()) {
+        detect(binding.projectId);
+        scheduleQuietDetection(binding.projectId, false);
+        auditDue.set(binding.projectId, input.now() + 60_000);
+      }
       if (!remoteDue.has(binding.projectId)) remoteDue.set(binding.projectId, input.now());
       if (!network.has(binding.projectId) && (due.has(binding.projectId) || remoteDue.get(binding.projectId)! <= input.now())) requestSync(binding.projectId, false);
     }
   }
   return {
     start() { if (running || stopped) return; running = true; tick(); timer = setInterval(tick, 1_000); timer.unref?.(); },
-    notify: detect,
+    notify(projectId) {
+      if (!running) return;
+      scheduleQuietDetection(projectId, true);
+    },
     requestSync,
     withNetworkPaused,
     async stop() {
       stopped = true; running = false; clearInterval(timer); timer = undefined;
-      pending.clear();
+      pending.clear(); auditDue.clear(); detectionPending.clear();
+      for (const quiet of quietTimers.values()) clearTimeout(quiet);
+      quietTimers.clear(); watcherBursts.clear();
       await Promise.allSettled([...detection.values(), ...network.values(), ...transitions.values()]);
     },
   };

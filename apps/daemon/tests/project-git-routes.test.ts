@@ -47,6 +47,19 @@ describe('project Git routes', () => {
     return id;
   }
 
+  async function waitForOperation(operationId: string): Promise<ProjectGitOperation> {
+    const deadline = Date.now() + 10_000;
+    let operation: ProjectGitOperation | undefined;
+    while (Date.now() < deadline) {
+      const response = await fetch(`${baseUrl}/api/project-git-operations/${operationId}`);
+      expect(response.status, await response.clone().text()).toBe(200);
+      operation = await response.json() as ProjectGitOperation;
+      if (operation.status === 'succeeded' || operation.status === 'failed' || operation.status === 'waiting') return operation;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for project Git operation ${operationId}: ${JSON.stringify(operation)}`);
+  }
+
   async function enableProject(projectId: string) {
     const previewResponse = await fetch(`${baseUrl}/api/projects/${projectId}/git/enable`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
@@ -54,7 +67,7 @@ describe('project Git routes', () => {
     });
     expect(previewResponse.status, await previewResponse.clone().text()).toBe(202);
     const previewAccepted = await previewResponse.json() as ProjectGitAccepted;
-    const preview = await fetch(`${baseUrl}/api/project-git-operations/${previewAccepted.operationId}`).then(response => response.json()) as ProjectGitOperation;
+    const preview = await waitForOperation(previewAccepted.operationId);
     expect(preview.result?.preview?.dependencies, JSON.stringify(preview)).toEqual([]);
     const confirmResponse = await fetch(`${baseUrl}/api/projects/${projectId}/git/enable`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
@@ -62,7 +75,7 @@ describe('project Git routes', () => {
     });
     expect(confirmResponse.status, await confirmResponse.clone().text()).toBe(202);
     const confirmed = await confirmResponse.json() as ProjectGitAccepted;
-    const operation = await fetch(`${baseUrl}/api/project-git-operations/${confirmed.operationId}`).then(response => response.json()) as ProjectGitOperation;
+    const operation = await waitForOperation(confirmed.operationId);
     expect(operation).toMatchObject({ kind: 'enable', status: 'succeeded', projectId });
     return operation;
   }
@@ -105,6 +118,16 @@ describe('project Git routes', () => {
     expect(await response.json()).toMatchObject({ error: { code: 'PROJECT_NOT_FOUND' } });
   });
 
+  it('applies global local-daemon admission before project, operation, or import disclosure', async () => {
+    const denied = { origin: 'https://outside.invalid' };
+    const responses = await Promise.all([
+      fetch(`${baseUrl}/api/projects/missing-${randomUUID()}/git`, { headers: denied }),
+      fetch(`${baseUrl}/api/project-git-operations/${randomUUID()}`, { headers: denied }),
+      fetch(`${baseUrl}/api/import/git`, { method: 'POST', headers: { ...denied, 'content-type': 'application/json' }, body: '{}' }),
+    ]);
+    for (const response of responses) expect(response.status).toBe(403);
+  });
+
   it('requires strict input and an idempotency key before accepting an action', async () => {
     const projectId = await createProject();
     const missingKey = await fetch(`${baseUrl}/api/projects/${projectId}/git/enable`, {
@@ -139,9 +162,7 @@ describe('project Git routes', () => {
     expect(repeated.status).toBe(202);
     expect(await repeated.json()).toEqual(accepted);
 
-    const operationResponse = await fetch(`${baseUrl}/api/project-git-operations/${accepted.operationId}`);
-    expect(operationResponse.status).toBe(200);
-    const operation = await operationResponse.json() as ProjectGitOperation;
+    const operation = await waitForOperation(accepted.operationId);
     expect(operation).toMatchObject({ id: accepted.operationId, kind: 'enable_preview', status: 'succeeded', projectId });
     const reusedForDifferentRequest = await fetch(`${baseUrl}/api/projects/${projectId}/git/enable`, {
       method: 'POST',
@@ -175,13 +196,14 @@ describe('project Git routes', () => {
     });
     expect(restorePreviewResponse.status, await restorePreviewResponse.clone().text()).toBe(202);
     const restorePreview = await restorePreviewResponse.json() as ProjectGitAccepted;
+    expect(await waitForOperation(restorePreview.operationId)).toMatchObject({ kind: 'restore_preview', status: 'succeeded' });
     const restoreResponse = await fetch(`${baseUrl}/api/projects/${projectId}/git/restore`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
       body: JSON.stringify({ previewId: restorePreview.operationId, expectedProjectRevision: state.projectRevision }),
     });
     expect(restoreResponse.status, await restoreResponse.clone().text()).toBe(202);
     const restored = await restoreResponse.json() as ProjectGitAccepted;
-    expect(await fetch(`${baseUrl}/api/project-git-operations/${restored.operationId}`).then(response => response.json())).toMatchObject({ kind: 'restore', status: 'succeeded' });
+    expect(await waitForOperation(restored.operationId)).toMatchObject({ kind: 'restore', status: 'succeeded' });
 
     const afterRestore = await fetch(`${baseUrl}/api/projects/${projectId}/git`).then(response => response.json()) as ProjectGitState;
     const syncResponse = await fetch(`${baseUrl}/api/projects/${projectId}/git/sync`, {
@@ -190,7 +212,7 @@ describe('project Git routes', () => {
     });
     expect(syncResponse.status, await syncResponse.clone().text()).toBe(202);
     const sync = await syncResponse.json() as ProjectGitAccepted;
-    expect(await fetch(`${baseUrl}/api/project-git-operations/${sync.operationId}`).then(response => response.json())).toMatchObject({ id: sync.operationId, kind: 'sync', status: 'succeeded' });
+    expect(await waitForOperation(sync.operationId)).toMatchObject({ id: sync.operationId, kind: 'sync', status: 'succeeded' });
   });
 
   it('strictly rejects repeated history queries, traversal, and contradictory retry IDs', async () => {
@@ -302,6 +324,8 @@ describe('project Git route registrar matrix', () => {
     const journals = new Map([
       ['op', operation('op', 'project')],
       ['other-actor', operation('other-actor', 'project', 'different-actor')],
+      ['background-project', operation('background-project', 'project', 'project-git-background')],
+      ['other-import', operation('other-import', null, 'different-actor')],
     ]);
     const store = { getJournal: (id: string) => journals.get(id) ?? null } as unknown as ProjectGitStore;
     const app = express(); app.use(express.json());
@@ -430,8 +454,27 @@ describe('project Git route registrar matrix', () => {
 
     const operationRead = await request('/api/project-git-operations/other-actor');
     const operationRetry = await request('/api/project-git-operations/other-actor/retry', { method: 'POST', body: '{}' });
-    expect(operationRead.status).toBe(404); expect(operationRetry.status).toBe(404);
+    expect(operationRead.status).toBe(200); expect(operationRetry.status).toBe(202);
     const open = await request('/api/import/git', { method: 'POST', headers: { 'x-deny-local': '1' }, body: '{}' });
     expect(open.status).toBe(403);
+  });
+
+  it('uses current project authority for background operations but keeps imports actor-scoped', async () => {
+    const projectRead = await request('/api/project-git-operations/background-project');
+    expect(projectRead.status, await projectRead.clone().text()).toBe(200);
+
+    vi.mocked(service.execute).mockClear();
+    const projectRetry = await request('/api/project-git-operations/background-project/retry', {
+      method: 'POST',
+      body: JSON.stringify({ operationId: 'background-project', expectedProjectRevision: 7 }),
+    });
+    expect(projectRetry.status, await projectRetry.clone().text()).toBe(202);
+    expect(service.execute).toHaveBeenCalledWith(
+      { kind: 'retry', operationId: 'background-project' },
+      { actorId: 'route-actor', projectId: 'project', idempotencyKey: 'route-key', expectedProjectRevision: 7 },
+    );
+
+    expect((await request('/api/project-git-operations/other-import')).status).toBe(404);
+    expect((await request('/api/project-git-operations/other-import/retry', { method: 'POST', body: '{}' })).status).toBe(404);
   });
 });

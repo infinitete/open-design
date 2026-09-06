@@ -249,6 +249,10 @@ export interface ProjectGitStore {
   /** Freezes a private conflict artifact reference without exposing it through the public operation DTO. */
   freezeConflictEvidence(operationId: string, basis: ProjectGitBasis, evidence: { path: string; digest: string }): void;
   findOperation(input: Pick<ProjectGitOperationInput, 'actorId' | 'projectId' | 'kind' | 'idempotencyKey'>): ProjectGitJournalRecord | null;
+  findOperationRequest(input: { actorId: string; projectId: string | null; action: 'retry'; idempotencyKey: string }):
+    { operationId: string; requestDigest: string } | null;
+  claimOperationRequest(input: { actorId: string; projectId: string | null; action: 'retry'; idempotencyKey: string;
+    requestDigest: string; operationId: string }): { operationId: string; requestDigest: string; created: boolean };
   getJournal(id: string): ProjectGitJournalRecord | null;
   /** Associate a reserved import ID before prepared; does not create or expose an application project row. */
   attachOperationProject(id: string, projectId: string, basis: ProjectGitBasis): void;
@@ -435,6 +439,9 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         if (existing.request_digest !== input.requestDigest || existing.owner_operation_id !== (input.ownerOperationId ?? null)) throw conflict();
         return journalFrom(existing);
       }
+      if (input.kind === 'resolve' && input.payload !== null && typeof input.payload === 'object' && !Array.isArray(input.payload)
+        && typeof input.payload.conflictOperationId === 'string'
+        && db.prepare('SELECT 1 FROM project_git_conflict_resolutions WHERE conflict_operation_id = ?').get(input.payload.conflictOperationId)) throw conflict();
       const binding = input.projectId === null ? null : getBinding(input.projectId);
       if (binding) {
         if (!input.basis) throw changed(); requireBasis(binding.projectId, input.basis);
@@ -452,6 +459,11 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'waiting_idle', ?, ?, ?)`)
         .run(id, input.actorId, scope, input.kind, input.idempotencyKey, input.requestDigest, input.projectId,
           json(basis), json(input.payload), now, now, input.ownerOperationId ?? null);
+      if (input.kind === 'resolve' && input.payload !== null && typeof input.payload === 'object' && !Array.isArray(input.payload)
+        && typeof input.payload.conflictOperationId === 'string') {
+        db.prepare(`INSERT INTO project_git_conflict_resolutions (conflict_operation_id, resolve_operation_id)
+          VALUES (?, ?)`).run(input.payload.conflictOperationId, id);
+      }
       return getJournal(id)!;
     });
   }
@@ -518,7 +530,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       if (conflictOperationId) {
         conflictOperation = getJournal(conflictOperationId);
         if (!conflictOperation || conflictOperation.kind !== 'sync' || conflictOperation.projectId !== op.projectId
-          || conflictOperation.actorId !== op.actorId || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict'
+          || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict'
           || !sameBasis(conflictOperation.basis, op.basis)) throw recoveryRequired();
       }
       const b = requireBasis(op.projectId, ownedBasis(op)); const head = op.protection?.sealedCandidate?.publishHead ?? op.recoveryData.publishHead;
@@ -865,6 +877,23 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         .get(input.actorId, input.projectId === null ? 'import' : `project:${input.projectId}`, input.kind, input.idempotencyKey) as OperationRow | undefined;
       return row ? journalFrom(row) : null;
     },
+    findOperationRequest: input => {
+      const row = db.prepare(`SELECT operation_id AS operationId, request_digest AS requestDigest
+        FROM project_git_operation_requests WHERE actor_id = ? AND scope = ? AND action = ? AND idempotency_key = ?`)
+        .get(input.actorId, input.projectId === null ? 'import' : `project:${input.projectId}`, input.action, input.idempotencyKey) as
+        { operationId: string; requestDigest: string } | undefined;
+      return row ?? null;
+    },
+    claimOperationRequest: input => transaction(() => {
+      const scope = input.projectId === null ? 'import' : `project:${input.projectId}`;
+      const inserted = db.prepare(`INSERT INTO project_git_operation_requests
+        (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(actor_id, scope, action, idempotency_key) DO NOTHING`)
+        .run(input.actorId, scope, input.action, input.idempotencyKey, input.requestDigest, input.operationId, Date.now());
+      const existing = store.findOperationRequest(input);
+      if (!existing || existing.requestDigest !== input.requestDigest || existing.operationId !== input.operationId) throw conflict();
+      return { ...existing, created: inserted.changes === 1 };
+    }),
     getJournal,
     attachOperationProject: (id, projectId, basis) => transaction(() => {
       const op = getJournal(id);

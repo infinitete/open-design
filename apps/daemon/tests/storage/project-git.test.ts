@@ -157,6 +157,41 @@ describe('project Git durable store', () => {
     expect(store.getJournal(first.id)).toMatchObject({ actorId: 'local', scope: 'import', payload: { branch: 'main' } });
   });
 
+  it('keeps an exact wrapper-free retry receipt across database reopen', () => {
+    let store = createProjectGitStore(db);
+    const operation = store.enqueueOperation(request);
+    expect(store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
+      idempotencyKey: 'retry-request', requestDigest: 'retry-digest', operationId: operation.id })).toEqual({
+      created: true, operationId: operation.id, requestDigest: 'retry-digest',
+    });
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.findOperationRequest({ actorId: 'local', projectId: null, action: 'retry', idempotencyKey: 'retry-request' }))
+      .toEqual({ operationId: operation.id, requestDigest: 'retry-digest' });
+    expect(store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
+      idempotencyKey: 'retry-request', requestDigest: 'retry-digest', operationId: operation.id })).toEqual({
+      created: false, operationId: operation.id, requestDigest: 'retry-digest',
+    });
+    expect(() => store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
+      idempotencyKey: 'different-retry', requestDigest: 'other-digest', operationId: operation.id })).toThrow();
+    expect(store.findOperationRequest({ actorId: 'local', projectId: null, action: 'retry', idempotencyKey: 'different-retry' })).toBeNull();
+    expect(() => store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
+      idempotencyKey: 'retry-request', requestDigest: 'different', operationId: operation.id })).toThrow();
+  });
+
+  it('admits only one resolution operation for a retained conflict', () => {
+    const store = createProjectGitStore(db); const current = store.saveBinding(binding());
+    const conflict = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'retained-conflict', basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+      error: { code: 'CONFLICT', message: 'Resolve this conflict.' } });
+    const first = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'resolve', idempotencyKey: 'resolve-one',
+      basis: basis(current), payload: { conflictOperationId: conflict.id } });
+    expect(store.getJournal(first.id)?.payload).toEqual({ conflictOperationId: conflict.id });
+    expect(() => store.enqueueOperation({ ...request, projectId: 'p1', kind: 'resolve', idempotencyKey: 'resolve-two',
+      basis: basis(current), payload: { conflictOperationId: conflict.id } })).toThrow();
+  });
+
   it('arbitrates simultaneous idempotent writers in separate processes', async () => {
     const moduleUrl = new URL('../../src/storage/project-git.ts', import.meta.url).href;
     const source = `import Database from 'better-sqlite3';

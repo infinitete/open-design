@@ -59,6 +59,26 @@ export function migrateProjectGit(db: Database.Database): void {
       attempts INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS project_git_operation_requests (
+      actor_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      action TEXT NOT NULL CHECK (action IN ('retry')),
+      idempotency_key TEXT NOT NULL,
+      request_digest TEXT NOT NULL,
+      operation_id TEXT NOT NULL REFERENCES project_git_operations(id),
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (actor_id, scope, action, idempotency_key),
+      UNIQUE (operation_id)
+    );
+    CREATE TABLE IF NOT EXISTS project_git_conflict_resolutions (
+      conflict_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
+      resolve_operation_id TEXT NOT NULL UNIQUE REFERENCES project_git_operations(id)
+    );
+    INSERT OR IGNORE INTO project_git_conflict_resolutions (conflict_operation_id, resolve_operation_id)
+      SELECT json_extract(payload_json, '$.conflictOperationId'), id
+      FROM project_git_operations
+      WHERE kind = 'resolve' AND json_type(payload_json, '$.conflictOperationId') = 'text'
+      ORDER BY created_at, id;
     CREATE TABLE IF NOT EXISTS project_git_run_terminals (
       run_id TEXT NOT NULL,
       execution_attempt INTEGER NOT NULL CHECK (execution_attempt >= 0),

@@ -17,7 +17,7 @@ import type {
   ProjectGitRequestContext,
   ProjectGitState,
 } from '@open-design/contracts';
-import type { ProjectGitStore } from '../../storage/project-git.js';
+import type { ProjectGitBindingRecord, ProjectGitStore } from '../../storage/project-git.js';
 import { createProjectGitBindingService } from './binding.js';
 import { GitDomainError } from './errors.js';
 import { getProjectGate, getUnmanagedProjectGate, type ProjectGate } from './gate.js';
@@ -64,6 +64,7 @@ export interface CreateProjectGitServiceInput {
   requireProject?(actorId: string, projectId: string): void | Promise<void>;
   requireCreate?(actorId: string): void | Promise<void>;
   resolveAvailability?(request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }): Promise<boolean>;
+  subscribeProject?(projectId: string, onChange: () => void): { ready: Promise<void>; unsubscribe(): void | Promise<void> };
 }
 
 type RuntimeProject = ProjectGitSyncProject & { readBasis(): import('@open-design/contracts').ProjectGitBasis };
@@ -115,6 +116,8 @@ export async function createProjectGitServiceComposition(
   };
   const projects = new Map<string, RuntimeProject>();
   const resolving = new Map<string, Promise<RuntimeProject>>();
+  const watchers = new Map<string, { unsubscribe(): void | Promise<void> }>();
+  const unavailableRootCodes = new Set(['ENOENT', 'EACCES', 'ENOTDIR', 'ESTALE', 'EIO']);
 
   const basis = (projectId: string) => {
     const binding = input.store.getBinding(projectId);
@@ -137,7 +140,23 @@ export async function createProjectGitServiceComposition(
       prepareRegistrationCompletion: operationId => bindingService.prepareRegistrationCompletion(operationId),
     };
     projects.set(projectId, runtime);
+    const quarantine = input.store.listPendingOperations().find(operation => operation.projectId === projectId
+      && operation.actorId === 'project-git-background' && operation.kind === 'sync'
+      && typeof operation.payload === 'object' && operation.payload !== null && !Array.isArray(operation.payload)
+      && operation.payload.lane === 'quarantine');
+    if (quarantine) input.store.updateOperation(quarantine.id, { status: 'succeeded', phase: 'local_saved', result: null, error: null });
     return runtime;
+  };
+
+  const quarantine = (binding: ProjectGitBindingRecord, error: unknown): void => {
+    const cause = error instanceof GitDomainError ? error.code : (error as NodeJS.ErrnoException).code;
+    if (!(error instanceof GitDomainError) && (!cause || !unavailableRootCodes.has(cause))) throw error;
+    const operation = input.store.enqueueOperation({ projectId: binding.projectId, actorId: 'project-git-background', kind: 'sync',
+      idempotencyKey: `quarantine:${binding.generation}`, requestDigest: requestDigest({ root: binding.canonicalRoot, generation: binding.generation }),
+      basis: basis(binding.projectId), payload: { lane: 'quarantine' } });
+    input.store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: null,
+      error: { code: 'RECOVERY_REQUIRED', message: 'The managed project repository is unavailable.',
+        details: { reason: 'project_root_unavailable', ...(cause ? { cause } : {}) } } });
   };
 
   const resolveRuntime = async (projectId: string, prepare = false): Promise<RuntimeProject> => {
@@ -174,7 +193,10 @@ export async function createProjectGitServiceComposition(
 
   // Recovery's resolver is deliberately synchronous. Resolve every durable
   // binding/registration before constructing the one recovery runtime.
-  for (const binding of input.store.listBindings()) await resolveRuntime(binding.projectId);
+  for (const binding of input.store.listBindings()) {
+    try { await resolveRuntime(binding.projectId); }
+    catch (error) { quarantine(binding, error); }
+  }
   for (const registration of input.store.listPendingRegistrations()) {
     if (!projects.has(registration.projectId)) {
       const gate = await getProjectGate({ root: registration.canonicalRoot, ...ownership });
@@ -253,6 +275,12 @@ export async function createProjectGitServiceComposition(
       }
     },
   });
+  const ensureWatcher = (projectId: string): void => {
+    if (!input.subscribeProject || watchers.has(projectId) || !projects.has(projectId)) return;
+    const watcher = input.subscribeProject(projectId, () => scheduler.notify(projectId));
+    watchers.set(projectId, watcher);
+    void watcher.ready.catch(() => {});
+  };
   const restoreService = createProjectGitRestoreService({
     db: input.db,
     store: input.store,
@@ -296,7 +324,7 @@ export async function createProjectGitServiceComposition(
     const active = conflict ?? operations.at(-1);
     const latest = input.store.getLatestProjectOperation(projectId);
     const operation = active ?? latest;
-    const recovering = input.store.listRecoverable().some(item => item.projectId === projectId);
+    const recovering = input.store.listRecoverable().some(item => item.projectId === projectId && item.recoveryData !== null);
     const pendingPush = binding.localHead !== binding.confirmedRemoteHead && binding.remoteUrl !== null;
     const phase = recovering ? 'recovering'
       : conflict ? 'conflict'
@@ -336,6 +364,7 @@ export async function createProjectGitServiceComposition(
     input.emit(projectId, { type: 'project-git-state', projectId, state: state(projectId) });
   }
   async function accepted(operation: ProjectGitOperation): Promise<ProjectGitAccepted> {
+    if (operation.projectId && input.store.getBinding(operation.projectId)) ensureWatcher(operation.projectId);
     await emitOperation(operation);
     if (operation.projectId) await emitState(operation.projectId);
     return { operationId: operation.id };
@@ -348,11 +377,20 @@ export async function createProjectGitServiceComposition(
 
   async function shortOperation(action: Extract<ProjectGitAction, { kind: 'pause' | 'resume' | 'sync' | 'resolve' | 'retry' }>, context: ProjectGitRequestContext) {
     if (!context.projectId && action.kind !== 'retry') throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
+    if (context.projectId) {
+      await input.requireProject?.(context.actorId, context.projectId);
+      if (action.kind !== 'retry') await resolveRuntime(context.projectId);
+    }
     if (action.kind === 'resolve') {
       const projectId = context.projectId!;
+      const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
+      const existing = input.store.findOperation({ actorId: context.actorId, projectId, kind: 'resolve', idempotencyKey: context.idempotencyKey });
+      if (existing) {
+        if (existing.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
+        return input.store.getOperation(existing.id)!;
+      }
       if (!input.store.getBinding(projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Managed project not found.');
       input.store.assertRevision(projectId, context.expectedProjectRevision);
-      const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
       return scheduler.withNetworkPaused(projectId, () => syncRuntime.resolveConflict({
         projectId,
         conflictOperationId: action.operationId,
@@ -364,8 +402,20 @@ export async function createProjectGitServiceComposition(
       }));
     }
     if (action.kind === 'retry') {
+      const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
+      const replay = input.store.findOperationRequest({ actorId: context.actorId, projectId: context.projectId,
+        action: 'retry', idempotencyKey: context.idempotencyKey });
+      if (replay) {
+        if (replay.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
+        const operation = input.store.getJournal(replay.operationId);
+        if (!operation) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The retried operation is unavailable.');
+        if (operation.status === 'succeeded' || operation.status === 'running' || operation.recoveryData) {
+          return input.store.getOperation(operation.id)!;
+        }
+      }
       const target = input.store.getJournal(action.operationId);
-      if (!target || target.actorId !== context.actorId || target.projectId !== context.projectId || target.kind === 'checkpoint') {
+      if (!target || target.projectId !== context.projectId || target.kind === 'checkpoint'
+        || target.projectId === null && target.actorId !== context.actorId) {
         throw new GitDomainError('NOT_FOUND', 404, 'Project Git operation not found.');
       }
       const retryableSync = target.kind === 'sync' && ['failed', 'waiting'].includes(target.status)
@@ -377,11 +427,27 @@ export async function createProjectGitServiceComposition(
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely.');
       }
+      const claim = () => input.store.claimOperationRequest({ actorId: context.actorId, projectId: context.projectId,
+        action: 'retry', idempotencyKey: context.idempotencyKey, requestDigest: digest, operationId: target.id });
       const original = { actorId: target.actorId, idempotencyKey: target.idempotencyKey,
         expectedProjectRevision: target.basis.projectRevision };
       if (target.kind === 'sync') {
-        if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
-          || payload.lane !== 'network') throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+        if (!target.projectId || target.scope !== `project:${target.projectId}`) {
+          throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+        }
+        if (payload.lane === 'quarantine') {
+          claim();
+          const binding = input.store.getBinding(target.projectId);
+          if (!binding) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+          try { await resolveRuntime(target.projectId); }
+          catch (error) { quarantine(binding, error); }
+          return input.store.getOperation(target.id)!;
+        }
+        if (!isDeepStrictEqual(basis(target.projectId), target.basis) || payload.lane !== 'network') {
+          throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+        }
+        await resolveRuntime(target.projectId);
+        claim();
         const retried = await syncProject({ projectId: target.projectId, oneShot: true, deps: syncRuntime,
           request: { actorId: target.actorId, idempotencyKey: target.idempotencyKey, requestDigest: target.requestDigest } });
         return retried;
@@ -401,12 +467,15 @@ export async function createProjectGitServiceComposition(
         if (target.scope !== 'import' || typeof payload.url !== 'string' || typeof payload.branch !== 'string') {
           throw new GitDomainError('CONFLICT', 409, 'This import cannot be retried safely.');
         }
+        claim();
         const url = payload.url; const branch = payload.branch;
         return resume(() => bindingService.openRepository({ actorId: original.actorId, idempotencyKey: original.idempotencyKey,
           url, branch }));
       }
       if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
         || typeof payload.previewId !== 'string') throw new GitDomainError('PREVIEW_STALE', 409, 'The original operation is no longer current.');
+      await resolveRuntime(target.projectId);
+      claim();
       if (target.kind === 'enable') return resume(() => bindingService.enable(target.projectId!, payload.previewId as string, original));
       if (target.kind === 'bind') {
         const confirmation = payload.confirmation;
@@ -492,44 +561,110 @@ export async function createProjectGitServiceComposition(
   let stopped = false;
   let stopPromise: Promise<void> | null = null;
   const inFlight = new Set<Promise<unknown>>();
-  const admit = <T>(work: () => T | Promise<T>): Promise<T> => {
-    if (stopping || stopped) return Promise.reject(new GitDomainError('PROJECT_BUSY', 409, 'Project versioning is stopping.'));
-    const promise = Promise.resolve().then(work);
+  const track = <T>(promise: Promise<T>): Promise<T> => {
     inFlight.add(promise);
     void promise.then(() => { inFlight.delete(promise); }, () => { inFlight.delete(promise); });
     return promise;
   };
+  const admit = <T>(work: () => T | Promise<T>): Promise<T> => {
+    if (stopping || stopped) return Promise.reject(new GitDomainError('PROJECT_BUSY', 409, 'Project versioning is stopping.'));
+    return track(Promise.resolve().then(work));
+  };
+  const operationForRequest = (action: ProjectGitAction, context: ProjectGitRequestContext): ProjectGitOperation | null => {
+    if (action.kind === 'retry') {
+      const request = input.store.findOperationRequest({ actorId: context.actorId, projectId: context.projectId,
+        action: 'retry', idempotencyKey: context.idempotencyKey });
+      return request ? input.store.getOperation(request.operationId) : null;
+    }
+    const operation = input.store.findOperation({ actorId: context.actorId, projectId: context.projectId,
+      kind: action.kind, idempotencyKey: context.idempotencyKey });
+    return operation ? input.store.getOperation(operation.id) : null;
+  };
+  const requestAdmissions = new Map<string, Promise<void>>();
+  const requestWorkers = new Map<string, { fingerprint: string; promise: Promise<ProjectGitOperation> }>();
   const service: ProjectGitService = {
     getState(projectId) {
       return admit(() => state(projectId));
     },
     execute(action, context) {
-      return admit(async () => {
+      const requestScope = context.projectId === null ? 'import' : `project:${context.projectId}`;
+      const requestKey = `${context.actorId}\0${requestScope}\0${action.kind}\0${context.idempotencyKey}`;
+      const priorAdmission = requestAdmissions.get(requestKey) ?? Promise.resolve();
+      const execution = admit(async () => {
+        await priorAdmission;
         await recoveryReady;
-        let operation: ProjectGitOperation;
-        const request = contextRequest(context);
-        switch (action.kind) {
-          case 'enable_preview': operation = await bindingService.previewEnable(context.projectId!, request); break;
-          case 'enable': operation = await bindingService.enable(context.projectId!, action.previewId, request); break;
-          case 'binding_preview': operation = await bindingService.previewBinding(context.projectId!, action.url, action.branch, request); break;
-          case 'bind': operation = await bindingService.bind(context.projectId!, action.previewId, { ...request, ...(action.confirmation ? { confirmation: action.confirmation } : {}) }); break;
-          case 'unbind': operation = await bindingService.unbind(context.projectId!, request); break;
-          case 'open': operation = await bindingService.openRepository({ ...request, url: action.url, branch: action.branch }); break;
-          case 'restore_preview': {
-            const preview = await restoreService.previewRestore(context.projectId!, action.oid, request);
-            operation = input.store.getOperation(preview.id)!;
-            break;
+        const fingerprint = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
+        const shareWorker = ['pause', 'resume', 'sync', 'resolve', 'retry'].includes(action.kind);
+        const activeWorker = shareWorker ? requestWorkers.get(requestKey) : undefined;
+        if (activeWorker) {
+          if (activeWorker.fingerprint !== fingerprint) {
+            throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
           }
-          case 'restore': {
-            const result = await restoreService.restoreProject(context.projectId!, action.previewId, request);
-            operation = input.store.getOperation(result.operationId)!;
-            break;
-          }
-          case 'sync': operation = await manualSync(context); break;
-          default: operation = await shortOperation(action, context);
+          const activeOperation = operationForRequest(action, context);
+          if (activeOperation) return accepted(activeOperation);
+          const operation = await activeWorker.promise;
+          return accepted(operation);
         }
-        return accepted(operation);
+        const operationAtAdmission = operationForRequest(action, context);
+        const worker = track((async (): Promise<ProjectGitOperation> => {
+          const request = contextRequest(context);
+          switch (action.kind) {
+            case 'enable_preview': return bindingService.previewEnable(context.projectId!, request);
+            case 'enable': return bindingService.enable(context.projectId!, action.previewId, request);
+            case 'binding_preview': return bindingService.previewBinding(context.projectId!, action.url, action.branch, request);
+            case 'bind': return bindingService.bind(context.projectId!, action.previewId, { ...request, ...(action.confirmation ? { confirmation: action.confirmation } : {}) });
+            case 'unbind': return bindingService.unbind(context.projectId!, request);
+            case 'open': return bindingService.openRepository({ ...request, url: action.url, branch: action.branch });
+            case 'restore_preview': {
+              const preview = await restoreService.previewRestore(context.projectId!, action.oid, request);
+              return input.store.getOperation(preview.id)!;
+            }
+            case 'restore': {
+              const result = await restoreService.restoreProject(context.projectId!, action.previewId, request);
+              return input.store.getOperation(result.operationId)!;
+            }
+            case 'sync': return manualSync(context);
+            default: return shortOperation(action, context);
+          }
+        })());
+        if (shareWorker) {
+          requestWorkers.set(requestKey, { fingerprint, promise: worker });
+          void worker.then(() => {
+            if (requestWorkers.get(requestKey)?.promise === worker) requestWorkers.delete(requestKey);
+          }, () => {
+            if (requestWorkers.get(requestKey)?.promise === worker) requestWorkers.delete(requestKey);
+          });
+        }
+        const completed = worker.then(async operation => {
+          await accepted(operation);
+          return { ok: true as const, operation };
+        }, async error => {
+          const operation = operationForRequest(action, context);
+          if (operation) await accepted(operation);
+          return { ok: false as const, error };
+        });
+        if (operationAtAdmission) {
+          const result = await completed;
+          if (result.ok) return { operationId: result.operation.id };
+          throw result.error;
+        }
+        while (true) {
+          const result = await Promise.race([
+            completed,
+            new Promise<null>(resolve => setTimeout(() => resolve(null), 1)),
+          ]);
+          if (result?.ok) return { operationId: result.operation.id };
+          if (result && !result.ok) throw result.error;
+          const operation = operationForRequest(action, context);
+          if (operation) return accepted(operation);
+        }
       });
+      const admissionSettled = execution.then(() => {}, () => {});
+      requestAdmissions.set(requestKey, admissionSettled);
+      void admissionSettled.then(() => {
+        if (requestAdmissions.get(requestKey) === admissionSettled) requestAdmissions.delete(requestKey);
+      });
+      return execution;
     },
     getOperation(id) {
       return admit(() => {
@@ -557,7 +692,11 @@ export async function createProjectGitServiceComposition(
     conflicts(projectId) { return admit(async () => {
       const conflicts: ProjectGitConflict[] = [];
       for (const operation of input.store.listPendingOperations()) {
-        if (operation.projectId === projectId && operation.phase === 'conflict') {
+        const payload = operation.payload;
+        if (operation.projectId === projectId && operation.phase === 'conflict'
+          && payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+          && payload.conflictEvidence !== null && typeof payload.conflictEvidence === 'object'
+          && !Array.isArray(payload.conflictEvidence)) {
           conflicts.push(...(await readProjectGitConflictEvidence(operationRoot, operation)).conflicts);
         }
       }
@@ -567,14 +706,20 @@ export async function createProjectGitServiceComposition(
       if (started || stopping || stopped) return;
       await recoveryReady;
       scheduler.start();
+      for (const binding of input.store.listBindings()) {
+        try { await resolveRuntime(binding.projectId); ensureWatcher(binding.projectId); }
+        catch (error) { quarantine(binding, error); }
+      }
       started = true;
     },
     async stop() {
       if (stopPromise) return stopPromise;
       stopping = true;
       stopPromise = (async () => {
+        while (inFlight.size) await Promise.allSettled([...inFlight]);
+        await Promise.allSettled([...watchers.values()].map(watcher => Promise.resolve(watcher.unsubscribe())));
+        watchers.clear();
         await scheduler.stop();
-        await Promise.allSettled([...inFlight]);
         for (const permit of permits.values()) permit.release();
         permits.clear();
         stopped = true;

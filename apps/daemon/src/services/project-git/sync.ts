@@ -140,7 +140,7 @@ export async function readProjectGitConflictEvidence(
 }
 
 function networkOperations(store: ProjectGitStore, projectId: string) {
-  return store.listPendingOperations().filter(op => op.projectId === projectId && op.actorId === actorId
+  return store.listPendingOperations().filter(op => op.projectId === projectId
     && op.kind === 'sync' && op.journalPhase === null && op.payload !== null
     && typeof op.payload === 'object' && !Array.isArray(op.payload) && op.payload.lane === 'network');
 }
@@ -173,12 +173,20 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
   if (oneShot) await deps.checkpoint(projectId);
   else if (!await deps.automaticReady(projectId)) return;
   let binding = store.getBinding(projectId);
+  const previous = binding
+    ? networkOperations(store, projectId).filter(op => op.basis.bindingGeneration === binding!.generation)
+    : [];
+  const retainedConflict = previous.find(op => op.phase === 'conflict');
+  if (retainedConflict) {
+    const details = retainedConflict.error?.details;
+    throw new GitDomainError('CONFLICT', 409, retainedConflict.error?.message ?? 'Resolve the retained conflict before synchronizing.',
+      isObject(details) ? details : undefined);
+  }
   const userOperation = input.request && binding ? store.enqueueOperation({ projectId, kind: 'sync', basis: basisFor(binding), ...input.request, payload: { lane: 'network' } }) : null;
   if (!binding?.localHead || !binding.remoteUrl || (!oneShot && !binding.autoSync)) {
     if (userOperation) store.updateOperation(userOperation.id, { status: 'succeeded', phase: binding?.localHead ? 'local_saved' : 'waiting_idle', result: null, error: null });
     return userOperation ? store.getOperation(userOperation.id) : null;
   }
-  const previous = networkOperations(store, projectId).filter(op => op.basis.bindingGeneration === binding!.generation);
   if (!oneShot && previous.some(op => ['auth_required', 'conflict'].includes(op.phase))) return;
   const queued = store.queuePush(projectId, binding.generation, binding.localHead);
   if (!oneShot && queued.nextAttemptAt > deps.now()) return;
@@ -506,7 +514,8 @@ export function createProjectGitSyncDeps(input: {
       const result = await runGitTransport({ preparationRoot: input.preparationRoot, ...await discoverObjectStore(project.root),
         args: ['fetch', b.remoteUrl, `refs/heads/${b.branch}`], ...(project.gitEnv ? { env: project.gitEnv } : {}) });
       if (binding(id).generation !== b.generation || !result.fetchedHead) throw changed();
-      await runGit({ cwd: project.root, args: ['update-ref', '--no-deref', `refs/open-design/fetch/${randomUUID()}`, result.fetchedHead, '0'.repeat(result.fetchedHead.length)] });
+      const ref = `refs/open-design/fetch/${createHash('sha256').update(id).digest('hex')}`;
+      await runGit({ cwd: project.root, args: ['update-ref', '--no-deref', ref, result.fetchedHead] });
       return result.fetchedHead;
     },
     async pushTarget(id, oid, generation) {
@@ -584,18 +593,18 @@ export function createProjectGitSyncDeps(input: {
     },
     async automaticReady(id) { await deps.detect(id); return observations.get(id)?.saved === true; },
   };
-  const resolveConflict: ProjectGitSyncRuntime['resolveConflict'] = async resolution => {
+  const resolveConflictCore: ProjectGitSyncRuntime['resolveConflict'] = async resolution => {
     await ready;
     const { projectId: id } = resolution;
-    const conflictOperation = store.getJournal(resolution.conflictOperationId);
-    if (!conflictOperation || conflictOperation.projectId !== id || conflictOperation.actorId !== resolution.actorId
-      || conflictOperation.kind !== 'sync' || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict') {
-      throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict operation is no longer current.');
-    }
     const existing = store.findOperation({ actorId: resolution.actorId, projectId: id, kind: 'resolve', idempotencyKey: resolution.idempotencyKey });
     if (existing) {
       if (existing.requestDigest !== resolution.requestDigest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
       return store.getOperation(existing.id)!;
+    }
+    const conflictOperation = store.getJournal(resolution.conflictOperationId);
+    if (!conflictOperation || conflictOperation.projectId !== id
+      || conflictOperation.kind !== 'sync' || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict') {
+      throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict operation is no longer current.');
     }
     const evidence = await readProjectGitConflictEvidence(input.operationRoot, conflictOperation);
     if (!isDeepStrictEqual(evidence.basis, resolution.basis)) throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict basis is no longer current.');
@@ -649,6 +658,22 @@ export function createProjectGitSyncDeps(input: {
       }
       throw error;
     }
+  };
+  const resolvingConflicts = new Map<string, { requestDigest: string; promise: Promise<ProjectGitOperation> }>();
+  const resolveConflict: ProjectGitSyncRuntime['resolveConflict'] = resolution => {
+    const key = `${resolution.actorId}\0${resolution.projectId}\0${resolution.idempotencyKey}`;
+    const current = resolvingConflicts.get(key);
+    if (current) {
+      if (current.requestDigest !== resolution.requestDigest) {
+        return Promise.reject(new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.'));
+      }
+      return current.promise;
+    }
+    const promise = resolveConflictCore(resolution).finally(() => {
+      if (resolvingConflicts.get(key)?.promise === promise) resolvingConflicts.delete(key);
+    });
+    resolvingConflicts.set(key, { requestDigest: resolution.requestDigest, promise });
+    return promise;
   };
   return Object.assign(deps, { recoveryReady: ready, resolveConflict });
 }

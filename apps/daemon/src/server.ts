@@ -2938,6 +2938,19 @@ export async function startServer({
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   const projectGitStore = createProjectGitStore(db);
+  // The current product authority is one admitted local-daemon principal.
+  // Keep this capability explicit so project access, creation, operation
+  // ownership and duplicate-copy filtering cannot drift into separate checks.
+  const localDaemonProjectAuthority = {
+    actorId: 'local-daemon',
+    authorizeProjectRequest: async () => true,
+    requireProject: (_actorId: string, projectId: string) => {
+      if (!getProject(db, projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
+    },
+    requireCreate: (actorId: string) => {
+      if (actorId !== 'local-daemon') throw new GitDomainError('FORBIDDEN', 403, 'Project creation is not allowed.');
+    },
+  };
   let dependencyAgentCache: { expiresAt: number; agents: Awaited<ReturnType<typeof detectAgents>> } | null = null;
   const availableDependencyAgents = async () => {
     if (dependencyAgentCache && dependencyAgentCache.expiresAt > Date.now()) return dependencyAgentCache.agents;
@@ -2971,12 +2984,11 @@ export async function startServer({
       return ensureProject(PROJECTS_DIR, projectId, project.metadata);
     },
     emit: emitProjectEvent,
-    requireProject: (_actorId, projectId) => {
-      if (!getProject(db, projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
-    },
-    requireCreate: (actorId) => {
-      if (actorId !== 'local-daemon') throw new GitDomainError('FORBIDDEN', 403, 'Project creation is not allowed.');
-    },
+    subscribeProject: (projectId, onChange) => subscribeFileEvents(PROJECTS_DIR, projectId, () => onChange(), {
+      metadata: getProject(db, projectId)?.metadata,
+    }),
+    requireProject: localDaemonProjectAuthority.requireProject,
+    requireCreate: localDaemonProjectAuthority.requireCreate,
     resolveAvailability: async ({ projectId, kind, id, agentId }) => {
       if (kind === 'agent') return (await availableDependencyAgents()).some(agent => agent.id === id && agent.available);
       if (kind === 'model') {
@@ -4736,14 +4748,7 @@ export async function startServer({
     stageProjectDirsForDelete,
     validateLinkedDirs,
   };
-  const authorizeProjectRequest = async (
-    _req: any,
-    _res: any,
-    _projectId: string,
-    _options: any = {},
-  ): Promise<boolean> => {
-    return true;
-  };
+  const authorizeProjectRequest = localDaemonProjectAuthority.authorizeProjectRequest;
   // Legacy registrars still receive the historical bound mutation-gate shape,
   // but production delegates it to the same central authorizer as newer route
   // modules. This keeps placeholder stamps authoritative across Figma import,
@@ -5047,7 +5052,7 @@ export async function startServer({
     db,
     projectGit,
     projectGitStore,
-    resolveProjectGitActor: () => 'local-daemon',
+    resolveProjectGitActor: () => localDaemonProjectAuthority.actorId,
     authorizeProjectRequest,
     http: httpDeps,
   });
