@@ -245,6 +245,9 @@ export interface ProjectGitStore {
   enqueueOperation(input: ProjectGitOperationInput): ProjectGitOperation;
   enqueueCheckpoint(input: ProjectGitCheckpointInput): ProjectGitJournalRecord;
   getOperation(id: string): ProjectGitOperation | null;
+  getLatestProjectOperation(projectId: string): ProjectGitOperation | null;
+  /** Freezes a private conflict artifact reference without exposing it through the public operation DTO. */
+  freezeConflictEvidence(operationId: string, basis: ProjectGitBasis, evidence: { path: string; digest: string }): void;
   findOperation(input: Pick<ProjectGitOperationInput, 'actorId' | 'projectId' | 'kind' | 'idempotencyKey'>): ProjectGitJournalRecord | null;
   getJournal(id: string): ProjectGitJournalRecord | null;
   /** Associate a reserved import ID before prepared; does not create or expose an application project row. */
@@ -261,6 +264,8 @@ export interface ProjectGitStore {
   sealProtectedCandidate(id: string, basis: ProjectGitBasis, candidate: ProjectGitProtectedCandidate): void;
   listRecoverable(): ProjectGitJournalRecord[];
   completeMaterialization(id: string, input: ProjectGitMaterializationCompletion): number;
+  /** Completes the resolve materialization and its retained conflict in one SQLite transaction. */
+  completeConflictResolution(resolveOperationId: string, conflictOperationId: string, input: ProjectGitMaterializationCompletion): number;
   queuePush(projectId: string, generation: number, oid: string): ProjectGitPushRecord;
   listDuePushes(now: number): ProjectGitPushRecord[];
   deferPush(projectId: string, generation: number, oid: string, nextAttemptAt: number): boolean;
@@ -491,6 +496,43 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       const b = getBinding(id);
       return b?.repositoryProjectId === intent.repositoryProjectId && Boolean(db.prepare(`SELECT 1 FROM projects p WHERE p.id = ?
         AND NOT EXISTS (SELECT 1 FROM project_git_registrations r WHERE r.project_id = p.id AND r.hidden = 1 AND r.state != 'complete')`).get(id));
+    });
+  }
+  function finishMaterialization(id: string, input: ProjectGitMaterializationCompletion, conflictOperationId?: string): number {
+    return transaction(() => {
+      const op = getJournal(id);
+      if (input.remainingDirty !== undefined && (op?.kind !== 'restore' || typeof input.remainingDirty !== 'boolean')) throw recoveryRequired();
+      if (op?.journalPhase === 'complete' && op.completedProjectRevision !== null) {
+        if (!sameBasis(op.basis, input.basis)
+          || op.completedProjectRevision !== input.basis.projectRevision + Number(input.advanceProjectRevision)) throw changed();
+        if (conflictOperationId) {
+          const conflictOperation = getJournal(conflictOperationId);
+          if (!conflictOperation || conflictOperation.status !== 'succeeded' || conflictOperation.error !== null) throw recoveryRequired();
+        }
+        return op.completedProjectRevision;
+      }
+      if (!op?.projectId || !op.recoveryData || op.journalPhase !== 'index_published' || !op.phaseCompleted) throw recoveryRequired();
+      if (!sameBasis(op.basis, input.basis)) throw changed();
+      if (!op.recordsTransition || op.recordsTransition.advanceProjectRevision !== input.advanceProjectRevision) throw recoveryRequired();
+      let conflictOperation: ProjectGitJournalRecord | null = null;
+      if (conflictOperationId) {
+        conflictOperation = getJournal(conflictOperationId);
+        if (!conflictOperation || conflictOperation.kind !== 'sync' || conflictOperation.projectId !== op.projectId
+          || conflictOperation.actorId !== op.actorId || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict'
+          || !sameBasis(conflictOperation.basis, op.basis)) throw recoveryRequired();
+      }
+      const b = requireBasis(op.projectId, ownedBasis(op)); const head = op.protection?.sealedCandidate?.publishHead ?? op.recoveryData.publishHead;
+      db.prepare('UPDATE project_git_bindings SET exported_content_revision = content_revision WHERE project_id = ?').run(b.projectId);
+      updateBindingData({ ...b, localHead: head, materializedHead: head, dirty: input.remainingDirty ?? false });
+      if (b.remoteUrl !== null) store.queuePush(b.projectId, b.generation, head);
+      const revision = getBinding(b.projectId)!.projectRevision;
+      db.prepare("UPDATE project_git_operations SET journal_phase = 'complete', phase_completed = 1, status = 'succeeded', phase = 'local_saved', result_json = ?, error_json = NULL, completed_project_revision = ?, updated_at = ? WHERE id = ?")
+        .run(json({ head }), revision, Date.now(), id);
+      if (conflictOperation) {
+        db.prepare("UPDATE project_git_operations SET status = 'succeeded', phase = 'local_saved', result_json = ?, error_json = NULL, updated_at = ? WHERE id = ?")
+          .run(json({ head }), Date.now(), conflictOperation.id);
+      }
+      return revision;
     });
   }
   const pushColumns = 'q.project_id AS projectId, q.binding_generation AS generation, q.target_oid AS targetOid, q.attempts, q.next_attempt_at AS nextAttemptAt';
@@ -794,6 +836,30 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     enqueueOperation: input => publicOperation(enqueue(input))!,
     enqueueCheckpoint: input => enqueue({ ...input, kind: 'checkpoint' }),
     getOperation: id => { const op = getJournal(id); return op ? publicOperation(op) : null; },
+    getLatestProjectOperation: id => {
+      const row = db.prepare("SELECT * FROM project_git_operations WHERE project_id = ? AND kind != 'checkpoint' ORDER BY updated_at DESC, id DESC LIMIT 1")
+        .get(id) as OperationRow | undefined;
+      return row ? publicOperation(journalFrom(row)) : null;
+    },
+    freezeConflictEvidence: (id, basis, evidence) => transaction(() => {
+      const op = getJournal(id);
+      if (!op || op.kind !== 'sync' || op.journalPhase !== null || op.status !== 'running'
+        || !/^conflict-[a-zA-Z0-9-]+\.json$/u.test(evidence.path)
+        || !/^[a-f0-9]{64}$/u.test(evidence.digest)
+        || op.payload === null || typeof op.payload !== 'object' || Array.isArray(op.payload)
+        || op.payload.lane !== 'network' || op.projectId === null) throw recoveryRequired();
+      const binding = getBinding(op.projectId);
+      if (!binding || !sameBasis(basisFor(binding), basis)
+        || op.basis.bindingGeneration !== basis.bindingGeneration
+        || op.basis.projectRevision !== basis.projectRevision
+        || op.basis.contentRevision !== basis.contentRevision
+        || op.basis.localHead !== basis.localHead) throw changed();
+      const next = { ...op.payload, conflictEvidence: evidence };
+      const current = op.payload.conflictEvidence;
+      if (current !== undefined && !isDeepStrictEqual(current, evidence)) throw recoveryRequired();
+      db.prepare('UPDATE project_git_operations SET basis_json = ?, payload_json = ?, updated_at = ? WHERE id = ?')
+        .run(json(basis), canonicalPayloadJson(next), Date.now(), id);
+    }),
     findOperation: input => {
       const row = db.prepare('SELECT * FROM project_git_operations WHERE actor_id = ? AND scope = ? AND kind = ? AND idempotency_key = ?')
         .get(input.actorId, input.projectId === null ? 'import' : `project:${input.projectId}`, input.kind, input.idempotencyKey) as OperationRow | undefined;
@@ -894,27 +960,15 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     listRecoverable: () => (db.prepare(`SELECT * FROM project_git_operations WHERE
       (journal_phase IS NOT NULL AND journal_phase != 'complete') OR (journal_phase IS NULL AND status IN ('queued', 'running', 'waiting'))
       ORDER BY created_at, id`).all() as OperationRow[]).map(journalFrom),
-    completeMaterialization: (id, input) => transaction(() => {
-      const op = getJournal(id);
-      if (input.remainingDirty !== undefined && (op?.kind !== 'restore' || typeof input.remainingDirty !== 'boolean')) throw recoveryRequired();
-      if (op?.journalPhase === 'complete' && op.completedProjectRevision !== null) {
-        if (!sameBasis(op.basis, input.basis)
-          || op.completedProjectRevision !== input.basis.projectRevision + Number(input.advanceProjectRevision)) throw changed();
-        return op.completedProjectRevision;
-      }
-      if (!op?.projectId || !op.recoveryData || op.journalPhase !== 'index_published' || !op.phaseCompleted) throw recoveryRequired();
-      if (!sameBasis(op.basis, input.basis)) throw changed();
-      if (!op.recordsTransition || op.recordsTransition.advanceProjectRevision !== input.advanceProjectRevision) throw recoveryRequired();
-      const b = requireBasis(op.projectId, ownedBasis(op)); const head = op.protection?.sealedCandidate?.publishHead ?? op.recoveryData.publishHead;
-      db.prepare('UPDATE project_git_bindings SET exported_content_revision = content_revision WHERE project_id = ?').run(b.projectId);
-      updateBindingData({ ...b, localHead: head, materializedHead: head, dirty: input.remainingDirty ?? false });
-      // This transaction closes the local-commit/outbox gap, including paused bindings.
-      if (b.remoteUrl !== null) store.queuePush(b.projectId, b.generation, head);
-      const revision = getBinding(b.projectId)!.projectRevision;
-      db.prepare("UPDATE project_git_operations SET journal_phase = 'complete', phase_completed = 1, status = 'succeeded', phase = 'local_saved', result_json = ?, error_json = NULL, completed_project_revision = ?, updated_at = ? WHERE id = ?")
-        .run(json({ head }), revision, Date.now(), id);
-      return revision;
-    }),
+    completeMaterialization: (id, input) => {
+      const operation = getJournal(id);
+      const payload = operation?.payload;
+      const conflictOperationId = operation?.kind === 'resolve' && payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+        && typeof payload.conflictOperationId === 'string' ? payload.conflictOperationId : undefined;
+      if (operation?.kind === 'resolve' && !conflictOperationId) throw recoveryRequired();
+      return finishMaterialization(id, input, conflictOperationId);
+    },
+    completeConflictResolution: (id, conflictId, input) => finishMaterialization(id, input, conflictId),
     queuePush: (id, generation, oid) => transaction(() => {
       requireGeneration(id, generation);
       db.prepare(`INSERT INTO project_git_push_queue (project_id, binding_generation, target_oid) VALUES (?, ?, ?)

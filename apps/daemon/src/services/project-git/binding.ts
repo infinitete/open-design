@@ -31,7 +31,7 @@ export interface ProjectGitBindingServiceInput {
   recoveryReady: Promise<void>;
   requireProject(actorId: string, projectId: string): void | Promise<void>;
   requireCreate(actorId: string): void | Promise<void>;
-  resolveAvailability(request: { actorId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string }): Promise<boolean>;
+  resolveAvailability(request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }): Promise<boolean>;
   resolveProject(projectId: string): ProjectGitSyncProject;
   reserveProject(input: { projectId: string; root: string; localBranch: string; gate: ProjectGate; readBasis(): ProjectGitBasis }): () => void;
   now(): number; newId(): string; gitEnv?: Record<string, string>;
@@ -60,13 +60,13 @@ function nulPaths(bytes: Buffer): string[] {
 /** No runtime registry or scheduler is created here; all identities come from the injected owner. */
 export function createProjectGitBindingService(input: ProjectGitBindingServiceInput) {
   const { db, store } = input; store.assertDatabase(db);
-  async function availability(actorId: string, snapshot: PortableSnapshot): Promise<ProjectGitDependency[]> {
-    const identifiers = new Map<string, { kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string }>();
-    const add = (kind: 'agent' | 'model' | 'plugin' | 'linked_folder', id: string | undefined) => {
-      if (id) identifiers.set(JSON.stringify([kind, id]), { kind, id });
+  async function availability(projectId: string, actorId: string, snapshot: PortableSnapshot): Promise<ProjectGitDependency[]> {
+    const identifiers = new Map<string, { kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }>();
+    const add = (kind: 'agent' | 'model' | 'plugin' | 'linked_folder', id: string | undefined, agentId?: string) => {
+      if (id) identifiers.set(JSON.stringify([kind, id, agentId ?? null]), { kind, id, ...(agentId ? { agentId } : {}) });
     };
     for (const preferences of [snapshot.project.preferences, ...snapshot.conversations.map(item => item.preferences)]) {
-      add('agent', preferences?.agentId); add('model', preferences?.model);
+      add('agent', preferences?.agentId); add('model', preferences?.model, preferences?.agentId);
     }
     for (const resource of snapshot.manifest.resources) if (snapshot.project.contentRefs.includes(resource.digest)) {
       for (const location of resource.locations) if (location.purpose === 'plugin') add('plugin', location.sourceLabel);
@@ -76,7 +76,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
     for (const [, item] of [...identifiers].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
       let available: boolean; let failed = false;
       const safeId = /^(?:\/|~|[a-zA-Z]:[\\/])|[\u0000-\u001f\u007f]/u.test(item.id) ? 'Unrecognized logical dependency' : item.id;
-      try { if (safeId !== item.id) throw validation(); available = await input.resolveAvailability({ actorId, ...item }); } catch { available = false; failed = true; }
+      try { if (safeId !== item.id) throw validation(); available = await input.resolveAvailability({ actorId, projectId, ...item }); } catch { available = false; failed = true; }
       if (!available) result.push({ kind: item.kind, label: safeId, requiredForContent: item.kind === 'linked_folder',
         nextStep: { action: failed ? 'retry' : item.kind === 'linked_folder' ? 'locate_folder' : 'install_dependency', label: safeId } });
     }
@@ -361,7 +361,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       return project.gate.exclusive(async () => {
         const current = existing(id, 'enable_preview', request, digest); if (current) return store.getOperation(current.id)!;
         const captured = await capture(id, project);
-        captured.availabilityDependencies = await availability(request.actorId, parsePortableEntries(unpack(captured)));
+        captured.availabilityDependencies = await availability(id, request.actorId, parsePortableEntries(unpack(captured)));
         const payload = await evidence(captured);
         const op = store.enqueueOperation({ projectId: id, actorId: request.actorId, kind: 'enable_preview', idempotencyKey: request.idempotencyKey,
           requestDigest: digest, basis: captured.basis, payload });
@@ -451,7 +451,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         const remoteHead = await targetHead(project.root, url, branch);
         return project.gate.exclusive(async () => {
           const captured = await capture(id, project);
-          captured.availabilityDependencies = await availability(request.actorId, parsePortableEntries(unpack(captured)));
+          captured.availabilityDependencies = await availability(id, request.actorId, parsePortableEntries(unpack(captured)));
           const local = captured.basis.localHead ? await inspectBindingCommit(project.root, captured.basis.localHead) : null;
           const remote = remoteHead ? await inspectBindingCommit(project.root, remoteHead) : null;
           let bases: string[] = [];
@@ -474,7 +474,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
             const candidate = await bindingCandidate(project, captured, preview.metadataSources.length ? { metadataSource: preview.metadataSources[0]! } : {});
             captured.bindingTarget.candidate = candidate;
             const selected = candidate ? await inspectBindingCommit(project.root, candidate.candidateOid) : local;
-            if (selected?.snapshot) captured.availabilityDependencies = await availability(request.actorId, selected.snapshot);
+            if (selected?.snapshot) captured.availabilityDependencies = await availability(id, request.actorId, selected.snapshot);
             const before = local?.files ?? new Map(); const after = selected?.files ?? new Map();
             for (const path of [...new Set([...before.keys(), ...after.keys()])].sort()) {
               const old = before.get(path); const next = after.get(path);
@@ -666,7 +666,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         }
         store.freezeOpenPreparation(user.id, { candidate: { candidateOid: candidateOid!, repositoryProjectId: snapshot.manifest.repositoryProjectId,
           canonicalSnapshotJson, snapshotDigest: sha256(Buffer.from(canonicalSnapshotJson)) } });
-        dependencies = await availability(request.actorId, snapshot);
+        dependencies = await availability(id, request.actorId, snapshot);
         if (dependencies.some(item => item.requiredForContent || item.nextStep?.action === 'retry')) {
           throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Resolve the listed project dependencies before importing.');
         }

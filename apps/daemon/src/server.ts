@@ -440,7 +440,8 @@ import { renderDesignSystemPreview } from './design-systems/preview.js';
 import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
-import { createUnavailableProjectGitCoordination } from './services/project-git/mutation-adapter.js';
+import { createProjectGitServiceComposition } from './services/project-git/service.js';
+import { GitDomainError } from './services/project-git/errors.js';
 import {
   createRunAnalyticsLifecycle,
   inheritedRunLineageHints,
@@ -787,6 +788,7 @@ import { registerDesignSystemToolRoutes } from './routes/design-system-tool.js';
 import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/deploy.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes, createEnforceWorkspaceProjectMutation } from './routes/project/index.js';
+import { registerProjectGitRoutes } from './routes/project-git.js';
 import { coordinateAuthorizedProjectMutation } from './routes/project-git-coordination.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
@@ -1123,6 +1125,7 @@ const ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'artifacts');
 // read path so project-membership, size, and CSP guards cannot be bypassed.
 const CRITIQUE_ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'critique-artifacts');
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
+const PROJECT_GIT_DAEMON_INSTANCE_ID = randomUUID();
 const USER_SKILLS_DIR = path.join(RUNTIME_DATA_DIR, 'skills');
 const USER_DESIGN_SYSTEMS_DIR = path.join(RUNTIME_DATA_DIR, 'design-systems');
 // Brand metadata (brand.json + meta.json per brand) lives here; each brand
@@ -2574,6 +2577,8 @@ export interface StartServerOptions {
   returnServer?: boolean;
   runtime?: DaemonRuntimeContext | null;
   staticDir?: string;
+  /** Trusted host Git environment used by the project-versioning runtime. */
+  projectGitEnv?: Record<string, string>;
   /** Daemon-owned host capability facts. HTTP/model output cannot populate it. */
   odNextExecutionPreflightResolver?: OdNextExecutionPreflightResolver | null;
   /**
@@ -2591,6 +2596,21 @@ export interface StartServerResult {
   routeInventory: import('./route-registration-guard.js').RouteRegistration[];
 }
 
+export async function finalizeDaemonServices(input: {
+  runs(): Promise<void>;
+  terminals(): Promise<void>;
+  browsers(): Promise<void>;
+  projectGit(): Promise<void>;
+  analytics(): Promise<void>;
+}): Promise<void> {
+  let firstError: unknown;
+  for (const finalize of [input.runs, input.terminals, input.browsers, input.projectGit, input.analytics]) {
+    try { await finalize(); }
+    catch (error) { firstError ??= error; }
+  }
+  if (firstError !== undefined) throw firstError;
+}
+
 export async function startServer({
   port = 7456,
   host = normalizeDaemonBindHost(process.env.OD_BIND_HOST),
@@ -2600,6 +2620,7 @@ export async function startServer({
   desktopArtifactExporter = null,
   runtime = null,
   staticDir = STATIC_DIR,
+  projectGitEnv,
   odNextExecutionPreflightResolver = null,
   odNextComplexProductionResolver = null,
 }: StartServerOptions = {}) {
@@ -2917,7 +2938,63 @@ export async function startServer({
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   const projectGitStore = createProjectGitStore(db);
-  const projectGitCoordination = createUnavailableProjectGitCoordination(projectGitStore);
+  let dependencyAgentCache: { expiresAt: number; agents: Awaited<ReturnType<typeof detectAgents>> } | null = null;
+  const availableDependencyAgents = async () => {
+    if (dependencyAgentCache && dependencyAgentCache.expiresAt > Date.now()) return dependencyAgentCache.agents;
+    const config = await readAppConfig(RUNTIME_DATA_DIR);
+    const agents = await detectAgents(config.agentCliEnv ?? {}, config.agentNetwork ?? {});
+    dependencyAgentCache = { expiresAt: Date.now() + 5_000, agents };
+    return agents;
+  };
+  const { service: projectGit, coordination: projectGitCoordination } = await createProjectGitServiceComposition({
+    db,
+    store: projectGitStore,
+    operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
+    instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
+    ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
+    resolveProjectRoot: async (projectId) => {
+      const project = getProject(db, projectId);
+      // Legacy file-only routes can authorize a trusted project directory
+      // before its SQLite row is materialized. Gate that exact resolved path
+      // without creating it; user-facing Git actions still require the row in
+      // requireProject/prepareProjectRoot.
+      return resolveProjectDir(PROJECTS_DIR, projectId, project?.metadata, {
+        // Root lookup is an admission concern, not execution authorization.
+        // Sandbox-aware routes retain their own imported-folder policy and
+        // user-facing Git actions use the strict prepareProjectRoot callback.
+        allowUnavailableSandboxImportedProject: true,
+      });
+    },
+    prepareProjectRoot: async (projectId) => {
+      const project = getProject(db, projectId);
+      if (!project) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
+      return ensureProject(PROJECTS_DIR, projectId, project.metadata);
+    },
+    emit: emitProjectEvent,
+    requireProject: (_actorId, projectId) => {
+      if (!getProject(db, projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
+    },
+    requireCreate: (actorId) => {
+      if (actorId !== 'local-daemon') throw new GitDomainError('FORBIDDEN', 403, 'Project creation is not allowed.');
+    },
+    resolveAvailability: async ({ projectId, kind, id, agentId }) => {
+      if (kind === 'agent') return (await availableDependencyAgents()).some(agent => agent.id === id && agent.available);
+      if (kind === 'model') {
+        if (!agentId) return false;
+        const agent = (await availableDependencyAgents()).find(item => item.id === agentId && item.available);
+        const definition = getAgentDef(agentId);
+        return Boolean(agent && definition && isKnownModel(definition, id));
+      }
+      if (kind === 'linked_folder') {
+        const project = getProject(db, projectId);
+        const linked = validateLinkedDirs(project?.metadata?.linkedDirs);
+        return !linked.error && linked.dirs.some(directory => path.basename(directory) === id);
+      }
+      const registry = await loadPluginRegistryView();
+      return [...registry.skills, ...registry.designSystems, ...registry.atoms, ...registry.scenarios]
+        .some(item => item.id === id);
+    },
+  });
   type SkillCandidateHookArgs = Parameters<typeof detectSkillPluginCandidateOnRunSuccess>;
   const detectSkillPluginCandidateAfterRun = (
     ...args: [
@@ -4351,6 +4428,7 @@ export async function startServer({
   } catch (error) {
     console.warn('[runs] terminal local reconciliation failed', error);
   }
+  await projectGit.start();
   void runTerminalReconciliation.delivery.then(async () => {
     const taskObservationsRecovered = await taskObservationRollout.reconcileCrashWindows();
     if (taskObservationsRecovered > 0) {
@@ -4965,6 +5043,14 @@ export async function startServer({
     });
   });
   registerSocialShareRoutes(app, { http: httpDeps });
+  registerProjectGitRoutes(app, {
+    db,
+    projectGit,
+    projectGitStore,
+    resolveProjectGitActor: () => 'local-daemon',
+    authorizeProjectRequest,
+    http: httpDeps,
+  });
   registerProjectRoutes(app, {
     db,
     projectGitCoordination,
@@ -12977,7 +13063,9 @@ export async function startServer({
   assertServerContextSatisfiesRoutes({
     db,
     projectGitStore,
+    projectGit,
     projectGitCoordination,
+    resolveProjectGitActor: () => 'local-daemon',
     internalRuns: internalRunCreation,
     design,
     http: httpDeps,
@@ -13101,10 +13189,21 @@ export async function startServer({
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
       clearTerminalTelemetryFallbackTimers();
-      await design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() });
-      await terminalService.shutdownActive();
-      await browserSessionService.shutdownActive();
-      await design.analytics.shutdown();
+      await finalizeDaemonServices({
+        runs: () => design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() }),
+        terminals: () => terminalService.shutdownActive(),
+        browsers: () => browserSessionService.shutdownActive(),
+        projectGit: () => projectGit.stop(),
+        analytics: () => design.analytics.shutdown(),
+      });
+    };
+    const rejectStartup = (error: unknown) => {
+      void shutdownDaemonRuns()
+        .then(cleanupDaemonBackgroundWork, shutdownError => {
+          cleanupDaemonBackgroundWork();
+          console.warn('[daemon] startup cleanup failed', shutdownError);
+        })
+        .finally(() => reject(error));
     };
     let server;
     try {
@@ -13142,11 +13241,10 @@ export async function startServer({
         const boundPort =
           address && typeof address === 'object' ? address.port : null;
         if (!boundPort) {
-          reject(
-            new Error(
-              `[od] daemon failed to resolve listening port (address=${JSON.stringify(address)})`,
-            ),
+          const error = new Error(
+            `[od] daemon failed to resolve listening port (address=${JSON.stringify(address)})`,
           );
+          server.close(() => rejectStartup(error));
           return;
         }
         resolvedPort = boundPort;
@@ -13167,8 +13265,7 @@ export async function startServer({
         } : url);
       });
     } catch (error) {
-      cleanupDaemonBackgroundWork();
-      reject(error);
+      rejectStartup(error);
       return;
     }
     server.once('close', () => {
@@ -13183,8 +13280,7 @@ export async function startServer({
     // EACCES / EADDRNOTAVAIL even on the same Node). Wire the event so the
     // returned Promise always settles instead of hanging forever.
     server.on('error', (error) => {
-      cleanupDaemonBackgroundWork();
-      reject(error);
+      rejectStartup(error);
     });
   });
 }

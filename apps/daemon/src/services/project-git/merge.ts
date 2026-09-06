@@ -3,8 +3,8 @@ import { mkdtemp, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { parsePortableSnapshot, type JsonValue, type PortableSnapshot, type ProjectGitConflict,
   type ProjectGitConflictContent, type PortableConversation, type PortableMessage, type PortableResource,
-  type PortableResourceLocation } from '@open-design/contracts';
-import { canonicalJson, parsePortableEntries, serializePortableMetadata } from './portable.js';
+  type PortableResourceLocation, type ProjectGitResolution } from '@open-design/contracts';
+import { canonicalJson, isPortableMetadataPath, parsePortableEntries, parsePortableMetadataEntries, serializePortableMetadata } from './portable.js';
 import { GitDomainError } from './errors.js';
 import { mergeGitText, runGit } from './git-process.js';
 import { discoverRepository, resolveCommit, validateTreeEntries } from './repository.js';
@@ -30,6 +30,66 @@ function conflict(kind: ProjectGitConflict['kind'], location: { path: string } |
   return { id: createHash('sha256').update(canonicalJson({ kind, ...location })).digest('hex'), kind, ...location,
     base: view(base), local: view(local), remote: view(remote) };
 }
+
+interface ResolutionState {
+  decisions: Map<string, ProjectGitResolution>;
+  seen: Set<string>;
+}
+
+function resolutionError(message: string): GitDomainError {
+  return new GitDomainError('VALIDATION_FAILED', 400, message);
+}
+
+function requireDecision(item: ProjectGitConflict, state: ResolutionState): ProjectGitResolution {
+  const decision = state.decisions.get(item.id);
+  if (!decision) throw new GitDomainError('PREVIEW_STALE', 409, 'Conflict decisions do not match the current conflict set.');
+  state.seen.add(item.id);
+  return decision;
+}
+
+function jsonSide(item: ProjectGitConflict, side: 'base' | 'local' | 'remote'): JsonValue | undefined {
+  const content = item[side];
+  if (content.kind === 'missing') return undefined;
+  if (content.kind !== 'json') throw resolutionError('The selected conflict side is not structured JSON.');
+  return content.value;
+}
+
+function resolveJsonConflict(item: ProjectGitConflict, state: ResolutionState): JsonValue | undefined {
+  const decision = requireDecision(item, state);
+  if (decision.kind === 'select') return jsonSide(item, decision.selectedSide);
+  if (decision.kind === 'edit' && 'value' in decision) return decision.value;
+  if (decision.kind === 'delete') return undefined;
+  throw resolutionError('This structured conflict requires a JSON selection, edit, or deletion.');
+}
+
+function resolveResourceConflict(
+  item: ProjectGitConflict,
+  values: Array<PortableResource | undefined>,
+  snapshots: PortableSnapshot[],
+  state: ResolutionState,
+): PortableResource | undefined {
+  const decision = requireDecision(item, state);
+  if (decision.kind === 'delete') return undefined;
+  if (decision.kind === 'select') {
+    const index = decision.selectedSide === 'base' ? 0 : decision.selectedSide === 'local' ? 1 : 2;
+    return values[index];
+  }
+  if (decision.kind === 'edit' && 'resourceRef' in decision) {
+    return snapshots.flatMap(snapshot => snapshot.manifest.resources).find(resource => resource.digest === decision.resourceRef);
+  }
+  throw resolutionError('A resource conflict requires a retained resource selection, reference, or deletion.');
+}
+function withDerivedResourceReferences(
+  resource: PortableResource,
+  project: PortableSnapshot['project'],
+  messages: PortableMessage[],
+  repositoryProjectId: string,
+): PortableResource {
+  return { ...resource, references: [
+    ...(project.contentRefs.includes(resource.digest) ? [repositoryProjectId] : []),
+    ...messages.filter(message => message.resourceRefs.includes(resource.digest)).map(message => message.id),
+  ].sort() };
+}
 function object(value: JsonValue | undefined): value is Record<string, JsonValue> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -42,24 +102,25 @@ function portableJson(value: PortableSnapshot | PortableSnapshot['project'] | Po
 }
 
 function fields(base: JsonValue | undefined, local: JsonValue | undefined, remote: JsonValue | undefined,
-  path: string, conflicts: ProjectGitConflict[]): JsonValue | undefined {
+  path: string, conflicts: ProjectGitConflict[], resolutions?: ResolutionState): JsonValue | undefined {
   const result = mergeValue(base, local, remote);
   if (result.kind === 'merged') return result.value;
   if (object(local) && object(remote) && (base === undefined || object(base))) {
     const merged: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
     const own = (value: Record<string, JsonValue> | undefined, key: string) => value && Object.hasOwn(value, key) ? value[key] : undefined;
     for (const key of keysOf(base, local, remote)) {
-      const value = fields(own(base, key), own(local, key), own(remote, key), `${path}/${pointer(key)}`, conflicts);
+      const value = fields(own(base, key), own(local, key), own(remote, key), `${path}/${pointer(key)}`, conflicts, resolutions);
       if (value !== undefined) merged[key] = value;
     }
     return merged;
   }
-  conflicts.push(conflict('field', { path }, base, local, remote));
-  return undefined;
+  const item = conflict('field', { path }, base, local, remote);
+  if (resolutions) return resolveJsonConflict(item, resolutions);
+  conflicts.push(item); return undefined;
 }
 
 function records<T extends PortableConversation | PortableMessage>(base: T[], local: T[], remote: T[],
-  kind: 'message' | 'field', conflicts: ProjectGitConflict[]): T[] {
+  kind: 'message' | 'field', conflicts: ProjectGitConflict[], resolutions?: ResolutionState): T[] {
   const maps = [base, local, remote].map(values => new Map(values.map(value => [value.id, value])));
   const merged: T[] = [];
   for (const id of [...new Set([...base, ...local, ...remote].map(record => record.id))].sort()) {
@@ -67,14 +128,62 @@ function records<T extends PortableConversation | PortableMessage>(base: T[], lo
     const result = mergeValue(b && portableJson(b), l && portableJson(l), r && portableJson(r));
     if (result.kind === 'merged') { if (result.value) merged.push(result.value as T); }
     else if (kind === 'field' && b && l && r) {
-      merged.push(fields(portableJson(b), portableJson(l), portableJson(r), `conversations/${pointer(id)}`, conflicts) as T);
-    } else conflicts.push(conflict(kind, { recordId: id }, b && portableJson(b), l && portableJson(l), r && portableJson(r)));
+      const value = fields(portableJson(b), portableJson(l), portableJson(r), `conversations/${pointer(id)}`, conflicts, resolutions);
+      if (value !== undefined) merged.push(value as T);
+    } else {
+      const item = conflict(kind, { recordId: id }, b && portableJson(b), l && portableJson(l), r && portableJson(r));
+      if (resolutions) {
+        const value = resolveJsonConflict(item, resolutions); if (value !== undefined) merged.push(value as T);
+      } else conflicts.push(item);
+    }
   }
   return merged;
 }
 
+function resolveConversationOrder(
+  conversationId: string,
+  messages: PortableMessage[],
+  item: ProjectGitConflict,
+  resolutions: ResolutionState,
+): void {
+  const decision = requireDecision(item, resolutions);
+  if (decision.kind !== 'order') throw resolutionError('A conversation-order conflict requires an explicit turn order.');
+  const members = messages.filter(message => message.conversationId === conversationId);
+  const turns = new Map<string, PortableMessage[]>();
+  for (const message of members) {
+    const group = turns.get(message.turnId) ?? [];
+    group.push(message); turns.set(message.turnId, group);
+  }
+  if (new Set(decision.orderedTurnIds).size !== decision.orderedTurnIds.length
+    || decision.orderedTurnIds.length !== turns.size
+    || decision.orderedTurnIds.some(id => !turns.has(id))) {
+    throw resolutionError('The ordered turn IDs must name every current turn exactly once.');
+  }
+  const ordered: PortableMessage[] = [];
+  for (const turnId of decision.orderedTurnIds) {
+    const pending = [...turns.get(turnId)!];
+    const selected: PortableMessage[] = [];
+    while (pending.length) {
+      const next = pending.find(message => message.predecessorId === null
+        || selected.some(candidate => candidate.id === message.predecessorId)
+        || !pending.some(candidate => candidate.id === message.predecessorId))
+        ?? [...pending].sort((a, b) => a.id.localeCompare(b.id))[0]!;
+      selected.push(next); pending.splice(pending.indexOf(next), 1);
+    }
+    ordered.push(...selected);
+  }
+  let predecessor: string | null = null;
+  for (const message of ordered) { message.predecessorId = predecessor; predecessor = message.id; }
+  const first = messages.findIndex(message => message.conversationId === conversationId);
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]!.conversationId === conversationId) messages.splice(index, 1);
+  }
+  messages.splice(first < 0 ? messages.length : first, 0, ...ordered);
+}
+
 /** Pure structured merge. Resource bytes are verified later by parsePortableEntries. */
-export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSnapshot, remote: PortableSnapshot): {
+export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSnapshot, remote: PortableSnapshot,
+  resolutionInputs?: readonly ProjectGitResolution[]): {
   snapshot: PortableSnapshot | null; conflicts: ProjectGitConflict[];
 } {
   if (new Set([base, local, remote].map(value => value.manifest.repositoryProjectId)).size !== 1) {
@@ -83,9 +192,15 @@ export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSn
   const inputs = [base, local, remote].map(value => parsePortableSnapshot(value));
   [base, local, remote] = inputs as [PortableSnapshot, PortableSnapshot, PortableSnapshot];
   const conflicts: ProjectGitConflict[] = [];
-  const project = fields(portableJson(base.project), portableJson(local.project), portableJson(remote.project), 'project', conflicts) as PortableSnapshot['project'];
-  const conversations = records(base.conversations, local.conversations, remote.conversations, 'field', conflicts);
-  const messages = records(base.messages, local.messages, remote.messages, 'message', conflicts);
+  let resolutions: ResolutionState | undefined;
+  if (resolutionInputs) {
+    const decisions = new Map(resolutionInputs.map(item => [item.conflictId, item]));
+    if (decisions.size !== resolutionInputs.length) throw resolutionError('Every conflict must have one unique decision.');
+    resolutions = { decisions, seen: new Set() };
+  }
+  const project = fields(portableJson(base.project), portableJson(local.project), portableJson(remote.project), 'project', conflicts, resolutions) as PortableSnapshot['project'];
+  const conversations = records(base.conversations, local.conversations, remote.conversations, 'field', conflicts, resolutions);
+  const messages = records(base.messages, local.messages, remote.messages, 'message', conflicts, resolutions);
   if (conflicts.length) return { snapshot: null, conflicts };
   const resources: PortableSnapshot['manifest']['resources'] = [];
   const resourceMaps = inputs.map(value => new Map(value.manifest.resources.map(resource => [resource.digest, resource])));
@@ -95,9 +210,16 @@ export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSn
     const locations = values.map(resource => resource && Object.fromEntries(resource.locations.map(location => [canonicalJson(portableJson(location)), portableJson(location)])));
     const presence = mergeValue(locations[0], locations[1], locations[2]);
     if (!values[1] || !values[2]) {
-      if (presence.kind === 'conflict') conflicts.push(conflict('resource', { recordId: digest },
-        values[0] && portableJson(values[0]), values[1] && portableJson(values[1]), values[2] && portableJson(values[2])));
-      if (presence.kind === 'conflict' || presence.value === undefined) continue;
+      if (presence.kind === 'conflict') {
+        const item = conflict('resource', { recordId: digest },
+          values[0] && portableJson(values[0]), values[1] && portableJson(values[1]), values[2] && portableJson(values[2]));
+        if (!resolutions) { conflicts.push(item); continue; }
+        const selected = resolveResourceConflict(item, values, inputs, resolutions);
+        if (!selected) continue;
+        resources.push(withDerivedResourceReferences(selected, project, messages, base.manifest.repositoryProjectId));
+        continue;
+      }
+      if (presence.value === undefined) continue;
     }
     const mergedLocations: PortableResourceLocation[] = [];
     for (const key of keysOf(...locations)) {
@@ -105,13 +227,19 @@ export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSn
       if (result.kind === 'merged' && result.value) mergedLocations.push(result.value as PortableResourceLocation);
     }
     if (!mergedLocations[0]) {
-      conflicts.push(conflict('resource', { recordId: digest }, values[0] && portableJson(values[0]), values[1] && portableJson(values[1]), values[2] && portableJson(values[2])));
+      const item = conflict('resource', { recordId: digest }, values[0] && portableJson(values[0]), values[1] && portableJson(values[1]), values[2] && portableJson(values[2]));
+      if (resolutions) {
+        const selected = resolveResourceConflict(item, values, inputs, resolutions);
+        if (selected) resources.push(withDerivedResourceReferences(selected, project, messages, base.manifest.repositoryProjectId));
+      } else conflicts.push(item);
       continue;
     }
-    resources.push({ digest, locations: [mergedLocations[0], ...mergedLocations.slice(1)], references: [
-      ...(project?.contentRefs.includes(digest) ? [base.manifest.repositoryProjectId] : []),
-      ...messages.filter(message => message.resourceRefs.includes(digest)).map(message => message.id),
-    ].sort() });
+    resources.push(withDerivedResourceReferences(
+      { digest, locations: [mergedLocations[0], ...mergedLocations.slice(1)], references: [] },
+      project,
+      messages,
+      base.manifest.repositoryProjectId,
+    ));
   }
   const candidate = { manifest: { ...base.manifest, resources }, project, conversations, messages };
   if (conflicts.length) return { snapshot: null, conflicts };
@@ -160,10 +288,37 @@ export function mergePortableSnapshots(base: PortableSnapshot, local: PortableSn
       cursor = successors.get(cursor.id);
     }
   }
-  for (const id of [...orderConflicts].sort()) conflicts.push(conflict('conversation_order', { recordId: id },
-    ...inputs.map(value => value.messages.filter(message => message.conversationId === id).map(portableJson)) as [JsonValue, JsonValue, JsonValue]));
-  for (const path of resourceConflicts) conflicts.push(conflict('resource', { path },
-    base.manifest.resources.map(portableJson), local.manifest.resources.map(portableJson), remote.manifest.resources.map(portableJson)));
+  for (const id of [...orderConflicts].sort()) {
+    const item = conflict('conversation_order', { recordId: id },
+      ...inputs.map(value => value.messages.filter(message => message.conversationId === id).map(portableJson)) as [JsonValue, JsonValue, JsonValue]);
+    if (resolutions) resolveConversationOrder(id, messages, item, resolutions);
+    else conflicts.push(item);
+  }
+  for (const path of resourceConflicts) {
+    const item = conflict('resource', { path },
+      base.manifest.resources.map(portableJson), local.manifest.resources.map(portableJson), remote.manifest.resources.map(portableJson));
+    if (!resolutions) { conflicts.push(item); continue; }
+    const decision = requireDecision(item, resolutions);
+    let selected: PortableResource[];
+    if (decision.kind === 'select') {
+      const index = decision.selectedSide === 'base' ? 0 : decision.selectedSide === 'local' ? 1 : 2;
+      selected = inputs[index]!.manifest.resources;
+    } else if (decision.kind === 'edit' && 'resourceRef' in decision) {
+      const resource = inputs.flatMap(snapshot => snapshot.manifest.resources)
+        .find(candidateResource => candidateResource.digest === decision.resourceRef);
+      if (!resource) throw resolutionError('The selected resource reference is unavailable in the conflict inputs.');
+      selected = [...resources.filter(candidateResource => candidateResource.digest !== resource.digest), resource];
+    } else if (decision.kind === 'delete') selected = [];
+    else throw resolutionError('A resource-set conflict requires a retained resource selection, reference, or deletion.');
+    resources.splice(0, resources.length, ...selected.map(resource => withDerivedResourceReferences(
+      resource, project, messages, base.manifest.repositoryProjectId,
+    )));
+    candidate.manifest.resources = resources;
+  }
+  if (resolutions && (resolutions.seen.size !== resolutions.decisions.size
+    || [...resolutions.decisions.keys()].some(id => !resolutions.seen.has(id)))) {
+    throw new GitDomainError('PREVIEW_STALE', 409, 'Conflict decisions do not match the current conflict set.');
+  }
   return conflicts.length ? { snapshot: null, conflicts } : { snapshot: parsePortableSnapshot(candidate), conflicts };
 }
 
@@ -226,6 +381,7 @@ function renameConflicts(base: FileTree, local: FileTree, remote: FileTree): Set
 export async function mergeFileTrees(input: {
   root: string; base: string; local: string; remote: string; stagingDir: string;
   metadataSource?: 'local' | 'remote';
+  resolutions?: readonly ProjectGitResolution[];
 }): Promise<{
   tree: string | null; conflicts: ProjectGitConflict[];
 }> {
@@ -235,9 +391,10 @@ export async function mergeFileTrees(input: {
   const within = (parent: string, child: string) => { const rest = relative(parent, child); return rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest); };
   if (within(root, stagingDir) || within(repository.commonDir, stagingDir)) throw new GitDomainError('VALIDATION_FAILED', 400, 'Merge preparation must be outside the project and Git directory.');
   const trees: FileTree[] = []; const snapshots: Array<PortableSnapshot | null> = [];
+  const invalidResourcePaths = new Set<string>();
   for (const oid of [input.base, input.local, input.remote]) {
+    const files = await readFileTree(root, oid); trees.push(files);
     try {
-      const files = await readFileTree(root, oid); trees.push(files);
       // Only genuine namespace absence is plain. Partial or case-variant layouts
       // must enter the strict parser and can never be selected away as ordinary files.
       const hasMetadata = [...files.keys()].some(path => path.split('/')[0]!.normalize('NFC').toLowerCase() === '.open-design');
@@ -246,18 +403,31 @@ export async function mergeFileTrees(input: {
       if (!(error instanceof GitDomainError) || error.code !== 'PORTABLE_RESOURCE_MISSING') throw error;
       const paths = Array.isArray(error.details?.paths) ? error.details.paths.filter((value): value is string => typeof value === 'string')
         : [typeof error.details?.path === 'string' ? error.details.path : '.open-design/resources'];
-      return { tree: null, conflicts: [...new Set(paths)].map(path => conflict('resource', { path },
-        { oid: input.base, path }, { oid: input.local, path }, { oid: input.remote, path })) };
+      for (const path of paths) invalidResourcePaths.add(path);
+      snapshots.push(parsePortableMetadataEntries(
+        new Map([...files].filter(([path]) => isPortableMetadataPath(path)).map(([path, file]) => [path, file.bytes])),
+        new Set(files.keys()),
+        { allowMissingResources: true },
+      ));
     }
   }
   if (new Set(snapshots.flatMap(snapshot => snapshot ? [snapshot.manifest.repositoryProjectId] : [])).size > 1) {
     throw new GitDomainError('CONFLICT', 409, 'Cannot merge a different repository project.');
   }
   let merged: ReturnType<typeof mergePortableSnapshots>; let resourceTrees = trees;
+  const encountered: ProjectGitConflict[] = [];
+  const resolvedIds = new Set<string>();
   if (snapshots.every(snapshot => snapshot !== null)) {
     if (input.metadataSource !== undefined) throw new GitDomainError('VALIDATION_FAILED', 400,
       'Metadata source selection requires a plain Git input.', { reason: 'metadata_source_not_applicable' });
-    merged = mergePortableSnapshots(snapshots[0]!, snapshots[1]!, snapshots[2]!);
+    const preview = mergePortableSnapshots(snapshots[0]!, snapshots[1]!, snapshots[2]!);
+    encountered.push(...preview.conflicts);
+    if (input.resolutions && preview.conflicts.length) {
+      const ids = new Set(preview.conflicts.map(item => item.id));
+      const structured = input.resolutions.filter(item => ids.has(item.conflictId));
+      merged = mergePortableSnapshots(snapshots[0]!, snapshots[1]!, snapshots[2]!, structured);
+      for (const item of preview.conflicts) resolvedIds.add(item.id);
+    } else merged = preview;
   } else {
     if (input.metadataSource === undefined) throw new GitDomainError('VALIDATION_FAILED', 400,
       'Plain Git inputs require an explicit portable metadata source.', { reason: 'metadata_source_required' });
@@ -274,8 +444,15 @@ export async function mergeFileTrees(input: {
     resourceTrees = [trees[sourceIndex]!];
   }
   const conflicts = [...merged.conflicts]; const candidate: FileTree = new Map();
+  for (const path of [...invalidResourcePaths].sort()) {
+    const item = conflict('resource', { path },
+      { oid: input.base, path }, { oid: input.local, path }, { oid: input.remote, path });
+    conflicts.push(item); encountered.push(item);
+  }
   const renamePaths = renameConflicts(trees[0]!, trees[1]!, trees[2]!);
-  for (const path of [...renamePaths].sort()) conflicts.push(fileConflict(path, trees));
+  for (const path of [...renamePaths].sort()) {
+    const item = fileConflict(path, trees); conflicts.push(item); encountered.push(item);
+  }
   const scratch = await mkdtemp(join(stagingDir, 'git-merge-'));
   for (const path of [...new Set(trees.flatMap(tree => [...tree.keys()]))].filter(ordinary).sort()) {
     if (renamePaths.has(path)) continue;
@@ -286,36 +463,106 @@ export async function mergeFileTrees(input: {
       if (value.value) candidate.set(path, [l, r, b].find(file => file?.oid === value.value!.oid && file?.mode === value.value!.mode)!);
       continue;
     }
-    if (!b || !l || !r) { conflicts.push(fileConflict(path, trees)); continue; }
+    if (!b || !l || !r) { const item = fileConflict(path, trees); conflicts.push(item); encountered.push(item); continue; }
     const mode = mergeValue(b.mode, l.mode, r.mode);
     const content = mergeValue(b.oid, l.oid, r.oid);
-    if (mode.kind === 'conflict') { conflicts.push(fileConflict(path, trees)); continue; }
+    if (mode.kind === 'conflict') { const item = fileConflict(path, trees); conflicts.push(item); encountered.push(item); continue; }
     let bytes: Buffer;
     if (content.kind === 'merged') bytes = [l, r, b].find(file => file.oid === content.value)!.bytes;
     else {
-      if (![b, l, r].every(file => isText(file.bytes))) { conflicts.push(fileConflict(path, trees)); continue; }
+      if (![b, l, r].every(file => isText(file.bytes))) { const item = fileConflict(path, trees); conflicts.push(item); encountered.push(item); continue; }
       const text = await mergeGitText({ stagingDir: scratch, base: b.bytes, local: l.bytes, remote: r.bytes });
-      if (text.kind === 'conflict') { conflicts.push(fileConflict(path, trees)); continue; }
+      if (text.kind === 'conflict') { const item = fileConflict(path, trees); conflicts.push(item); encountered.push(item); continue; }
       bytes = text.content;
     }
     candidate.set(path, { oid: '', mode: mode.value!, bytes });
   }
-  if (conflicts.length || !merged.snapshot) return { tree: null, conflicts };
+  if (!merged.snapshot) return { tree: null, conflicts };
   for (const [path, bytes] of serializePortableMetadata(merged.snapshot)) candidate.set(path, { oid: '', mode: '100644', bytes: Buffer.from(bytes) });
   for (const resource of merged.snapshot.manifest.resources) for (const location of resource.locations) {
     const file = resourceTrees.map(tree => tree.get(location.path)).find(file => file && createHash('sha256').update(file.bytes).digest('hex') === resource.digest);
-    if (!file) conflicts.push(conflict('resource', { path: location.path },
-      ...trees.map(tree => tree.has(location.path) ? resource.digest : undefined) as [JsonValue | undefined, JsonValue | undefined, JsonValue | undefined]));
-    else candidate.set(location.path, file);
+    if (!file) {
+      const item = conflict('resource', { path: location.path },
+        ...trees.map(tree => tree.has(location.path) ? resource.digest : undefined) as [JsonValue | undefined, JsonValue | undefined, JsonValue | undefined]);
+      if (!conflicts.some(existing => existing.id === item.id)) {
+        conflicts.push(item); encountered.push(item);
+      }
+    } else candidate.set(location.path, file);
   }
-  if (conflicts.length) return { tree: null, conflicts };
   try { validateTreeEntries([...candidate].map(([path, file]) => ({ path, mode: file.mode }))); }
   catch (error) {
     if (!(error instanceof GitDomainError)) throw error;
     const paths = new Set(merged.snapshot.manifest.resources.flatMap(resource => resource.locations.map(location => location.path)));
-    return { tree: null, conflicts: [...candidate.keys()].filter(path => ordinary(path) || paths.has(path)).sort()
-      .map(path => fileConflict(path, trees, ordinary(path) ? 'file' : 'resource')) };
+    for (const path of [...candidate.keys()].filter(path => ordinary(path) || paths.has(path)).sort()) {
+      const item = fileConflict(path, trees, ordinary(path) ? 'file' : 'resource');
+      if (!conflicts.some(existing => existing.id === item.id)) {
+        conflicts.push(item); encountered.push(item);
+      }
+    }
   }
+  if (conflicts.length && input.resolutions) {
+    const decisions = new Map(input.resolutions.map(item => [item.conflictId, item]));
+    if (decisions.size !== input.resolutions.length || conflicts.some(item => !decisions.has(item.id))) {
+      throw new GitDomainError('PREVIEW_STALE', 409, 'Conflict decisions do not match the current conflict set.');
+    }
+    for (const item of conflicts) {
+      const decision = decisions.get(item.id)!;
+      resolvedIds.add(item.id);
+      if (!('path' in item) || !item.path || !['file', 'resource'].includes(item.kind)) {
+        throw new GitDomainError('VALIDATION_FAILED', 400, 'Structured conflict resolution requires an explicit structured merge decision.');
+      }
+      if (decision.kind === 'delete') {
+        candidate.delete(item.path);
+        if (item.kind === 'resource') {
+          for (let index = merged.snapshot.manifest.resources.length - 1; index >= 0; index--) {
+            const resource = merged.snapshot.manifest.resources[index]!;
+            const retained = resource.locations.filter(location => location.path !== item.path);
+            if (retained.length) resource.locations = [retained[0]!, ...retained.slice(1)];
+            else if (!resource.references.length) merged.snapshot.manifest.resources.splice(index, 1);
+            else throw resolutionError('A referenced resource must retain at least one content location.');
+          }
+        }
+        continue;
+      }
+      if (decision.kind === 'edit' && 'file' in decision) {
+        let bytes: Buffer;
+        try { bytes = Buffer.from(decision.file.content, 'base64'); }
+        catch { throw new GitDomainError('VALIDATION_FAILED', 400, 'Invalid resolved file content.'); }
+        if (bytes.toString('base64') !== decision.file.content) throw new GitDomainError('VALIDATION_FAILED', 400, 'Invalid resolved file content.');
+        candidate.set(item.path, { oid: '', mode: trees[1]!.get(item.path)?.mode ?? trees[2]!.get(item.path)?.mode ?? '100644', bytes });
+        continue;
+      }
+      if (decision.kind === 'edit' && 'resourceRef' in decision) {
+        const resource = merged.snapshot.manifest.resources.find(value => value.digest === decision.resourceRef);
+        const selected = resource?.locations.flatMap(location => resourceTrees.map(tree => tree.get(location.path)))
+          .find(file => file && createHash('sha256').update(file.bytes).digest('hex') === decision.resourceRef);
+        if (!selected) throw resolutionError('The selected retained resource content is unavailable.');
+        candidate.set(item.path, {
+          ...selected,
+          mode: trees[1]!.get(item.path)?.mode ?? trees[2]!.get(item.path)?.mode ?? selected.mode,
+        });
+        continue;
+      }
+      if (decision.kind !== 'select') throw new GitDomainError('VALIDATION_FAILED', 400, 'This conflict requires a file selection or edit.');
+      const index = decision.selectedSide === 'base' ? 0 : decision.selectedSide === 'local' ? 1 : 2;
+      const selected = trees[index]!.get(item.path);
+      if (selected) candidate.set(item.path, selected); else candidate.delete(item.path);
+    }
+    conflicts.length = 0;
+    for (const [path, bytes] of serializePortableMetadata(merged.snapshot)) {
+      candidate.set(path, { oid: '', mode: '100644', bytes: Buffer.from(bytes) });
+    }
+  }
+  if (input.resolutions) {
+    const currentIds = new Set(encountered.map(item => item.id));
+    if (currentIds.size !== encountered.length || currentIds.size !== input.resolutions.length
+      || input.resolutions.some(item => !currentIds.has(item.conflictId))
+      || [...currentIds].some(id => !resolvedIds.has(id))) {
+      throw new GitDomainError('PREVIEW_STALE', 409, 'Conflict decisions do not match the current conflict set.');
+    }
+  }
+  if (conflicts.length) return { tree: null, conflicts };
+  validateTreeEntries([...candidate].map(([path, file]) => ({ path, mode: file.mode })));
   // This checks the exact candidate metadata paths, every alias digest and legacy archive closure.
   parsePortableEntries(new Map([...candidate].map(([path, file]) => [path, file.bytes])));
   const env = { GIT_INDEX_FILE: join(scratch, 'index') };

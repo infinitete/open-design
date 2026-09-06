@@ -49,7 +49,7 @@ export interface RecoveredProjectTerminals {
 
 export interface ProjectGitRuntimeAdapterDeps {
   store: RuntimeStore;
-  gateFor(projectId: string): ProjectGate;
+  gateFor(projectId: string): ProjectGate | Promise<ProjectGate>;
   recoveryReady: Promise<void>;
   notify(projectId: string): void;
   permits: Map<string, ProjectRunPermit>;
@@ -91,7 +91,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
   return {
     async admit(projectId, expectedProjectRevision) {
       await deps.recoveryReady;
-      const release = await deps.gateFor(projectId).beginRun();
+      const release = await (await deps.gateFor(projectId)).beginRun();
       try {
         const binding = deps.store.getBinding(projectId);
         assertProjectRevision(
@@ -120,7 +120,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
     },
     async admitSession(projectId, expectedProjectRevision) {
       await deps.recoveryReady;
-      const release = await deps.gateFor(projectId).beginRun();
+      const release = await (await deps.gateFor(projectId)).beginRun();
       try {
         const binding = deps.store.getBinding(projectId);
         assertProjectRevision(
@@ -226,7 +226,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
     },
     async reconcileTerminalsWithLocalRepair(group, repair) {
       await deps.recoveryReady;
-      const release = await deps.gateFor(group.projectId).beginRun();
+      const release = await (await deps.gateFor(group.projectId)).beginRun();
       try {
         const binding = deps.store.getBinding(group.projectId);
         const exactManagedEpoch = binding !== null

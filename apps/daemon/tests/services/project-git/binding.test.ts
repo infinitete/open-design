@@ -400,7 +400,7 @@ it.each((['agent', 'model', 'plugin', 'linked_folder'] as const).flatMap(kind =>
   await f.git(f.a, 'push', 'origin', 'HEAD:main');
   const request = { actorId: 'local', idempotencyKey: 'availability', url: 'ssh://git@example.invalid/repo', branch: 'main' };
   const operation = await service.openRepository(request);
-  expect(resolver).toHaveBeenCalledExactlyOnceWith({ actorId: 'local', kind, id: label });
+  expect(resolver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ actorId: 'local', kind, id: label, projectId: expect.any(String) }));
   expect(operation.result!.dependencies).toEqual([{ kind, label, requiredForContent: kind === 'linked_folder',
     nextStep: { action: failed ? 'retry' : kind === 'linked_folder' ? 'locate_folder' : 'install_dependency', label } }]);
   expect(operation.status).toBe(kind === 'linked_folder' || failed ? 'failed' : 'succeeded');

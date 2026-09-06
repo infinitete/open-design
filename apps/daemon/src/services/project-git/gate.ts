@@ -2,7 +2,7 @@ import { GitDomainError } from './errors.js';
 import { acquireRepositoryLease, type RepositoryLease, type RepositoryLeaseInput } from './repository-lease.js';
 import { discoverObjectStore, discoverRepository } from './repository.js';
 import { lstat, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { initializeRepository, runGit, type GitInitializationInput } from './git-process.js';
 import type { ProjectGitStore } from '../../storage/project-git.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -178,7 +178,20 @@ const ownershipIdentity = (input: RepositoryLeaseInput) => JSON.stringify([input
 const unexpectedRepository = () => new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'The project repository changed. Refresh its registration before writing.');
 
 async function assertUnmanagedRoot(root: string): Promise<void> {
-  if (await realpath(root) !== root) throw unexpectedRepository();
+  try {
+    if (await realpath(root) !== root) throw unexpectedRepository();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const parent = dirname(root);
+    if (parent === root || join(parent, basename(root)) !== root || await realpath(parent) !== parent) throw unexpectedRepository();
+    // Close the absence-check race: a root that appeared must pass the normal
+    // realpath validation, while a still-missing root remains read-only here.
+    try {
+      const appeared = await lstat(root);
+      if (appeared.isSymbolicLink() || await realpath(root) !== root) throw unexpectedRepository();
+    }
+    catch (appeared) { if ((appeared as NodeJS.ErrnoException).code !== 'ENOENT') throw appeared; }
+  }
   const present = async (path: string) => {
     try { return await lstat(path); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null; }

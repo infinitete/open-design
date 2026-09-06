@@ -3,19 +3,20 @@ import { realpath, readFile, lstat, readdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
-import type { ApiError, ProjectGitBasis, ProjectGitPhase } from '@open-design/contracts';
+import { ProjectGitBasisSchema, ProjectGitConflictSchema } from '@open-design/contracts';
+import type { ApiError, JsonValue, ProjectGitBasis, ProjectGitConflict, ProjectGitOperation, ProjectGitPhase, ProjectGitResolution } from '@open-design/contracts';
 import type { ProjectGitBindingRecord, ProjectGitStore } from '../../storage/project-git.js';
 import type { ProjectGate } from './gate.js';
 import { GitDomainError } from './errors.js';
 import { runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, validateTreeEntries } from './repository.js';
 import { prepareCheckpoint, publishCheckpoint, isPrivateProjectGitPath, computeCheckpointContentDigest } from './checkpoint.js';
-import { exportPortableProject, parsePortableEntries } from './portable.js';
+import { canonicalJson, exportPortableProject, parsePortableEntries } from './portable.js';
 import { nativeHistoryRoot, projectGitPathsAtRoot } from './paths.js';
 import { readBindingEvidence } from './binding-evidence.js';
 import { mergeFileTrees } from './merge.js';
-import { materializeProject } from './materialize.js';
-import { gitTree, safeFile, recoverProjectOperations, within, sha256 } from './recovery.js';
+import { materializeProject, type MaterializePhase } from './materialize.js';
+import { durableWrite, gitTree, readBytes, safeFile, recoverProjectOperations, within, sha256 } from './recovery.js';
 
 const actorId = 'project-git-background';
 const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The project state changed. Refresh and retry.');
@@ -41,7 +42,7 @@ export interface ProjectGitSyncDeps {
   random(): number;
   checkpoint(projectId: string): Promise<string | null>;
   fetchTarget(projectId: string): Promise<string | null>;
-  mergeAndMaterialize(projectId: string, local: string, remote: string): Promise<string>;
+  mergeAndMaterialize(projectId: string, local: string, remote: string, operationId: string): Promise<string>;
   pushTarget(projectId: string, oid: string, generation: number): Promise<void>;
   confirmTarget(projectId: string): Promise<string | null>;
   isAncestor(projectId: string, ancestor: string, descendant: string): Promise<boolean>;
@@ -49,7 +50,94 @@ export interface ProjectGitSyncDeps {
   /** Coherent automatic detection/checkpoint, sharing the sole observed-content quiet clock. */
   automaticReady(projectId: string): Promise<boolean>;
 }
-export interface ProjectGitSyncRuntime extends ProjectGitSyncDeps { readonly recoveryReady: Promise<void> }
+export interface ProjectGitConflictEvidence {
+  schemaVersion: 1;
+  projectId: string;
+  canonicalRoot: string;
+  commonDir: string;
+  repositoryProjectId: string;
+  cloneId: string;
+  localBranch: string;
+  targetBranch: string;
+  base: string;
+  local: string;
+  remote: string;
+  basis: ProjectGitBasis;
+  previewContentDigest: string;
+  conflicts: ProjectGitConflict[];
+}
+export interface ProjectGitSyncRuntime extends ProjectGitSyncDeps {
+  readonly recoveryReady: Promise<void>;
+  resolveConflict(input: {
+    projectId: string;
+    conflictOperationId: string;
+    actorId: string;
+    idempotencyKey: string;
+    requestDigest: string;
+    basis: ProjectGitBasis;
+    resolutions: readonly ProjectGitResolution[];
+  }): Promise<ProjectGitOperation>;
+}
+
+type ConflictEvidenceReference = { path: string; digest: string };
+
+class RetainedConflictError extends GitDomainError {
+  constructor(readonly basis: ProjectGitBasis, readonly reference: ConflictEvidenceReference) {
+    super('CONFLICT', 409, 'Project histories require conflict resolution.', {
+      reason: 'merge_conflict',
+      nextStep: 'Review and resolve the retained conflict candidate.',
+    });
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseConflictEvidence(value: unknown): ProjectGitConflictEvidence {
+  const fail = () => new GitDomainError('RECOVERY_REQUIRED', 409, 'The retained conflict evidence is invalid.');
+  if (!isObject(value) || value.schemaVersion !== 1
+    || typeof value.projectId !== 'string' || !value.projectId
+    || typeof value.canonicalRoot !== 'string' || !value.canonicalRoot
+    || typeof value.commonDir !== 'string' || !value.commonDir
+    || typeof value.repositoryProjectId !== 'string' || !value.repositoryProjectId
+    || typeof value.cloneId !== 'string' || !value.cloneId
+    || typeof value.localBranch !== 'string' || !value.localBranch
+    || typeof value.targetBranch !== 'string' || !value.targetBranch
+    || typeof value.base !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value.base)
+    || typeof value.local !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value.local)
+    || typeof value.remote !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value.remote)
+    || typeof value.previewContentDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(value.previewContentDigest)
+    || !ProjectGitBasisSchema.safeParse(value.basis).success
+    || !Array.isArray(value.conflicts) || !value.conflicts.length
+    || !value.conflicts.every(item => ProjectGitConflictSchema.safeParse(item).success)
+    || new Set(value.conflicts.map(item => (item as ProjectGitConflict).id)).size !== value.conflicts.length) throw fail();
+  return value as unknown as ProjectGitConflictEvidence;
+}
+
+export async function readProjectGitConflictEvidence(
+  operationRoot: string,
+  operation: import('../../storage/project-git.js').ProjectGitJournalRecord,
+): Promise<ProjectGitConflictEvidence> {
+  const fail = () => new GitDomainError('RECOVERY_REQUIRED', 409, 'The retained conflict evidence is unavailable.');
+  const payload = isObject(operation.payload) ? operation.payload : null;
+  const reference = payload && isObject(payload.conflictEvidence) ? payload.conflictEvidence : null;
+  if (!reference || typeof reference.path !== 'string' || !/^conflict-[a-zA-Z0-9-]+\.json$/u.test(reference.path)
+    || typeof reference.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(reference.digest)
+    || operationRoot !== await realpath(operationRoot)) throw fail();
+  const path = join(operationRoot, reference.path);
+  if (!within(operationRoot, path)) throw fail();
+  let bytes: Buffer | null;
+  try { bytes = await readBytes(path); }
+  catch { throw fail(); }
+  if (!bytes || sha256(bytes) !== reference.digest) throw fail();
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString('utf8')); }
+  catch { throw fail(); }
+  const evidence = parseConflictEvidence(parsed);
+  if (evidence.projectId !== operation.projectId || !isDeepStrictEqual(evidence.basis, operation.basis)) throw fail();
+  return evidence;
+}
 
 function networkOperations(store: ProjectGitStore, projectId: string) {
   return store.listPendingOperations().filter(op => op.projectId === projectId && op.actorId === actorId
@@ -75,19 +163,27 @@ function errorPhase(error: unknown): ProjectGitPhase {
 }
 
 /** A single reconciliation pass. Success requires exact remote confirmation and exact outbox ACK. */
-export async function syncProject(input: { projectId: string; oneShot: boolean; deps: ProjectGitSyncDeps }): Promise<void> {
+export function syncProject(input: { projectId: string; oneShot: boolean; deps: ProjectGitSyncDeps }): Promise<void>;
+export function syncProject(input: { projectId: string; oneShot: true; deps: ProjectGitSyncDeps;
+  request: { actorId: string; idempotencyKey: string; requestDigest: string } }): Promise<ProjectGitOperation>;
+export async function syncProject(input: { projectId: string; oneShot: boolean; deps: ProjectGitSyncDeps;
+  request?: { actorId: string; idempotencyKey: string; requestDigest: string } }): Promise<ProjectGitOperation | null | void> {
   const { projectId, oneShot, deps } = input; const { store } = deps;
   assertNoRecovery(store, projectId);
   if (oneShot) await deps.checkpoint(projectId);
   else if (!await deps.automaticReady(projectId)) return;
   let binding = store.getBinding(projectId);
-  if (!binding?.localHead || !binding.remoteUrl || (!oneShot && !binding.autoSync)) return;
+  const userOperation = input.request && binding ? store.enqueueOperation({ projectId, kind: 'sync', basis: basisFor(binding), ...input.request, payload: { lane: 'network' } }) : null;
+  if (!binding?.localHead || !binding.remoteUrl || (!oneShot && !binding.autoSync)) {
+    if (userOperation) store.updateOperation(userOperation.id, { status: 'succeeded', phase: binding?.localHead ? 'local_saved' : 'waiting_idle', result: null, error: null });
+    return userOperation ? store.getOperation(userOperation.id) : null;
+  }
   const previous = networkOperations(store, projectId).filter(op => op.basis.bindingGeneration === binding!.generation);
   if (!oneShot && previous.some(op => ['auth_required', 'conflict'].includes(op.phase))) return;
   const queued = store.queuePush(projectId, binding.generation, binding.localHead);
   if (!oneShot && queued.nextAttemptAt > deps.now()) return;
   const original = binding; const generation = binding.generation;
-  const operation = store.enqueueOperation({ projectId, actorId, kind: 'sync', basis: basisFor(binding),
+  const operation = userOperation ?? store.enqueueOperation({ projectId, actorId, kind: 'sync', basis: basisFor(binding),
     idempotencyKey: randomUUID(), requestDigest: randomUUID(), payload: { lane: 'network' } });
   for (const op of previous) store.updateOperation(op.id, { status: 'failed', phase: op.phase, result: op.result, error: op.error });
   store.updateOperation(operation.id, { status: 'running', phase: 'syncing', result: null, error: null });
@@ -104,7 +200,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
   try {
     const remote = await deps.fetchTarget(projectId); binding = current();
     if (binding.localHead !== target) throw changed();
-    if (paused()) return;
+    if (paused()) return store.getOperation(operation.id);
     const observed = binding.observedRemoteHead;
     const rewritten = observed !== null && (remote === null || !await deps.isAncestor(projectId, observed, remote));
     if (current().localHead !== target) throw changed();
@@ -117,30 +213,32 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
       { reason: 'remote_rewritten', nextStep: 'Review and resolve the remote history change.' });
     store.observeRemote(projectId, generation, remote);
     if (action === 'merge' || action === 'fast_forward') {
-      target = await deps.mergeAndMaterialize(projectId, target, remote!); current();
+      target = await deps.mergeAndMaterialize(projectId, target, remote!, operation.id); current();
     }
     if (current().localHead !== target) throw changed();
     store.queuePush(projectId, generation, target);
     if (target !== remote) {
-      if (paused()) return;
+      if (paused()) return store.getOperation(operation.id);
       try { await deps.pushTarget(projectId, target, generation); }
       catch (error) {
         // A rejection can race another writer. Fetch and compare; never blindly repeat the push.
         if (error instanceof GitDomainError && error.code === 'CONFLICT') {
-          if (paused()) return;
+          if (paused()) return store.getOperation(operation.id);
           const advanced = await deps.fetchTarget(projectId); current();
           if (advanced !== remote) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The remote changed during push. Reconcile again.');
         }
         throw error;
       }
     }
-    if (paused()) return;
+    if (paused()) return store.getOperation(operation.id);
     const confirmed = await deps.confirmTarget(projectId); current();
     if (confirmed !== target) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The remote changed before confirmation. Reconcile again.');
     if (!store.ackPush(projectId, generation, target)) throw changed();
     store.observeRemote(projectId, generation, confirmed);
     store.updateOperation(operation.id, { status: 'succeeded', phase: 'synced', result: { head: target }, error: null });
+    return store.getOperation(operation.id);
   } catch (error) {
+    if (error instanceof RetainedConflictError) store.freezeConflictEvidence(operation.id, error.basis, error.reference);
     const phase = errorPhase(error);
     const queue = store.listDuePushes(Number.MAX_SAFE_INTEGER).find(item => item.projectId === projectId && item.generation === generation);
     if (queue?.targetOid === target) store.deferPush(projectId, generation, target,
@@ -162,6 +260,7 @@ export function createProjectGitSyncDeps(input: {
   db: Database.Database; store: ProjectGitStore; operationRoot: string; preparationRoot: string;
   resolveProject(projectId: string): ProjectGitSyncProject;
   now(): number; random(): number;
+  afterDurablePhase?: (phase: MaterializePhase) => Promise<void>;
 }): ProjectGitSyncRuntime {
   const { store } = input; store.assertDatabase(input.db);
   function binding(id: string) { const found = store.getBinding(id); if (!found) throw changed(); return found; }
@@ -421,7 +520,7 @@ export function createProjectGitSyncDeps(input: {
       try { await runGit({ cwd: project.root, args: ['merge-base', '--is-ancestor', ancestor, descendant] }); return true; }
       catch (error) { if (error instanceof GitDomainError && error.details?.exitCode === 1) return false; throw error; }
     },
-    async mergeAndMaterialize(id, local, remote) {
+    async mergeAndMaterialize(id, local, remote, operationId) {
       const { b, project, basis, candidate: preview } = await capture(id);
       if (basis.localHead !== local) throw changed();
       const fastForward = await deps.isAncestor(id, local, remote); let candidateOid = remote;
@@ -430,8 +529,28 @@ export function createProjectGitSyncDeps(input: {
         const bases = baseResult?.stdout.toString().trim().split('\n');
         if (bases?.length !== 1 || !bases[0]) throw new GitDomainError('CONFLICT', 409, 'History has no unique common ancestor.', { reason: 'merge_conflict' });
         const merged = await mergeFileTrees({ root: project.root, stagingDir: input.preparationRoot, base: bases[0], local, remote });
-        if (!merged.tree || merged.conflicts.length) throw new GitDomainError('CONFLICT', 409, 'Project histories require conflict resolution.',
-          { reason: 'merge_conflict', conflictIds: merged.conflicts.map(conflict => conflict.id) });
+        if (!merged.tree || merged.conflicts.length) {
+          const conflictEvidence: ProjectGitConflictEvidence = {
+            schemaVersion: 1,
+            projectId: id,
+            canonicalRoot: b.canonicalRoot,
+            commonDir: b.commonDir,
+            repositoryProjectId: b.repositoryProjectId,
+            cloneId: b.cloneId,
+            localBranch: b.localBranch ?? b.branch,
+            targetBranch: b.branch,
+            base: bases[0],
+            local,
+            remote,
+            basis,
+            previewContentDigest: preview.previewContentDigest,
+            conflicts: merged.conflicts,
+          };
+          const path = `conflict-${operationId}.json`;
+          const bytes = Buffer.from(canonicalJson(JSON.parse(JSON.stringify(conflictEvidence)) as JsonValue));
+          await durableWrite(join(input.operationRoot, path), bytes);
+          throw new RetainedConflictError(basis, { path, digest: sha256(bytes) });
+        }
         candidateOid = (await runGit({ cwd: project.root, args: ['commit-tree', merged.tree, '-p', local, '-p', remote],
           stdin: Buffer.from('Open Design merge\n'), ...(project.gitEnv ? { env: project.gitEnv } : {}) })).stdout.toString().trim();
       }
@@ -465,7 +584,73 @@ export function createProjectGitSyncDeps(input: {
     },
     async automaticReady(id) { await deps.detect(id); return observations.get(id)?.saved === true; },
   };
-  return Object.assign(deps, { recoveryReady: ready });
+  const resolveConflict: ProjectGitSyncRuntime['resolveConflict'] = async resolution => {
+    await ready;
+    const { projectId: id } = resolution;
+    const conflictOperation = store.getJournal(resolution.conflictOperationId);
+    if (!conflictOperation || conflictOperation.projectId !== id || conflictOperation.actorId !== resolution.actorId
+      || conflictOperation.kind !== 'sync' || conflictOperation.status !== 'waiting' || conflictOperation.phase !== 'conflict') {
+      throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict operation is no longer current.');
+    }
+    const existing = store.findOperation({ actorId: resolution.actorId, projectId: id, kind: 'resolve', idempotencyKey: resolution.idempotencyKey });
+    if (existing) {
+      if (existing.requestDigest !== resolution.requestDigest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
+      return store.getOperation(existing.id)!;
+    }
+    const evidence = await readProjectGitConflictEvidence(input.operationRoot, conflictOperation);
+    if (!isDeepStrictEqual(evidence.basis, resolution.basis)) throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict basis is no longer current.');
+    const verifyCurrent = async () => {
+      const current = await capture(id);
+      const bindingRecord = current.b;
+      if (!isDeepStrictEqual(current.basis, evidence.basis)
+        || current.candidate.previewContentDigest !== evidence.previewContentDigest
+        || current.project.root !== evidence.canonicalRoot
+        || bindingRecord.commonDir !== evidence.commonDir
+        || bindingRecord.repositoryProjectId !== evidence.repositoryProjectId
+        || bindingRecord.cloneId !== evidence.cloneId
+        || (bindingRecord.localBranch ?? bindingRecord.branch) !== evidence.localBranch
+        || bindingRecord.branch !== evidence.targetBranch) {
+        throw new GitDomainError('PREVIEW_STALE', 409, 'The local conflict basis is no longer current.');
+      }
+      const remote = await deps.fetchTarget(id);
+      if (remote !== evidence.remote || !isDeepStrictEqual(readBasis(id), evidence.basis)) {
+        throw new GitDomainError('PREVIEW_STALE', 409, 'The remote conflict basis is no longer current.');
+      }
+      return current;
+    };
+    let current = await verifyCurrent();
+    const merged = await mergeFileTrees({ root: current.project.root, stagingDir: input.preparationRoot,
+      base: evidence.base, local: evidence.local, remote: evidence.remote, resolutions: resolution.resolutions });
+    if (!merged.tree || merged.conflicts.length) throw new GitDomainError('PREVIEW_STALE', 409, 'The conflict set changed. Create a new resolution.');
+    current = await verifyCurrent();
+    const operation = store.enqueueOperation({ projectId: id, actorId: resolution.actorId, kind: 'resolve', basis: evidence.basis,
+      idempotencyKey: resolution.idempotencyKey, requestDigest: resolution.requestDigest,
+      payload: { conflictOperationId: resolution.conflictOperationId } });
+    store.updateOperation(operation.id, { status: 'running', phase: 'waiting_idle', result: null, error: null });
+    try {
+      const candidateOid = (await runGit({ cwd: current.project.root,
+        args: ['commit-tree', merged.tree, '-p', evidence.local, '-p', evidence.remote],
+        stdin: Buffer.from('Open Design merge resolution\n'), ...(current.project.gitEnv ? { env: current.project.gitEnv } : {}) })).stdout.toString().trim();
+      const tree = await gitTree(current.project.root, candidateOid);
+      const snapshot = parsePortableEntries(new Map([...tree].map(([path, file]) => [path, file.bytes])));
+      unchanged(id, evidence.basis);
+      await materializeProject({ projectId: id, root: current.project.root, branch: current.project.branch,
+        operationId: operation.id, operationDir: input.operationRoot, publicationMode: 'commit', basis: evidence.basis,
+        candidateOid, snapshot, store, db: input.db, gate: current.project.gate,
+        previewContentDigest: evidence.previewContentDigest, readBasis: () => readBasis(id),
+        ...(current.project.gitEnv ? { gitEnv: current.project.gitEnv } : {}),
+        ...(input.afterDurablePhase ? { afterDurablePhase: input.afterDurablePhase } : {}),
+        exportCurrentPortable: () => exported(id, current.b, current.project) });
+      return store.getOperation(operation.id)!;
+    } catch (error) {
+      const journal = store.getJournal(operation.id);
+      if (journal && journal.status === 'running' && !journal.recoveryData) {
+        store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null, error: publicError(error) });
+      }
+      throw error;
+    }
+  };
+  return Object.assign(deps, { recoveryReady: ready, resolveConflict });
 }
 
 export function retryDelayMs(attempt: number, random: () => number): number {

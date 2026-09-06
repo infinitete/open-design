@@ -150,7 +150,7 @@ export type ProjectGitAction =
   | { kind: 'open'; url: string; branch: string }
   | { kind: 'restore_preview'; oid: string }
   | { kind: 'restore'; previewId: string }
-  | { kind: 'resolve'; operationId: string; resolutions: ProjectGitResolution[] }
+  | { kind: 'resolve'; operationId: string; resolutions: ProjectGitResolution[]; basis: ProjectGitBasis }
   | { kind: 'retry'; operationId: string };
 
 export interface ProjectGitRequestContext extends ProjectMutationRevision {
@@ -294,7 +294,7 @@ export interface ProjectGitFileRequest {
 export interface ProjectGitConversationsRequest {
   oid: string;
 }
-export type ProjectGitConversationsResponse = PortableSnapshot;
+export type ProjectGitConversationsResponse = PortableSnapshot | null;
 
 export interface ProjectGitRestorePreviewRequest extends ProjectMutationRevision {
   oid: string;
@@ -314,6 +314,7 @@ export interface ProjectGitConflictsResponse {
 export interface ProjectGitResolveRequest extends ProjectMutationRevision {
   operationId: string;
   resolutions: ProjectGitResolution[];
+  basis: ProjectGitBasis;
 }
 export type ProjectGitResolveResponse = ProjectGitAccepted;
 
@@ -371,9 +372,38 @@ export const ProjectGitResolutionSchema = z.union([
   }).strict(),
 ]);
 
+export const ProjectGitConflictContentSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('missing') }).strict(),
+  z.object({ kind: z.literal('text'), content: z.string() }).strict(),
+  z.object({ kind: z.literal('json'), value: jsonValueSchema }).strict(),
+  z.object({ kind: z.literal('resource'), resourceRef: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('file'), file: projectGitFileResponseSchema }).strict(),
+]);
+
+const projectGitConflictBaseSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['file', 'field', 'message', 'conversation_order', 'resource']),
+  base: ProjectGitConflictContentSchema,
+  local: ProjectGitConflictContentSchema,
+  remote: ProjectGitConflictContentSchema,
+}).strict();
+
+export const ProjectGitConflictSchema = z.union([
+  projectGitConflictBaseSchema.extend({ path: z.string().min(1) }).strict(),
+  projectGitConflictBaseSchema.extend({ recordId: z.string().min(1) }).strict(),
+]);
+
 const projectMutationRevisionSchema = {
   expectedProjectRevision: z.number().int().nonnegative().optional(),
 };
+
+export const ProjectGitBasisSchema = z.object({
+  projectRevision: z.number().int().nonnegative(),
+  contentRevision: z.number().int().nonnegative(),
+  localHead: z.string().nullable(),
+  remoteHead: z.string().nullable(),
+  bindingGeneration: z.number().int().nonnegative(),
+}).strict();
 
 export const ProjectGitBindConfirmationSchema = z.object({
   metadataSource: z.enum(['local', 'remote']).optional(),
@@ -383,6 +413,48 @@ export const ProjectGitBindConfirmationSchema = z.object({
 
 export const ProjectGitBindRequestSchema = z.object({
   previewId: z.string().min(1), confirmation: ProjectGitBindConfirmationSchema.optional(), ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitBindingPreviewRequestSchema = z.object({
+  url: z.string().min(1),
+  branch: z.string().min(1),
+  ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitUnbindRequestSchema = z.object(projectMutationRevisionSchema).strict();
+
+export const ProjectGitUpdateRequestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('pause'), ...projectMutationRevisionSchema }).strict(),
+  z.object({ action: z.literal('resume'), ...projectMutationRevisionSchema }).strict(),
+]);
+
+export const ProjectGitSyncRequestSchema = z.object(projectMutationRevisionSchema).strict();
+
+export const ProjectGitOpenRequestSchema = z.object({
+  url: z.string().min(1),
+  branch: z.string().min(1),
+}).strict();
+
+export const ProjectGitRestorePreviewRequestSchema = z.object({
+  oid: z.string().min(1),
+  ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitRestoreRequestSchema = z.object({
+  previewId: z.string().min(1),
+  ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitResolveRequestSchema = z.object({
+  operationId: z.string().min(1),
+  resolutions: z.array(ProjectGitResolutionSchema),
+  basis: ProjectGitBasisSchema,
+  ...projectMutationRevisionSchema,
+}).strict();
+
+export const ProjectGitRetryRequestSchema = z.object({
+  operationId: z.string().min(1),
+  ...projectMutationRevisionSchema,
 }).strict();
 
 export const ProjectGitDependencySchema = z.object({
@@ -399,8 +471,7 @@ export const ProjectGitBindingPreviewSchema = z.object({
 
 export const ProjectGitPreviewSchema = z.object({
   id: z.string().min(1), kind: z.enum(['enable', 'bind', 'restore', 'resolve']),
-  basis: z.object({ projectRevision: z.number().int().nonnegative(), contentRevision: z.number().int().nonnegative(),
-    localHead: z.string().nullable(), remoteHead: z.string().nullable(), bindingGeneration: z.number().int().nonnegative() }).strict(),
+  basis: ProjectGitBasisSchema,
   targetOid: z.string().nullable(), expiresAt: z.number().finite(),
   changes: z.object({ addedPaths: z.array(z.string()), modifiedPaths: z.array(z.string()), deletedPaths: z.array(z.string()),
     settingsChanged: z.number().int().nonnegative(), conversationsChanged: z.number().int().nonnegative(),
@@ -450,6 +521,7 @@ export const ProjectGitActionSchema = z.discriminatedUnion('kind', [
     kind: z.literal('resolve'),
     operationId: z.string().min(1),
     resolutions: z.array(ProjectGitResolutionSchema),
+    basis: ProjectGitBasisSchema,
   }).strict(),
   z.object({ kind: z.literal('retry'), operationId: z.string().min(1) }).strict(),
 ]);

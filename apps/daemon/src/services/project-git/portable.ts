@@ -132,7 +132,11 @@ export const isPortableMetadataPath = (file: string): boolean => file === '.open
   || /^\.open-design\/conversations\/[^/]+\/(?:conversation\.json|messages\/[^/]+\.json)$/u.test(file);
 
 /** Metadata/layout classification only; resource integrity belongs to parsePortableEntries. */
-export function parsePortableMetadataEntries(entries: ReadonlyMap<string, Uint8Array>, availablePaths: ReadonlySet<string>): PortableSnapshot {
+export function parsePortableMetadataEntries(
+  entries: ReadonlyMap<string, Uint8Array>,
+  availablePaths: ReadonlySet<string>,
+  options?: { allowMissingResources?: boolean },
+): PortableSnapshot {
   if ([...entries.keys()].some(file => !isPortableMetadataPath(file))) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Only portable metadata is accepted.');
   validateTreeEntries([...availablePaths].filter(file => file.startsWith('.open-design/')).map(file => ({ path: file, mode: '100644' })));
   const decode = (file: string): unknown => {
@@ -167,7 +171,9 @@ export function parsePortableMetadataEntries(entries: ReadonlyMap<string, Uint8A
     if (file.startsWith('.open-design/') && !allowed.has(file)) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Unrecognized portable layout');
   }
   const missing = [...allowed].filter(file => !availablePaths.has(file));
-  if (missing.length) throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Declared portable paths are missing', { paths: missing });
+  if (missing.length && !options?.allowMissingResources) {
+    throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Declared portable paths are missing', { paths: missing });
+  }
   return snapshot;
 }
 

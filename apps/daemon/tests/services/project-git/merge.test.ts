@@ -53,6 +53,57 @@ describe('portable three-way merge', () => {
     expect(() => mergePortableSnapshots(base, local, remote)).toThrow(/repository project/i);
   });
 
+  it('applies one explicit decision for every structured conflict and validates the complete candidate', () => {
+    const base = snapshot(); base.messages = [message('message')];
+    const local = clone(base); const remote = clone(base);
+    local.project.name = 'Local'; remote.project.name = 'Remote';
+    local.messages[0]!.content = 'local message'; remote.messages[0]!.content = 'remote message';
+    const preview = mergePortableSnapshots(base, local, remote);
+    const field = preview.conflicts.find(item => item.kind === 'field' && 'path' in item && item.path === 'project/name')!;
+    const record = preview.conflicts.find(item => item.kind === 'message')!;
+
+    const resolved = mergePortableSnapshots(base, local, remote, [
+      { conflictId: field.id, kind: 'select', selectedSide: 'remote' },
+      { conflictId: record.id, kind: 'edit', value: JSON.parse(JSON.stringify({ ...message('message'), content: 'edited merge' })) as JsonValue },
+    ]);
+
+    expect(resolved.conflicts).toEqual([]);
+    expect(resolved.snapshot?.project.name).toBe('Remote');
+    expect(resolved.snapshot?.messages).toEqual([{ ...message('message'), content: 'edited merge' }]);
+    expect(parsePortableSnapshot(resolved.snapshot)).toEqual(resolved.snapshot);
+  });
+
+  it('rebuilds conversation predecessors from an explicit complete turn order', () => {
+    const base = snapshot(); base.messages.push(message('base'));
+    const local = clone(base); const remote = clone(base);
+    local.messages.push(message('local', 'base'));
+    remote.messages.push(message('remote', 'base'));
+    const preview = mergePortableSnapshots(base, local, remote);
+    const order = preview.conflicts.find(item => item.kind === 'conversation_order')!;
+
+    const resolved = mergePortableSnapshots(base, local, remote, [{
+      conflictId: order.id,
+      kind: 'order',
+      orderedTurnIds: ['turn-base', 'turn-remote', 'turn-local'],
+    }]);
+
+    expect(resolved.conflicts).toEqual([]);
+    expect(resolved.snapshot?.messages.map(item => [item.id, item.predecessorId])).toEqual([
+      ['base', null], ['remote', 'base'], ['local', 'remote'],
+    ]);
+    expect(parsePortableSnapshot(resolved.snapshot)).toEqual(resolved.snapshot);
+  });
+
+  it.each(['missing', 'duplicate', 'unknown'] as const)('rejects %s structured conflict decisions', kind => {
+    const base = snapshot(); const local = clone(base); const remote = clone(base);
+    local.project.name = 'Local'; remote.project.name = 'Remote';
+    const conflictId = mergePortableSnapshots(base, local, remote).conflicts[0]!.id;
+    const valid = { conflictId, kind: 'select' as const, selectedSide: 'local' as const };
+    const resolutions = kind === 'missing' ? [] : kind === 'duplicate' ? [valid, valid]
+      : [{ ...valid, conflictId: 'unknown-conflict' }];
+    expect(() => mergePortableSnapshots(base, local, remote, resolutions)).toThrow();
+  });
+
   it('preserves arbitrary review field keys when nested preference objects merge', () => {
     const base = snapshot(); base.project.preferences.designSystemReview = {};
     const local = clone(base); const remote = clone(base);
@@ -143,6 +194,18 @@ describe('portable three-way merge', () => {
       conflicts: [expect.objectContaining({ kind: 'resource' })] });
   });
 
+  it('resolves a structured resource conflict by selecting one complete retained side', () => {
+    const base = snapshot(); const digest = 'a'.repeat(64); const path = `.open-design/resources/${digest}/file`;
+    base.manifest.resources = [{ digest, locations: [{ path, purpose: 'attachment' }], references: [] }];
+    const local = clone(base); local.manifest.resources = [];
+    const remote = clone(base); remote.manifest.resources[0]!.locations.push({ path, purpose: 'skill' });
+    const conflict = mergePortableSnapshots(base, local, remote).conflicts.find(item => item.kind === 'resource')!;
+    const resolved = mergePortableSnapshots(base, local, remote, [{ conflictId: conflict.id, kind: 'select', selectedSide: 'remote' }]);
+    expect(resolved.conflicts).toEqual([]);
+    expect(resolved.snapshot?.manifest.resources).toEqual(remote.manifest.resources);
+    expect(parsePortableSnapshot(resolved.snapshot)).toEqual(resolved.snapshot);
+  });
+
   it('keeps every shared resource alias and rebuilds reciprocal references from merged records', () => {
     const base = snapshot(); const local = clone(base); const remote = clone(base); const digest = 'a'.repeat(64);
     const path = `.open-design/resources/${digest}/shared`;
@@ -164,7 +227,16 @@ describe('portable three-way merge', () => {
     base.manifest.resources = [{ digest, locations: [{ path: `.open-design/resources/${digest}/file`, purpose: 'attachment' }], references: ['first'] }];
     const local = clone(base); const remote = clone(base); local.messages[0]!.resourceRefs = []; local.manifest.resources = [];
     remote.messages.push({ ...message('second', 'first'), resourceRefs: [digest] }); remote.manifest.resources[0]!.references.push('second');
-    expect(mergePortableSnapshots(base, local, remote)).toMatchObject({ snapshot: null, conflicts: [expect.objectContaining({ kind: 'resource' })] });
+    const preview = mergePortableSnapshots(base, local, remote);
+    expect(preview).toMatchObject({ snapshot: null, conflicts: [expect.objectContaining({ kind: 'resource' })] });
+    const resolved = mergePortableSnapshots(base, local, remote, [{
+      conflictId: preview.conflicts[0]!.id,
+      kind: 'select',
+      selectedSide: 'remote',
+    }]);
+    expect(resolved.conflicts).toEqual([]);
+    expect(resolved.snapshot?.manifest.resources[0]?.digest).toBe(digest);
+    expect(parsePortableSnapshot(resolved.snapshot)).toEqual(resolved.snapshot);
   });
 
   it('returns the semantic array conflict before reading an unresolved required project field', () => {
@@ -315,6 +387,45 @@ describe('candidate Git tree merge', () => {
     expect(existsSync(join(f.a, 'file.txt'))).toBe(false); expect(existsSync(join(f.a, '.git/index'))).toBe(false);
   });
 
+  it('applies mixed structured and file decisions to one complete private candidate tree', async () => {
+    const f = await fixture(); const b = snapshot(); const l = clone(b); const r = clone(b);
+    l.project.name = 'Local'; r.project.name = 'Remote';
+    const base = await commit(f, { 'file.txt': 'base' }, b);
+    const local = await commit(f, { 'file.txt': 'local' }, l);
+    const remote = await commit(f, { 'file.txt': 'remote' }, r);
+    const preview = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote });
+    const field = preview.conflicts.find(item => item.kind === 'field')!;
+    const file = preview.conflicts.find(item => item.kind === 'file')!;
+
+    const resolved = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, resolutions: [
+      { conflictId: field.id, kind: 'select', selectedSide: 'remote' },
+      { conflictId: file.id, kind: 'edit', file: { encoding: 'base64', content: Buffer.from('merged').toString('base64'), mediaType: 'text/plain' } },
+    ] });
+
+    expect(resolved.conflicts).toEqual([]);
+    const entries = await readTree(f.a, resolved.tree!);
+    expect(parsePortableEntries(entries).project.name).toBe('Remote');
+    expect(Buffer.from(entries.get('file.txt')!).toString()).toBe('merged');
+  });
+
+  it('resolves a whole-file conflict from a retained resource reference', async () => {
+    const f = await fixture(); const resourceBytes = Buffer.from([0, 1, 2, 3]);
+    const digest = createHash('sha256').update(resourceBytes).digest('hex');
+    const resourcePath = `.open-design/resources/${digest}/content`; const portable = snapshot();
+    portable.manifest.resources = [{ digest, locations: [{ path: resourcePath, purpose: 'attachment' }], references: [] }];
+    const base = await commit(f, { 'file.bin': 'base', [resourcePath]: resourceBytes }, portable);
+    const local = await commit(f, { 'file.bin': 'local', [resourcePath]: resourceBytes }, portable);
+    const remote = await commit(f, { 'file.bin': 'remote', [resourcePath]: resourceBytes }, portable);
+    const preview = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote });
+    const file = preview.conflicts.find(item => item.kind === 'file' && 'path' in item && item.path === 'file.bin')!;
+
+    const resolved = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote,
+      resolutions: [{ conflictId: file.id, kind: 'edit', resourceRef: digest }] });
+
+    expect(resolved.conflicts).toEqual([]);
+    expect((await readTree(f.a, resolved.tree!)).get('file.bin')).toEqual(resourceBytes);
+  });
+
   it('merges fields structurally even when canonical metadata changes occupy one text line', async () => {
     const f = await fixture(); const b = snapshot(); const l = clone(b); const r = clone(b);
     l.project.name = 'Local'; r.project.customInstructions = 'Remote';
@@ -359,8 +470,12 @@ describe('candidate Git tree merge', () => {
     const corrupt = await commit(f, { [resourcePath]: 'wrong digest' }, l);
     expect(await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote: corrupt })).toMatchObject({ tree: null, conflicts: [expect.objectContaining({ kind: 'resource' })] });
     const missing = await commit(f, {}, l);
-    expect(await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote: missing })).toMatchObject({ tree: null,
-      conflicts: [expect.objectContaining({ kind: 'resource', path: resourcePath })] });
+    const missingPreview = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote: missing });
+    expect(missingPreview).toMatchObject({ tree: null, conflicts: [expect.objectContaining({ kind: 'resource', path: resourcePath })] });
+    const resolved = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote: missing,
+      resolutions: [{ conflictId: missingPreview.conflicts[0]!.id, kind: 'select', selectedSide: 'local' }] });
+    expect(resolved.conflicts).toEqual([]);
+    expect((await readTree(f.a, resolved.tree!)).get(resourcePath)).toEqual(bytes);
   });
 
   it('refuses another repository project and revision expressions before producing a candidate', async () => {
@@ -379,6 +494,15 @@ describe('candidate Git tree merge', () => {
     const base = await commit(f, {}, b); const local = await commit(f, { [localPath]: bytes }, l); const remote = await commit(f, { [remotePath]: bytes }, r);
     const result = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote });
     expect(result.tree).toBeNull(); expect(result.conflicts).toContainEqual(expect.objectContaining({ kind: 'resource', path: localPath }));
+    const resolved = await mergeFileTrees({ root: f.a, stagingDir: f.stagingDir, base, local, remote, resolutions: result.conflicts.map(item => ({
+      conflictId: item.id,
+      ...(item.path === localPath
+        ? { kind: 'select' as const, selectedSide: 'local' as const }
+        : { kind: 'delete' as const }),
+    })) });
+    expect(resolved.conflicts).toEqual([]);
+    const entries = await readTree(f.a, resolved.tree!);
+    expect(entries.get(localPath)).toEqual(bytes); expect(entries.has(remotePath)).toBe(false);
   });
 
   it('rejects preparation directories inside the project even when their name starts with two dots', async () => {

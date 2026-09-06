@@ -71,7 +71,7 @@ export interface ProjectGitCoordination extends ProjectGitMutationAdapter {
 
 export interface ProjectGitMutationAdapterDeps {
   store: MutationStore;
-  gateFor(projectId: string): ProjectGate;
+  gateFor(projectId: string): ProjectGate | Promise<ProjectGate>;
   recoveryReady: Promise<void>;
   notify(projectId: string): void;
 }
@@ -192,7 +192,7 @@ export function createProjectGitMutationAdapter(
   return {
     async withProjectMutation<T>(input: ProjectMutationInput, work: () => Promise<T>): Promise<T> {
       await deps.recoveryReady;
-      return deps.gateFor(input.projectId).mutate(async () => {
+      return (await deps.gateFor(input.projectId)).mutate(async () => {
         const binding = deps.store.getBinding(input.projectId);
         assertProjectRevision(
           binding !== null,
@@ -211,7 +211,7 @@ export function createProjectGitMutationAdapter(
     },
     async withProjectRead<T>(projectId: string, work: () => Promise<T>): Promise<T> {
       await deps.recoveryReady;
-      return deps.gateFor(projectId).read(work);
+      return (await deps.gateFor(projectId)).read(work);
     },
     startup: {
       async repairIfNeeded<T>(input: {
@@ -223,7 +223,7 @@ export function createProjectGitMutationAdapter(
         work(): Promise<T>;
       }): Promise<{ mutated: false } | { mutated: true; value: T }> {
         await deps.recoveryReady;
-        return deps.gateFor(input.projectId).mutate(async () => {
+        return (await deps.gateFor(input.projectId)).mutate(async () => {
           const binding = deps.store.getBinding(input.projectId);
           const exactManagedEpoch = binding !== null
             && binding.generation === input.bindingGeneration

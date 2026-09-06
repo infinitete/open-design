@@ -2270,8 +2270,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         console.log(
           `[${opts.logTag}] ${req.method} anthropic ${anthropicUrl} model=${model} project=${projectId} tools=${hasTools ? 'on' : 'off'}`,
         );
-        if (hasTools) return runAnthropicToolChat(res, anthropicUrl, anthropicHeaders);
-        return runAnthropicChatStream(res, {
+        if (hasTools) return await runAnthropicToolChat(res, anthropicUrl, anthropicHeaders);
+        return await runAnthropicChatStream(res, {
           url: anthropicUrl,
           headers: anthropicHeaders,
           payload: buildAnthropicChatPayload(model, systemPrompt, messages, maxTokens),
@@ -2284,8 +2284,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         console.log(
           `[${opts.logTag}] ${req.method} gemini ${geminiUrl} model=${model} project=${projectId} tools=${hasTools ? 'on' : 'off'}`,
         );
-        if (hasTools) return runGeminiToolChat(res, geminiUrl, geminiHeaders);
-        return runGeminiChatStream(res, {
+        if (hasTools) return await runGeminiToolChat(res, geminiUrl, geminiHeaders);
+        return await runGeminiChatStream(res, {
           url: geminiUrl,
           headers: geminiHeaders,
           payload: buildGeminiChatPayload(systemPrompt, messages, maxTokens),

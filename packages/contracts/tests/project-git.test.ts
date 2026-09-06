@@ -438,6 +438,13 @@ describe('project git API contracts', () => {
       {
         kind: 'resolve',
         operationId: 'operation-one',
+        basis: {
+          projectRevision: 3,
+          contentRevision: 8,
+          localHead: 'a'.repeat(40),
+          remoteHead: 'b'.repeat(40),
+          bindingGeneration: 2,
+        },
         resolutions: [
           { conflictId: 'conflict-one', kind: 'select', selectedSide: 'local' },
           { conflictId: 'conflict-two', kind: 'edit', value: null },

@@ -6,9 +6,10 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
-import { chooseSyncAction, retryDelayMs, createProjectGitSyncDeps, syncProject } from '../../../src/services/project-git/sync.js';
+import { chooseSyncAction, retryDelayMs, createProjectGitSyncDeps, readProjectGitConflictEvidence, syncProject } from '../../../src/services/project-git/sync.js';
 import { createGitFixture } from '../../helpers/project-git.js';
 import { fixtureGitEnv, portableSnapshot, writeFixtureEntries, createCrashFixture } from '../../helpers/project-git-crash-worker.js';
 import { closeDatabase, insertProject, insertConversation, openDatabase } from '../../../src/db.js';
@@ -59,14 +60,30 @@ async function fixture(withMessage = false) {
     gates.set(id, await getProjectGate({ root: f[id], instanceId: 'sync-fixture', ownerDomain: await getRepositoryOwnerDomain() ?? 'unknown', dataRootId: data }));
   }
   let now = 100_000;
+  let afterDurablePhase: ((phase: import('../../../src/services/project-git/materialize.js').MaterializePhase) => Promise<void>) | undefined;
   const compose = () => createProjectGitSyncDeps({ db: db!, store, operationRoot, preparationRoot, now: () => now, random: () => 0.5,
-    resolveProject: (id: string) => ({ root: id === 'a' ? f.a : f.b, branch: 'main', gate: gates.get(id)!, gitEnv }) });
+    resolveProject: (id: string) => ({ root: id === 'a' ? f.a : f.b, branch: 'main', gate: gates.get(id)!, gitEnv }),
+    ...(afterDurablePhase ? { afterDurablePhase } : {}) });
   let deps = compose();
   return { ...f, head, operationRoot, preparationRoot, gitEnv, gates, get db() { return db!; }, get store() { return store; }, get deps() { return deps; },
     advance: (ms: number) => { now += ms; },
-    reopen() { db!.close(); db = new Database(join(data, 'app.sqlite')); store = createProjectGitStore(db); deps = compose(); },
+    interruptAfterPrepared() { afterDurablePhase = async phase => { if (phase === 'prepared') throw new Error('resolve interrupted'); }; deps = compose(); },
+    reopen() { afterDurablePhase = undefined; db!.close(); db = new Database(join(data, 'app.sqlite')); store = createProjectGitStore(db); deps = compose(); },
     sync: (projectId: string, oneShot = true) => syncProject({ projectId, oneShot, deps }),
   };
+}
+
+async function retainedMessageConflict(f: Awaited<ReturnType<typeof fixture>>) {
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'a-message'); await f.sync('a');
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('remote message', 'b-message'); await f.deps.checkpoint('b');
+  await expect(f.sync('b')).rejects.toMatchObject({ code: 'CONFLICT' });
+  const operation = f.store.listPendingOperations().find(item => item.projectId === 'b' && item.phase === 'conflict')!;
+  const evidence = await readProjectGitConflictEvidence(f.operationRoot, operation);
+  return { operation, evidence, resolution: {
+    conflictId: evidence.conflicts.find(item => item.kind === 'message')!.id,
+    kind: 'select' as const,
+    selectedSide: 'local' as const,
+  } };
 }
 
 it('distinguishes equality, ancestry, divergence and remote rewrites', () => {
@@ -113,7 +130,141 @@ it('retains a same-message conflict without materializing remote records or chan
   expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
   expect(await readFile(join(f.b, messageFile))).toEqual(bytes);
   expect(f.db.prepare('SELECT content FROM messages WHERE id = ?').get('b-message')).toEqual({ content: 'remote message' });
-  expect(f.store.listPendingOperations()).toContainEqual(expect.objectContaining({ projectId: 'b', phase: 'conflict' }));
+  const conflict = f.store.listPendingOperations().find(operation => operation.projectId === 'b' && operation.phase === 'conflict');
+  expect(conflict).toMatchObject({
+    error: { code: 'CONFLICT', details: { reason: 'merge_conflict' } },
+    payload: {
+      lane: 'network',
+      conflictEvidence: {
+        path: expect.stringMatching(/^conflict-[a-zA-Z0-9-]+\.json$/u),
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      },
+    },
+  });
+  expect(conflict!.error!.details).not.toHaveProperty('conflicts');
+  expect(conflict!.error!.details).not.toHaveProperty('base');
+  expect(conflict!.error!.details).not.toHaveProperty('local');
+  expect(conflict!.error!.details).not.toHaveProperty('remote');
+  const reference = (conflict!.payload as { conflictEvidence: { path: string; digest: string } }).conflictEvidence;
+  const evidenceBytes = await readFile(join(f.operationRoot, reference.path));
+  expect(createHash('sha256').update(evidenceBytes).digest('hex')).toBe(reference.digest);
+  expect(JSON.parse(evidenceBytes.toString())).toMatchObject({
+    schemaVersion: 1,
+    projectId: 'b',
+    canonicalRoot: f.b,
+    repositoryProjectId: 'repository',
+    base: expect.stringMatching(/^[a-f0-9]{40}$/u),
+    local: head,
+    remote: expect.stringMatching(/^[a-f0-9]{40}$/u),
+    basis: conflict!.basis,
+    previewContentDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    conflicts: [expect.objectContaining({ kind: 'message', recordId: 'message' })],
+  });
+  expect((await fs.stat(join(f.operationRoot, reference.path))).mode & 0o777).toBe(0o600);
+  await expect(readProjectGitConflictEvidence(f.operationRoot, conflict!)).resolves.toMatchObject({ projectId: 'b', conflicts: [{ kind: 'message' }] });
+  await writeFile(join(f.operationRoot, reference.path), Buffer.concat([evidenceBytes, Buffer.from(' ')]));
+  await expect(readProjectGitConflictEvidence(f.operationRoot, conflict!)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  await unlink(join(f.operationRoot, reference.path));
+  await expect(readProjectGitConflictEvidence(f.operationRoot, conflict!)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+  const outside = join(f.root, 'outside-conflict.json'); await writeFile(outside, evidenceBytes);
+  await fs.symlink(outside, join(f.operationRoot, reference.path));
+  await expect(readProjectGitConflictEvidence(f.operationRoot, conflict!)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+});
+
+it('resolves a retained message conflict through a distinct two-parent operation and atomically closes the conflict', async () => {
+  const f = await fixture(true);
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('local message', 'a-message'); await f.sync('a');
+  f.db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('remote message', 'b-message'); await f.deps.checkpoint('b');
+  await expect(f.sync('b')).rejects.toMatchObject({ code: 'CONFLICT' });
+  const conflict = f.store.listPendingOperations().find(operation => operation.projectId === 'b' && operation.phase === 'conflict')!;
+  const evidence = await readProjectGitConflictEvidence(f.operationRoot, conflict);
+  const messageConflict = evidence.conflicts.find(item => item.kind === 'message')!;
+
+  const resolved = await (f.deps.resolveConflict as (input: unknown) => Promise<import('@open-design/contracts').ProjectGitOperation>)({
+    projectId: 'b',
+    conflictOperationId: conflict.id,
+    actorId: 'project-git-background',
+    idempotencyKey: 'resolve-message',
+    requestDigest: '1'.repeat(64),
+    basis: conflict.basis,
+    resolutions: [{ conflictId: messageConflict.id, kind: 'select', selectedSide: 'local' }],
+  });
+
+  expect(resolved).toMatchObject({ kind: 'resolve', status: 'succeeded', projectId: 'b', basis: conflict.basis });
+  expect(resolved.id).not.toBe(conflict.id);
+  expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'succeeded', error: null });
+  const merged = await f.git(f.b, 'rev-parse', 'HEAD');
+  expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', merged)).toBe(`${merged} ${evidence.local} ${evidence.remote}`);
+  expect(f.db.prepare('SELECT content FROM messages WHERE id = ?').get('b-message')).toEqual({ content: 'remote message' });
+  expect(f.store.listPendingOperations().filter(operation => operation.projectId === 'b' && operation.phase === 'conflict')).toEqual([]);
+});
+
+it.each(['file', 'head', 'content', 'project', 'generation', 'remote'] as const)(
+  'rejects stale %s conflict state before creating a resolve operation or changing current state',
+  async drift => {
+    const f = await fixture(true); const retained = await retainedMessageConflict(f);
+    if (drift === 'file') await writeFile(join(f.b, 'late.txt'), 'late local edit');
+    if (drift === 'head') {
+      await writeFile(join(f.b, 'late.txt'), 'late local commit'); await f.git(f.b, 'add', 'late.txt'); await f.git(f.b, 'commit', '-m', 'late local');
+    }
+    if (drift === 'content') f.store.bumpContent('b', retained.operation.basis);
+    if (drift === 'project') f.store.bumpProject('b', retained.operation.basis);
+    if (drift === 'generation') f.store.saveBinding({ ...f.store.getBinding('b')!, branch: 'other' });
+    if (drift === 'remote') {
+      await writeFile(join(f.a, 'late-remote.txt'), 'late remote commit'); await f.git(f.a, 'add', 'late-remote.txt');
+      await f.git(f.a, 'commit', '-m', 'late remote'); await f.git(f.a, 'push', 'origin', 'HEAD:refs/heads/main');
+    }
+    const head = await f.git(f.b, 'rev-parse', 'HEAD'); const index = await readFile(join(f.b, '.git/index'));
+    const resolveCount = f.db.prepare("SELECT count(*) AS n FROM project_git_operations WHERE kind = 'resolve'").get();
+    await expect(f.deps.resolveConflict({
+      projectId: 'b', conflictOperationId: retained.operation.id, actorId: 'project-git-background',
+      idempotencyKey: `stale-${drift}`, requestDigest: '2'.repeat(64), basis: retained.operation.basis,
+      resolutions: [retained.resolution],
+    })).rejects.toMatchObject({ code: 'PREVIEW_STALE' });
+    expect(f.db.prepare("SELECT count(*) AS n FROM project_git_operations WHERE kind = 'resolve'").get()).toEqual(resolveCount);
+    expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(head);
+    expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
+    expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  },
+);
+
+it('replays an interrupted resolve and atomically closes both durable operations after reopen', async () => {
+  const f = await fixture(true); const retained = await retainedMessageConflict(f); f.interruptAfterPrepared();
+  await expect(f.deps.resolveConflict({
+    projectId: 'b', conflictOperationId: retained.operation.id, actorId: 'project-git-background',
+    idempotencyKey: 'resolve-after-restart', requestDigest: '3'.repeat(64), basis: retained.operation.basis,
+    resolutions: [retained.resolution],
+  })).rejects.toThrow('resolve interrupted');
+  const resolve = f.store.listRecoverable().find(operation => operation.kind === 'resolve')!;
+  expect(resolve).toMatchObject({ status: 'waiting', phase: 'waiting_idle', journalPhase: 'prepared' });
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+
+  f.reopen(); await f.deps.recoveryReady;
+
+  expect(f.store.getOperation(resolve.id)).toMatchObject({ status: 'succeeded', phase: 'local_saved', error: null });
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'succeeded', phase: 'local_saved', error: null });
+  const merged = await f.git(f.b, 'rev-parse', 'HEAD');
+  expect(await f.git(f.b, 'rev-list', '--parents', '--max-count=1', merged)).toBe(`${merged} ${retained.evidence.local} ${retained.evidence.remote}`);
+  expect(f.db.prepare('SELECT content FROM messages WHERE id = ?').get('b-message')).toEqual({ content: 'remote message' });
+});
+
+it('terminalizes a resolve operation when candidate creation fails before recoverable materialization', async () => {
+  const f = await fixture(true); const retained = await retainedMessageConflict(f);
+  (f.gitEnv as Record<string, string>).GIT_AUTHOR_DATE = 'not-a-git-date';
+  const head = await f.git(f.b, 'rev-parse', 'HEAD'); const index = await readFile(join(f.b, '.git/index'));
+
+  await expect(f.deps.resolveConflict({
+    projectId: 'b', conflictOperationId: retained.operation.id, actorId: 'project-git-background',
+    idempotencyKey: 'resolve-candidate-failure', requestDigest: '4'.repeat(64), basis: retained.operation.basis,
+    resolutions: [retained.resolution],
+  })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+  const resolve = f.store.findOperation({ actorId: 'project-git-background', projectId: 'b', kind: 'resolve', idempotencyKey: 'resolve-candidate-failure' })!;
+  expect(resolve).toMatchObject({ status: 'failed', phase: 'failed', error: { code: 'CONFLICT' } });
+  expect(resolve.recoveryData).toBeNull();
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  expect(await f.git(f.b, 'rev-parse', 'HEAD')).toBe(head);
+  expect(await readFile(join(f.b, '.git/index'))).toEqual(index);
 });
 
 it('persists the approved backoff schedule with final jitter capped at five minutes', () => {
