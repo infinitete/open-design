@@ -84,7 +84,11 @@ export function migrateProjectGit(db: Database.Database): void {
     INSERT OR IGNORE INTO project_git_retry_attempts
       (operation_id, attempt, state, prior_status, prior_phase, prior_result_json, prior_error_json, created_at, updated_at)
     SELECT request.operation_id, 1,
-      CASE WHEN operation.status = 'succeeded' THEN 'settled' ELSE 'admitted' END,
+      CASE WHEN operation.status = 'succeeded'
+        OR operation.status = 'waiting' AND (
+          operation.phase IN ('conflict', 'auth_required', 'paused', 'pending_push', 'external_git_busy')
+          OR operation.phase = 'waiting_idle' AND operation.error_json IS NOT NULL
+        ) THEN 'settled' ELSE 'admitted' END,
       operation.status, operation.phase, operation.result_json, operation.error_json,
       request.created_at, request.created_at
     FROM project_git_operation_requests AS request
@@ -94,6 +98,10 @@ export function migrateProjectGit(db: Database.Database): void {
     SET status = 'queued', phase = 'waiting_idle', error_json = NULL,
       updated_at = MAX(updated_at, (SELECT updated_at FROM project_git_retry_attempts WHERE operation_id = project_git_operations.id))
     WHERE status IN ('failed', 'waiting')
+      AND NOT (status = 'waiting' AND (
+        phase IN ('conflict', 'auth_required', 'paused', 'pending_push', 'external_git_busy')
+        OR phase = 'waiting_idle' AND error_json IS NOT NULL
+      ))
       AND id IN (SELECT operation_id FROM project_git_retry_attempts WHERE state IN ('admitted', 'started'));
     CREATE TABLE IF NOT EXISTS project_git_conflict_resolutions (
       conflict_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),

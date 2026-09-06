@@ -2579,6 +2579,8 @@ export interface StartServerOptions {
   staticDir?: string;
   /** Trusted host Git environment used by the project-versioning runtime. */
   projectGitEnv?: Record<string, string>;
+  /** Host lifecycle checkpoint after a retry attempt becomes durably visible. */
+  projectGitAfterRetryAttemptStarted?: import('./services/project-git/service.js').CreateProjectGitServiceInput['afterRetryAttemptStarted'];
   /** Daemon-owned host capability facts. HTTP/model output cannot populate it. */
   odNextExecutionPreflightResolver?: OdNextExecutionPreflightResolver | null;
   /**
@@ -2621,6 +2623,7 @@ export async function startServer({
   runtime = null,
   staticDir = STATIC_DIR,
   projectGitEnv,
+  projectGitAfterRetryAttemptStarted,
   odNextExecutionPreflightResolver = null,
   odNextComplexProductionResolver = null,
 }: StartServerOptions = {}) {
@@ -2965,6 +2968,7 @@ export async function startServer({
     operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
     instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
     ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
+    ...(projectGitAfterRetryAttemptStarted ? { afterRetryAttemptStarted: projectGitAfterRetryAttemptStarted } : {}),
     resolveProjectRoot: async (projectId) => {
       const project = getProject(db, projectId);
       // Legacy file-only routes can authorize a trusted project directory

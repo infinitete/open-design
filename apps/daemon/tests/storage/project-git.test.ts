@@ -261,6 +261,147 @@ describe('project Git durable store', () => {
     });
   });
 
+  it('settles a started retry that already durably retained a conflict without rewriting its public record', () => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'started-conflict-target', basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'auth_required', result: { head: current.localHead! },
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' } });
+    expect(store.claimOperationRequest({ actorId: 'local', projectId: 'p1', action: 'retry',
+      idempotencyKey: 'started-conflict-retry', requestDigest: 'started-conflict-digest', operationId: operation.id }))
+      .toMatchObject({ admitted: true, attempt: 1 });
+    expect(store.startRetryAttempt(operation.id, 1)).toBe(true);
+    store.freezeConflictEvidence(operation.id, basis(current), {
+      path: `conflict-${operation.id}.json`, digest: 'b'.repeat(64),
+    });
+    store.updateOperation(operation.id, { status: 'waiting', phase: 'conflict', result: { head: current.localHead! },
+      error: { code: 'GIT_CONFLICT', message: 'Resolve the retained conflict.',
+        details: { reason: 'merge_conflict', nextStep: 'Resolve this conflict.' } } });
+    const retained = store.getJournal(operation.id)!;
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getJournal(operation.id)).toEqual(retained);
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+    expect(store.getJournal(operation.id)).toEqual(retained);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  });
+
+  it.each([
+    ['auth_required', { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' }],
+    ['paused', null],
+    ['pending_push', { code: 'CONFLICT', message: 'Check connectivity and retry.' }],
+    ['external_git_busy', { code: 'EXTERNAL_GIT_BUSY', message: 'Finish the external Git operation.' }],
+    ['waiting_idle', { code: 'RECOVERY_REQUIRED', message: 'The managed project repository is unavailable.',
+      details: { reason: 'project_root_unavailable' } }],
+  ] as const)('settles a started retry that completed in waiting/%s', (phase, error) => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: `started-${phase}-target`, basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'CONFLICT', message: 'Retry the operation.' } });
+    store.claimOperationRequest({ actorId: 'local', projectId: 'p1', action: 'retry',
+      idempotencyKey: `started-${phase}-retry`, requestDigest: `started-${phase}-digest`, operationId: operation.id });
+    expect(store.startRetryAttempt(operation.id, 1)).toBe(true);
+    store.updateOperation(operation.id, { status: 'waiting', phase, result: { head: current.localHead! }, error });
+    const completed = store.getJournal(operation.id)!;
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+    expect(store.getJournal(operation.id)).toEqual(completed);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  });
+
+  it('fails closed for an ambiguous started waiting-idle retry with no completion evidence', () => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'ambiguous-waiting-target', basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'CONFLICT', message: 'Retry the operation.' } });
+    store.claimOperationRequest({ actorId: 'local', projectId: 'p1', action: 'retry',
+      idempotencyKey: 'ambiguous-waiting-retry', requestDigest: 'ambiguous-waiting-digest', operationId: operation.id });
+    expect(store.startRetryAttempt(operation.id, 1)).toBe(true);
+    store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: null, error: null });
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([operation.id]);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed',
+      error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_retry' } } });
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  });
+
+  it('backfills a legacy receipt-only retained conflict as settled without rewriting it on repeated reopen', () => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'legacy-conflict-target', basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'running', phase: 'syncing', result: null, error: null });
+    store.freezeConflictEvidence(operation.id, basis(current), {
+      path: `conflict-${operation.id}.json`, digest: 'c'.repeat(64),
+    });
+    store.updateOperation(operation.id, { status: 'waiting', phase: 'conflict', result: { head: current.localHead! },
+      error: { code: 'GIT_CONFLICT', message: 'Resolve the retained conflict.', details: { reason: 'merge_conflict' } } });
+    db.prepare(`INSERT INTO project_git_operation_requests
+      (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+      VALUES ('local', 'project:p1', 'retry', 'legacy-conflict-retry', 'legacy-conflict-digest', ?, 1)`).run(operation.id);
+    db.prepare('DELETE FROM project_git_retry_attempts WHERE operation_id = ?').run(operation.id);
+    const retained = store.getJournal(operation.id)!;
+
+    migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled',
+      priorStatus: 'waiting', priorPhase: 'conflict' });
+    expect(store.getJournal(operation.id)).toEqual(retained);
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getJournal(operation.id)).toEqual(retained);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+  });
+
+  it.each([
+    ['auth_required', { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' }],
+    ['paused', null],
+  ] as const)('backfills a legacy receipt-only waiting/%s result as settled', (phase, error) => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: `legacy-${phase}-target`, basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'waiting', phase, result: { head: current.localHead! }, error });
+    db.prepare(`INSERT INTO project_git_operation_requests
+      (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+      VALUES ('local', 'project:p1', 'retry', ?, ?, ?, 1)`)
+      .run(`legacy-${phase}-retry`, `legacy-${phase}-digest`, operation.id);
+    db.prepare('DELETE FROM project_git_retry_attempts WHERE operation_id = ?').run(operation.id);
+    const completed = store.getJournal(operation.id)!;
+
+    migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getJournal(operation.id)).toEqual(completed);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ state: 'settled', priorStatus: 'waiting', priorPhase: phase });
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+  });
+
+  it('fails closed when a legacy receipt-only waiting-idle row has no completion evidence', () => {
+    let store = createProjectGitStore(db);
+    const current = store.saveBinding({ ...binding(), localHead: 'a'.repeat(40) });
+    const operation = store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync',
+      idempotencyKey: 'legacy-ambiguous-target', basis: basis(current), payload: { lane: 'network' } });
+    store.updateOperation(operation.id, { status: 'waiting', phase: 'waiting_idle', result: null, error: null });
+    db.prepare(`INSERT INTO project_git_operation_requests
+      (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+      VALUES ('local', 'project:p1', 'retry', 'legacy-ambiguous-retry', 'legacy-ambiguous-digest', ?, 1)`).run(operation.id);
+    db.prepare('DELETE FROM project_git_retry_attempts WHERE operation_id = ?').run(operation.id);
+
+    migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ state: 'admitted', priorStatus: 'waiting', priorPhase: 'waiting_idle' });
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'queued', phase: 'waiting_idle' });
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([operation.id]);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed',
+      error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_retry' } } });
+  });
+
   it('atomically couples a retry receipt to a visible nonterminal attempt before SQLite reopen', () => {
     let store = createProjectGitStore(db);
     const operation = store.enqueueOperation({ ...request, idempotencyKey: 'failed-open' });

@@ -67,6 +67,8 @@ export interface CreateProjectGitServiceInput {
   resolveAvailability?(request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }): Promise<boolean>;
   subscribeProject?(projectId: string, onChange: () => void): { ready: Promise<void>; unsubscribe(): void | Promise<void> };
   afterDurablePhase?(phase: MaterializePhase): Promise<void>;
+  /** Process host checkpoint after the retry CAS, before any replayed effect or lane acquisition. */
+  afterRetryAttemptStarted?(operation: ProjectGitOperation, attempt: number): Promise<void>;
 }
 
 type RuntimeProject = ProjectGitSyncProject & { readBasis(): import('@open-design/contracts').ProjectGitBasis };
@@ -545,6 +547,9 @@ export async function createProjectGitServiceComposition(
     if (!input.store.startRetryAttempt(operationId, attempt)) {
       throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry worker is unavailable.');
     }
+    const started = input.store.getOperation(operationId);
+    if (!started) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry is unavailable.');
+    await input.afterRetryAttemptStarted?.(started, attempt);
     const target = input.store.getJournal(operationId);
     const payload = target?.payload;
     if (!target || !payload || typeof payload !== 'object' || Array.isArray(payload)) {

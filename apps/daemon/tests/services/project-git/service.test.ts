@@ -25,6 +25,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
 async function fixture(options: {
+  instanceId?: string;
   requireProject?: (actorId: string, projectId: string) => Promise<void>;
   resolveAvailability?: (request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }) => Promise<boolean>;
   subscribeProject?: (projectId: string, onChange: () => void) => { ready: Promise<void>; unsubscribe(): Promise<void> };
@@ -45,9 +46,11 @@ async function fixture(options: {
   const blockFetch = join(data, 'block-fetch'); const fetchEntered = join(data, 'fetch-entered');
   await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) echo push >> '${join(data, 'network.log')}'; touch '${pushEntered}'; while [ -f '${blockPush}' ]; do sleep 0.01; done; if [ -f '${denyPush}' ]; then echo 'Permission denied' >&2; exit 1; fi; exec git receive-pack '${git.remote}';; *) echo fetch >> '${join(data, 'network.log')}'; touch '${fetchEntered}'; while [ -f '${blockFetch}' ]; do sleep 0.01; done; exec git upload-pack '${git.remote}';; esac\n`);
   await chmod(join(bin, 'ssh'), 0o700);
+  const gitEnv = { ...fixtureGitEnv, PATH: `${bin}:${process.env.PATH}` };
   const composition = await createProjectGitServiceComposition({ db, store, operationRoot,
     resolveProjectRoot: async id => id === 'project' ? git.a : id === 'unmanaged' ? unmanaged : join(data, 'missing'), emit: options.emit ?? (() => {}),
-    gitEnv: { ...fixtureGitEnv, PATH: `${bin}:${process.env.PATH}` },
+    ...(options.instanceId ? { instanceId: options.instanceId } : {}),
+    gitEnv,
     ...(options.requireProject ? { requireProject: options.requireProject } : {}),
     ...(options.resolveAvailability ? { resolveAvailability: options.resolveAvailability } : {}),
     ...(options.subscribeProject ? { subscribeProject: options.subscribeProject } : {}),
@@ -59,7 +62,7 @@ async function fixture(options: {
     branch: 'main', remoteUrl: 'ssh://git@example.invalid/repo', generation: 0, autoSync: true, localHead: await git.git(git.a, 'rev-parse', 'HEAD'),
     observedRemoteHead: null, confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, materializedHead: null, dirty: false });
   cleanups.push(async () => { await composition.service.stop(); if (db.open) db.close(); await git.close(); await rm(data, { recursive: true, force: true }); });
-  return { ...composition, db, store, operationRoot, git, data, denyPush, blockPush, pushEntered, blockFetch, fetchEntered, unmanaged };
+  return { ...composition, db, store, operationRoot, git, gitEnv, data, denyPush, blockPush, pushEntered, blockFetch, fetchEntered, unmanaged };
 }
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(value)))).digest('hex');
@@ -412,6 +415,78 @@ it('reads conflicts only from digest-verified private evidence', async () => {
   await expect(f.service.conflicts('project')).resolves.toEqual([conflict]);
   await writeFile(join(f.operationRoot, path), '{}');
   await expect(f.service.conflicts('project')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+});
+
+it('keeps a completed retry conflict pollable, fenced, and resolvable across repeated service startup', async () => {
+  const instanceId = 'completed-retry-conflict-instance';
+  const f = await fixture({ instanceId });
+  const baseline = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'retry-conflict-baseline', expectedProjectRevision: 0,
+  });
+  expect(await terminal(f.store, baseline.operationId)).toMatchObject({ status: 'succeeded' });
+  await f.git.git(f.git.b, 'fetch', 'origin', 'main');
+  await f.git.git(f.git.b, 'checkout', '-B', 'main', 'FETCH_HEAD');
+  await writeFile(join(f.git.a, 'index.html'), 'local retry conflict side');
+  await f.git.git(f.git.a, 'add', 'index.html');
+  await f.git.git(f.git.a, 'commit', '-m', 'local retry conflict side');
+  await writeFile(join(f.git.b, 'index.html'), 'remote retry conflict side');
+  await f.git.git(f.git.b, 'add', 'index.html');
+  await f.git.git(f.git.b, 'commit', '-m', 'remote retry conflict side');
+  await f.git.git(f.git.b, 'push', 'origin', 'HEAD:main');
+  const syncing = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'completed-retry-conflict', expectedProjectRevision: 0,
+  });
+  const deadline = Date.now() + 10_000;
+  while (f.store.getOperation(syncing.operationId)?.phase !== 'conflict') {
+    if (Date.now() >= deadline) throw new Error('sync did not retain a conflict');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  await f.service.stop();
+  f.store.saveBinding({ ...f.store.getBinding('project')!, autoSync: false });
+  const completed = f.store.getJournal(syncing.operationId)!;
+  f.db.prepare(`INSERT INTO project_git_operation_requests
+    (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+    VALUES ('local', 'project:project', 'retry', 'completed-conflict-retry', 'completed-conflict-digest', ?, ?)`)
+    .run(completed.id, Date.now());
+  f.db.prepare(`INSERT INTO project_git_retry_attempts
+    (operation_id, attempt, state, prior_status, prior_phase, prior_result_json, prior_error_json, created_at, updated_at)
+    VALUES (?, 1, 'started', 'failed', 'auth_required', NULL, ?, ?, ?)`).run(completed.id,
+      JSON.stringify({ code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' }), Date.now(), Date.now());
+
+  const startupEvents: ProjectGitEvent[] = [];
+  const restarted = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: (_projectId, event) => { startupEvents.push(event); }, gitEnv: f.gitEnv, instanceId });
+  await restarted.service.start();
+  expect(f.store.getJournal(completed.id)).toEqual(completed);
+  expect(f.store.getRetryAttempt(completed.id)).toMatchObject({ state: 'settled' });
+  expect(startupEvents.filter(event => event.type === 'project-git-operation' && event.operation.id === completed.id)).toEqual([]);
+  await expect(restarted.service.getState('project')).resolves.toMatchObject({ phase: 'conflict', operationId: completed.id });
+  const [conflict] = await restarted.service.conflicts('project');
+  expect(conflict).toMatchObject({ kind: 'file', path: 'index.html' });
+  await restarted.service.stop();
+
+  const secondEvents: ProjectGitEvent[] = [];
+  const second = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+    emit: (_projectId, event) => { secondEvents.push(event); }, gitEnv: f.gitEnv, instanceId });
+  // Stop the restarted composition before the fixture cleanup closes its shared database.
+  cleanups.unshift(() => second.service.stop());
+  await second.service.start();
+  expect(f.store.getJournal(completed.id)).toEqual(completed);
+  expect(secondEvents.filter(event => event.type === 'project-git-operation' && event.operation.id === completed.id)).toEqual([]);
+  const networkBefore = await readFile(join(f.data, 'network.log'));
+  await expect(second.service.execute({ kind: 'binding_preview', url: 'ssh://git@example.invalid/other', branch: 'main' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'recovered-conflict-fence', expectedProjectRevision: 0,
+  })).rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  expect(await readFile(join(f.data, 'network.log'))).toEqual(networkBefore);
+
+  const resolving = await second.service.execute({ kind: 'resolve', operationId: completed.id, basis: completed.basis,
+    resolutions: [{ conflictId: conflict!.id, kind: 'select', selectedSide: 'local' }] }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'resolve-recovered-retry-conflict', expectedProjectRevision: 0,
+  });
+  expect(await terminal(f.store, resolving.operationId)).toMatchObject({ status: 'succeeded' });
+  expect(f.store.getOperation(completed.id)).toMatchObject({ status: 'succeeded', phase: 'local_saved' });
 });
 
 it('returns a durably claimed resolution before materialization completes and drains it on stop', async () => {

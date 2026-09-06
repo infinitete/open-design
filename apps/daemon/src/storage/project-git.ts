@@ -414,6 +414,9 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       priorError: row.prior_error_json === null ? null : JSON.parse(row.prior_error_json),
     } : null;
   };
+  const isCompletedRetryWaitingResult = (operation: ProjectGitJournalRecord): boolean => operation.status === 'waiting'
+    && (['conflict', 'auth_required', 'paused', 'pending_push', 'external_git_busy'].includes(operation.phase)
+      || operation.phase === 'waiting_idle' && operation.error !== null);
   function requireGeneration(id: string, generation: number): ProjectGitBindingRecord {
     const b = getBinding(id); if (!b || b.generation !== generation) throw changed(); return b;
   }
@@ -1035,6 +1038,12 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         if (operationIds && !operationIds.has(row.operationId)) continue;
         const operation = getJournal(row.operationId);
         if (!operation) throw recoveryRequired();
+        const attempt = getRetryAttempt(operation.id)!;
+        if (attempt.state === 'started' && isCompletedRetryWaitingResult(operation)) {
+          db.prepare("UPDATE project_git_retry_attempts SET state = 'settled', updated_at = ? WHERE operation_id = ?")
+            .run(Date.now(), operation.id);
+          continue;
+        }
         if (!['queued', 'running', 'waiting'].includes(operation.status)) {
           db.prepare("UPDATE project_git_retry_attempts SET state = 'settled', updated_at = ? WHERE operation_id = ?")
             .run(Date.now(), operation.id);
