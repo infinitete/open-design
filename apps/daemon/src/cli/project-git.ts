@@ -4,6 +4,10 @@ import {
   ProjectGitBindingPreviewRequestSchema,
   ProjectGitBindRequestSchema,
   ProjectGitEnableRequestSchema,
+  ProjectGitBasisSchema,
+  ProjectGitConflictSchema,
+  ProjectGitDependencySchema,
+  ProjectGitOperationResultSchema,
   ProjectGitOpenRequestSchema,
   ProjectGitResolveRequestSchema,
   ProjectGitRestoreRequestSchema,
@@ -12,10 +16,12 @@ import {
   ProjectGitSyncRequestSchema,
   ProjectGitUnbindRequestSchema,
   ProjectGitUpdateRequestSchema,
+  parsePortableSnapshot,
   type JsonValue,
   type ProjectGitOperation,
 } from '@open-design/contracts';
 import { resolveDaemonUrl } from '../daemon-url.js';
+import { redactGitText } from '../services/project-git/repository.js';
 
 export interface ProjectGitCliRequest {
   method: 'GET' | 'POST' | 'PATCH';
@@ -60,6 +66,28 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
+const COMMON_FLAGS = ['json', 'daemon-url'] as const;
+const MUTATION_FLAGS = [...COMMON_FLAGS, 'prompt-file', 'idempotency-key'] as const;
+const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
+  status: new Set([...COMMON_FLAGS, 'project']),
+  enable: new Set([...MUTATION_FLAGS, 'project', 'preview']),
+  'bind-preview': new Set([...MUTATION_FLAGS, 'project', 'url', 'branch']),
+  bind: new Set([...MUTATION_FLAGS, 'project', 'preview']),
+  unbind: new Set([...MUTATION_FLAGS, 'project']),
+  pause: new Set([...MUTATION_FLAGS, 'project']),
+  resume: new Set([...MUTATION_FLAGS, 'project']),
+  sync: new Set([...MUTATION_FLAGS, 'project']),
+  open: new Set([...MUTATION_FLAGS, 'url', 'branch']),
+  log: new Set([...COMMON_FLAGS, 'project', 'cursor', 'path']),
+  show: new Set([...COMMON_FLAGS, 'project', 'commit', 'path', 'conversations', 'output', 'overwrite', 'text']),
+  'restore-preview': new Set([...MUTATION_FLAGS, 'project', 'commit']),
+  restore: new Set([...MUTATION_FLAGS, 'project', 'preview']),
+  conflicts: new Set([...COMMON_FLAGS, 'project']),
+  resolve: new Set([...MUTATION_FLAGS, 'project', 'operation']),
+  operation: new Set(COMMON_FLAGS),
+  retry: new Set([...MUTATION_FLAGS, 'operation']),
+};
+
 function parseArgs(args: string[]): ParsedArgs {
   const command = args[0] ?? '';
   const positionals: string[] = [];
@@ -85,10 +113,24 @@ function parseArgs(args: string[]): ParsedArgs {
     if (value === undefined || equals < 0 && value.startsWith('--')) {
       throw new Error(`flag --${name} requires a value`);
     }
+    if (value.length === 0) throw new Error(`flag --${name} cannot be empty`);
     if (equals < 0) index += 1;
     flags[name] = value;
   }
   return { command, positionals, flags };
+}
+
+function validateCommandFlags(parsed: ParsedArgs): void {
+  const allowed = COMMAND_FLAGS[parsed.command];
+  if (!allowed) return;
+  for (const flag of Object.keys(parsed.flags)) {
+    if (!allowed.has(flag)) {
+      const qualifier = flag === 'prompt-file' || flag === 'idempotency-key'
+        ? 'mutation-only flag and '
+        : '';
+      throw new Error(`--${flag} is a ${qualifier}not valid for od git ${parsed.command}`);
+    }
+  }
 }
 
 function required(flags: Record<string, string | boolean>, name: string): string {
@@ -101,7 +143,18 @@ function encodedProjectPath(projectId: string, suffix = ''): string {
   return `/api/projects/${encodeURIComponent(projectId)}/git${suffix}`;
 }
 
+function validateHistoricalPath(path: string): void {
+  if (path.startsWith('/')
+    || /^[a-z]:/iu.test(path)
+    || path.includes('\\')
+    || /[\u0000-\u001f\u007f]/u.test(path)
+    || path.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) {
+    throw new Error('--path must be a confined project-relative path');
+  }
+}
+
 function encodedFilePath(path: string): string {
+  validateHistoricalPath(path);
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
@@ -132,6 +185,7 @@ function noExtraPositionals(parsed: ParsedArgs): void {
 
 export function parseProjectGitCommand(args: string[]): ProjectGitCliRequest {
   const parsed = parseArgs(args);
+  validateCommandFlags(parsed);
   const projectRequest = (
     suffix: string,
     input: Omit<ProjectGitCliRequest, 'path' | 'json' | 'promptFile' | 'daemonUrl' | 'idempotencyKey'>,
@@ -183,7 +237,10 @@ export function parseProjectGitCommand(args: string[]): ProjectGitCliRequest {
       noExtraPositionals(parsed);
       const query: string[] = [];
       if (typeof parsed.flags.cursor === 'string') query.push(`cursor=${encodeURIComponent(parsed.flags.cursor)}`);
-      if (typeof parsed.flags.path === 'string') query.push(`path=${encodeURIComponent(parsed.flags.path)}`);
+      if (typeof parsed.flags.path === 'string') {
+        validateHistoricalPath(parsed.flags.path);
+        query.push(`path=${encodeURIComponent(parsed.flags.path)}`);
+      }
       return makeRequest(parsed, {
         method: 'GET',
         path: `${encodedProjectPath(required(parsed.flags, 'project'), '/history')}${query.length ? `?${query.join('&')}` : ''}`,
@@ -276,21 +333,50 @@ class ProjectGitCliError extends Error {
     readonly code: string,
     message: string,
     readonly exitCode: number,
+    readonly details?: JsonValue,
+    readonly retryable?: boolean,
+    readonly requestId?: string,
+    readonly taskId?: string,
   ) {
     super(message);
   }
 }
 
-function safeMessage(value: unknown, secrets: string[]): string {
-  let message = typeof value === 'string' && value.trim()
-    ? value.trim()
-    : 'Project Git request failed.';
+function redactText(value: string, secrets: string[]): string {
+  let message = value;
   for (const secret of secrets) {
     if (secret) message = message.replaceAll(secret, '[redacted]');
   }
-  return message
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/giu, '$1[redacted]@')
-    .replace(/Bearer\s+\S+/giu, 'Bearer [redacted]');
+  return redactGitText(message)
+    .replace(/\b(Bearer|Basic)\s+\S+/giu, '$1 [redacted]');
+}
+
+function safeMessage(value: unknown, secrets: string[]): string {
+  const message = typeof value === 'string' && value.trim()
+    ? value.trim()
+    : 'Project Git request failed.';
+  return redactText(message, secrets);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return typeof value === 'object' && Object.values(value).every(isJsonValue);
+}
+
+function redactJsonValue(value: JsonValue, secrets: string[]): JsonValue {
+  if (typeof value === 'string') return redactText(value, secrets);
+  if (Array.isArray(value)) return value.map(item => redactJsonValue(item, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        redactText(key, secrets),
+        redactJsonValue(item, secrets),
+      ]),
+    );
+  }
+  return value;
 }
 
 async function requestJson(
@@ -330,7 +416,24 @@ async function requestJson(
     const message = error && typeof error === 'object' && 'message' in error
       ? error.message
       : 'Project Git request failed.';
-    throw new ProjectGitCliError(code, safeMessage(message, [token ?? '']), 1);
+    const details = error && typeof error === 'object' && 'details' in error && isJsonValue(error.details)
+      ? error.details
+      : undefined;
+    const retryable = error && typeof error === 'object' && 'retryable' in error
+      && typeof error.retryable === 'boolean' ? error.retryable : undefined;
+    const requestId = error && typeof error === 'object' && 'requestId' in error
+      && typeof error.requestId === 'string' ? error.requestId : undefined;
+    const taskId = error && typeof error === 'object' && 'taskId' in error
+      && typeof error.taskId === 'string' ? error.taskId : undefined;
+    throw new ProjectGitCliError(
+      code,
+      safeMessage(message, [token ?? '']),
+      1,
+      details,
+      retryable,
+      requestId,
+      taskId,
+    );
   }
   if (expectedStatus !== undefined && response.status !== expectedStatus) {
     throw new ProjectGitCliError(
@@ -339,7 +442,9 @@ async function requestJson(
       1,
     );
   }
-  return payload;
+  return request.method === 'GET'
+    ? validateProjectGitReadResponse(request.path, payload)
+    : payload;
 }
 
 async function readPromptBody(promptFile: string): Promise<Record<string, JsonValue>> {
@@ -372,10 +477,149 @@ function mergePromptBody(
   return { ...body, ...fromFile };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+const PROJECT_GIT_PHASES = new Set([
+  'enable_pending', 'waiting_idle', 'dirty', 'checkpointing', 'local_saved',
+  'pending_push', 'syncing', 'synced', 'paused', 'conflict', 'auth_required',
+  'external_git_busy', 'recovering', 'failed',
+]);
+const PROJECT_GIT_OPERATION_STATUSES = new Set([
+  'queued', 'running', 'waiting', 'succeeded', 'failed',
+]);
+const PROJECT_GIT_OPERATION_KINDS = new Set([
+  'enable_preview', 'enable', 'binding_preview', 'bind', 'unbind', 'pause', 'resume',
+  'sync', 'open', 'restore_preview', 'restore', 'resolve', 'retry',
+]);
+
+function isApiError(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.code !== 'string' || typeof value.message !== 'string') return false;
+  return (value.details === undefined || isJsonValue(value.details))
+    && (value.retryable === undefined || typeof value.retryable === 'boolean')
+    && (value.requestId === undefined || typeof value.requestId === 'string')
+    && (value.taskId === undefined || typeof value.taskId === 'string');
+}
+
+function invalidResponse(noun: string): never {
+  throw new ProjectGitCliError('INVALID_RESPONSE', `The daemon returned an invalid ${noun}.`, 1);
+}
+
+function projectGitOperation(payload: unknown): ProjectGitOperation {
+  if (!isRecord(payload)
+    || typeof payload.id !== 'string' || payload.id.length === 0
+    || typeof payload.kind !== 'string' || !PROJECT_GIT_OPERATION_KINDS.has(payload.kind)
+    || typeof payload.status !== 'string' || !PROJECT_GIT_OPERATION_STATUSES.has(payload.status)
+    || typeof payload.phase !== 'string' || !PROJECT_GIT_PHASES.has(payload.phase)
+    || !isNullableString(payload.projectId)
+    || !ProjectGitBasisSchema.safeParse(payload.basis).success
+    || !(payload.result === null || ProjectGitOperationResultSchema.safeParse(payload.result).success)
+    || !(payload.error === null || isApiError(payload.error))) {
+    return invalidResponse('project Git operation');
+  }
+  return payload as unknown as ProjectGitOperation;
+}
+
+function projectGitState(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)
+    || typeof payload.enabled !== 'boolean'
+    || typeof payload.phase !== 'string' || !PROJECT_GIT_PHASES.has(payload.phase)
+    || !isNullableString(payload.localHead)
+    || !isNullableString(payload.observedRemoteHead)
+    || !isNullableString(payload.confirmedRemoteHead)
+    || !isNonnegativeSafeInteger(payload.projectRevision)
+    || !isNonnegativeSafeInteger(payload.contentRevision)
+    || !isNonnegativeSafeInteger(payload.bindingGeneration)
+    || typeof payload.dirty !== 'boolean'
+    || typeof payload.pendingPush !== 'boolean'
+    || typeof payload.autoSync !== 'boolean'
+    || !isNullableString(payload.operationId)
+    || !(payload.error === null || isApiError(payload.error))
+    || !isRecord(payload.binding)
+    || typeof payload.binding.remoteConfigured !== 'boolean'
+    || !isNullableString(payload.binding.remoteLabel)
+    || !isNullableString(payload.binding.branch)
+    || !Array.isArray(payload.dependencies)
+    || !payload.dependencies.every(item => ProjectGitDependencySchema.safeParse(item).success)) {
+    return invalidResponse('project Git status');
+  }
+  return payload;
+}
+
+function isProjectGitCommit(payload: unknown): boolean {
+  return isRecord(payload)
+    && typeof payload.oid === 'string' && payload.oid.length > 0
+    && isStringArray(payload.parents)
+    && isRecord(payload.author)
+    && typeof payload.author.name === 'string'
+    && isNullableString(payload.author.email)
+    && typeof payload.authoredAt === 'number' && Number.isFinite(payload.authoredAt)
+    && typeof payload.message === 'string'
+    && (payload.source === 'open-design' || payload.source === 'external')
+    && (payload.snapshotKind === 'complete' || payload.snapshotKind === 'files_only')
+    && isRecord(payload.changedPaths)
+    && isStringArray(payload.changedPaths.added)
+    && isStringArray(payload.changedPaths.modified)
+    && isStringArray(payload.changedPaths.deleted);
+}
+
+function projectGitHistory(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)
+    || !Array.isArray(payload.commits) || !payload.commits.every(isProjectGitCommit)
+    || !isNullableString(payload.nextCursor)) {
+    return invalidResponse('project Git history');
+  }
+  return payload;
+}
+
+function projectGitCommit(payload: unknown): Record<string, unknown> {
+  if (!isProjectGitCommit(payload)) return invalidResponse('project Git commit');
+  return payload as Record<string, unknown>;
+}
+
+function projectGitConflicts(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload) || !Array.isArray(payload.conflicts)
+    || !payload.conflicts.every(item => ProjectGitConflictSchema.safeParse(item).success)) {
+    return invalidResponse('project Git conflicts');
+  }
+  return payload;
+}
+
+function projectGitConversations(payload: unknown): unknown {
+  if (payload === null) return payload;
+  try {
+    return parsePortableSnapshot(payload);
+  } catch {
+    return invalidResponse('project Git conversations');
+  }
+}
+
+function validateProjectGitReadResponse(path: string, payload: unknown): unknown {
+  if (/^\/api\/project-git-operations\/[^/]+$/u.test(path)) return projectGitOperation(payload);
+  if (/\/git$/u.test(path)) return projectGitState(payload);
+  if (/\/history(?:\?|$)/u.test(path)) return projectGitHistory(payload);
+  if (/\/files\//u.test(path)) return historicalFile(payload);
+  if (/\/conversations$/u.test(path)) return projectGitConversations(payload);
+  if (/\/conflicts$/u.test(path)) return projectGitConflicts(payload);
+  if (/\/commits\/[^/]+$/u.test(path)) return projectGitCommit(payload);
+  return invalidResponse('project Git read response');
+}
+
 function operationRevision(payload: unknown): number {
-  const basis = payload && typeof payload === 'object' && 'basis' in payload
-    ? (payload as { basis?: unknown }).basis
-    : null;
+  const basis = projectGitOperation(payload).basis;
   const revision = basis && typeof basis === 'object' && 'projectRevision' in basis
     ? (basis as { projectRevision?: unknown }).projectRevision
     : null;
@@ -502,20 +746,32 @@ async function pollOperation(base: string, operationId: string, request: Project
     json: true,
     ...(request.daemonUrl ? { daemonUrl: request.daemonUrl } : {}),
   };
+  let latestStatus = 'unknown';
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const operation = await requestJson(base, operationRequest) as ProjectGitOperation;
+    const operation = projectGitOperation(await requestJson(base, operationRequest));
+    latestStatus = operation.status;
     if (operation.status === 'succeeded' || operation.status === 'waiting') return operation;
     if (operation.status === 'failed') {
       throw new ProjectGitCliError(
         operation.error?.code ?? 'OPERATION_FAILED',
         safeMessage(operation.error?.message, [process.env.OD_TOOL_TOKEN ?? '']),
         1,
+        operation.error?.details,
+        operation.error?.retryable,
+        operation.error?.requestId,
+        operation.error?.taskId,
       );
     }
     if (attempt === 0) process.stderr.write(`Project Git operation ${operationId} is ${operation.status}.\n`);
     await new Promise(resolve => setTimeout(resolve, 250));
   }
-  throw new ProjectGitCliError('OPERATION_PENDING', 'Project Git operation is still running.', 2);
+  throw new ProjectGitCliError(
+    'OPERATION_PENDING',
+    `Project Git operation ${operationId} is still ${latestStatus}.`,
+    2,
+    { operationId, latestStatus },
+    true,
+  );
 }
 
 function printResult(payload: unknown, json: boolean): void {
@@ -535,10 +791,20 @@ function historicalFile(payload: unknown): { encoding: 'base64'; content: string
   if (!payload || typeof payload !== 'object'
     || (payload as { encoding?: unknown }).encoding !== 'base64'
     || typeof (payload as { content?: unknown }).content !== 'string'
-    || typeof (payload as { mediaType?: unknown }).mediaType !== 'string') {
+    || typeof (payload as { mediaType?: unknown }).mediaType !== 'string'
+    || !isStrictBase64((payload as { content: string }).content)) {
     throw new ProjectGitCliError('INVALID_RESPONSE', 'The daemon returned an invalid historical file.', 1);
   }
   return payload as { encoding: 'base64'; content: string; mediaType: string };
+}
+
+function isStrictBase64(value: string): boolean {
+  if (value === '') return true;
+  if (value.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, 'base64').toString('base64') === value;
 }
 
 async function printReadResult(request: ProjectGitCliRequest, payload: unknown): Promise<void> {
@@ -577,6 +843,34 @@ async function printReadResult(request: ProjectGitCliRequest, payload: unknown):
     return;
   }
   throw new ProjectGitCliError('OUTPUT_REQUIRED', 'Historical files require --json, --text, or --output.', 2);
+}
+
+function writeProjectGitFailure(failure: ProjectGitCliError, json: boolean): void {
+  const secrets = [process.env.OD_TOOL_TOKEN ?? ''];
+  const error = {
+    code: failure.code,
+    message: safeMessage(failure.message, secrets),
+    ...(failure.details === undefined
+      ? {}
+      : { details: redactJsonValue(failure.details, secrets) }),
+    ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+    ...(failure.requestId === undefined
+      ? {}
+      : { requestId: redactText(failure.requestId, secrets) }),
+    ...(failure.taskId === undefined
+      ? {}
+      : { taskId: redactText(failure.taskId, secrets) }),
+  };
+  if (json) {
+    process.stderr.write(`${JSON.stringify({ error })}\n`);
+    return;
+  }
+  const lines = [`${error.code}: ${error.message}`];
+  if (error.details !== undefined) lines.push(`Details: ${JSON.stringify(error.details)}`);
+  if (error.retryable !== undefined) lines.push(`Retryable: ${error.retryable}`);
+  if (error.requestId !== undefined) lines.push(`Request ID: ${error.requestId}`);
+  if (error.taskId !== undefined) lines.push(`Task ID: ${error.taskId}`);
+  process.stderr.write(`${lines.join('\n')}\n`);
 }
 
 export async function runProjectGit(args: string[]): Promise<void> {
@@ -625,11 +919,6 @@ Common options:
       request.daemonUrl ? { flagUrl: request.daemonUrl } : {},
     )).replace(/\/$/u, '');
     if (request.method === 'GET') {
-      if (args[0] === 'operation') {
-        const operationId = decodeURIComponent(request.path.split('/').at(-1) ?? '');
-        printResult(await pollOperation(base, operationId, request), request.json);
-        return;
-      }
       await printReadResult(request, await requestJson(base, request));
       return;
     }
@@ -638,8 +927,8 @@ Common options:
       idempotencyKey: request.idempotencyKey ?? randomUUID(),
     };
     const body = await prepareMutationBody(args[0]!, base, mutationRequest);
-    const accepted = await requestJson(base, mutationRequest, body, 202) as { operationId?: unknown };
-    if (typeof accepted.operationId !== 'string' || !accepted.operationId) {
+    const accepted = await requestJson(base, mutationRequest, body, 202);
+    if (!isRecord(accepted) || typeof accepted.operationId !== 'string' || !accepted.operationId) {
       throw new ProjectGitCliError('INVALID_RESPONSE', 'The daemon did not return an operation id.', 1);
     }
     printResult(await pollOperation(base, accepted.operationId, mutationRequest), request.json);
@@ -647,7 +936,7 @@ Common options:
     const failure = error instanceof ProjectGitCliError
       ? error
       : new ProjectGitCliError('BAD_REQUEST', safeMessage(error instanceof Error ? error.message : error, [process.env.OD_TOOL_TOKEN ?? '']), 2);
-    process.stderr.write(`${JSON.stringify({ error: { code: failure.code, message: failure.message } })}\n`);
+    writeProjectGitFailure(failure, args.includes('--json'));
     process.exitCode = failure.exitCode;
   }
 }

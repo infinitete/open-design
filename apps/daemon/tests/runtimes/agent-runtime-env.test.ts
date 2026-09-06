@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SIDECAR_ENV } from '@open-design/sidecar-proto';
 
 import {
+  composeOpenDesignAgentEnvironment,
   createAgentRuntimeEnv,
   createAgentRuntimeToolPrompt,
   createDaemonDataDirConfiguredAgentEnv,
@@ -243,6 +244,40 @@ describe('agent runtime tool environment', () => {
       expectedProjectRevision: 41,
     })).not.toHaveProperty('OD_PROJECT_REVISION');
     expect(codexOpenDesignShellEnvironmentArgs().join(' ')).toContain('OD_PROJECT_REVISION');
+  });
+
+  it('composes the project revision only from the admitted run-scoped environment', () => {
+    const staleLayers = [
+      { PATH: '/bin', OD_PROJECT_REVISION: '999' },
+      { Od_Project_Revision: '777', CONFIGURED: '1' },
+      { od_project_revision: '555', DEFINITION: '1' },
+    ];
+    const runWithoutRevision = createOpenDesignToolEnv({
+        daemonUrl: 'http://127.0.0.1:7456',
+        projectDir: '/tmp/project',
+        projectId: 'project-1',
+      });
+    const withoutAdmittedRevision = composeOpenDesignAgentEnvironment(
+      [...staleLayers, runWithoutRevision],
+      runWithoutRevision,
+    );
+    expect(Object.keys(withoutAdmittedRevision)
+      .filter(key => key.toUpperCase() === 'OD_PROJECT_REVISION')).toEqual([]);
+
+    const admittedRunEnv = createOpenDesignToolEnv({
+        daemonUrl: 'http://127.0.0.1:7456',
+        projectDir: '/tmp/project',
+        projectId: 'project-1',
+        expectedProjectRevision: 41,
+      });
+    const withAdmittedRevision = composeOpenDesignAgentEnvironment(
+      [...staleLayers, admittedRunEnv],
+      admittedRunEnv,
+    );
+    expect(Object.entries(withAdmittedRevision)
+      .filter(([key]) => key.toUpperCase() === 'OD_PROJECT_REVISION'))
+      .toEqual([['OD_PROJECT_REVISION', '41']]);
+    expect(withAdmittedRevision).toMatchObject({ CONFIGURED: '1', DEFINITION: '1' });
   });
 
   it('names the codex rollout root so a complex Run can observe its native Children', () => {

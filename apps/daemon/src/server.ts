@@ -1513,6 +1513,28 @@ const critiqueWarnedAdapters = new Set<string>();
 const critiqueRunRegistry = createRunRegistry();
 export const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 
+function withoutOpenDesignProjectRevision(
+  input: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(input).filter(([key]) => key.toUpperCase() !== 'OD_PROJECT_REVISION'),
+  );
+}
+
+export function composeOpenDesignAgentEnvironment(
+  layers: ReadonlyArray<NodeJS.ProcessEnv | Record<string, string | undefined>>,
+  runScopedEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): NodeJS.ProcessEnv {
+  const env = Object.assign({}, ...layers.map(withoutOpenDesignProjectRevision));
+  const revision = runScopedEnv.OD_PROJECT_REVISION;
+  if (typeof revision === 'string'
+    && /^(?:0|[1-9]\d*)$/u.test(revision)
+    && Number.isSafeInteger(Number(revision))) {
+    env.OD_PROJECT_REVISION = revision;
+  }
+  return env;
+}
+
 export function createAgentRuntimeEnv(
   baseEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
   daemonUrl: string,
@@ -1532,7 +1554,8 @@ export function createAgentRuntimeEnv(
   // children receive only their run-scoped tool capability, never that broad
   // credential inherited from the daemon process (including Windows casing).
   for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'OD_API_TOKEN') delete env[key];
+    if (key.toUpperCase() === 'OD_API_TOKEN'
+      || key.toUpperCase() === 'OD_PROJECT_REVISION') delete env[key];
   }
   // A GUI-launched daemon can inherit a broken PATHEXT such as `.CPL` (issue
   // #6934). Nested native commands then lose stdout/stderr or fail with
@@ -1656,7 +1679,7 @@ export function createDaemonDataDirConfiguredAgentEnv(
   configuredAgentEnv: Record<string, string> = {},
 ): Record<string, string> {
   return {
-    ...configuredAgentEnv,
+    ...withoutOpenDesignProjectRevision(configuredAgentEnv),
     OD_DATA_DIR: RUNTIME_DATA_DIR,
   };
 }
@@ -9969,7 +9992,7 @@ export async function startServer({
       def.id,
       {
         ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
-        ...(def.env || {}),
+        ...withoutOpenDesignProjectRevision(def.env || {}),
         ...browserUseRuntimeEnv,
       },
       configuredAgentSpawnEnv,
@@ -10036,11 +10059,11 @@ export async function startServer({
         def.streamFormat === 'dsh-profile-jsonl'
           ? 'pipe'
           : 'ignore';
-      const env = applyAgentLaunchEnv({
-        ...agentSpawnEnv,
-        ...(mmdRouteLaunchEnv || {}),
-        ...odMediaEnv,
-        ...(byokOpenCodeProvider ? byokOpenCodeProvider.env : {}),
+      const env = applyAgentLaunchEnv(composeOpenDesignAgentEnvironment([
+        agentSpawnEnv,
+        mmdRouteLaunchEnv || {},
+        odMediaEnv,
+        byokOpenCodeProvider ? byokOpenCodeProvider.env : {},
         // OpenCode external-MCP injection (issue #2142). Layered AFTER
         // spawnEnvForAgent / odMediaEnv / configuredAgentEnv so the
         // daemon-built MCP config wins over a stale value the user
@@ -10051,16 +10074,16 @@ export async function startServer({
         // we deliberately leave the env unset in that case so the
         // user's saved `~/.config/opencode/opencode.json` continues
         // to apply as-is.
-        ...(opencodeConfigContent
+        (opencodeConfigContent
           ? { [isMiMoContent ? 'MIMOCODE_CONFIG_CONTENT' : 'OPENCODE_CONFIG_CONTENT']: opencodeConfigContent }
           : {}),
         // Daemon-owned resolver for task-input: references. Keep this last so
         // configured/BYOK/runtime env cannot redirect the Agent from the
         // verified Run projection back to mutable or canonical bytes.
-        ...(odNextTaskInputSnapshot
+        (odNextTaskInputSnapshot
           ? { OD_TASK_INPUT_DIR: odNextTaskInputSnapshot.projectionDir }
           : {}),
-      }, agentLaunch);
+      ], odMediaEnv), agentLaunch);
       spawnedAgentEnv = env;
       const invocation = createCommandInvocation({
         command: agentLaunch.launchPath,

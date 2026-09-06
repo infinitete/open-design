@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   parseProjectGitCommand,
   readProjectGitPromptFile,
+  runProjectGit,
 } from '../src/cli/project-git.js';
 
 let tempRoot = '';
@@ -20,6 +21,10 @@ const CLI_SRC = pathResolve(__dirname, '../src/cli.ts');
 const TSX_CLI = pathResolve(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs');
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  process.exitCode = undefined;
   if (server) server.close();
   server = null;
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
@@ -78,12 +83,15 @@ async function startStub(
   return { baseUrl: `http://127.0.0.1:${address.port}`, requests };
 }
 
-function operation(id: string, status: 'succeeded' | 'running' = 'succeeded') {
+function operation(
+  id: string,
+  status: 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' = 'succeeded',
+) {
   return {
     id,
     kind: 'restore',
     status,
-    phase: status === 'succeeded' ? 'synced' : 'syncing',
+    phase: status === 'succeeded' ? 'synced' : status === 'failed' ? 'failed' : 'syncing',
     projectId: 'p 1',
     basis: {
       projectRevision: 7,
@@ -93,7 +101,9 @@ function operation(id: string, status: 'succeeded' | 'running' = 'succeeded') {
       bindingGeneration: 2,
     },
     result: status === 'succeeded' ? { head: 'c'.repeat(40) } : null,
-    error: null,
+    error: status === 'failed'
+      ? { code: 'GIT_CONFLICT', message: 'merge failed', retryable: false }
+      : null,
   };
 }
 
@@ -113,6 +123,17 @@ const projectState = {
   error: null,
   binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
   dependencies: [],
+};
+
+const projectCommit = {
+  oid: 'abc',
+  parents: [],
+  author: { name: 'Open Design', email: null },
+  authoredAt: 1,
+  message: 'commit',
+  source: 'open-design',
+  snapshotKind: 'complete',
+  changedPaths: { added: [], modified: [], deleted: [] },
 };
 
 describe('od git parser', () => {
@@ -196,6 +217,41 @@ describe('od git parser', () => {
       .toThrow(/mutation/i);
     expect(() => parseProjectGitCommand(['retry', 'operation-1']))
       .toThrow(/unexpected positional/i);
+  });
+
+  it('rejects unsafe historical paths before URL construction', () => {
+    for (const path of ['a//b', '.', '..', 'a/./b', 'a/../b', 'a\\b', `a${String.fromCharCode(1)}b`]) {
+      expect(() => parseProjectGitCommand([
+        'show', '--project', 'p', '--commit', 'abc', '--path', path, '--json',
+      ]), path).toThrow(/path/i);
+    }
+  });
+
+  it('rejects every known flag that is inapplicable to the selected command', () => {
+    const cases = [
+      ['restore', '--project', 'p', '--preview', 'v', '--commit', 'different-target'],
+      ['status', '--project', 'p', '--url', 'ssh://git/repo'],
+      ['status', '--project', 'p', '--conversations'],
+      ['sync', '--project', 'p', '--url', 'ssh://git/repo'],
+      ['sync', '--project', 'p', '--text'],
+      ['log', '--project', 'p', '--preview', 'v'],
+    ];
+    for (const args of cases) {
+      expect(() => parseProjectGitCommand(args), args.join(' ')).toThrow(/not valid|not allowed/i);
+    }
+  });
+
+  it('rejects explicitly empty string flags, including optional flags', () => {
+    const cases = [
+      ['log', '--project', 'p', '--cursor', ''],
+      ['show', '--project', 'p', '--commit', 'abc', '--path='],
+      ['enable', '--project', 'p', '--preview', ''],
+      ['sync', '--project', 'p', '--idempotency-key='],
+      ['status', '--project', 'p', '--daemon-url', ''],
+    ];
+    for (const args of cases) {
+      expect(() => parseProjectGitCommand(args), args.join(' ')).toThrow(/empty|requires a value/i);
+    }
   });
 
   it('reads a UTF-8 prompt file whose path contains spaces', async () => {
@@ -326,7 +382,7 @@ describe('od git process boundary', () => {
       }
       if (request.method === 'GET' && request.url?.includes('/commits/')) {
         response.statusCode = 200;
-        response.end(JSON.stringify({ oid: 'abc', parents: [], message: 'commit' }));
+        response.end(JSON.stringify(projectCommit));
         return;
       }
       if (request.method === 'POST' || request.method === 'PATCH') {
@@ -437,6 +493,101 @@ describe('od git process boundary', () => {
     ]);
   });
 
+  it('rejects traversal locally so fetch cannot normalize it into another daemon route', async () => {
+    const stub = await startStub((_request, response) => {
+      response.statusCode = 200;
+      response.end(JSON.stringify({
+        encoding: 'base64',
+        content: Buffer.from('should not be fetched').toString('base64'),
+        mediaType: 'text/plain',
+      }));
+    });
+
+    const result = await runCli([
+      'git', 'show', '--project', 'p', '--commit', 'abc',
+      '--path', '../../../../../../health', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/path/i);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('looks up every operation state exactly once and prints the complete DTO', async () => {
+    const counts = new Map<string, number>();
+    const requested = new Map<string, ReturnType<typeof operation>>();
+    for (const status of ['queued', 'running', 'waiting', 'succeeded', 'failed'] as const) {
+      requested.set(`op-${status}`, operation(`op-${status}`, status));
+    }
+    const stub = await startStub((request, response) => {
+      const id = decodeURIComponent(request.url.split('/').at(-1) ?? '');
+      const count = (counts.get(id) ?? 0) + 1;
+      counts.set(id, count);
+      response.statusCode = 200;
+      response.end(JSON.stringify(count === 1 ? requested.get(id) : operation(id)));
+    });
+
+    for (const [id, expectedOperation] of requested) {
+      const result = await runCli([
+        'git', 'operation', id, '--json', '--daemon-url', stub.baseUrl,
+      ]);
+      expect(result.code, `${id}\n${result.stderr}`).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(expectedOperation);
+      expect(counts.get(id)).toBe(1);
+    }
+  });
+
+  it('retains the operation id and latest status when mutation polling times out', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'GET' && url.endsWith('/api/projects/p/git')) {
+        return new Response(JSON.stringify(projectState), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (init?.method === 'POST' && url.endsWith('/api/projects/p/git/sync')) {
+        return new Response(JSON.stringify({ operationId: 'timeout-op' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(operation('timeout-op', 'running')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation(chunk => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    const pending = runProjectGit([
+      'sync', '--project', 'p', '--json', '--daemon-url', 'http://127.0.0.1:7456',
+    ]);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(process.exitCode).toBe(2);
+    expect(stdout).toEqual([]);
+    const failure = JSON.parse(stderr.at(-1) ?? '{}') as {
+      error?: { code?: string; message?: string; details?: unknown };
+    };
+    expect(failure.error).toMatchObject({
+      code: 'OPERATION_PENDING',
+      details: { operationId: 'timeout-op', latestStatus: 'running' },
+    });
+    expect(failure.error?.message).toMatch(/timeout-op.*running/i);
+  });
+
   it('keeps HTTP failures non-zero and redacts tokens and credential-bearing URLs from stderr', async () => {
     let status = 401;
     const stub = await startStub((_request, response) => {
@@ -458,6 +609,95 @@ describe('od git process boundary', () => {
       expect(result.stderr).not.toContain('private-token');
       expect(result.stderr).not.toContain('user:secret');
     }
+  });
+
+  it('preserves actionable error fields while redacting every credential form at stderr', async () => {
+    const message = [
+      'https://user:pass@example.test/repo?access_token=query-secret',
+      'Authorization: Basic YmFkOmNyZWRlbnRpYWw=',
+      'credential=assigned-secret',
+      'Bearer bearer-secret',
+      'tool-private-token',
+    ].join(' ');
+    const stub = await startStub((_request, response) => {
+      response.statusCode = 409;
+      response.end(JSON.stringify({
+        error: {
+          code: 'PROJECT_STATE_CHANGED',
+          message,
+          details: {
+            operationId: 'op-1',
+            nextStep: 'retry with password=detail-secret',
+            'tool-private-token': 'credential key',
+          },
+          retryable: true,
+          requestId: 'request-1',
+          taskId: 'task-1',
+        },
+      }));
+    });
+
+    const jsonResult = await runCli([
+      'git', 'status', '--project', 'p', '--json', '--daemon-url', stub.baseUrl,
+    ], { env: { OD_TOOL_TOKEN: 'tool-private-token' } });
+    expect(jsonResult.code).toBe(1);
+    const jsonFailure = JSON.parse(jsonResult.stderr) as { error: Record<string, unknown> };
+    expect(jsonFailure.error).toMatchObject({
+      code: 'PROJECT_STATE_CHANGED',
+      details: { operationId: 'op-1' },
+      retryable: true,
+      requestId: 'request-1',
+      taskId: 'task-1',
+    });
+    for (const secret of [
+      'user:pass', 'query-secret', 'YmFkOmNyZWRlbnRpYWw=', 'assigned-secret',
+      'bearer-secret', 'detail-secret', 'tool-private-token',
+    ]) {
+      expect(jsonResult.stderr).not.toContain(secret);
+    }
+
+    const humanResult = await runCli([
+      'git', 'status', '--project', 'p', '--daemon-url', stub.baseUrl,
+    ], { env: { OD_TOOL_TOKEN: 'tool-private-token' } });
+    expect(humanResult.code).toBe(1);
+    expect(humanResult.stderr).toMatch(/PROJECT_STATE_CHANGED/);
+    expect(humanResult.stderr).toMatch(/retryable/i);
+    expect(humanResult.stderr).toContain('request-1');
+    expect(humanResult.stderr).toContain('task-1');
+    expect(humanResult.stderr).toContain('op-1');
+    expect(() => JSON.parse(humanResult.stderr)).toThrow();
+    expect(humanResult.stderr).not.toMatch(/query-secret|assigned-secret|bearer-secret|detail-secret|tool-private-token/);
+  });
+
+  it('rejects malformed operation, status, and history success DTOs immediately', async () => {
+    let operationRequests = 0;
+    const stub = await startStub((request, response) => {
+      response.statusCode = 200;
+      if (request.url === '/api/projects/p/git') {
+        response.end(JSON.stringify({ projectRevision: 7 }));
+        return;
+      }
+      if (request.url === '/api/projects/p/git/history') {
+        response.end(JSON.stringify({ commits: 'not-an-array', nextCursor: null }));
+        return;
+      }
+      operationRequests += 1;
+      response.end(JSON.stringify(operationRequests === 1
+        ? { ...operation('bad-op'), status: 'mystery' }
+        : operation('bad-op')));
+    });
+
+    for (const command of [
+      ['status', '--project', 'p'],
+      ['log', '--project', 'p'],
+      ['operation', 'bad-op'],
+    ]) {
+      const result = await runCli(['git', ...command, '--json', '--daemon-url', stub.baseUrl]);
+      expect(result.code, command.join(' ')).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/INVALID_RESPONSE/);
+    }
+    expect(operationRequests).toBe(1);
   });
 
   it('rejects a mutation response that is not the reviewed 202 acceptance contract', async () => {
@@ -516,5 +756,28 @@ describe('od git process boundary', () => {
     expect(overwritten.code).toBe(0);
     expect(JSON.parse(overwritten.stdout)).toMatchObject({ outputPath, bytes: 4 });
     expect(Buffer.from(await import('node:fs/promises').then(fs => fs.readFile(outputPath)))).toEqual(bytes);
+  });
+
+  it('rejects malformed base64 before mutating an output file', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'od-git-cli-invalid-base64-'));
+    const outputPath = join(tempRoot, 'copy.bin');
+    writeFileSync(outputPath, 'keep', 'utf8');
+    const stub = await startStub((_request, response) => {
+      response.statusCode = 200;
+      response.end(JSON.stringify({
+        encoding: 'base64', content: '%%%not-base64%%%', mediaType: 'application/octet-stream',
+      }));
+    });
+
+    const result = await runCli([
+      'git', 'show', '--project', 'p', '--commit', 'abc', '--path', 'asset.bin',
+      '--output', outputPath, '--overwrite', '--json', '--daemon-url', stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/INVALID_RESPONSE|base64/i);
+    expect(existsSync(outputPath)).toBe(true);
+    expect(readFileSync(outputPath, 'utf8')).toBe('keep');
   });
 });
