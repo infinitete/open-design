@@ -510,8 +510,10 @@ function atomicWriteJson(filePath, value) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tempPath, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tempPath, filePath);
+    return true;
   } catch {
     try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+    return false;
   }
 }
 
@@ -576,6 +578,9 @@ function durableRunState(run) {
       : {}),
     ...(typeof run.manualResumeAttemptCount === 'number'
       ? { manualResumeAttemptCount: run.manualResumeAttemptCount }
+      : {}),
+    ...(typeof run.pendingManualResumeAttemptCount === 'number'
+      ? { pendingManualResumeAttemptCount: run.pendingManualResumeAttemptCount }
       : {}),
     ...(typeof run.rechargeWaitDurationMs === 'number'
       ? { rechargeWaitDurationMs: run.rechargeWaitDurationMs }
@@ -1024,7 +1029,33 @@ export function createChatRunService({
   };
 
   const persistState = (run) => {
-    if (run?.statePath) atomicWriteJson(run.statePath, durableRunState(run));
+    if (!run?.statePath) return true;
+    return atomicWriteJson(run.statePath, durableRunState(run));
+  };
+
+  const reserveRestartAttempt = (run, executionAttempt) => {
+    const completedExecutionAttempt = Number.isSafeInteger(run?.manualResumeAttemptCount)
+      && run.manualResumeAttemptCount >= 0
+      ? run.manualResumeAttemptCount
+      : 0;
+    if (
+      !run
+      || !TERMINAL_RUN_STATUSES.has(run.status)
+      || !Number.isSafeInteger(executionAttempt)
+      || executionAttempt <= completedExecutionAttempt
+    ) return false;
+    const previous = run.pendingManualResumeAttemptCount;
+    run.pendingManualResumeAttemptCount = executionAttempt;
+    if (persistState(run)) return true;
+    if (previous === undefined) delete run.pendingManualResumeAttemptCount;
+    else run.pendingManualResumeAttemptCount = previous;
+    return false;
+  };
+
+  const clearRestartAttempt = (run, executionAttempt) => {
+    if (!run || run.pendingManualResumeAttemptCount !== executionAttempt) return;
+    delete run.pendingManualResumeAttemptCount;
+    persistState(run);
   };
 
   const setAnalyticsRecovery = (run, recovery) => {
@@ -1178,7 +1209,15 @@ export function createChatRunService({
       attemptStartedAt: resumedAt,
       attemptIndex: 0,
     };
-    run.manualResumeAttemptCount = (run.manualResumeAttemptCount ?? 0) + 1;
+    const completedExecutionAttempt = Number.isSafeInteger(run.manualResumeAttemptCount)
+      && run.manualResumeAttemptCount >= 0
+      ? run.manualResumeAttemptCount
+      : 0;
+    run.manualResumeAttemptCount = Number.isSafeInteger(run.pendingManualResumeAttemptCount)
+      && run.pendingManualResumeAttemptCount > completedExecutionAttempt
+      ? run.pendingManualResumeAttemptCount
+      : completedExecutionAttempt + 1;
+    delete run.pendingManualResumeAttemptCount;
     run.rechargeWaitDurationMs =
       (run.rechargeWaitDurationMs ?? 0) + rechargeWaitDurationMs;
     persistState(run);
@@ -1933,6 +1972,8 @@ export function createChatRunService({
     create,
     createOrReuse,
     prepareRestart,
+    reserveRestartAttempt,
+    clearRestartAttempt,
     start,
     get,
     findByPluginWorkflowId,

@@ -1141,6 +1141,35 @@ describe('chat run service shutdown', () => {
     }
   });
 
+  it('durably reserves and then promotes the exact same-id resume attempt', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-resume-attempt-test-'));
+    try {
+      const runs = createChatRunService({
+        createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
+        createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
+        runsLogDir: tmpDir as unknown as null,
+      });
+      const run = runs.create({ projectId: 'project' }) as any;
+      run.failureAction = 'recharge';
+      runs.finish(run, 'failed', 1, null);
+
+      expect(runs.reserveRestartAttempt(run, 1)).toBe(true);
+      expect(runs.statusBody(run)).not.toHaveProperty('pendingManualResumeAttemptCount');
+      expect(JSON.parse(fs.readFileSync(run.statePath, 'utf8'))).toMatchObject({
+        manualResumeAttemptCount: 0,
+        pendingManualResumeAttemptCount: 1,
+        status: 'failed',
+      });
+
+      expect(runs.prepareRestart(run)).toBe(run);
+      const restarted = JSON.parse(fs.readFileSync(run.statePath, 'utf8'));
+      expect(restarted).toMatchObject({ manualResumeAttemptCount: 1, status: 'queued' });
+      expect(restarted).not.toHaveProperty('pendingManualResumeAttemptCount');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('escalates to SIGKILL when a child ignores the shutdown SIGTERM grace window', async () => {
     const runs = createRuns();
     const child = new FakeChildProcess({ closeOn: 'SIGKILL' });

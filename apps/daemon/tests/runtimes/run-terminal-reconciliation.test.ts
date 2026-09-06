@@ -5,7 +5,13 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pinAssistantMessageOnRunCreate } from '../../src/runtimes/chat-run-messages.js';
 import { beginDurableRunTerminalReconciliation, reconcileDurableRunTerminals } from '../../src/runtimes/run-terminal-reconciliation.js';
+import { createChatRunService } from '../../src/runtimes/runs.js';
+import { createProjectGate } from '../../src/services/project-git/gate.js';
+import { createProjectGitRuntimeAdapter } from '../../src/services/project-git/runtime-adapter.js';
+import { migrateProjectGit } from '../../src/storage/project-git-migrations.js';
+import { createProjectGitStore } from '../../src/storage/project-git.js';
 
 describe('durable run terminal reconciliation', () => {
   let tmpDir: string;
@@ -22,12 +28,123 @@ describe('durable run terminal reconciliation', () => {
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
         conversation_id TEXT,
+        role TEXT NOT NULL DEFAULT 'assistant',
+        content TEXT NOT NULL DEFAULT '',
         run_id TEXT,
         run_status TEXT,
+        last_run_event_id TEXT,
+        session_mode TEXT,
+        run_context_json TEXT,
+        started_at INTEGER,
         ended_at INTEGER,
         events_json TEXT
       )
     `);
+    migrateProjectGit(db);
+  });
+
+  function seedReservedRunWithCleanAttemptZero() {
+    const store = createProjectGitStore(db);
+    const binding = store.saveBinding({
+      projectId: 'p1', cloneId: 'clone-1', repositoryProjectId: 'repo-1',
+      canonicalRoot: path.join(tmpDir, 'project'), commonDir: path.join(tmpDir, 'project', '.git'),
+      branch: 'main', remoteUrl: 'https://private.invalid/project.git', generation: 0,
+      autoSync: true, localHead: null, observedRemoteHead: null, confirmedRemoteHead: null,
+      projectRevision: 0, contentRevision: 0, exportedContentRevision: 0,
+      materializedHead: null, dirty: false,
+    });
+    const epoch = {
+      bindingGeneration: binding.generation,
+      projectRevision: binding.projectRevision,
+    };
+    const runs = createChatRunService({
+      createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
+      createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
+      runsLogDir: tmpDir as unknown as null,
+    });
+    const run = runs.create({
+      projectId: 'p1', conversationId: 'c-resume', assistantMessageId: 'm-resume', agentId: 'codex',
+    });
+    (run as any).projectGitBindingGeneration = epoch.bindingGeneration;
+    run.expectedProjectRevision = epoch.projectRevision;
+    runs.persistState(run);
+    runs.finish(run, 'failed', 1, null);
+    expect(store.recordRunTerminal({
+      runId: run.id, executionAttempt: 0, projectId: 'p1',
+      bindingGeneration: binding.generation, projectRevision: binding.projectRevision,
+      terminal: 'failed',
+    })).toBe(true);
+    const dirty = store.getBinding('p1')!;
+    store.markExported('p1', {
+      bindingGeneration: dirty.generation,
+      projectRevision: dirty.projectRevision,
+    }, dirty.contentRevision);
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
+    expect(runs.reserveRestartAttempt(run, 1)).toBe(true);
+    db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c-resume', 'p1')").run();
+    db.prepare(`INSERT INTO messages
+      (id, conversation_id, run_id, run_status, ended_at, events_json)
+      VALUES ('m-resume', 'c-resume', ?, 'failed', 2, '[]')`).run(run.id);
+    return { epoch, run, statePath: run.statePath as string, store };
+  }
+
+  it('repairs a committed same-id resume claim with its reserved next receipt identity', async () => {
+    const { epoch, run, statePath, store } = seedReservedRunWithCleanAttemptZero();
+    expect(pinAssistantMessageOnRunCreate(db, run, { status: 'queued' })).toEqual({ ok: true });
+    expect(db.prepare("SELECT run_status AS status, ended_at AS endedAt FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'queued', endedAt: null });
+
+    const gate = createProjectGate();
+    const notify = vi.fn();
+    const runtime = createProjectGitRuntimeAdapter({
+      recoveryReady: Promise.resolve(), store, gateFor: () => gate, notify, permits: new Map(),
+    });
+    const reconcile = () => beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => epoch,
+      reconcileTerminalsWithLocalRepair: runtime.reconcileTerminalsWithLocalRepair,
+      reportLangfuse: vi.fn(),
+    }).localReady;
+
+    await reconcile();
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'failed' });
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 2, dirty: true });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
+      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
+      { attempt: 0 }, { attempt: 1 },
+    ]);
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      manualResumeAttemptCount: 1,
+    });
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')))
+      .not.toHaveProperty('pendingManualResumeAttemptCount');
+
+    await reconcile();
+    expect(store.getBinding('p1')?.contentRevision).toBe(2);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a pre-claim attempt reservation without an active exact message', async () => {
+    const { epoch, statePath, store } = seedReservedRunWithCleanAttemptZero();
+    const notify = vi.fn();
+    const runtime = createProjectGitRuntimeAdapter({
+      recoveryReady: Promise.resolve(), store, gateFor: () => createProjectGate(),
+      notify, permits: new Map(),
+    });
+
+    await beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => epoch,
+      reconcileTerminalsWithLocalRepair: runtime.reconcileTerminalsWithLocalRepair,
+      reportLangfuse: vi.fn(),
+    }).localReady;
+
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
+    expect(notify).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')))
+      .not.toHaveProperty('pendingManualResumeAttemptCount');
   });
 
   it('groups durable local repairs by exact project epoch and detaches delivery only after local ready', async () => {

@@ -9,6 +9,7 @@ import {
 interface TestRun extends InternalPhysicalRun {
   assistantMessageId: string | null;
   manualResumeAttemptCount?: number;
+  pendingManualResumeAttemptCount?: number;
   projectGitBindingGeneration?: number;
 }
 
@@ -19,6 +20,7 @@ function createHarness(initial: {
   restartOk?: boolean;
   installThrows?: boolean;
   startThrows?: boolean;
+  reserveRestartOk?: boolean;
 } = {}) {
   const run: TestRun = {
     id: 'run-1',
@@ -34,7 +36,21 @@ function createHarness(initial: {
     return startedRun;
   });
   const persistState = vi.fn();
-  const registry: InternalRunRegistry<InternalRunCreateInput, TestRun> = {
+  const reserveRestartAttempt = vi.fn((reservedRun: TestRun, executionAttempt: number) => {
+    if (initial.reserveRestartOk === false) return false;
+    reservedRun.pendingManualResumeAttemptCount = executionAttempt;
+    persistState(reservedRun);
+    return true;
+  });
+  const clearRestartAttempt = vi.fn((reservedRun: TestRun, executionAttempt: number) => {
+    if (reservedRun.pendingManualResumeAttemptCount !== executionAttempt) return;
+    delete reservedRun.pendingManualResumeAttemptCount;
+    persistState(reservedRun);
+  });
+  const registry: InternalRunRegistry<InternalRunCreateInput, TestRun> & {
+    reserveRestartAttempt(run: TestRun, executionAttempt: number): boolean;
+    clearRestartAttempt(run: TestRun, executionAttempt: number): void;
+  } = {
     createOrReuse: vi.fn((meta) => {
       run.projectId = meta.projectId ?? null;
       run.expectedProjectRevision = meta.expectedProjectRevision;
@@ -49,9 +65,13 @@ function createHarness(initial: {
     prepareRestart: vi.fn(() => {
       if (initial.restartOk === false) return null;
       run.status = 'queued';
-      run.manualResumeAttemptCount = (run.manualResumeAttemptCount ?? 0) + 1;
+      run.manualResumeAttemptCount = run.pendingManualResumeAttemptCount
+        ?? (run.manualResumeAttemptCount ?? 0) + 1;
+      delete run.pendingManualResumeAttemptCount;
       return run;
     }),
+    reserveRestartAttempt,
+    clearRestartAttempt,
     get: vi.fn(() => null),
     drop,
     fail: vi.fn((failedRun, _errorCode, _errorMessage) => {
@@ -104,6 +124,7 @@ function createHarness(initial: {
     attachProjectRun,
     beginProjectRunAdmission,
     claimAssistantMessage,
+    clearRestartAttempt,
     drop,
     detachProjectRun,
     install,
@@ -112,6 +133,7 @@ function createHarness(initial: {
     preRunHandle,
     releaseProjectRun,
     registry,
+    reserveRestartAttempt,
     run,
     service,
     start,
@@ -311,6 +333,9 @@ describe('internal run creation service', () => {
       resumed: true,
     });
     expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1', 8);
+    expect(harness.reserveRestartAttempt).toHaveBeenCalledWith(harness.run, 3);
+    expect(harness.reserveRestartAttempt.mock.invocationCallOrder[0]!)
+      .toBeLessThan(harness.claimAssistantMessage.mock.invocationCallOrder[0]!);
     expect(harness.attachProjectRun).toHaveBeenCalledWith(
       'run-1',
       'project-1',
@@ -323,6 +348,49 @@ describe('internal run creation service', () => {
     );
     expect(harness.registry.prepareRestart).toHaveBeenCalledWith(harness.run);
     expect(harness.run.manualResumeAttemptCount).toBe(3);
+    expect(harness.run.pendingManualResumeAttemptCount).toBeUndefined();
+  });
+
+  it('clears a durable resume-attempt reservation when the assistant claim conflicts', async () => {
+    const harness = createHarness({ creation: 'reused', claimOk: false });
+    harness.run.manualResumeAttemptCount = 0;
+
+    expect(await harness.service.prepare({
+      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      resume: { requested: true, canResume: () => true },
+    })).toMatchObject({ kind: 'assistant_claim_conflict' });
+
+    expect(harness.reserveRestartAttempt).toHaveBeenCalledWith(harness.run, 1);
+    expect(harness.clearRestartAttempt).toHaveBeenCalledWith(harness.run, 1);
+    expect(harness.run.pendingManualResumeAttemptCount).toBeUndefined();
+    expect(harness.registry.prepareRestart).not.toHaveBeenCalled();
+  });
+
+  it('does not claim or admit a resume when its attempt reservation cannot be persisted', async () => {
+    const harness = createHarness({ creation: 'reused', reserveRestartOk: false });
+
+    await expect(harness.service.prepare({
+      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      resume: { requested: true, canResume: () => true },
+    })).rejects.toThrow('Failed to persist the resumed run execution attempt.');
+
+    expect(harness.claimAssistantMessage).not.toHaveBeenCalled();
+    expect(harness.beginProjectRunAdmission).not.toHaveBeenCalled();
+    expect(harness.attachProjectRun).not.toHaveBeenCalled();
+    expect(harness.run.pendingManualResumeAttemptCount).toBeUndefined();
+  });
+
+  it('clears a durable resume-attempt reservation when the claim transaction throws', async () => {
+    const harness = createHarness({ creation: 'reused', claimThrows: true });
+
+    await expect(harness.service.prepare({
+      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      resume: { requested: true, canResume: () => true },
+    })).rejects.toThrow('claim failed');
+
+    expect(harness.clearRestartAttempt).toHaveBeenCalledWith(harness.run, 1);
+    expect(harness.run.pendingManualResumeAttemptCount).toBeUndefined();
+    expect(harness.releaseProjectRun).toHaveBeenCalledWith('run-1');
   });
 
   it('preserves a reused terminal run when resume eligibility fails before admission', async () => {
@@ -346,6 +414,7 @@ describe('internal run creation service', () => {
     expect(harness.releaseProjectRun).toHaveBeenCalledOnce();
     expect(harness.releaseProjectRun).toHaveBeenCalledWith('run-1');
     expect(harness.drop).not.toHaveBeenCalled();
+    expect(harness.run.pendingManualResumeAttemptCount).toBe(1);
   });
 
   it('discards an admitted ready run through the service and releases exactly once', async () => {

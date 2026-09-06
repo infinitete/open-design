@@ -157,6 +157,8 @@ export interface ChatRun {
   analyticsRecovery?: { context?: AnalyticsContext } | null;
   externalPluginAnalytics?: Record<string, unknown> | null;
   manualResumeAttemptCount?: number;
+  /** Private durable reservation used only across a same-ID resume claim crash window. */
+  pendingManualResumeAttemptCount?: number;
   rechargeWaitDurationMs?: number;
   artifactOriginStatus?:
     | 'matched'

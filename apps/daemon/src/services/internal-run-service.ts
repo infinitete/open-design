@@ -49,6 +49,7 @@ export interface InternalPhysicalRun {
   expectedProjectRevision?: number;
   projectGitBindingGeneration?: number;
   manualResumeAttemptCount?: number;
+  pendingManualResumeAttemptCount?: number;
 }
 
 export interface InternalRunAnalyticsLifecycle<TRun> {
@@ -64,6 +65,8 @@ export interface InternalRunRegistry<
     | { kind: 'reused'; run: TRun }
     | { kind: 'conflict'; run: TRun };
   prepareRestart(run: TRun): TRun | null;
+  reserveRestartAttempt(run: TRun, executionAttempt: number): boolean;
+  clearRestartAttempt(run: TRun, executionAttempt: number): void;
   get(id: string): TRun | null;
   drop(run: TRun): void;
   fail(run: TRun, errorCode: string, errorMessage: string): void;
@@ -265,7 +268,24 @@ export function createInternalRunCreationService<
       if (projectAdmission) releaseAttachedAdmission(projectAdmission, run.id);
     };
     let claim: AssistantRunClaimResult;
+    const executionAttempt = creation.kind === 'reused'
+      ? (run.manualResumeAttemptCount ?? 0) + 1
+      : (run.manualResumeAttemptCount ?? 0);
+    let reservedResumeAttempt = false;
+    let resumeClaimCommitted = false;
+    const clearReservedResumeAttempt = (): void => {
+      if (!reservedResumeAttempt) return;
+      reservedResumeAttempt = false;
+      try { deps.runs.clearRestartAttempt(run, executionAttempt); }
+      catch { /* The stale private marker is ignored without an active claim on restart. */ }
+    };
     try {
+      if (creation.kind === 'reused') {
+        if (!deps.runs.reserveRestartAttempt(run, executionAttempt)) {
+          throw new Error('Failed to persist the resumed run execution attempt.');
+        }
+        reservedResumeAttempt = true;
+      }
       if (typeof input.meta.projectId === 'string' && input.meta.projectId) {
         projectAdmission ??= await preAdmitProjectRun(
           input.meta.projectId,
@@ -279,9 +299,6 @@ export function createInternalRunCreationService<
           throw new Error('Pre-run project admission does not match the run project epoch.');
         }
         const state = admissionState(projectAdmission);
-        const executionAttempt = creation.kind === 'reused'
-          ? (run.manualResumeAttemptCount ?? 0) + 1
-          : (run.manualResumeAttemptCount ?? 0);
         const epoch = deps.attachProjectRun(
           run.id,
           input.meta.projectId,
@@ -306,6 +323,7 @@ export function createInternalRunCreationService<
           isRunActive,
         });
         if (!resumeClaim.ok) {
+          clearReservedResumeAttempt();
           releaseAdmission();
           return {
             kind: 'assistant_claim_conflict',
@@ -313,6 +331,7 @@ export function createInternalRunCreationService<
             ...(resumeClaim.reason ? { reason: resumeClaim.reason } : {}),
           };
         }
+        resumeClaimCommitted = true;
         if (!deps.runs.prepareRestart(run)) {
           releaseAdmission();
           return { kind: 'resume_not_allowed', run };
@@ -331,6 +350,7 @@ export function createInternalRunCreationService<
     } catch (error) {
       // The registry create is optimistic. A failed ownership transaction must
       // not leave a physical Run that can be listed, streamed, or reconciled.
+      if (!resumeClaimCommitted) clearReservedResumeAttempt();
       releaseAdmission();
       if (creation.kind === 'created') deps.runs.drop(run);
       throw error;

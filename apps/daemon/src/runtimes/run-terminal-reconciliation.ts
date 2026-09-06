@@ -48,6 +48,7 @@ interface DurableRunState extends RestartRecoverableDurableRunState {
   expectedProjectRevision?: number;
   projectGitBindingGeneration?: number;
   manualResumeAttemptCount?: number;
+  pendingManualResumeAttemptCount?: number;
   conversationId: string | null;
   assistantMessageId: string | null;
   agentId: string | null;
@@ -169,13 +170,15 @@ function readState(filePath: string): DurableRunState | null {
   }
 }
 
-function writeState(filePath: string, state: DurableRunState): void {
+function writeState(filePath: string, state: DurableRunState): boolean {
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(tempPath, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tempPath, filePath);
+    return true;
   } catch {
     try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+    return false;
   }
 }
 
@@ -313,7 +316,7 @@ function activeMessageRows(db: Database.Database): Array<{
 
 async function reconcileProjectTerminalLocals(
   options: ReconciliationOptions,
-  states: Array<{ state: DurableRunState }>,
+  states: Array<{ filePath: string; state: DurableRunState }>,
   result: RunTerminalReconciliationResult,
   now: number,
 ): Promise<void> {
@@ -339,25 +342,63 @@ async function reconcileProjectTerminalLocals(
 
   const terminalStates = states.map(entry => entry.state).filter(state => TERMINAL_STATUSES.has(state.status));
   const durableRunIds = new Set(terminalStates.map(state => state.id));
-  const groups = new Map<string, { group: RecoveredProjectTerminals; states: DurableRunState[] }>();
-  for (const state of terminalStates) {
+  const groups = new Map<string, {
+    group: RecoveredProjectTerminals;
+    states: Array<{
+      filePath: string;
+      state: DurableRunState;
+      pendingExecutionAttempt?: number;
+    }>;
+  }>();
+  for (const entry of states.filter(({ state }) => TERMINAL_STATUSES.has(state.status))) {
+    const { filePath, state } = entry;
     if (!state.projectId) continue;
     const bindingGeneration = Number.isSafeInteger(state.projectGitBindingGeneration)
       ? state.projectGitBindingGeneration! : 0;
     const projectRevision = Number.isSafeInteger(state.expectedProjectRevision)
       ? state.expectedProjectRevision! : 0;
+    const completedExecutionAttempt = Number.isSafeInteger(state.manualResumeAttemptCount)
+      && state.manualResumeAttemptCount! >= 0
+      ? state.manualResumeAttemptCount! : 0;
+    const pendingExecutionAttempt = Number.isSafeInteger(state.pendingManualResumeAttemptCount)
+      && state.pendingManualResumeAttemptCount! > completedExecutionAttempt
+      ? state.pendingManualResumeAttemptCount! : undefined;
+    let pendingClaimActive = false;
+    let pendingClaimKnown = true;
+    if (pendingExecutionAttempt !== undefined && state.assistantMessageId && state.conversationId) {
+      try {
+        pendingClaimActive = Boolean(options.db.prepare(
+          `SELECT 1 FROM messages
+            WHERE id = ? AND conversation_id = ? AND role = 'assistant'
+              AND run_id = ? AND run_status IN ('queued', 'running')`,
+        ).get(state.assistantMessageId, state.conversationId, state.id));
+      } catch {
+        pendingClaimKnown = false;
+      }
+    }
+    if (state.pendingManualResumeAttemptCount !== undefined
+      && (pendingExecutionAttempt === undefined || (pendingClaimKnown && !pendingClaimActive))) {
+      delete state.pendingManualResumeAttemptCount;
+      writeState(filePath, state);
+    }
+    const executionAttempt = pendingClaimActive
+      ? pendingExecutionAttempt!
+      : completedExecutionAttempt;
     const key = JSON.stringify([state.projectId, bindingGeneration, projectRevision]);
     const current = groups.get(key) ?? {
       group: { projectId: state.projectId, bindingGeneration, projectRevision, terminals: [] },
       states: [],
     };
-    current.states.push(state);
+    current.states.push({
+      filePath,
+      state,
+      ...(pendingClaimActive ? { pendingExecutionAttempt: executionAttempt } : {}),
+    });
     current.group = {
       ...current.group,
       terminals: [...current.group.terminals, {
         runId: state.id,
-        executionAttempt: Number.isSafeInteger(state.manualResumeAttemptCount)
-          ? state.manualResumeAttemptCount! : 0,
+        executionAttempt,
         terminal: state.status,
       }],
     };
@@ -366,7 +407,15 @@ async function reconcileProjectTerminalLocals(
   for (const { group, states: groupedStates } of groups.values()) {
     try {
       await reconcile(group, async () => {
-        for (const state of groupedStates) {
+        for (const entry of groupedStates) {
+          if (entry.pendingExecutionAttempt === undefined) continue;
+          entry.state.manualResumeAttemptCount = entry.pendingExecutionAttempt;
+          delete entry.state.pendingManualResumeAttemptCount;
+          if (!writeState(entry.filePath, entry.state)) {
+            throw new Error(`Failed to promote resumed run attempt ${entry.state.id}.`);
+          }
+        }
+        for (const { state } of groupedStates) {
           result.messagesReconciled += reconcileMessageForTerminal(options.db, state, now);
           if ((state.status === 'failed' || state.status === 'canceled')
             && reconcileStrategyTaskRunTerminalIsolated(options.db, {
