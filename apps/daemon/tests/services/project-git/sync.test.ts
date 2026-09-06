@@ -367,6 +367,39 @@ it('terminalizes a resolve operation when candidate creation fails before recove
   expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'succeeded', error: null });
 });
 
+it('rejects an unselected legacy resolver before candidate construction and lets the durable owner finish', async () => {
+  const f = await fixture(true); const retained = await retainedMessageConflict(f);
+  (f.gitEnv as Record<string, string>).GIT_AUTHOR_DATE = 'not-a-git-date';
+  await expect(f.deps.resolveConflict({ projectId: 'b', conflictOperationId: retained.operation.id,
+    actorId: 'local-daemon', idempotencyKey: 'selected-resolver', requestDigest: '7'.repeat(64),
+    basis: retained.operation.basis, resolutions: [retained.resolution] })).rejects.toMatchObject({ code: 'CONFLICT' });
+  const selected = f.store.findOperation({ actorId: 'local-daemon', projectId: 'b', kind: 'resolve', idempotencyKey: 'selected-resolver' })!;
+  f.db.prepare('DELETE FROM project_git_conflict_resolutions').run();
+  const unselected = f.store.enqueueOperation({ projectId: 'b', actorId: 'legacy-daemon', kind: 'resolve',
+    idempotencyKey: 'unselected-resolver', requestDigest: '8'.repeat(64), basis: retained.operation.basis,
+    payload: JSON.parse(JSON.stringify({ conflictOperationId: retained.operation.id, basis: retained.operation.basis,
+      resolutions: [retained.resolution] })) as import('@open-design/contracts').JsonValue });
+  f.store.updateOperation(unselected.id, { status: 'failed', phase: 'failed', result: null,
+    error: { code: 'CONFLICT', message: 'Legacy resolver failed.' } });
+  f.db.prepare('DELETE FROM project_git_conflict_resolutions').run();
+  f.db.prepare('INSERT INTO project_git_conflict_resolutions VALUES (?, ?)').run(retained.operation.id, selected.id);
+  delete (f.gitEnv as Record<string, string>).GIT_AUTHOR_DATE;
+  f.reopen(); await f.deps.recoveryReady;
+
+  const [loser, winner] = await Promise.allSettled([
+    f.deps.retryConflictResolution(unselected.id),
+    f.deps.retryConflictResolution(selected.id),
+  ]);
+  expect(loser).toMatchObject({ status: 'rejected', reason: { code: 'CONFLICT', status: 409 } });
+  expect(winner).toMatchObject({ status: 'fulfilled', value: { id: selected.id, status: 'succeeded' } });
+  expect(f.store.getOperation(unselected.id)).toMatchObject({ status: 'failed', phase: 'failed' });
+  expect(f.store.getOperation(retained.operation.id)).toMatchObject({ status: 'succeeded', error: null });
+  f.reopen(); await f.deps.recoveryReady;
+  expect(f.store.getConflictResolutionOwner(retained.operation.id)).toBe(selected.id);
+  expect(f.store.getOperation(selected.id)).toMatchObject({ status: 'succeeded' });
+  expect(f.store.getOperation(unselected.id)).toMatchObject({ status: 'failed' });
+});
+
 it('persists the approved backoff schedule with final jitter capped at five minutes', () => {
   expect([0, 1, 2, 3, 4].map(n => retryDelayMs(n, () => 0.5))).toEqual([5000, 30000, 120000, 300000, 300000]);
   expect(retryDelayMs(0, () => 0)).toBe(4000);

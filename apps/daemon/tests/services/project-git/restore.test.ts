@@ -111,6 +111,60 @@ it('retains durable preview admission when successful result persistence fails',
   });
 });
 
+it('arbitrates restore-preview replay by target and normalized revision before mutable project checks', async () => {
+  const f = await fixture();
+  const ctx = { actorId: 'local', idempotencyKey: 'restore-preview-replay', expectedProjectRevision: 2 };
+  const accepted = await f.service.admitRestorePreview('project', f.head, ctx);
+  const current = await f.input.readBasis(); f.store.bumpProject('project', current);
+  const changedBasis = await f.input.readBasis();
+  const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'background', kind: 'sync',
+    idempotencyKey: 'restore-preview-replay-conflict', requestDigest: 'restore-preview-replay-conflict', basis: changedBasis, payload: {} });
+  f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.' } });
+
+  await expect(f.service.admitRestorePreview('project', f.head, ctx)).resolves.toEqual(accepted);
+  await expect(f.service.admitRestorePreview('project', f.head, { ...ctx, expectedProjectRevision: 3 }))
+    .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+  await expect(f.service.admitRestorePreview('project', '0'.repeat(40), ctx))
+    .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+});
+
+it('includes normalized revision in durable restore-confirmation replay identity', async () => {
+  const f = await fixture(); const previewContext = request();
+  const preview = await f.service.previewRestore('project', f.head, previewContext);
+  const ctx = { actorId: 'local', idempotencyKey: 'restore-confirm-replay', expectedProjectRevision: 2 };
+  const accepted = await f.service.admitRestore('project', preview.id, ctx);
+  const withoutRevision = { actorId: ctx.actorId, idempotencyKey: ctx.idempotencyKey };
+
+  await expect(f.service.admitRestore('project', preview.id, ctx)).resolves.toEqual(accepted);
+  await expect(f.service.admitRestore('project', preview.id, withoutRevision))
+    .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+  await expect(f.service.admitRestore('project', 'substituted-preview', ctx))
+    .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+});
+
+it('keeps restore preview and confirmation replay identity stable after database reopen', async () => {
+  const f = await fixture();
+  const previewContext = { actorId: 'local', idempotencyKey: 'reopen-preview-replay', expectedProjectRevision: 2 };
+  const preview = await f.service.previewRestore('project', f.head, previewContext);
+  const restoreContext = { actorId: 'local', idempotencyKey: 'reopen-restore-replay', expectedProjectRevision: 2 };
+  const restore = await f.service.admitRestore('project', preview.id, restoreContext);
+  f.db.close(); const reopened = await openCrashFixture(f.root);
+  try {
+    const service = createProjectGitRestoreService({ db: reopened.db, store: reopened.store, operationRoot: f.input.operationDir,
+      now: () => 1000, recoveryReady: Promise.resolve(), requireProject: f.serviceInput.requireProject,
+      resolveProject: () => ({ root: f.a, branch: 'main', gate: reopened.gate, gitEnv: fixtureGitEnv }) });
+    await expect(service.admitRestorePreview('project', f.head, previewContext)).resolves.toEqual({ operationId: preview.id });
+    await expect(service.admitRestore('project', preview.id, restoreContext)).resolves.toEqual(restore);
+    await expect(service.admitRestorePreview('project', f.head, {
+      actorId: previewContext.actorId, idempotencyKey: previewContext.idempotencyKey,
+    }))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(service.admitRestore('project', preview.id, { ...restoreContext, expectedProjectRevision: 3 }))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+  } finally { reopened.db.close(); }
+});
+
 it.each(['result', 'payload', 'capture'])('quarantines malformed persisted restore preview %s with a domain error', async field => {
   const f = await fixture();
   const service = createProjectGitRestoreService({ ...f.serviceInput, afterDurablePhase: async phase => { if (phase === 'prepared') throw new Error('stop'); } });

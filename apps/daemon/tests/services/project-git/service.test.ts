@@ -16,6 +16,7 @@ import { serializePortableMetadata } from '../../../src/services/project-git/por
 import { canonicalJson } from '../../../src/services/project-git/portable.js';
 import { readBindingEvidence } from '../../../src/services/project-git/binding-evidence.js';
 import { bindingOwnerRef } from '../../../src/services/project-git/registration.js';
+import type { MaterializePhase } from '../../../src/services/project-git/materialize.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -25,6 +26,7 @@ async function fixture(options: {
   resolveAvailability?: (request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }) => Promise<boolean>;
   subscribeProject?: (projectId: string, onChange: () => void) => { ready: Promise<void>; unsubscribe(): Promise<void> };
   emit?: (projectId: string, event: ProjectGitEvent) => void;
+  afterDurablePhase?: (phase: MaterializePhase) => Promise<void>;
 } = {}) {
   const git = await createGitFixture();
   await writeFile(join(git.a, 'index.html'), 'initial');
@@ -38,14 +40,15 @@ async function fixture(options: {
   const denyPush = join(data, 'deny-push');
   const blockPush = join(data, 'block-push'); const pushEntered = join(data, 'push-entered');
   const blockFetch = join(data, 'block-fetch'); const fetchEntered = join(data, 'fetch-entered');
-  await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) touch '${pushEntered}'; while [ -f '${blockPush}' ]; do sleep 0.01; done; if [ -f '${denyPush}' ]; then echo 'Permission denied' >&2; exit 1; fi; exec git receive-pack '${git.remote}';; *) touch '${fetchEntered}'; while [ -f '${blockFetch}' ]; do sleep 0.01; done; exec git upload-pack '${git.remote}';; esac\n`);
+  await writeFile(join(bin, 'ssh'), `#!/bin/sh\nunset GIT_DIR GIT_OBJECT_DIRECTORY\ncase "$*" in *git-receive-pack*) echo push >> '${join(data, 'network.log')}'; touch '${pushEntered}'; while [ -f '${blockPush}' ]; do sleep 0.01; done; if [ -f '${denyPush}' ]; then echo 'Permission denied' >&2; exit 1; fi; exec git receive-pack '${git.remote}';; *) echo fetch >> '${join(data, 'network.log')}'; touch '${fetchEntered}'; while [ -f '${blockFetch}' ]; do sleep 0.01; done; exec git upload-pack '${git.remote}';; esac\n`);
   await chmod(join(bin, 'ssh'), 0o700);
   const composition = await createProjectGitServiceComposition({ db, store, operationRoot,
     resolveProjectRoot: async id => id === 'project' ? git.a : id === 'unmanaged' ? unmanaged : join(data, 'missing'), emit: options.emit ?? (() => {}),
     gitEnv: { ...fixtureGitEnv, PATH: `${bin}:${process.env.PATH}` },
     ...(options.requireProject ? { requireProject: options.requireProject } : {}),
     ...(options.resolveAvailability ? { resolveAvailability: options.resolveAvailability } : {}),
-    ...(options.subscribeProject ? { subscribeProject: options.subscribeProject } : {}) });
+    ...(options.subscribeProject ? { subscribeProject: options.subscribeProject } : {}),
+    ...(options.afterDurablePhase ? { afterDurablePhase: options.afterDurablePhase } : {}) });
   const repo = await discoverRepository(git.a);
   insertProject(db, { id: 'project', name: 'Local project', createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype', baseDir: git.a } });
   insertProject(db, { id: 'unmanaged', name: 'Unmanaged project', createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype', baseDir: unmanaged } });
@@ -408,6 +411,73 @@ it('reads conflicts only from digest-verified private evidence', async () => {
   await expect(f.service.conflicts('project')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
 });
 
+it('returns a durably claimed resolution before materialization completes and drains it on stop', async () => {
+  let releaseMaterialization!: () => void;
+  const materializationBlocked = new Promise<void>(resolve => { releaseMaterialization = resolve; });
+  let enterMaterialization!: () => void;
+  const materializationEntered = new Promise<void>(resolve => { enterMaterialization = resolve; });
+  const f = await fixture({ afterDurablePhase: async phase => {
+    if (phase === 'prepared') { enterMaterialization(); await materializationBlocked; }
+  } });
+  const baseline = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'resolve-baseline', expectedProjectRevision: 0,
+  });
+  const baselineOperation = await settledWithin(f.store, baseline.operationId, 10_000);
+  expect(baselineOperation, JSON.stringify(baselineOperation)).toMatchObject({ status: 'succeeded' });
+  await f.git.git(f.git.b, 'fetch', 'origin', 'main');
+  await f.git.git(f.git.b, 'checkout', '-B', 'main', 'FETCH_HEAD');
+  await writeFile(join(f.git.a, 'index.html'), 'local resolution side');
+  await f.git.git(f.git.a, 'add', 'index.html');
+  await f.git.git(f.git.a, 'commit', '-m', 'local divergence');
+  await writeFile(join(f.git.b, 'index.html'), 'remote resolution side');
+  await f.git.git(f.git.b, 'add', 'index.html');
+  await f.git.git(f.git.b, 'commit', '-m', 'remote divergence');
+  await f.git.git(f.git.b, 'push', 'origin', 'HEAD:main');
+  const synchronization = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'resolve-conflict', expectedProjectRevision: 0,
+  });
+  const conflict = await settledWithin(f.store, synchronization.operationId, 10_000);
+  expect(conflict).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  const [item] = await f.service.conflicts('project');
+  expect(item).toMatchObject({ kind: 'file', path: 'index.html' });
+  const action = { kind: 'resolve' as const, operationId: conflict.id, basis: conflict.basis,
+    resolutions: [{ conflictId: item!.id, kind: 'select' as const, selectedSide: 'local' as const }] };
+  const context = { actorId: 'local', projectId: 'project', idempotencyKey: 'async-resolve', expectedProjectRevision: 0 } as const;
+  const resolving = f.service.execute(action, context);
+  try {
+    const progress = await Promise.race([
+      materializationEntered.then(() => ({ materializationStarted: true as const })),
+      resolving.then(result => ({ result })),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 5_000)),
+    ]);
+    expect(progress).not.toBeNull();
+    const admitted = progress && 'result' in progress ? progress.result : await Promise.race([
+      resolving,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+    ]);
+    expect(admitted).not.toBeNull();
+    expect(f.store.getOperation(admitted!.operationId)).toMatchObject({ kind: 'resolve', status: 'running' });
+    await expect(Promise.race([
+      materializationEntered.then(() => 'materialization-started' as const),
+      new Promise(resolve => setTimeout(() => resolve('materialization-timeout' as const), 5_000)),
+    ])).resolves.toBe('materialization-started');
+    await expect(f.service.execute(action, context)).resolves.toEqual(admitted);
+    await expect(f.service.execute({ ...action, resolutions: [{ ...action.resolutions[0]!, selectedSide: 'remote' }] }, context))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    const stopping = f.service.stop();
+    await expect(Promise.race([
+      stopping.then(() => 'stopped' as const),
+      new Promise(resolve => setTimeout(() => resolve('waiting' as const), 100)),
+    ])).resolves.toBe('waiting');
+    releaseMaterialization();
+    await stopping;
+    expect(await terminal(f.store, admitted!.operationId)).toMatchObject({ status: 'succeeded' });
+  } finally {
+    releaseMaterialization();
+    await resolving.catch(() => undefined);
+  }
+});
+
 it('durably admits manual conflict recomputation while the sync worker keeps an unchanged conflict off the network', async () => {
   const f = await fixture();
   const baseline = await f.service.execute({ kind: 'sync' }, {
@@ -429,6 +499,72 @@ it('durably admits manual conflict recomputation while the sync worker keeps an 
   expect(await settledWithin(f.store, accepted.operationId)).toMatchObject({ status: 'failed', error: { code: 'CONFLICT' } });
   expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
   expect(await readFile(join(f.data, 'network.log')).catch(() => Buffer.alloc(0))).toEqual(networkBefore);
+});
+
+it('fences a manual sync queued behind network work that retains a conflict before release', async () => {
+  const f = await fixture(); await writeFile(f.blockFetch, 'block');
+  const binding = f.store.getBinding('project')!;
+  const predecessor = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'predecessor-manual-sync', expectedProjectRevision: binding.projectRevision,
+  });
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try { await access(f.fetchEntered); break; }
+    catch { if (Date.now() >= deadline) throw new Error('background fetch did not start'); await new Promise(resolve => setTimeout(resolve, 5)); }
+  }
+  const accepted = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'queued-manual-sync', expectedProjectRevision: binding.projectRevision,
+  });
+  const admitted = f.store.getJournal(accepted.operationId)!;
+  expect(admitted).toMatchObject({ status: 'queued', payload: { retainedConflictId: null } });
+  const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'queued-manual-conflict', requestDigest: 'queued-manual-conflict', basis: admitted.basis, payload: { lane: 'network' } });
+  f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.', details: { reason: 'merge_conflict' } } });
+  const before = { generation: binding.generation };
+  await rm(f.blockFetch);
+
+  const predecessorTerminal = await terminal(f.store, predecessor.operationId);
+  expect(predecessorTerminal).toMatchObject({ status: 'succeeded' });
+  expect(await terminal(f.store, admitted.id)).toMatchObject({ status: 'failed', phase: 'failed', error: { code: 'GIT_CONFLICT' } });
+  expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  expect(f.store.getBinding('project')).toMatchObject({ generation: before.generation, localHead: predecessorTerminal.result?.head });
+  expect(f.store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual([]);
+});
+
+it('fences a sync retry queued behind network work without starting another transport', async () => {
+  const f = await fixture();
+  await writeFile(f.blockFetch, 'block');
+  const predecessor = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'retry-lane-predecessor', expectedProjectRevision: 0,
+  });
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try { await access(f.fetchEntered); break; }
+    catch { if (Date.now() >= deadline) throw new Error('predecessor fetch did not start'); await new Promise(resolve => setTimeout(resolve, 5)); }
+  }
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const target = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync',
+    idempotencyKey: 'queued-retry-target', requestDigest: 'queued-retry-target', basis, payload: { lane: 'network' } });
+  f.store.updateOperation(target.id, { status: 'failed', phase: 'failed', result: null,
+    error: { code: 'CONFLICT', message: 'Retry after recovery.' } });
+  await expect(f.service.execute({ kind: 'retry', operationId: target.id }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'queued-sync-retry', expectedProjectRevision: 0,
+  })).resolves.toEqual({ operationId: target.id });
+  const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'queued-retry-conflict', requestDigest: 'queued-retry-conflict', basis, payload: { lane: 'network' } });
+  f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.', details: { reason: 'merge_conflict' } } });
+  await rm(f.blockFetch);
+  expect(await terminal(f.store, predecessor.operationId)).toMatchObject({ status: 'succeeded' });
+  await f.service.stop();
+  expect(f.store.getOperation(target.id)).toMatchObject({ status: 'failed' });
+  expect(f.store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+  const network = (await readFile(join(f.data, 'network.log'), 'utf8')).trim().split('\n');
+  expect(network.filter(line => line === 'push')).toHaveLength(1);
+  expect(network.filter(line => line === 'fetch')).toHaveLength(2);
 });
 
 it.each(['remote_rewritten', 'external_head_conflict', 'portable_resource'])(
@@ -583,6 +719,56 @@ it('serializes start with stop so a delayed startup cannot leak a watcher after 
   })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
 });
 
+it('terminalizes every interrupted phase-null admission before startup schedules project work', async () => {
+  const f = await fixture();
+  f.store.saveBinding({ ...f.store.getBinding('project')!, autoSync: false });
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const retained = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'retained-conflict-on-restart', requestDigest: 'retained-conflict-on-restart', basis, payload: { lane: 'network' } });
+  f.store.updateOperation(retained.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve the retained conflict.' } });
+  const admitted = [
+    f.store.enqueueOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'restart-open',
+      requestDigest: 'restart-open', payload: { url: 'ssh://git@example.invalid/repo', branch: 'main' } }),
+    f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'binding_preview', idempotencyKey: 'restart-preview',
+      requestDigest: 'restart-preview', basis, payload: { url: 'ssh://git@example.invalid/repo', branch: 'main' } }),
+    f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync', idempotencyKey: 'restart-sync',
+      requestDigest: 'restart-sync', basis, payload: { lane: 'network' } }),
+    f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'resolve', idempotencyKey: 'restart-resolve',
+      requestDigest: 'restart-resolve', basis, payload: { conflictOperationId: retained.id, basis, resolutions: [] } }),
+  ];
+  f.store.updateOperation(admitted[1]!.id, { status: 'running', phase: 'waiting_idle', result: null, error: null });
+  f.store.updateOperation(admitted[2]!.id, { status: 'waiting', phase: 'waiting_idle', result: null, error: null });
+
+  for (const [kind, consumerKind] of [['enable_preview', 'enable'], ['binding_preview', 'bind'], ['restore_preview', 'restore']] as const) {
+    const preview = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind,
+      idempotencyKey: `restart-${kind}`, requestDigest: `restart-${kind}`, basis, payload: {} });
+    f.store.updateOperation(preview.id, { status: 'succeeded', phase: 'local_saved',
+      result: { preview: { id: preview.id, kind: consumerKind, basis, targetOid: null, expiresAt: Date.now() + 60_000,
+        changes: { addedPaths: [], modifiedPaths: [], deletedPaths: [], settingsChanged: 0, conversationsChanged: 0,
+          ignoredPaths: [], privatePaths: [], missingPaths: [], historyMode: 'complete', collisions: [] }, dependencies: [] } }, error: null });
+    const consumer = f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: consumerKind,
+      idempotencyKey: `restart-${consumerKind}`, requestDigest: `restart-${consumerKind}`, basis,
+      payload: { previewId: preview.id } });
+    f.store.consumePreview(preview.id, consumer.id);
+    admitted.push(consumer);
+  }
+  await f.service.stop();
+  const restarted = await createProjectGitServiceComposition({ db: f.db, store: f.store, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : id === 'unmanaged' ? f.unmanaged : join(f.data, 'missing'),
+    emit: () => {}, gitEnv: fixtureGitEnv });
+  cleanups.push(() => restarted.service.stop());
+  await restarted.service.start();
+
+  for (const operation of admitted) {
+    expect(f.store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed',
+      error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_admission' } } });
+  }
+  expect(f.store.getOperation(retained.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+});
+
 it('quarantines corrupt repositories and unavailable Git as project-local state', async () => {
   const f = await fixture(); await f.service.stop();
   const gitDir = join(f.git.a, '.git'); const displaced = join(f.git.a, '.git-corrupt');
@@ -658,6 +844,45 @@ it('retries an auth-blocked sync in the same operation and rejects stale retry w
     { actorId: 'local', projectId: 'project', idempotencyKey: 'retry-sync' })).resolves.toEqual(retried);
   await expect(f.service.execute({ kind: 'retry', operationId: first.operationId },
     { actorId: 'local', projectId: 'project', idempotencyKey: 'retry-again' })).rejects.toMatchObject({ code: 'CONFLICT' });
+});
+
+it('returns a claimed retry operation before its network attempt completes', async () => {
+  const f = await fixture();
+  await writeFile(f.denyPush, 'deny');
+  const original = await f.service.execute({ kind: 'sync' }, {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'blocked-retry-original', expectedProjectRevision: 0,
+  });
+  while (f.store.getJournal(original.operationId)?.status !== 'waiting') {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  await rm(f.denyPush);
+  await rm(f.pushEntered, { force: true });
+  await writeFile(f.blockPush, 'block');
+  const context = {
+    actorId: 'local', projectId: 'project', idempotencyKey: 'blocked-retry', expectedProjectRevision: 0,
+  } as const;
+  const retrying = f.service.execute({ kind: 'retry', operationId: original.operationId }, context);
+  try {
+    const deadline = Date.now() + 5_000;
+    while (true) {
+      try { await access(f.pushEntered); break; }
+      catch { if (Date.now() >= deadline) throw new Error('retry push did not start'); await new Promise(resolve => setTimeout(resolve, 5)); }
+    }
+    const admitted = await Promise.race([
+      retrying,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+    ]);
+    expect(admitted).not.toBeNull();
+    expect(admitted).toEqual({ operationId: original.operationId });
+    expect(f.store.getOperation(original.operationId)).toMatchObject({ status: 'running', phase: 'syncing' });
+    await expect(f.service.execute({ kind: 'retry', operationId: original.operationId }, context)).resolves.toEqual(admitted);
+    await expect(f.service.execute({ kind: 'retry', operationId: original.operationId }, {
+      ...context, idempotencyKey: 'blocked-retry-changed',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+  } finally {
+    await rm(f.blockPush, { force: true });
+    await retrying.catch(() => undefined);
+  }
 });
 
 it('replays an exact terminal resolve before revalidating its now-stale project revision', async () => {

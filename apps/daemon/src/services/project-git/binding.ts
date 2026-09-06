@@ -532,6 +532,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         const winner = existing(id, 'binding_preview', request, digest);
         if (!winner || winner.id !== admitted.id) throw stateChanged();
         if (winner.status !== 'queued') return store.getOperation(winner.id)!;
+        assertNoRetainedConflict(id);
         store.assertRevision(id, request.expectedProjectRevision);
         await input.checkpointCurrent(id);
         const remoteHead = await targetHead(project.root, url, branch);
@@ -597,6 +598,7 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         prior = existing(id, 'bind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
         const preview = store.getJournal(previewId);
         const pending = prior && store.getRegistration(prior.id)?.state === 'pending';
+        if (!pending) assertNoRetainedConflict(id);
         if (!preview || preview.actorId !== request.actorId || preview.projectId !== id || preview.kind !== 'binding_preview'
           || preview.status !== 'succeeded' || preview.result?.preview?.id !== previewId || (!pending && preview.result.preview.expiresAt <= input.now())) throw stateChanged();
         const captured = await readEvidence(preview); const target = captured.bindingTarget;
@@ -626,7 +628,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       const project = await resolveAuthorized(id);
       return input.scheduler.withNetworkPaused(id, async () => {
         prior = existing(id, 'unbind', request, digest); if (prior?.status === 'succeeded') return store.getOperation(prior.id)!;
-        if (prior && store.getRegistration(prior.id)?.state === 'pending') return completeBindingOnly(id, prior, await readEvidence(prior));
+        const pending = prior && store.getRegistration(prior.id)?.state === 'pending';
+        if (pending) return completeBindingOnly(id, prior!, await readEvidence(prior!));
+        assertNoRetainedConflict(id);
         let captured: BindingCapture; let user: ProjectGitJournalRecord;
         await project.gate.exclusive(async () => {
           if (!prior) store.assertRevision(id, request.expectedProjectRevision);

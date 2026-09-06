@@ -248,6 +248,7 @@ export interface ProjectGitStore {
   getLatestProjectOperation(projectId: string): ProjectGitOperation | null;
   /** Freezes a private conflict artifact reference without exposing it through the public operation DTO. */
   freezeConflictEvidence(operationId: string, basis: ProjectGitBasis, evidence: { path: string; digest: string }): void;
+  getConflictResolutionOwner(conflictOperationId: string): string | null;
   markRetainedConflictStale(operationId: string): void;
   supersedeRetainedConflict(staleOperationId: string, replacementOperationId: string,
     replacement: Pick<ProjectGitOperationUpdate, 'result' | 'error'>): void;
@@ -263,6 +264,8 @@ export interface ProjectGitStore {
   replaceAdmittedOperationPayload(id: string, payload: JsonValue, basis?: ProjectGitBasis): void;
   /** Closes a worker that failed before it established an owned recovery/registration intent. */
   settleAdmittedOperationFailure(id: string, error: ApiError): void;
+  /** Closes crash-stranded admission-only work before runtime schedulers can observe it. */
+  reconcileInterruptedAdmissions(operationIds?: ReadonlySet<string>): string[];
   updateOperation(id: string, update: ProjectGitOperationUpdate): void;
   listPendingOperations(): ProjectGitJournalRecord[];
   /** Writes intent BEFORE the effect; completePhase separately records verified completion. */
@@ -520,6 +523,7 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   function finishMaterialization(id: string, input: ProjectGitMaterializationCompletion, conflictOperationId?: string): number {
     return transaction(() => {
       const op = getJournal(id);
+      if (conflictOperationId && store.getConflictResolutionOwner(conflictOperationId) !== id) throw recoveryRequired();
       if (input.remainingDirty !== undefined && (op?.kind !== 'restore' || typeof input.remainingDirty !== 'boolean')) throw recoveryRequired();
       if (op?.journalPhase === 'complete' && op.completedProjectRevision !== null) {
         if (!sameBasis(op.basis, input.basis)
@@ -879,6 +883,11 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       db.prepare('UPDATE project_git_operations SET basis_json = ?, payload_json = ?, updated_at = ? WHERE id = ?')
         .run(json(basis), canonicalPayloadJson(next), Date.now(), id);
     }),
+    getConflictResolutionOwner: conflictId => {
+      const row = db.prepare(`SELECT resolve_operation_id AS id FROM project_git_conflict_resolutions
+        WHERE conflict_operation_id = ?`).get(conflictId) as { id: string } | undefined;
+      return row?.id ?? null;
+    },
     markRetainedConflictStale: id => transaction(() => {
       const op = getJournal(id);
       if (!op || op.kind !== 'sync' || op.status !== 'waiting' || op.phase !== 'conflict' || op.journalPhase !== null
@@ -973,6 +982,26 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         || getRegistration(id)?.state === 'pending') return;
       db.prepare("UPDATE project_git_operations SET status = 'failed', phase = 'failed', error_json = ?, updated_at = ? WHERE id = ?")
         .run(json(error), Date.now(), id);
+    }),
+    reconcileInterruptedAdmissions: operationIds => transaction(() => {
+      const reconciled: string[] = [];
+      for (const op of store.listPendingOperations()) {
+        const payload = op.payload !== null && typeof op.payload === 'object' && !Array.isArray(op.payload)
+          ? op.payload as Record<string, JsonValue> : null;
+        const retainedWaiting = op.status === 'waiting' && op.phase !== 'waiting_idle';
+        const quarantine = op.actorId === 'project-git-background' && op.kind === 'sync' && payload?.lane === 'quarantine';
+        if ((operationIds && !operationIds.has(op.id)) || op.kind === 'checkpoint' || op.ownerOperationId !== null
+          || op.journalPhase !== null || op.recoveryData !== null || getRegistration(op.id)?.state === 'pending'
+          || retainedWaiting || quarantine) continue;
+        const retryable = ['enable', 'bind', 'open', 'restore', 'resolve', 'sync'].includes(op.kind);
+        const nextStep = retryable ? 'Retry the interrupted operation.'
+          : op.kind.endsWith('_preview') ? 'Create a new preview.' : 'Submit a new request.';
+        db.prepare("UPDATE project_git_operations SET status = 'failed', phase = 'failed', result_json = NULL, error_json = ?, updated_at = ? WHERE id = ?")
+          .run(json({ code: 'RECOVERY_REQUIRED', message: 'The operation was interrupted before durable work began.',
+            details: { reason: 'interrupted_admission', nextStep } }), Date.now(), op.id);
+        reconciled.push(op.id);
+      }
+      return reconciled;
     }),
     updateOperation: (id, update) => transaction(() => {
       const op = getJournal(id); if (!op) throw conflict();

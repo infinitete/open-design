@@ -29,6 +29,7 @@ import {
 import { getRepositoryOwnerDomain } from './repository-lease.js';
 import { discoverRepository, redactGitText } from './repository.js';
 import { createProjectGitRestoreService } from './restore.js';
+import type { MaterializePhase } from './materialize.js';
 import { createProjectGitRuntimeAdapter, type ProjectRunPermit } from './runtime-adapter.js';
 import { createProjectGitScheduler, type ProjectGitScheduler } from './scheduler.js';
 import { createProjectGitSyncDeps, readProjectGitConflictEvidence, syncProject, type ProjectGitSyncProject } from './sync.js';
@@ -65,6 +66,7 @@ export interface CreateProjectGitServiceInput {
   requireCreate?(actorId: string): void | Promise<void>;
   resolveAvailability?(request: { actorId: string; projectId: string; kind: 'agent' | 'model' | 'plugin' | 'linked_folder'; id: string; agentId?: string }): Promise<boolean>;
   subscribeProject?(projectId: string, onChange: () => void): { ready: Promise<void>; unsubscribe(): void | Promise<void> };
+  afterDurablePhase?(phase: MaterializePhase): Promise<void>;
 }
 
 type RuntimeProject = ProjectGitSyncProject & { readBasis(): import('@open-design/contracts').ProjectGitBasis };
@@ -128,6 +130,19 @@ export async function createProjectGitServiceComposition(
       remoteHead: binding.observedRemoteHead,
       bindingGeneration: binding.generation,
     } : unmanagedBasis();
+  };
+
+  const retainedConflict = (projectId: string) => input.store.listPendingOperations().find(operation =>
+    operation.projectId === projectId && operation.phase === 'conflict');
+
+  const assertNetworkAdmissionUnfenced = (operationId: string): void => {
+    const operation = input.store.getJournal(operationId);
+    if (!operation?.projectId || operation.payload === null || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return;
+    const conflict = retainedConflict(operation.projectId);
+    if (!conflict || operation.payload.retainedConflictId === conflict.id) return;
+    const error = new GitDomainError('GIT_CONFLICT', 409, 'Resolve the current project conflict first.');
+    input.store.settleAdmittedOperationFailure(operation.id, publicError(error));
+    throw error;
   };
 
   const register = (projectId: string, root: string, branch: string, gate: ProjectGate): RuntimeProject => {
@@ -254,8 +269,12 @@ export async function createProjectGitServiceComposition(
     resolveProject: requireRuntime,
     now: Date.now,
     random: Math.random,
+    ...(input.afterDurablePhase ? { afterDurablePhase: input.afterDurablePhase } : {}),
   });
   const recoveryReady = syncRuntime.recoveryReady;
+  const interruptedAdmissions = new Set(input.store.listPendingOperations()
+    .filter(operation => operation.journalPhase === null && operation.recoveryData === null)
+    .map(operation => operation.id));
   scheduler = createProjectGitScheduler({
     store: input.store,
     now: Date.now,
@@ -380,23 +399,28 @@ export async function createProjectGitServiceComposition(
     ...(context.expectedProjectRevision === undefined ? {} : { expectedProjectRevision: context.expectedProjectRevision }),
   });
 
-  async function shortOperation(action: Extract<ProjectGitAction, { kind: 'pause' | 'resume' | 'sync' | 'resolve' | 'retry' }>, context: ProjectGitRequestContext) {
-    if (!context.projectId && action.kind !== 'retry') throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
-    if (context.projectId) {
-      await input.requireProject?.(context.actorId, context.projectId);
-      if (action.kind !== 'retry') await resolveRuntime(context.projectId);
+  async function admitResolve(
+    action: Extract<ProjectGitAction, { kind: 'resolve' }>,
+    context: ProjectGitRequestContext,
+  ): Promise<{ operation: ProjectGitOperation; worker: Promise<ProjectGitOperation> | null }> {
+    if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
+    const projectId = context.projectId;
+    await input.requireProject?.(context.actorId, projectId);
+    const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
+    const existing = input.store.findOperation({ actorId: context.actorId, projectId, kind: 'resolve', idempotencyKey: context.idempotencyKey });
+    if (existing) {
+      if (existing.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
+      return { operation: input.store.getOperation(existing.id)!, worker: null };
     }
-    if (action.kind === 'resolve') {
-      const projectId = context.projectId!;
-      const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
-      const existing = input.store.findOperation({ actorId: context.actorId, projectId, kind: 'resolve', idempotencyKey: context.idempotencyKey });
-      if (existing) {
-        if (existing.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
-        return input.store.getOperation(existing.id)!;
-      }
-      if (!input.store.getBinding(projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Managed project not found.');
-      input.store.assertRevision(projectId, context.expectedProjectRevision);
-      return scheduler.withNetworkPaused(projectId, () => syncRuntime.resolveConflict({
+    await resolveRuntime(projectId);
+    if (!input.store.getBinding(projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Managed project not found.');
+    input.store.assertRevision(projectId, context.expectedProjectRevision);
+    let resolveAdmission!: (operation: ProjectGitOperation) => void;
+    let rejectAdmission!: (error: unknown) => void;
+    const admission = new Promise<ProjectGitOperation>((resolve, reject) => {
+      resolveAdmission = resolve; rejectAdmission = reject;
+    });
+    const worker = scheduler.withNetworkPaused(projectId, () => syncRuntime.resolveConflict({
         projectId,
         conflictOperationId: action.operationId,
         actorId: context.actorId,
@@ -404,102 +428,15 @@ export async function createProjectGitServiceComposition(
         requestDigest: digest,
         basis: action.basis,
         resolutions: action.resolutions,
-      }));
-    }
-    if (action.kind === 'retry') {
-      const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
-      const replay = input.store.findOperationRequest({ actorId: context.actorId, projectId: context.projectId,
-        action: 'retry', idempotencyKey: context.idempotencyKey });
-      if (replay) {
-        if (replay.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
-        const operation = input.store.getJournal(replay.operationId);
-        if (!operation) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The retried operation is unavailable.');
-        if (operation.status === 'succeeded' || operation.status === 'running' || operation.recoveryData) {
-          return input.store.getOperation(operation.id)!;
-        }
-      }
-      const target = input.store.getJournal(action.operationId);
-      if (!target || target.projectId !== context.projectId || target.kind === 'checkpoint'
-        || target.projectId === null && target.actorId !== context.actorId) {
-        throw new GitDomainError('NOT_FOUND', 404, 'Project Git operation not found.');
-      }
-      const retryableSync = target.kind === 'sync' && ['failed', 'waiting'].includes(target.status)
-        && ['auth_required', 'pending_push', 'external_git_busy', 'waiting_idle', 'failed'].includes(target.phase);
-      if (!(target.status === 'failed' && ['enable', 'bind', 'open', 'restore', 'resolve'].includes(target.kind)) && !retryableSync) {
-        throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely. Create a new preview.');
-      }
-      const payload = target.payload;
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-        throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely.');
-      }
-      const claim = () => input.store.claimOperationRequest({ actorId: context.actorId, projectId: context.projectId,
-        action: 'retry', idempotencyKey: context.idempotencyKey, requestDigest: digest, operationId: target.id });
-      const original = { actorId: target.actorId, idempotencyKey: target.idempotencyKey,
-        expectedProjectRevision: target.basis.projectRevision };
-      if (target.kind === 'sync') {
-        if (!target.projectId || target.scope !== `project:${target.projectId}`) {
-          throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
-        }
-        if (payload.lane === 'quarantine') {
-          claim();
-          const binding = input.store.getBinding(target.projectId);
-          if (!binding) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
-          try { await resolveRuntime(target.projectId); }
-          catch (error) { quarantine(binding, error); }
-          return input.store.getOperation(target.id)!;
-        }
-        if (!isDeepStrictEqual(basis(target.projectId), target.basis) || payload.lane !== 'network') {
-          throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
-        }
-        await resolveRuntime(target.projectId);
-        claim();
-        const retried = await syncProject({ projectId: target.projectId, oneShot: true, deps: syncRuntime,
-          request: { actorId: target.actorId, idempotencyKey: target.idempotencyKey, requestDigest: target.requestDigest } });
-        return retried;
-      }
-      const resume = async (work: () => Promise<ProjectGitOperation>): Promise<ProjectGitOperation> => {
-        input.store.updateOperation(target.id, { status: 'running', phase: 'waiting_idle', result: target.result, error: null });
-        try { return await work(); }
-        catch (error) {
-          const current = input.store.getJournal(target.id);
-          if (current?.journalPhase === null) input.store.updateOperation(target.id, {
-            status: 'failed', phase: target.phase, result: target.result, error: target.error,
-          });
-          throw error;
-        }
-      };
-      if (target.kind === 'open') {
-        if (target.scope !== 'import' || typeof payload.url !== 'string' || typeof payload.branch !== 'string') {
-          throw new GitDomainError('CONFLICT', 409, 'This import cannot be retried safely.');
-        }
-        claim();
-        const url = payload.url; const branch = payload.branch;
-        return resume(() => bindingService.openRepository({ actorId: original.actorId, idempotencyKey: original.idempotencyKey,
-          url, branch }));
-      }
-      if (target.kind === 'resolve') {
-        if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
-          || typeof payload.conflictOperationId !== 'string') {
-          throw new GitDomainError('PREVIEW_STALE', 409, 'The original conflict resolution is no longer current.');
-        }
-        await resolveRuntime(target.projectId); claim();
-        return syncRuntime.retryConflictResolution(target.id);
-      }
-      if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
-        || typeof payload.previewId !== 'string') throw new GitDomainError('PREVIEW_STALE', 409, 'The original operation is no longer current.');
-      await resolveRuntime(target.projectId);
-      claim();
-      if (target.kind === 'enable') return resume(() => bindingService.enable(target.projectId!, payload.previewId as string, original));
-      if (target.kind === 'bind') {
-        const confirmation = payload.confirmation;
-        if (!confirmation || typeof confirmation !== 'object' || Array.isArray(confirmation)) {
-          throw new GitDomainError('CONFLICT', 409, 'This binding operation cannot be retried safely.');
-        }
-        return resume(() => bindingService.bind(target.projectId!, payload.previewId as string, { ...original,
-          confirmation: confirmation as import('@open-design/contracts').ProjectGitBindConfirmation }));
-      }
-      return resume(async () => input.store.getOperation((await restoreService.restoreProject(target.projectId!, payload.previewId as string, original)).operationId)!);
-    }
+      }, resolveAdmission));
+    void worker.catch(rejectAdmission);
+    return { operation: await admission, worker };
+  }
+
+  async function shortOperation(action: Extract<ProjectGitAction, { kind: 'pause' | 'resume' | 'sync' }>, context: ProjectGitRequestContext) {
+    if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
+    await input.requireProject?.(context.actorId, context.projectId);
+    await resolveRuntime(context.projectId);
     const existing = input.store.findOperation({ actorId: context.actorId, projectId: context.projectId, kind: action.kind, idempotencyKey: context.idempotencyKey });
     const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
     if (existing) {
@@ -543,6 +480,116 @@ export async function createProjectGitServiceComposition(
     return input.store.getOperation(operation.id)!;
   }
 
+  async function admitRetry(
+    action: Extract<ProjectGitAction, { kind: 'retry' }>,
+    context: ProjectGitRequestContext,
+  ): Promise<{ operation: ProjectGitOperation; startWorker: boolean }> {
+    if (context.projectId) await input.requireProject?.(context.actorId, context.projectId);
+    const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
+    const replay = input.store.findOperationRequest({ actorId: context.actorId, projectId: context.projectId,
+      action: 'retry', idempotencyKey: context.idempotencyKey });
+    if (replay) {
+      if (replay.requestDigest !== digest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
+      const operation = input.store.getOperation(replay.operationId);
+      if (!operation) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The retried operation is unavailable.');
+      const journal = input.store.getJournal(operation.id)!;
+      if (operation.status === 'succeeded' || operation.status === 'running' || journal.recoveryData !== null) {
+        return { operation, startWorker: false };
+      }
+    }
+    const target = input.store.getJournal(action.operationId);
+    if (!target || target.projectId !== context.projectId || target.kind === 'checkpoint'
+      || target.projectId === null && target.actorId !== context.actorId) {
+      throw new GitDomainError('NOT_FOUND', 404, 'Project Git operation not found.');
+    }
+    const retryableSync = target.kind === 'sync' && ['failed', 'waiting'].includes(target.status)
+      && ['auth_required', 'pending_push', 'external_git_busy', 'waiting_idle', 'failed'].includes(target.phase);
+    if (!(target.status === 'failed' && ['enable', 'bind', 'open', 'restore', 'resolve'].includes(target.kind)) && !retryableSync) {
+      throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely. Create a new preview.');
+    }
+    const payload = target.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new GitDomainError('CONFLICT', 409, 'This operation cannot be retried safely.');
+    }
+    if (target.kind === 'sync') {
+      if (!target.projectId || target.scope !== `project:${target.projectId}`) {
+        throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+      }
+      if (payload.lane !== 'quarantine' && (payload.lane !== 'network' || !isDeepStrictEqual(basis(target.projectId), target.basis))) {
+        throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+      }
+    } else if (target.kind === 'open') {
+      if (target.scope !== 'import' || typeof payload.url !== 'string' || typeof payload.branch !== 'string') {
+        throw new GitDomainError('CONFLICT', 409, 'This import cannot be retried safely.');
+      }
+    } else if (target.kind === 'resolve') {
+      if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
+        || typeof payload.conflictOperationId !== 'string') {
+        throw new GitDomainError('PREVIEW_STALE', 409, 'The original conflict resolution is no longer current.');
+      }
+    } else if (!target.projectId || target.scope !== `project:${target.projectId}` || !isDeepStrictEqual(basis(target.projectId), target.basis)
+      || typeof payload.previewId !== 'string') {
+      throw new GitDomainError('PREVIEW_STALE', 409, 'The original operation is no longer current.');
+    } else if (target.kind === 'bind' && (!payload.confirmation || typeof payload.confirmation !== 'object' || Array.isArray(payload.confirmation))) {
+      throw new GitDomainError('CONFLICT', 409, 'This binding operation cannot be retried safely.');
+    }
+    if (target.projectId && payload.lane !== 'quarantine') await resolveRuntime(target.projectId);
+    const claim = input.store.claimOperationRequest({ actorId: context.actorId, projectId: context.projectId,
+      action: 'retry', idempotencyKey: context.idempotencyKey, requestDigest: digest, operationId: target.id });
+    return { operation: input.store.getOperation(target.id)!, startWorker: claim.created || replay !== null };
+  }
+
+  async function retryOperation(operationId: string): Promise<ProjectGitOperation> {
+    const target = input.store.getJournal(operationId);
+    const payload = target?.payload;
+    if (!target || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry is unavailable.');
+    }
+    const original = { actorId: target.actorId, idempotencyKey: target.idempotencyKey,
+      expectedProjectRevision: target.basis.projectRevision };
+    if (target.kind === 'sync') {
+      if (!target.projectId) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry is unavailable.');
+      if (payload.lane === 'quarantine') {
+        const binding = input.store.getBinding(target.projectId);
+        if (!binding) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The original synchronization is no longer current.');
+        try { await resolveRuntime(target.projectId); }
+        catch (error) { quarantine(binding, error); }
+        return input.store.getOperation(target.id)!;
+      }
+      return scheduler.withNetworkPaused(target.projectId, () => {
+        assertNetworkAdmissionUnfenced(target.id);
+        return syncProject({ projectId: target.projectId!, oneShot: true, deps: syncRuntime,
+          request: { actorId: target.actorId, idempotencyKey: target.idempotencyKey, requestDigest: target.requestDigest } })
+        .then(operation => {
+          if (!operation) throw new GitDomainError('CONFLICT', 409, 'Project synchronization was not admitted.');
+          return operation;
+        });
+      });
+    }
+    const resume = async (work: () => Promise<ProjectGitOperation>): Promise<ProjectGitOperation> => {
+      input.store.updateOperation(target.id, { status: 'running', phase: 'waiting_idle', result: target.result, error: null });
+      try { return await work(); }
+      catch (error) {
+        const current = input.store.getJournal(target.id);
+        if (current?.journalPhase === null) input.store.updateOperation(target.id, {
+          status: 'failed', phase: target.phase, result: target.result, error: target.error,
+        });
+        throw error;
+      }
+    };
+    if (target.kind === 'open') {
+      return resume(() => bindingService.openRepository({ actorId: original.actorId, idempotencyKey: original.idempotencyKey,
+        url: payload.url as string, branch: payload.branch as string }));
+    }
+    if (target.kind === 'resolve') return syncRuntime.retryConflictResolution(target.id);
+    if (!target.projectId) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry is unavailable.');
+    if (target.kind === 'enable') return resume(() => bindingService.enable(target.projectId!, payload.previewId as string, original));
+    if (target.kind === 'bind') return resume(() => bindingService.bind(target.projectId!, payload.previewId as string, { ...original,
+      confirmation: payload.confirmation as import('@open-design/contracts').ProjectGitBindConfirmation }));
+    return resume(async () => input.store.getOperation((await restoreService.restoreProject(
+      target.projectId!, payload.previewId as string, original)).operationId)!);
+  }
+
   async function admitManualSync(context: ProjectGitRequestContext): Promise<ProjectGitOperation> {
     if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
     await input.requireProject?.(context.actorId, context.projectId);
@@ -557,15 +604,22 @@ export async function createProjectGitServiceComposition(
     if (!input.store.getBinding(context.projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Managed project not found.');
     input.store.assertRevision(context.projectId, context.expectedProjectRevision);
     return input.store.getOperation(input.store.enqueueOperation({ projectId: context.projectId, actorId: context.actorId, kind: 'sync',
-      idempotencyKey: context.idempotencyKey, requestDigest: digest, basis: basis(context.projectId), payload: { lane: 'network' } }).id)!;
+      idempotencyKey: context.idempotencyKey, requestDigest: digest, basis: basis(context.projectId),
+      payload: { lane: 'network', retainedConflictId: retainedConflict(context.projectId)?.id ?? null } }).id)!;
   }
 
   async function manualSync(context: ProjectGitRequestContext): Promise<ProjectGitOperation> {
     if (!context.projectId) throw new GitDomainError('VALIDATION_FAILED', 400, 'A project is required.');
     const digest = requestDigest({ kind: 'sync', expectedProjectRevision: context.expectedProjectRevision ?? null });
     try {
-      const operation = await syncProject({ projectId: context.projectId, oneShot: true, deps: syncRuntime,
-        request: { actorId: context.actorId, idempotencyKey: context.idempotencyKey, requestDigest: digest } });
+      const operation = await scheduler.withNetworkPaused(context.projectId, () => {
+        const admitted = input.store.findOperation({ actorId: context.actorId, projectId: context.projectId,
+          kind: 'sync', idempotencyKey: context.idempotencyKey });
+        if (!admitted) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted synchronization is unavailable.');
+        assertNetworkAdmissionUnfenced(admitted.id);
+        return syncProject({ projectId: context.projectId!, oneShot: true, deps: syncRuntime,
+          request: { actorId: context.actorId, idempotencyKey: context.idempotencyKey, requestDigest: digest } });
+      });
       if (!operation) throw new GitDomainError('CONFLICT', 409, 'Project synchronization was not admitted.');
       return operation;
     } catch (error) {
@@ -629,6 +683,8 @@ export async function createProjectGitServiceComposition(
         }
         const request = contextRequest(context);
         let operationAtAdmission: ProjectGitOperation | null = null;
+        let prestartedWorker: Promise<ProjectGitOperation> | null = null;
+        let startWorker = true;
         switch (action.kind) {
           case 'enable_preview': operationAtAdmission = await bindingService.admitPreviewEnable(context.projectId!, request); break;
           case 'enable': operationAtAdmission = await bindingService.admitEnable(context.projectId!, action.previewId, request); break;
@@ -642,11 +698,28 @@ export async function createProjectGitServiceComposition(
           case 'restore': operationAtAdmission = input.store.getOperation((await restoreService.admitRestore(
             context.projectId!, action.previewId, request)).operationId); break;
           case 'sync': operationAtAdmission = await admitManualSync(context); break;
+          case 'resolve': {
+            const resolution = await admitResolve(action, context);
+            operationAtAdmission = resolution.operation;
+            prestartedWorker = resolution.worker;
+            startWorker = resolution.worker !== null;
+            break;
+          }
+          case 'retry': {
+            const retry = await admitRetry(action, context);
+            operationAtAdmission = retry.operation;
+            startWorker = retry.startWorker;
+            break;
+          }
         }
-        if (operationAtAdmission && operationAtAdmission.status !== 'queued') {
+        if (operationAtAdmission && !startWorker) {
           return accepted(operationAtAdmission);
         }
-        const worker = track((async (): Promise<ProjectGitOperation> => {
+        if (operationAtAdmission && operationAtAdmission.status !== 'queued'
+          && action.kind !== 'retry' && action.kind !== 'resolve') {
+          return accepted(operationAtAdmission);
+        }
+        const worker = track(prestartedWorker ?? (async (): Promise<ProjectGitOperation> => {
           switch (action.kind) {
             case 'enable_preview': return bindingService.previewEnable(context.projectId!, request);
             case 'enable': return bindingService.enable(context.projectId!, action.previewId, request);
@@ -663,6 +736,8 @@ export async function createProjectGitServiceComposition(
               return input.store.getOperation(result.operationId)!;
             }
             case 'sync': return manualSync(context);
+            case 'retry': return retryOperation(action.operationId);
+            case 'resolve': throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted conflict resolution worker is unavailable.');
             default: return shortOperation(action, context);
           }
         })());
@@ -740,6 +815,8 @@ export async function createProjectGitServiceComposition(
       if (startPromise) return startPromise;
       startPromise = (async () => {
         await recoveryReady;
+        if (stopping || stopped) return;
+        input.store.reconcileInterruptedAdmissions(interruptedAdmissions);
         if (stopping || stopped) return;
         scheduler.start();
         for (const binding of input.store.listBindings()) {

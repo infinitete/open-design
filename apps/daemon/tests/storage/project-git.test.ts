@@ -89,6 +89,26 @@ describe('project Git durable store', () => {
     store.settleAdmittedOperationFailure(recoverable.id, { code: 'INTERNAL_ERROR', message: 'ignored' });
     expect(store.getJournal(recoverable.id)).toMatchObject({ status: 'queued', journalPhase: 'prepared', recoveryData: expect.any(Object) });
   });
+
+  it('atomically closes interrupted admissions after SQLite close and keeps them terminal after another reopen', () => {
+    let store = createProjectGitStore(db); const b = store.saveBinding({ ...binding(), autoSync: false });
+    const operations = [
+      store.enqueueOperation({ ...request, idempotencyKey: 'restart-import' }),
+      store.enqueueOperation({ ...request, projectId: 'p1', kind: 'binding_preview', idempotencyKey: 'restart-preview', basis: basis(b) }),
+      store.enqueueOperation({ ...request, projectId: 'p1', kind: 'sync', idempotencyKey: 'restart-sync', basis: basis(b), payload: { lane: 'network' } }),
+    ];
+    store.updateOperation(operations[1]!.id, { status: 'running', phase: 'waiting_idle', result: null, error: null });
+    store.updateOperation(operations[2]!.id, { status: 'waiting', phase: 'waiting_idle', result: null, error: null });
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(new Set(store.reconcileInterruptedAdmissions())).toEqual(new Set(operations.map(operation => operation.id)));
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    for (const operation of operations) {
+      expect(store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed',
+        error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_admission' } } });
+    }
+    expect(store.reconcileInterruptedAdmissions()).toEqual([]);
+  });
   function binding(): ProjectGitBindingRecord {
     return { projectId: 'p1', cloneId: 'c1', repositoryProjectId: 'r1',
       canonicalRoot: join(root, 'project'), commonDir: join(root, 'project/.git'),

@@ -45,9 +45,12 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     return { bindingGeneration: b.generation, projectRevision: b.projectRevision, contentRevision: b.contentRevision,
       localHead: b.localHead, remoteHead: b.observedRemoteHead };
   };
-  async function authorized(id: string, request: RestoreRequestContext) {
+  async function authorize(id: string, request: RestoreRequestContext) {
     await input.requireProject(request.actorId, id); await input.recoveryReady;
     if (!request.idempotencyKey || !request.actorId) throw invalid();
+  }
+  async function authorized(id: string, request: RestoreRequestContext) {
+    await authorize(id, request);
     return input.resolveProject(id);
   }
   function assertIdle(id: string, project: ReturnType<ProjectGitRestoreServiceInput['resolveProject']>) {
@@ -113,11 +116,25 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
   }
   async function admitRestorePreview(id: string, targetOid: string, request: RestoreRequestContext,
     file: { path: string; history: ProjectFileHistoryId } | null = null): Promise<ProjectGitAccepted> {
-    const project = await authorized(id, request); assertIdle(id, project);
+    await authorize(id, request);
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(targetOid)) throw invalid();
+    if (file) {
+      assertHistoryPath(file.path);
+      if (!file.history || !['git', 'legacy'].includes(file.history.source)) throw invalid();
+    }
+    const requestDigest = digest({ targetOid, file, expectedProjectRevision: request.expectedProjectRevision ?? null });
+    const prior = store.findOperation({ projectId: id, kind: 'restore_preview', ...request });
+    if (prior) {
+      const legacyExact = prior.requestDigest === digest({ targetOid, file })
+        && request.expectedProjectRevision === prior.basis.projectRevision;
+      if (prior.requestDigest !== requestDigest && !legacyExact) throw new GitDomainError('CONFLICT', 409, 'Restore idempotency key was already used.');
+      return { operationId: prior.id };
+    }
+    const project = input.resolveProject(id); assertIdle(id, project);
     const expected = basis(id); store.assertRevision(id, request.expectedProjectRevision);
     await assertHistoryCommit(project.root, targetOid);
     const operation = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
-      requestDigest: digest({ targetOid, file }), payload: json({ targetOid, file }) });
+      requestDigest, payload: json({ targetOid, file }) });
     return { operationId: operation.id };
   }
   async function capturePreview(id: string, targetOid: string, request: RestoreRequestContext, file?: { path: string; history: ProjectFileHistoryId }): Promise<ProjectGitPreview> {
@@ -186,7 +203,8 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       }
       return db.transaction(() => {
         const op = store.enqueueOperation({ projectId: id, kind: 'restore_preview', ...request, basis: expected,
-          requestDigest: digest({ targetOid, file: file ?? null }), payload: json({ captured, evidenceDigest: digest(captured) }) });
+          requestDigest: digest({ targetOid, file: file ?? null, expectedProjectRevision: request.expectedProjectRevision ?? null }),
+          payload: json({ captured, evidenceDigest: digest(captured) }) });
         const existing = store.getJournal(op.id)!;
         if (existing.result?.preview) return existing.result.preview;
         store.replaceAdmittedOperationPayload(op.id, json({ captured, evidenceDigest: digest(captured) }));
@@ -205,12 +223,17 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
     return capturePreview(id, history.source === 'git' ? history.oid : head, request, { path, history });
   }
   async function admitRestore(id: string, previewId: string, request: RestoreRequestContext): Promise<ProjectGitAccepted> {
-    const project = await authorized(id, request); const requestDigest = digest({ previewId });
+    await authorize(id, request);
+    if (!previewId) throw invalid();
+    const requestDigest = digest({ previewId, expectedProjectRevision: request.expectedProjectRevision ?? null });
     const prior = store.findOperation({ projectId: id, kind: 'restore', ...request });
     if (prior) {
-      if (prior.requestDigest !== requestDigest) throw new GitDomainError('CONFLICT', 409, 'Restore idempotency key was already used.');
+      const legacyExact = prior.requestDigest === digest({ previewId })
+        && request.expectedProjectRevision === prior.basis.projectRevision;
+      if (prior.requestDigest !== requestDigest && !legacyExact) throw new GitDomainError('CONFLICT', 409, 'Restore idempotency key was already used.');
       return { operationId: prior.id };
     }
+    const project = input.resolveProject(id);
     assertIdle(id, project);
     const op = store.getJournal(previewId); const preview = op?.result?.preview;
     const payload = op?.payload as { captured?: Capture; evidenceDigest?: string } | undefined;

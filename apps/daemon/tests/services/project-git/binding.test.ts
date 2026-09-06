@@ -720,6 +720,78 @@ it('fences binding preview, bind, and unbind behind a retained conflict without 
   expect(store.listPendingOperations().map(operation => operation.id)).toEqual(before.operations);
 });
 
+it('rechecks a retained conflict after binding preview waits for the project network lane', async () => {
+  const { service, existing, store, scheduler, f } = await serviceFixture(); const root = await existing();
+  const request = { actorId: 'local', expectedProjectRevision: 0 };
+  const enablePreview = await service.previewEnable('existing', { ...request, idempotencyKey: 'queued-enable-preview' });
+  await service.enable('existing', enablePreview.id, { ...request, idempotencyKey: 'queued-enable' });
+  const binding = store.getBinding('existing')!;
+  store.saveBinding({ ...binding, remoteUrl: null, autoSync: false });
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const waiting = new Promise<void>(resolve => { entered = resolve; });
+  vi.spyOn(scheduler, 'withNetworkPaused').mockImplementation(async (_projectId, work) => {
+    entered(); await blocked; return work();
+  });
+  const transport = vi.spyOn(gitProcess, 'runGitTransport');
+  const previewing = service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', {
+    ...request, idempotencyKey: 'queued-binding-preview',
+  });
+  await waiting;
+  const current = store.getBinding('existing')!;
+  const conflict = store.enqueueOperation({ projectId: 'existing', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'queued-retained-conflict', requestDigest: 'queued-retained-conflict', basis: {
+      bindingGeneration: current.generation, projectRevision: current.projectRevision, contentRevision: current.contentRevision,
+      localHead: current.localHead, remoteHead: current.observedRemoteHead,
+    }, payload: { lane: 'network' } });
+  store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.', details: { reason: 'merge_conflict' } } });
+  const head = await f.git(root, 'rev-parse', 'HEAD'); const generation = current.generation;
+  release();
+  await expect(previewing).rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  expect(transport).not.toHaveBeenCalled();
+  expect(await f.git(root, 'rev-parse', 'HEAD')).toBe(head);
+  expect(store.getBinding('existing')).toMatchObject({ generation });
+  expect(store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+});
+
+it.each(['bind', 'unbind'] as const)('rechecks a retained conflict after %s waits without applying binding effects', async action => {
+  const { service, existing, store, scheduler } = await serviceFixture(); await existing();
+  const request = { actorId: 'local', expectedProjectRevision: 0 };
+  const enablePreview = await service.previewEnable('existing', { ...request, idempotencyKey: `${action}-queued-enable-preview` });
+  await service.enable('existing', enablePreview.id, { ...request, idempotencyKey: `${action}-queued-enable` });
+  const initial = store.getBinding('existing')!;
+  store.saveBinding({ ...initial, remoteUrl: null, autoSync: false });
+  const bindPreview = action === 'bind'
+    ? await service.previewBinding('existing', 'ssh://git@example.invalid/repo', 'main', {
+      ...request, idempotencyKey: 'queued-bind-preview',
+    })
+    : null;
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const waiting = new Promise<void>(resolve => { entered = resolve; });
+  vi.spyOn(scheduler, 'withNetworkPaused').mockImplementation(async (_projectId, work) => {
+    entered(); await blocked; return work();
+  });
+  const running = action === 'bind'
+    ? service.bind('existing', bindPreview!.id, { ...request, idempotencyKey: 'queued-bind' })
+    : service.unbind('existing', { ...request, idempotencyKey: 'queued-unbind' });
+  await waiting;
+  const current = store.getBinding('existing')!;
+  const before = { generation: current.generation, remoteUrl: current.remoteUrl,
+    pushes: store.listDuePushes(Number.MAX_SAFE_INTEGER) };
+  const conflict = store.enqueueOperation({ projectId: 'existing', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: `queued-${action}-conflict`, requestDigest: `queued-${action}-conflict`, basis: {
+      bindingGeneration: current.generation, projectRevision: current.projectRevision, contentRevision: current.contentRevision,
+      localHead: current.localHead, remoteHead: current.observedRemoteHead,
+    }, payload: { lane: 'network' } });
+  store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve retained conflict.', details: { reason: 'merge_conflict' } } });
+  release();
+  await expect(running).rejects.toMatchObject({ code: 'GIT_CONFLICT' });
+  expect(store.getBinding('existing')).toMatchObject({ generation: before.generation, remoteUrl: before.remoteUrl });
+  expect(store.listDuePushes(Number.MAX_SAFE_INTEGER)).toEqual(before.pushes);
+  expect(store.getOperation(conflict.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+});
+
 it('waits the same scheduler admitted real push result before unbind advances generation', async () => {
   const { service, existing, store, scheduler, f } = await serviceFixture(); const root = await existing();
   const ctx = { actorId: 'local', expectedProjectRevision: 0 };

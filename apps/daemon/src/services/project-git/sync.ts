@@ -77,7 +77,7 @@ export interface ProjectGitSyncRuntime extends ProjectGitSyncDeps {
     requestDigest: string;
     basis: ProjectGitBasis;
     resolutions: readonly ProjectGitResolution[];
-  }): Promise<ProjectGitOperation>;
+  }, onAdmitted?: (operation: ProjectGitOperation) => void): Promise<ProjectGitOperation>;
   retryConflictResolution(operationId: string): Promise<ProjectGitOperation>;
 }
 
@@ -618,7 +618,8 @@ export function createProjectGitSyncDeps(input: {
     },
     async automaticReady(id) { await deps.detect(id); return observations.get(id)?.saved === true; },
   };
-  const resolveConflictCore = async (resolution: Parameters<ProjectGitSyncRuntime['resolveConflict']>[0], retryOperationId?: string): Promise<ProjectGitOperation> => {
+  const resolveConflictCore = async (resolution: Parameters<ProjectGitSyncRuntime['resolveConflict']>[0], retryOperationId?: string,
+    onAdmitted?: (operation: ProjectGitOperation) => void): Promise<ProjectGitOperation> => {
     await ready;
     const { projectId: id } = resolution;
     const existing = store.findOperation({ actorId: resolution.actorId, projectId: id, kind: 'resolve', idempotencyKey: resolution.idempotencyKey });
@@ -673,6 +674,7 @@ export function createProjectGitSyncDeps(input: {
       payload: JSON.parse(JSON.stringify({ conflictOperationId: resolution.conflictOperationId, basis: resolution.basis,
         resolutions: resolution.resolutions })) as JsonValue });
     store.updateOperation(operation.id, { status: 'running', phase: 'waiting_idle', result: null, error: null });
+    onAdmitted?.(store.getOperation(operation.id)!);
     try {
       const candidateOid = (await runGit({ cwd: current.project.root,
         args: ['commit-tree', merged.tree, '-p', evidence.local, '-p', evidence.remote],
@@ -697,7 +699,7 @@ export function createProjectGitSyncDeps(input: {
     }
   };
   const resolvingConflicts = new Map<string, { requestDigest: string; promise: Promise<ProjectGitOperation> }>();
-  const resolveConflict: ProjectGitSyncRuntime['resolveConflict'] = resolution => {
+  const resolveConflict: ProjectGitSyncRuntime['resolveConflict'] = (resolution, onAdmitted) => {
     const key = `${resolution.actorId}\0${resolution.projectId}\0${resolution.idempotencyKey}`;
     const current = resolvingConflicts.get(key);
     if (current) {
@@ -706,7 +708,7 @@ export function createProjectGitSyncDeps(input: {
       }
       return current.promise;
     }
-    const promise = resolveConflictCore(resolution).finally(() => {
+    const promise = resolveConflictCore(resolution, undefined, onAdmitted).finally(() => {
       if (resolvingConflicts.get(key)?.promise === promise) resolvingConflicts.delete(key);
     });
     resolvingConflicts.set(key, { requestDigest: resolution.requestDigest, promise });
@@ -719,6 +721,9 @@ export function createProjectGitSyncDeps(input: {
       || typeof payload.conflictOperationId !== 'string' || !ProjectGitBasisSchema.safeParse(payload.basis).success
       || !Array.isArray(payload.resolutions) || !payload.resolutions.every(item => ProjectGitResolutionSchema.safeParse(item).success)) {
       throw new GitDomainError('CONFLICT', 409, 'This conflict resolution cannot be retried safely.');
+    }
+    if (store.getConflictResolutionOwner(payload.conflictOperationId) !== operation.id) {
+      throw new GitDomainError('CONFLICT', 409, 'This conflict resolution is not the selected recovery owner.');
     }
     const resolution = { projectId: operation.projectId, conflictOperationId: payload.conflictOperationId,
       actorId: operation.actorId, idempotencyKey: operation.idempotencyKey, requestDigest: operation.requestDigest,
