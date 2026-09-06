@@ -13,6 +13,7 @@ import {
 } from '../../src/server.js';
 import { applyAgentLaunchEnv } from '../../src/runtimes/launch.js';
 import { spawnEnvForAgent } from '../../src/runtimes/env.js';
+import { codexOpenDesignShellEnvironmentArgs } from '../../src/runtimes/defs/codex.js';
 import { withPlatform } from './helpers/test-helpers.js';
 
 describe('agent runtime tool environment', () => {
@@ -220,6 +221,28 @@ describe('agent runtime tool environment', () => {
     expect(env.OD_PROJECT_ID).toBe('project-1');
     expect(env.OD_PROJECT_DIR).toBe('/tmp/project');
     expect(env.OD_HYPERFRAMES_BIN).toBe('/opt/open-design/hyperframes/bin/hyperframes.mjs');
+  });
+
+  it('injects only the admitted run epoch into wrapper commands and the Codex shell allowlist', () => {
+    const env = createOpenDesignToolEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      hyperFramesBin: '/opt/open-design/hyperframes/bin/hyperframes.mjs',
+      projectDir: '/tmp/project',
+      projectId: 'project-1',
+      expectedProjectRevision: 41,
+    });
+
+    expect(env.OD_PROJECT_REVISION).toBe('41');
+    expect(createOpenDesignToolEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      projectDir: '/tmp/project',
+      projectId: 'project-1',
+    })).not.toHaveProperty('OD_PROJECT_REVISION');
+    expect(createOpenDesignToolEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      expectedProjectRevision: 41,
+    })).not.toHaveProperty('OD_PROJECT_REVISION');
+    expect(codexOpenDesignShellEnvironmentArgs().join(' ')).toContain('OD_PROJECT_REVISION');
   });
 
   it('names the codex rollout root so a complex Run can observe its native Children', () => {

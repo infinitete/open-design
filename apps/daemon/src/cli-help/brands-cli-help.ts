@@ -9,19 +9,23 @@ export const BRAND_USAGE = `Usage:
                                        browser tab; open it to run the extraction agent.
                                        --prompt-file <path|-> reads the URL from a file or stdin.
                                        --locale <locale> localizes generated brand.html copy.
-  od brand continue <id> [--json]      Restart the deterministic extraction pass for an
+  od brand continue <id> [--expected-project-revision <n>] [--json]
+                                       Restart the deterministic extraction pass for an
                                        existing brand/project/design-system without creating
                                        a duplicate design system.
-  od brand preview <id> [--json]       Re-render brand.html from the project's current
+  od brand preview <id> [--expected-project-revision <n>] [--json]
+                                       Re-render brand.html from the project's current
                                        brand.json so the kit page fills in live during
                                        extraction. --project <projectId> overrides the project.
                                        --locale <locale> overrides the stored brand locale.
-  od brand finalize <id> [--json]      Register the agent's extracted kit (brand.json in the
+  od brand finalize <id> [--expected-project-revision <n>] [--json]
+                                       Register the agent's extracted kit (brand.json in the
                                        backing project) as a design system; marks it ready.
                                        --project <projectId> overrides the backing project.
                                        --locale <locale> overrides the stored brand locale.
   od brand extract-from-html <id> --html-file <path|->
-                       [--css-file <path>] [--base-url <url>] [--json]
+                       [--css-file <path>] [--base-url <url>]
+                       [--expected-project-revision <n>] [--json]
                                        Re-run extraction against pre-captured rendered HTML
                                        (e.g. a page already loaded past an anti-bot wall),
                                        instead of fetching. --html-file reads from a file or
@@ -35,7 +39,11 @@ Output:
   "<id>\\t<status>\\t<projectId>\\t<conversationId>"; finalize prints "<id>\\t<name>".
 
 Common options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.`;
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --expected-project-revision <n>
+                       Preserve the project epoch for existing-brand writes.
+                       Independent callers read it with od git status; agents
+                       use the run-scoped OD_PROJECT_REVISION fallback.`;
 
 // `help`, `--help`, and `-h` all route to the usage text above.
 export function isBrandHelpArg(arg: string | undefined): boolean {

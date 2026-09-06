@@ -12,6 +12,7 @@ import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './cli-help/index.j
 import { BRAND_USAGE, isBrandHelpArg } from './cli-help/index.js';
 import { parseDesignSystemRenameArgs } from './design-systems/rename-args.js';
 import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
+import { runProjectGit } from './cli/project-git.js';
 import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { requestJsonIpc } from '@open-design/sidecar';
@@ -360,7 +361,7 @@ const FIGMA_BOOLEAN_FLAGS = new Set([
 // module evaluation — a const declared further down would still be in TDZ.
 const BRAND_STRING_FLAGS = new Set([
   'daemon-url', 'prompt-file', 'project', 'locale',
-  'html-file', 'css-file', 'base-url',
+  'html-file', 'css-file', 'base-url', 'expected-project-revision',
 ]);
 const BRAND_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -415,6 +416,7 @@ const SUBCOMMAND_MAP = {
   brand: runBrand,
   brands: runBrand,
   project: runProject,
+  git: runProjectGit,
   strategy: runStrategy,
   workspace: runWorkspace,
   automation: runAutomation,
@@ -1028,6 +1030,10 @@ function printRootHelp() {
       Create a Side Chat: a new conversation that inherits another
       conversation's context by copying its messages (--seed-from), optionally
       stopping at one message (--fork-after). Mirrors the web chat fork action.
+
+  od git <status|enable|bind|sync|open|log|show|restore|conflicts|resolve|operation|retry> [args]
+      Manage project Git versioning through the same daemon API as the web UI.
+      Run \`od git --help\` for the complete command list and mutation options.
 
   od diagnostics export [<path>] [--json]
       Bundle daemon/web/desktop logs, machine info, and recent crash reports
@@ -1655,6 +1661,42 @@ async function cliDaemonUrl(flags) {
 
 async function cliDaemonBaseUrl(flags) {
   return (await cliDaemonUrl(flags)).replace(/\/$/, '');
+}
+
+async function fetchProjectRevision(base, projectId, headers = {}) {
+  const token = process.env.OD_TOOL_TOKEN;
+  const requestHeaders = {
+    ...headers,
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  let response;
+  try {
+    response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/git`, {
+      headers: requestHeaders,
+    });
+  } catch (error) {
+    surfaceFetchError(error, base);
+    process.exit(3);
+  }
+  if (!response.ok) return structuredHttpFailure(response, 'project-not-found');
+  const state = await response.json();
+  if (!Number.isSafeInteger(state?.projectRevision) || state.projectRevision < 0) {
+    return exitWithStructuredError({
+      code: 'project-state-invalid',
+      message: 'The daemon returned an invalid project revision.',
+    });
+  }
+  return state.projectRevision;
+}
+
+async function captureProjectMutationHeaders(base, projectId, headers = {}) {
+  const projectRevision = await fetchProjectRevision(base, projectId, headers);
+  const token = process.env.OD_TOOL_TOKEN;
+  return {
+    ...headers,
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    'X-OD-Project-Revision': String(projectRevision),
+  };
 }
 
 function printMediaHelp() {
@@ -5906,6 +5948,39 @@ function formatBrandRow(summary) {
   ].join('\t');
 }
 
+function brandExpectedProjectRevision(flags) {
+  const flagRaw = flags['expected-project-revision'];
+  const envRaw = process.env.OD_PROJECT_REVISION;
+  const parseRevision = (raw, source) => {
+    if (raw === undefined) return undefined;
+    const text = String(raw).trim();
+    if (!text && source === 'OD_PROJECT_REVISION') return undefined;
+    if (!text) {
+      console.error(`${source} must be a non-negative safe integer`);
+      process.exit(2);
+    }
+    const revision = Number(text);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      console.error(`${source} must be a non-negative safe integer`);
+      process.exit(2);
+    }
+    return revision;
+  };
+  const fromFlag = parseRevision(flagRaw, '--expected-project-revision');
+  const fromEnv = parseRevision(envRaw, 'OD_PROJECT_REVISION');
+  if (fromFlag !== undefined && fromEnv !== undefined && fromFlag !== fromEnv) {
+    console.error('--expected-project-revision and OD_PROJECT_REVISION must agree');
+    process.exit(2);
+  }
+  return fromFlag ?? fromEnv;
+}
+
+function brandProjectRevisionHeaders(expectedProjectRevision) {
+  return expectedProjectRevision === undefined
+    ? {}
+    : { 'X-OD-Project-Revision': String(expectedProjectRevision) };
+}
+
 async function runBrand(args) {
   if (args.length === 0 || isBrandHelpArg(args[0])
       || args.includes('--help') || args.includes('-h')) {
@@ -6037,6 +6112,7 @@ async function runBrandFinalize(rest) {
     console.error('Usage: od brand finalize <id> [--project <projectId>] [--json]');
     process.exit(2);
   }
+  const mutationHeaders = brandProjectRevisionHeaders(brandExpectedProjectRevision(flags));
   const base = await cliDaemonBaseUrl(flags);
   const body = {};
   if (typeof flags.project === 'string' && flags.project.trim()) body.projectId = flags.project.trim();
@@ -6045,7 +6121,7 @@ async function runBrandFinalize(rest) {
   try {
     resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/finalize`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...mutationHeaders },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -6080,12 +6156,13 @@ async function runBrandContinue(rest) {
     console.error('Usage: od brand continue <id> [--json]');
     process.exit(2);
   }
+  const mutationHeaders = brandProjectRevisionHeaders(brandExpectedProjectRevision(flags));
   const base = await cliDaemonBaseUrl(flags);
   let resp;
   try {
     resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/continue-extraction`, {
       method: 'POST',
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', ...mutationHeaders },
     });
   } catch (err) {
     surfaceFetchError(err, base);
@@ -6146,6 +6223,7 @@ async function runBrandExtractFromHtml(rest) {
       + '[--css-file <path>] [--base-url <url>] [--json]');
     process.exit(2);
   }
+  const mutationHeaders = brandProjectRevisionHeaders(brandExpectedProjectRevision(flags));
   let html;
   try {
     html = await readFileFlagOrStdin(flags['html-file']);
@@ -6177,7 +6255,7 @@ async function runBrandExtractFromHtml(rest) {
   try {
     resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/extract-from-html`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...mutationHeaders },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -6214,6 +6292,7 @@ async function runBrandPreview(rest) {
     console.error('Usage: od brand preview <id> [--project <projectId>] [--json]');
     process.exit(2);
   }
+  const mutationHeaders = brandProjectRevisionHeaders(brandExpectedProjectRevision(flags));
   const base = await cliDaemonBaseUrl(flags);
   const body = {};
   if (typeof flags.project === 'string' && flags.project.trim()) body.projectId = flags.project.trim();
@@ -6222,7 +6301,7 @@ async function runBrandPreview(rest) {
   try {
     resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/preview`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: { 'content-type': 'application/json', accept: 'application/json', ...mutationHeaders },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -6552,6 +6631,7 @@ Common options:
         console.error('Usage: od project restore-automatic-scenario <id> [--json]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const infoResponse = await fetch(`${base}/api/projects/${encodeURIComponent(id)}`, {
         headers: workspaceHeaders,
       });
@@ -6561,7 +6641,7 @@ Common options:
         base,
         `/api/projects/${encodeURIComponent(id)}/scenario/restore-automatic`,
         { expectedCurrentSnapshotId: info.project?.appliedPluginSnapshotId ?? null },
-        workspaceHeaders,
+        mutationHeaders,
       );
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(
@@ -6760,9 +6840,10 @@ Common options:
         console.error('Usage: od project delete <id>');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: workspaceHeaders,
+        headers: mutationHeaders,
       });
       if (!resp.ok) return structuredHttpFailure(resp, 'project-not-found');
       console.log(`[project] deleted ${id}`);
@@ -7063,13 +7144,22 @@ Common options:
         console.error('Usage: od workspace projects batch-delete --workspace <id> --project <id> [--project <id> ...] [--json]');
         process.exit(2);
       }
+      const uniqueProjectIds = [...new Set(projectIds)];
+      const expectedProjectRevisions = {};
+      for (const projectId of uniqueProjectIds) {
+        expectedProjectRevisions[projectId] = await fetchProjectRevision(
+          base,
+          projectId,
+          workspaceHeaders,
+        );
+      }
       const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects/batch-delete`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectIds }),
+        body: JSON.stringify({ projectIds: uniqueProjectIds, expectedProjectRevisions }),
       });
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      console.log(`[workspace] deleted ${projectIds.length} project(s)`);
+      console.log(`[workspace] deleted ${uniqueProjectIds.length} project(s)`);
       return;
     }
     case 'batch-move': {
@@ -7239,6 +7329,7 @@ Common options:
         else console.error(payload.error.message);
         process.exit(1);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, status.projectId, workspaceHeaders);
       const message = await readRunMessageFromFlags(flags, RESUME_CONTINUE_PROMPT);
       const body = {
         projectId: status.projectId,
@@ -7247,7 +7338,7 @@ Common options:
         analyticsHints: { entryFrom: 'resume_continue' },
         ...(status.agentId ? { agentId: status.agentId } : {}),
       };
-      const data = await postJsonToDaemon(base, '/api/runs', body, workspaceHeaders);
+      const data = await postJsonToDaemon(base, '/api/runs', body, mutationHeaders);
       if (flags.json && !flags.follow) {
         return process.stdout.write(JSON.stringify({
           ...data,
@@ -7272,10 +7363,6 @@ Common options:
       const promptFromArgs = parts.join(' ').trim();
       const defaultMessage =
         'Use the redesign-existing-projects skill. Audit the current UI first, then redesign it to premium quality without breaking functionality. Preserve the existing product structure, routes, and behavior.';
-      const message = await readRunMessageFromFlags(
-        flags,
-        promptFromArgs || defaultMessage,
-      );
       const skillId = flags.skill ?? 'redesign-existing-projects';
       const designSystemId = flags['design-system'] ?? 'default';
       let projectId = flags.project;
@@ -7303,6 +7390,12 @@ Common options:
         }
       }
 
+      const mutationHeaders = await captureProjectMutationHeaders(base, projectId, workspaceHeaders);
+      const message = await readRunMessageFromFlags(
+        flags,
+        promptFromArgs || defaultMessage,
+      );
+
       const body = {
         projectId,
         ...(conversationId ? { conversationId } : {}),
@@ -7313,7 +7406,7 @@ Common options:
         ...(flags.model ? { model: flags.model } : {}),
         ...(flags['service-tier'] ? { serviceTier: flags['service-tier'] } : {}),
       };
-      const data = await postJsonToDaemon(base, '/api/runs', body, workspaceHeaders);
+      const data = await postJsonToDaemon(base, '/api/runs', body, mutationHeaders);
       if (flags.json && !flags.follow) {
         return process.stdout.write(JSON.stringify({
           ...data,
@@ -7330,6 +7423,7 @@ Common options:
         console.error('--project <projectId> is required');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, flags.project, workspaceHeaders);
       const body = { projectId: flags.project };
       if (flags.conversation) body.conversationId = flags.conversation;
       const message = await readRunMessageFromFlags(flags);
@@ -7361,7 +7455,7 @@ Common options:
       if (flags['client-request-id']) body.clientRequestId = flags['client-request-id'];
       const resp = await fetch(`${base}/api/runs`, {
         method:  'POST',
-        headers: { 'content-type': 'application/json', ...workspaceHeaders },
+        headers: { 'content-type': 'application/json', ...mutationHeaders },
         body:    JSON.stringify(body),
       });
       const data = await resp.json().catch(() => ({}));
@@ -7671,13 +7765,14 @@ Common options:
         console.error('Usage: od files upload <projectId> <localpath> [--as <relpath>]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const buf = readFileSync(localPath);
       const desiredName = typeof flags.as === 'string' && flags.as.length > 0
         ? flags.as
         : basename(localPath);
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/files`, {
         method:  'POST',
-        headers: { 'content-type': 'application/json', ...workspaceHeaders },
+        headers: { 'content-type': 'application/json', ...mutationHeaders },
         body:    JSON.stringify({
           name: desiredName,
           content: buf.toString('base64'),
@@ -7698,6 +7793,7 @@ Common options:
         console.error('Usage: od files write <projectId> <relpath> [< stdin]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       // Read stdin synchronously into a buffer.
       let chunks = [];
       try {
@@ -7710,7 +7806,7 @@ Common options:
       const body = Buffer.concat(chunks);
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/files`, {
         method:  'POST',
-        headers: { 'content-type': 'application/json', ...workspaceHeaders },
+        headers: { 'content-type': 'application/json', ...mutationHeaders },
         body:    JSON.stringify({
           name: rel,
           content: body.toString('utf8'),
@@ -7731,9 +7827,10 @@ Common options:
         console.error('Usage: od files delete <projectId> <name>');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const resp = await fetch(
         `${base}/api/projects/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`,
-        { method: 'DELETE', headers: workspaceHeaders },
+        { method: 'DELETE', headers: mutationHeaders },
       );
       if (!resp.ok) return structuredHttpFailure(resp);
       console.log(`[files] deleted ${name}`);
@@ -7808,6 +7905,7 @@ Common options:
         console.error('Usage: od files version-create <projectId> <relpath> [--prompt <text> | --prompt-file <path|->] [--label <text>] [--source <ai|manual|restore>]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const source = parseProjectFileVersionSourceFlag(flags.source);
       const prompt = await readPromptFromFlags(flags);
       const body = {};
@@ -7818,7 +7916,7 @@ Common options:
         `${base}/api/projects/${encodeURIComponent(id)}/files/${encodeProjectRelpath(rel)}/versions`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          headers: { 'content-type': 'application/json', ...mutationHeaders },
           body: JSON.stringify(body),
         },
       );
@@ -7835,6 +7933,7 @@ Common options:
         console.error('Usage: od files version-restore <projectId> <relpath> <versionId> [--prompt <text> | --prompt-file <path|->]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const prompt = await readPromptFromFlags(flags);
       const body = {};
       if (prompt !== null) body.prompt = prompt;
@@ -7842,7 +7941,7 @@ Common options:
         `${base}/api/projects/${encodeURIComponent(id)}/files/${encodeProjectRelpath(rel)}/versions/${encodeURIComponent(versionId)}/restore`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          headers: { 'content-type': 'application/json', ...mutationHeaders },
           body: JSON.stringify(body),
         },
       );
@@ -8205,6 +8304,7 @@ Common options:
         console.error('Usage: od conversation new <projectId> [--title "<title>"] [--seed-from <cid>] [--fork-after <mid>]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const body = {};
       if (typeof flags.title === 'string') body.title = flags.title;
       const sessionMode = normalizeChatSessionModeFlag(flags.mode);
@@ -8221,7 +8321,7 @@ Common options:
       }
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/conversations`, {
         method:  'POST',
-        headers: { 'content-type': 'application/json', ...workspaceHeaders },
+        headers: { 'content-type': 'application/json', ...mutationHeaders },
         body:    JSON.stringify(body),
       });
       if (!resp.ok) return structuredHttpFailure(resp, 'project-not-found');
@@ -8310,6 +8410,7 @@ Common options:
         console.error('Usage: od chat new --project <id> [--seed-from <cid>] [--fork-after <mid>] [--title "<title>"]');
         process.exit(2);
       }
+      const mutationHeaders = await captureProjectMutationHeaders(base, id, workspaceHeaders);
       const body = {};
       if (typeof flags.title === 'string') body.title = flags.title;
       const sessionMode = normalizeChatSessionModeFlag(flags.mode);
@@ -8326,7 +8427,7 @@ Common options:
       }
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/conversations`, {
         method:  'POST',
-        headers: { 'content-type': 'application/json', ...workspaceHeaders },
+        headers: { 'content-type': 'application/json', ...mutationHeaders },
         body:    JSON.stringify(body),
       });
       if (!resp.ok) return structuredHttpFailure(resp, 'project-not-found');

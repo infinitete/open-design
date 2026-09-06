@@ -1618,11 +1618,13 @@ export function createAgentRuntimeToolPrompt(
 
 export function createOpenDesignToolEnv({
   daemonUrl,
+  expectedProjectRevision,
   hyperFramesBin = resolveHyperFramesCliPath(),
   projectDir,
   projectId,
 }: {
   daemonUrl: string;
+  expectedProjectRevision?: number;
   hyperFramesBin?: string;
   projectDir?: string | null;
   projectId?: string | null;
@@ -1633,6 +1635,14 @@ export function createOpenDesignToolEnv({
     OD_HYPERFRAMES_BIN: hyperFramesBin,
     OD_NODE_BIN,
     OD_DAEMON_URL: daemonUrl,
+    ...(typeof projectId === 'string'
+      && projectId
+      && projectDir
+      && typeof expectedProjectRevision === 'number'
+      && Number.isSafeInteger(expectedProjectRevision)
+      && expectedProjectRevision >= 0
+      ? { OD_PROJECT_REVISION: String(expectedProjectRevision) }
+      : {}),
     ...(typeof projectId === 'string' && projectId && projectDir
       ? {
           OD_PROJECT_ID: projectId,
@@ -9973,6 +9983,11 @@ export async function startServer({
       daemonUrl,
       projectDir: cwd,
       projectId: typeof projectId === 'string' ? projectId : null,
+      ...(typeof run.expectedProjectRevision === 'number'
+        && Number.isSafeInteger(run.expectedProjectRevision)
+        && run.expectedProjectRevision >= 0
+        ? { expectedProjectRevision: run.expectedProjectRevision }
+        : {}),
     });
     if (run.cancelRequested || design.runs.isTerminal(run.status)) {
       cleanupPromptFile();
