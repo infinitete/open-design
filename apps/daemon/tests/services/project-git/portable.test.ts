@@ -9,7 +9,7 @@ import type { JsonValue, PortableSnapshot } from '@open-design/contracts';
 import { canonicalJson, exportProjectPreferences, exportPortableProject, portableImportMarker, portableIdSegment, parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
 import { importPortableRecords, readPortableRecords, readRestoredMessagePresentations } from '../../../src/services/project-git/portable-db.js';
 import { appendMessageAgentEvent, closeDatabase, getProject, listProjects, insertConversation, insertProject, listMessages,
-  openDatabase, upsertMessage } from '../../../src/db.js';
+  listConversationsAwaitingInput, listProjectsAwaitingInput, openDatabase, upsertMessage } from '../../../src/db.js';
 import { createProjectGitStore, type ProjectGitRecoveryData, type ProjectGitStore } from '../../../src/storage/project-git.js';
 
 describe('portable serialization', () => {
@@ -287,6 +287,8 @@ describe('portable database roundtrip', () => {
     const restored = readRestoredMessagePresentations(target.db, 'restored-project');
     const localUserId = String((target.db.prepare("SELECT id FROM messages WHERE role = 'user'").get() as { id: string }).id);
     const localAssistantId = String((target.db.prepare("SELECT id FROM messages WHERE role = 'assistant'").get() as { id: string }).id);
+    const localConversationId = String((target.db.prepare('SELECT conversation_id AS id FROM messages WHERE id = ?')
+      .get(localAssistantId) as { id: string }).id);
     const portableUserId = exported.snapshot.messages.find((message) => message.role === 'user')!.id;
     const portableAssistantId = exported.snapshot.messages.find((message) => message.role === 'assistant')!.id;
     expect(restored.get(localUserId)).toMatchObject({
@@ -306,6 +308,8 @@ describe('portable database roundtrip', () => {
     });
     expect(JSON.stringify([...restored.values()])).not.toContain('private-run');
     expect(JSON.stringify([...restored.values()])).not.toContain('/api/projects/restored-project/raw//api/projects');
+    expect(listProjectsAwaitingInput(target.db).has('restored-project')).toBe(false);
+    expect(listConversationsAwaitingInput(target.db).has(localConversationId)).toBe(false);
   });
 
   it('encodes arbitrary record IDs safely and rejects mismatched paths, corrupt UTF-8 and missing bytes', async () => {

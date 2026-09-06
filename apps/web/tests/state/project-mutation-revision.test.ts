@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectGitState } from '@open-design/contracts';
-import { patchProject } from '../../src/state/projects';
-import { uploadProjectFiles, writeProjectTextFileDetailed } from '../../src/providers/registry';
+import {
+  createTerminal,
+  listConversations,
+  listProjects,
+  patchProject,
+} from '../../src/state/projects';
+import {
+  applyLibraryAsset,
+  deleteLiveArtifact,
+  refreshLiveArtifact,
+  uploadProjectFiles,
+  updateLiveArtifact,
+  writeProjectTextFileDetailed,
+} from '../../src/providers/registry';
 import {
   ProjectStateChangedError,
   createProjectGitStateStore,
@@ -63,5 +75,118 @@ describe('project mutation transport', () => {
 
     await expect(patchProject(projectId, { name: 'Draft name' }))
       .rejects.toMatchObject({ apiError: { code: 'PROJECT_STATE_CHANGED', message: 'Reload the project' } });
+  });
+
+  it('binds terminal creation to the captured revision and preserves a stale-state rejection', async () => {
+    const projectId = 'terminal-project';
+    const store = createProjectGitStateStore(state(6));
+    registerProjectMutationStore(projectId, store);
+    const captured = store.capture();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'PROJECT_STATE_CHANGED', message: 'Terminal intent is stale' },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createTerminal(projectId, undefined, captured))
+      .rejects.toBeInstanceOf(ProjectStateChangedError);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('6');
+    expect(JSON.parse(String(init.body))).toEqual({ expectedProjectRevision: 6 });
+    expect(init.signal).toBe(captured.signal);
+  });
+
+  it('uses one captured revision for a library apply and rethrows stale-state rejection', async () => {
+    const projectId = 'library-apply-project';
+    const store = createProjectGitStateStore(state(9));
+    registerProjectMutationStore(projectId, store);
+    const captured = store.capture();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'PROJECT_STATE_CHANGED', message: 'Library selection is stale' },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(applyLibraryAsset('asset-1', projectId, 'references', {
+      includeElement: true,
+      mutationContext: captured,
+    })).rejects.toBeInstanceOf(ProjectStateChangedError);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('9');
+    expect(JSON.parse(String(init.body))).toEqual({
+      projectId,
+      dir: 'references',
+      includeElement: true,
+      expectedProjectRevision: 9,
+    });
+    expect(init.signal).toBe(captured.signal);
+  });
+
+  it('preserves revision authority and stale-state errors for all live-artifact mutations', async () => {
+    const projectId = 'live-artifact-project';
+    const store = createProjectGitStateStore(state(11));
+    registerProjectMutationStore(projectId, store);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'PROJECT_STATE_CHANGED', message: 'Live artifact action is stale' },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (const run of [
+      () => refreshLiveArtifact(projectId, 'artifact-1', store.capture()),
+      () => updateLiveArtifact(projectId, 'artifact-1', {
+        title: 'Updated', status: 'active', pinned: false, preview: null,
+      } as never, store.capture()),
+      () => deleteLiveArtifact(projectId, 'artifact-1', store.capture()),
+    ]) {
+      await expect(run()).rejects.toBeInstanceOf(ProjectStateChangedError);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>) {
+      expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('11');
+      expect(init.signal).toBeDefined();
+    }
+    const calls = fetchMock.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
+    expect(JSON.parse(String(calls[1]?.[1]?.body))).toMatchObject({
+      expectedProjectRevision: 11,
+    });
+  });
+
+  it('does not join a pre-restore cached project-list read during an authoritative refresh', async () => {
+    const replies: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { replies.push(resolve); }));
+    vi.stubGlobal('fetch', fetchMock);
+    const stale = listProjects();
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    const controller = new AbortController();
+    const fresh = listProjects({ fresh: true, signal: controller.signal, throwOnError: true });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[1]!(new Response(JSON.stringify({ projects: [{ id: 'fresh' }] }), { status: 200 }));
+    await expect(fresh).resolves.toEqual([{ id: 'fresh' }]);
+    replies[0]!(new Response(JSON.stringify({ projects: [{ id: 'stale' }] }), { status: 200 }));
+    await expect(stale).resolves.toEqual([{ id: 'stale' }]);
+    const later = listProjects();
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]!(new Response(JSON.stringify({ projects: [{ id: 'later' }] }), { status: 200 }));
+    await expect(later).resolves.toEqual([{ id: 'later' }]);
+  });
+
+  it('does not join a pre-restore conversation-list read during an authoritative refresh', async () => {
+    const replies: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { replies.push(resolve); }));
+    vi.stubGlobal('fetch', fetchMock);
+    const stale = listConversations('conversation-fresh-project');
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    const fresh = listConversations('conversation-fresh-project', {
+      fresh: true,
+      signal: new AbortController().signal,
+      throwOnError: true,
+    });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[1]!(new Response(JSON.stringify({ conversations: [{ id: 'fresh' }] }), { status: 200 }));
+    await expect(fresh).resolves.toEqual([{ id: 'fresh' }]);
+    replies[0]!(new Response(JSON.stringify({ conversations: [{ id: 'stale' }] }), { status: 200 }));
+    await expect(stale).resolves.toEqual([{ id: 'stale' }]);
+    const later = listConversations('conversation-fresh-project');
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]!(new Response(JSON.stringify({ conversations: [{ id: 'later' }] }), { status: 200 }));
+    await expect(later).resolves.toEqual([{ id: 'later' }]);
   });
 });

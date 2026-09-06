@@ -15,6 +15,7 @@ import {
   terminalStreamUrl,
 } from '../../state/projects';
 import styles from './TerminalViewer.module.css';
+import { captureProjectMutation } from '../../state/project-git';
 
 interface Props {
   /** PTY session id (the `terminal:<id>` tab's suffix). */
@@ -365,6 +366,7 @@ export function TerminalViewer({
 
   // Spawn a fresh PTY and rebind this surface to it (the tab id is unchanged).
   const restart = useCallback(async () => {
+    const mutationContext = captureProjectMutation(projectId);
     setPhase('connecting');
     // Abandon the previous PTY before rebinding. Restart is only reachable from
     // the ended/unavailable states (old session already gone), so this is
@@ -373,7 +375,7 @@ export function TerminalViewer({
     void killTerminal(projectId, sessionId, {
       keepalive: true,
     });
-    const next = await createTerminal(projectId, undefined);
+    const next = await createTerminal(projectId, undefined, mutationContext);
     if (next?.id) {
       lastSizeRef.current = null;
       setSessionId(next.id);

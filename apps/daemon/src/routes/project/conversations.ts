@@ -204,7 +204,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     } else if (requestedForkMessageId) {
       return res.status(404).json({ error: 'fork source conversation not found' });
     }
-    if (requestedForkMessageId && seedMessages.some((message) => {
+    if (seedMessages.some((message) => {
       if (!message || typeof message.id !== 'string') return false;
       return Boolean(db.prepare(`SELECT 1 FROM project_git_portable_records
         WHERE project_id = ? AND kind = 'message' AND local_id = ? LIMIT 1`)

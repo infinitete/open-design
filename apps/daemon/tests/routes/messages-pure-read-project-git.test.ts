@@ -167,3 +167,83 @@ it('rejects a conversation fork whose selected prefix contains restored portable
   } });
   expect(insertConversation).not.toHaveBeenCalled();
 });
+
+it.each([
+  {
+    label: 'full source-conversation seed',
+    sourceMessages: [
+      { id: 'live-user', role: 'user', content: 'Before' },
+      { id: 'restored-full', role: 'assistant', content: 'Historical answer' },
+    ],
+    body: { seedFromConversationId: 'source' },
+  },
+  {
+    label: 'legacy client snapshot seed',
+    sourceMessages: [],
+    body: {
+      seedMessages: [
+        { id: 'live-user', role: 'user', content: 'Before' },
+        { id: 'restored-legacy', role: 'assistant', content: 'Historical answer' },
+      ],
+    },
+  },
+  {
+    label: 'in-memory fork fallback seed',
+    sourceMessages: [{ id: 'live-user', role: 'user', content: 'Before' }],
+    body: {
+      seedFromConversationId: 'source',
+      forkAfterMessageId: 'restored-fallback',
+      forkFallbackPredecessorMessageId: 'live-user',
+      forkFallbackMessage: {
+        id: 'restored-fallback',
+        role: 'assistant',
+        content: 'Historical answer',
+      },
+    },
+  },
+])('rejects restored provenance in a $label before creating rows', async ({ sourceMessages, body }) => {
+  const app = express();
+  app.use(express.json());
+  const insertConversation = vi.fn(() => ({ id: 'fork', projectId: 'project' }));
+  const upsertMessage = vi.fn();
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes('SELECT 1 FROM project_git_portable_records')) {
+      return {
+        get: (_projectId: string, messageId: string) =>
+          messageId.startsWith('restored-') ? { 1: 1 } : undefined,
+      };
+    }
+    throw new Error(`unexpected query: ${sql}`);
+  });
+  registerProjectConversationRoutes(app, {
+    db: { prepare }, design: { runs: { list: () => [] } },
+    http: { sendApiError: (res: express.Response, status: number, code: string, message: string) =>
+      res.status(status).json({ error: { code, message } }) },
+    paths: { BRANDS_DIR: '/brands', PROJECTS_DIR: '/projects', RUNTIME_DATA_DIR: '/data' },
+    projectStore: { getProject: () => ({ id: 'project' }) },
+    conversations: {
+      getConversation: () => ({ id: 'source', projectId: 'project', sessionMode: 'design' }),
+      listMessages: () => sourceMessages,
+      insertConversation,
+      upsertMessage,
+    },
+    ids: { randomId: () => 'fork' }, telemetry: {}, appConfig: {}, agents: {},
+    projectGitCoordination: { recoveryReady: Promise.resolve(), withProjectRead: vi.fn(),
+      withProjectMutation: async (_projectId: string, work: () => Promise<unknown>) => work(), runtime: {}, startup: {} },
+    authorizeProjectRequest: vi.fn(async () => true),
+  } as never);
+  const server = app.listen(0, '127.0.0.1'); servers.push(server);
+  await new Promise<void>(resolve => server.once('listening', resolve));
+
+  const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    + '/api/projects/project/conversations', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: {
+    code: 'CONFLICT', message: 'Restored historical messages cannot be forked',
+  } });
+  expect(insertConversation).not.toHaveBeenCalled();
+  expect(upsertMessage).not.toHaveBeenCalled();
+});

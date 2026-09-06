@@ -489,13 +489,21 @@ export const ProjectGitOperationResultSchema = z.object({
 }).strict().refine(value => value.existingProjectIds === undefined || (new Set(value.existingProjectIds).size === value.existingProjectIds.length
   && !value.existingProjectIds.includes(value.projectId ?? '')), 'Existing copies must be distinct from the opened project.');
 
-const ProjectGitApiErrorSchema = z.object({
+export const ProjectGitAcceptedSchema = z.object({
+  operationId: z.string().min(1),
+}).strict();
+
+export const ProjectGitApiErrorSchema = z.object({
   code: z.enum(API_ERROR_CODES),
   message: z.string(),
   details: jsonValueSchema.optional(),
   retryable: z.boolean().optional(),
   requestId: z.string().optional(),
   taskId: z.string().optional(),
+}).strict();
+
+export const ProjectGitApiErrorResponseSchema = z.object({
+  error: ProjectGitApiErrorSchema,
 }).strict();
 
 const ProjectGitPhaseSchema = z.enum([

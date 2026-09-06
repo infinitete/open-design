@@ -18,6 +18,11 @@ import { ChatComposer, type ChatComposerHandle } from '../../src/components/Chat
 import { I18nProvider } from '../../src/i18n';
 import type { Locale } from '../../src/i18n/types';
 import type { AppliedPluginSnapshot, ProjectMetadata } from '@open-design/contracts';
+import type { ProjectGitState } from '@open-design/contracts';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+} from '../../src/state/project-git';
 import { composerText, pressEnter, typeAndSettle, typeInComposer } from '../helpers/lexical-composer';
 
 const COMMUNITY_PLUGIN = {
@@ -132,6 +137,8 @@ let openFolderPaths: string[];
 let deferNextProjectPatch = false;
 let rejectNextProjectPatch = false;
 let resolveDeferredProjectPatch: (() => void) | null = null;
+let deferNextFolderDialog = false;
+let resolveDeferredFolderDialog: (() => void) | null = null;
 let referenceProjects: Array<{
   id: string;
   name: string;
@@ -205,6 +212,8 @@ beforeEach(() => {
   deferNextProjectPatch = false;
   rejectNextProjectPatch = false;
   resolveDeferredProjectPatch = null;
+  deferNextFolderDialog = false;
+  resolveDeferredFolderDialog = null;
   referenceProjects = [];
   referenceProjectDetails = {};
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -242,6 +251,10 @@ beforeEach(() => {
       });
     }
     if (url === '/api/dialog/open-folder' && init?.method === 'POST') {
+      if (deferNextFolderDialog) {
+        deferNextFolderDialog = false;
+        await new Promise<void>((resolve) => { resolveDeferredFolderDialog = resolve; });
+      }
       return new Response(
         JSON.stringify({ path: openFolderPaths.shift() ?? '/Users/me/reference-dir' }),
         {
@@ -318,6 +331,36 @@ afterEach(() => {
 });
 
 describe('ChatComposer context pickers', () => {
+  it('keeps a linked-folder mutation on the revision captured before the dialog resolves', async () => {
+    const state = (revision: number): ProjectGitState => ({
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+      confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
+      bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
+      operationId: null, error: null,
+      binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+    });
+    const store = createProjectGitStateStore(state(12));
+    registerProjectMutationStore('project-1', store);
+    deferNextFolderDialog = true;
+    renderComposer({ projectMetadata: { kind: 'prototype' } });
+    await flushMounts();
+
+    fireEvent.click(screen.getByTestId('chat-plus-trigger'));
+    fireEvent.click(await screen.findByText('Link local code'));
+    await waitFor(() => expect(resolveDeferredFolderDialog).toBeTruthy());
+    store.accept(state(13), 'event');
+    await act(async () => {
+      resolveDeferredFolderDialog?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(projectPatchBodies()).toHaveLength(1));
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => url === '/api/projects/project-1' && init?.method === 'PATCH',
+    );
+    expect(new Headers(patchCall?.[1]?.headers).get('X-OD-Project-Revision')).toBe('12');
+  });
+
   it('auto-stages the active workspace context and re-stages after a tab change', async () => {
     const onSend = vi.fn();
     const fileContext = {

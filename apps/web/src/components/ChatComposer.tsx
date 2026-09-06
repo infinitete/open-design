@@ -44,7 +44,7 @@ import {
   patchProject,
 } from "../state/projects";
 import { navigate } from '../router';
-import { captureProjectMutation } from '../state/project-git';
+import { captureProjectMutation, type ProjectMutationContext } from '../state/project-git';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
@@ -1405,9 +1405,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       setComposerEngaged(true);
     }
 
-    async function addLinkedDirs(dirs: string[]): Promise<Map<string, TrackedWorkspaceLinkedDir | null> | false> {
+    async function addLinkedDirs(
+      dirs: string[],
+      suppliedMutationContext = projectId ? captureProjectMutation(projectId) : undefined,
+    ): Promise<Map<string, TrackedWorkspaceLinkedDir | null> | false> {
       if (!projectId) return false;
-      const mutationContext = captureProjectMutation(projectId);
+      const mutationContext = suppliedMutationContext;
       const trimmedDirs = Array.from(new Set(dirs.map((dir) => dir.trim()).filter(Boolean)));
       if (trimmedDirs.length === 0) return new Map();
       const base = projectMetadata ?? { kind: 'prototype' as const };
@@ -1440,8 +1443,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       return trackedByDir;
     }
 
-    async function addLinkedDir(dir: string): Promise<TrackedWorkspaceLinkedDir | null | false> {
-      const trackedByDir = await addLinkedDirs([dir]);
+    async function addLinkedDir(
+      dir: string,
+      mutationContext = projectId ? captureProjectMutation(projectId) : undefined,
+    ): Promise<TrackedWorkspaceLinkedDir | null | false> {
+      const trackedByDir = await addLinkedDirs([dir], mutationContext);
       if (trackedByDir === false) return false;
       return trackedByDir.get(dir.trim()) ?? null;
     }
@@ -1494,6 +1500,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     }
 
     async function handleLinkLocalCodeContext() {
+      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
       const selected = await openFolderDialog();
       if (!selected) {
         trackContextLinkResult(analytics.track, {
@@ -1505,7 +1512,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         });
         return;
       }
-      const trackedLinkedDir = await addLinkedDir(selected);
+      const trackedLinkedDir = await addLinkedDir(selected, mutationContext);
       if (trackedLinkedDir === false) {
         trackContextLinkResult(analytics.track, {
           page_name: 'chat_panel',
@@ -1805,9 +1812,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       return onEnsureProject();
     }
 
-    async function uploadFiles(files: File[]) {
+    async function uploadFiles(files: File[], suppliedMutationContext?: ProjectMutationContext) {
       if (files.length === 0) return;
-      const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
+      const existingProjectMutation = suppliedMutationContext
+        ?? (projectId ? captureProjectMutation(projectId) : undefined);
       const id = await ensureProject();
       if (!id) return;
       const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
@@ -1868,8 +1876,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // consumed.
     async function addAssetsFromLibrary(assets: LibraryAsset[]) {
       if (assets.length === 0) return;
+      const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
       const id = await ensureProject();
       if (!id) return;
+      const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
       setUploading(true);
       setUploadError(null);
       const orderStart = reserveAttachmentOrders(assets.length);
@@ -1885,7 +1895,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
             asset.id,
             id,
             undefined,
-            undefined,
+            { mutationContext },
           );
           if (!res?.relPath) {
             failed += 1;
@@ -1927,6 +1937,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function uploadClipboardImagesFromAsyncClipboard() {
       if (!navigator.clipboard?.read) return false;
+      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
       try {
         const items = await navigator.clipboard.read();
         const files: File[] = [];
@@ -1939,7 +1950,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           files.push(new File([blob], `clipboard-screenshot-${stamp}.${extension}`, { type: imageType }));
         }
         if (files.length === 0) return false;
-        await uploadFiles(files);
+        await uploadFiles(files, mutationContext);
         return true;
       } catch (err) {
         console.warn('Could not read image from clipboard', err);
@@ -2229,9 +2240,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function handleLinkFolder() {
       if (!projectId) return;
+      const mutationContext = captureProjectMutation(projectId);
       const selected = await openFolderDialog();
       if (!selected) return;
-      await addLinkedDir(selected);
+      await addLinkedDir(selected, mutationContext);
     }
 
     function linkedDirsWithWorkspaceContext(primaryDir: string | null): string[] {

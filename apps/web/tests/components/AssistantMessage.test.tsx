@@ -11,7 +11,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
 import * as registry from '../../src/providers/registry';
+import type { ProjectGitState } from '@open-design/contracts';
 import type { ChatMessage, ProjectFile } from '../../src/types';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+} from '../../src/state/project-git';
 
 beforeAll(() => {
   const store = new Map<string, string>();
@@ -60,6 +65,26 @@ function producedFile(name: string): ProjectFile {
     kind: 'html',
     mime: 'text/html',
   } as ProjectFile;
+}
+
+function projectGitState(revision: number): ProjectGitState {
+  return {
+    enabled: true,
+    phase: 'synced',
+    localHead: 'a'.repeat(40),
+    observedRemoteHead: null,
+    confirmedRemoteHead: null,
+    projectRevision: revision,
+    contentRevision: revision,
+    bindingGeneration: 1,
+    dirty: false,
+    pendingPush: false,
+    autoSync: true,
+    operationId: null,
+    error: null,
+    binding: { remoteConfigured: false, remoteLabel: null, branch: null },
+    dependencies: [],
+  };
 }
 
 describe('internal control markers', () => {
@@ -179,6 +204,77 @@ describe('AssistantMessage feedback gate', () => {
     fireEvent.click(toggle);
     expect(disclosure?.classList.contains('open')).toBe(true);
     expect(screen.getByRole('button', { name: 'Create plugin/template' })).toBeTruthy();
+  });
+
+  it('does not continue a plugin draft after its captured project epoch is revoked', async () => {
+    const projectId = 'plugin-draft-project';
+    const store = createProjectGitStateStore(projectGitState(4));
+    registerProjectMutationStore(projectId, store);
+    let releaseDraft!: (response: Response) => void;
+    const draftResponse = new Promise<Response>((resolve) => { releaseDraft = resolve; });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => draftResponse);
+    const onRequestOpenFile = vi.fn();
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          content: '',
+          events: [{
+            kind: 'plugin_candidate',
+            candidateId: 'candidate-deferred',
+            title: 'Deferred helper',
+            description: 'Create a reusable helper.',
+          } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId={projectId}
+        onRequestOpenFile={onRequestOpenFile}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'View details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create plugin/template' }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+
+    store.accept(projectGitState(5), 'event');
+    await act(async () => {
+      releaseDraft(new Response(JSON.stringify({ draftPath: '.open-design/plugins/deferred' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      await draftResponse;
+    });
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(onRequestOpenFile).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Draft created/)).toBeNull();
+  });
+
+  it('sends plugin share with its captured revision and keeps the stale-state notice', async () => {
+    const projectId = 'plugin-share-project';
+    registerProjectMutationStore(projectId, createProjectGitStateStore(projectGitState(7)));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'PROJECT_STATE_CHANGED', message: 'Plugin action belongs to older history' },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          content: '',
+          events: [{
+            kind: 'plugin_candidate',
+            candidateId: 'candidate-share',
+            title: 'Share helper',
+            description: 'Share a reusable helper.',
+          } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId={projectId}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Contribute to open-design' }));
+
+    expect(await screen.findByText('Plugin action belongs to older history')).toBeTruthy();
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('7');
+    expect(init.signal).toBeDefined();
   });
 
   it('omits the repeated identity header for a consecutive assistant reply', () => {

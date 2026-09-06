@@ -6,6 +6,9 @@ import {
   parseProjectGitAction,
   parseProjectGitEnableRequest,
   ProjectGitBindRequestSchema,
+  ProjectGitAcceptedSchema,
+  ProjectGitApiErrorResponseSchema,
+  ProjectGitApiErrorSchema,
   ProjectGitPreviewSchema,
   ProjectGitStateSchema,
   ProjectGitOperationSchema,
@@ -77,6 +80,19 @@ describe('project Git browser response schemas', () => {
   it('declares the daemon-supported optional history path', () => {
     const request = { cursor: 'next', path: 'src/index.ts' } satisfies import('../src/api/project-git.js').ProjectGitHistoryRequest;
     expect(request).toEqual({ cursor: 'next', path: 'src/index.ts' });
+  });
+
+  it('strictly validates accepted mutations and shared API error envelopes', () => {
+    expect(ProjectGitAcceptedSchema.parse({ operationId: 'operation-1' }))
+      .toEqual({ operationId: 'operation-1' });
+    expect(ProjectGitAcceptedSchema.safeParse({ operationId: '' }).success).toBe(false);
+    expect(ProjectGitAcceptedSchema.safeParse({ operationId: 'operation-1', extra: true }).success).toBe(false);
+    const apiError = { code: 'PROJECT_STATE_CHANGED', message: 'History changed', retryable: false } as const;
+    expect(ProjectGitApiErrorSchema.parse(apiError)).toEqual(apiError);
+    expect(ProjectGitApiErrorResponseSchema.parse({ error: apiError })).toEqual({ error: apiError });
+    expect(ProjectGitApiErrorSchema.safeParse({ ...apiError, code: 'UNKNOWN_CODE' }).success).toBe(false);
+    expect(ProjectGitApiErrorSchema.safeParse({ ...apiError, extra: true }).success).toBe(false);
+    expect(ProjectGitApiErrorResponseSchema.safeParse({ error: apiError, extra: true }).success).toBe(false);
   });
 });
 

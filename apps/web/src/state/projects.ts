@@ -43,6 +43,7 @@ import { removeDesignBrowserProjectCache } from '../components/design-browser-st
 import { boundedRequestErrorCode } from '../analytics/workspace';
 import {
   captureProjectMutation,
+  projectMutationBody,
   projectMutationHeaders,
   rethrowProjectStateChanged,
   throwIfProjectStateChanged,
@@ -66,16 +67,22 @@ export class ProjectDeleteError extends Error {
 
 export async function listProjects(options?: {
   throwOnError?: boolean;
+  fresh?: boolean;
+  signal?: AbortSignal;
 }): Promise<Project[]> {
   try {
-    return await coalescedGet('local-projects', async () => {
-      const resp = await fetch('/api/projects');
+    const read = async () => {
+      const resp = await fetch('/api/projects', { signal: options?.signal });
       // Throw inside the coalesced run so a failed read is not cached — the next
       // caller/poll retries immediately (see coalesced-get.ts).
       if (!resp.ok) throw new Error(`projects ${resp.status}`);
       const json = (await resp.json()) as { projects: Project[] };
       return json.projects ?? [];
-    });
+    };
+    if (options?.fresh) evictCoalescedGet('local-projects');
+    return await (options?.fresh
+      ? read()
+      : coalescedGet('local-projects', read));
   } catch (err) {
     if (options?.throwOnError) throw err;
     return [];
@@ -719,22 +726,26 @@ export async function listConversations(
   projectId: string,
   options?: {
     throwOnError?: boolean;
+    fresh?: boolean;
+    signal?: AbortSignal;
   },
 ): Promise<Conversation[]> {
   const readKey = `project-conversations:${projectId}`;
   try {
     // Concurrent consumers of one project's conversation list share a single
     // request per burst (Batch A §4.3); conversation writes below evict.
-    const json = await coalescedGet(
-      readKey,
-      async () => {
-        const resp = await fetch(
-          `/api/projects/${encodeURIComponent(projectId)}/conversations`,
-        );
+    const read = async () => {
+      const resp = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/conversations`,
+        { signal: options?.signal },
+      );
         if (!resp.ok) throw new ProjectConversationsHttpError(resp.status);
         return (await resp.json()) as { conversations: Conversation[] };
-      },
-    );
+    };
+    if (options?.fresh) evictCoalescedGet(readKey);
+    const json = await (options?.fresh
+      ? read()
+      : coalescedGet(readKey, read));
     return json.conversations ?? [];
   } catch (err) {
     if (options?.throwOnError) throw err;
@@ -1031,7 +1042,9 @@ export async function saveMessage(
 export async function createTerminal(
   projectId: string,
   init?: CreateTerminalRequest,
+  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<TerminalSession | null> {
+  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/terminals`,
@@ -1039,14 +1052,18 @@ export async function createTerminal(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...projectMutationHeaders(mutationContext),
         },
-        body: JSON.stringify(init ?? {}),
+        body: JSON.stringify(projectMutationBody({ ...(init ?? {}) }, mutationContext)),
+        signal: mutationContext?.signal,
       },
     );
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { terminal: TerminalSession };
     return json.terminal ?? null;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return null;
   }
 }

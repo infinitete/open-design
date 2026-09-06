@@ -64,6 +64,10 @@ export function registerProjectMutationStore(projectId: string, store: ProjectGi
   projectMutationStores.set(projectId, store);
 }
 
+export function unregisterProjectMutationStore(projectId: string, store: ProjectGitStateStore): void {
+  if (projectMutationStores.get(projectId) === store) projectMutationStores.delete(projectId);
+}
+
 export function registerProjectEpochInvalidator(projectId: string, invalidate: () => void): () => void {
   const listeners = projectEpochInvalidators.get(projectId) ?? new Set<() => void>();
   listeners.add(invalidate);
@@ -81,6 +85,13 @@ export function invalidateProjectBrowserEpoch(projectId: string): void {
 /** Capture once at the user/queue boundary and carry this object to fetch. */
 export function captureProjectMutation(projectId: string): ProjectMutationContext | undefined {
   return projectMutationStores.get(projectId)?.capture();
+}
+
+export function isProjectMutationCurrent(
+  projectId: string,
+  context: ProjectMutationContext | undefined,
+): context is ProjectMutationContext {
+  return Boolean(context && projectMutationStores.get(projectId)?.isCurrent(context));
 }
 
 export function projectMutationHeaders(context?: ProjectMutationContext): Record<string, string> {

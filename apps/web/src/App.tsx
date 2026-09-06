@@ -443,7 +443,7 @@ function AppInner() {
   const hostPlatform = useMemo(() => getOpenDesignHost()?.client.platform, []);
   useModalWindowDragGuard();
   const listCurrentProjects = useCallback(
-    (options?: { throwOnError?: boolean }) => {
+    (options?: { throwOnError?: boolean; fresh?: boolean; signal?: AbortSignal }) => {
       return listProjects(options);
     },
     [],
@@ -1252,7 +1252,11 @@ function AppInner() {
     });
   }, [daemonConfigLoaded, dsLoading, designSystems, config.designSystemId]);
 
-  const refreshProjects = useCallback(async (options?: { throwOnError?: boolean }) => {
+  const refreshProjects = useCallback(async (options?: {
+    throwOnError?: boolean;
+    fresh?: boolean;
+    signal?: AbortSignal;
+  }) => {
     const request = beginProjectListRequest();
     const list = await listCurrentProjects(options);
     reconcileFetchedProjects(list, request);

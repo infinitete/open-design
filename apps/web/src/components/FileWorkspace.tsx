@@ -3841,7 +3841,8 @@ export function FileWorkspace({
     // Surface a toast when the daemon can't start one (e.g. node-pty not
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
-      const term = await createTerminal(projectId, undefined);
+      const mutationContext = captureProjectMutation(projectId);
+      const term = await createTerminal(projectId, undefined, mutationContext);
       if (!term) {
         setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
         return null;
@@ -4588,6 +4589,7 @@ export function FileWorkspace({
           <LibraryPicker
             onClose={() => setShowLibraryPicker(false)}
             onConfirm={async (assets) => {
+              const mutationContext = captureProjectMutation(projectId);
               // Copy each picked asset into the project's design files (under the
               // folder currently in view, if any). Apply records a provenance
               // back-link so the registry knows the asset was consumed. For
@@ -4601,7 +4603,7 @@ export function FileWorkspace({
                   asset.id,
                   projectId,
                   dir,
-                  { includeElement: true },
+                  { includeElement: true, mutationContext },
                 );
                 if (res?.relPath) lastRelPath = res.relPath;
                 if (res?.elementRelPath) lastRelPath = res.elementRelPath;

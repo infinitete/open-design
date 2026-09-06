@@ -14,6 +14,10 @@ import { navigate } from "../router";
 import { deleteProjectFile, projectFileUrl, uploadProjectFiles } from "../providers/registry";
 import {
   captureProjectMutation,
+  isProjectMutationCurrent,
+  projectMutationBody,
+  projectMutationHeaders,
+  throwIfProjectStateChanged,
   type ProjectMutationContext,
 } from "../state/project-git";
 import { useAnalytics } from "../analytics/provider";
@@ -303,14 +307,21 @@ function SkillPluginCandidateCard({
       ? t("skillPluginCandidate.repoDescription")
       : block.description || t("skillPluginCandidate.repoDescription");
 
-  async function post(path: string, body: Record<string, unknown> = {}) {
+  async function post(
+    path: string,
+    body: Record<string, unknown> = {},
+    mutationContext?: ProjectMutationContext,
+  ) {
     const resp = await fetch(path, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-              },
-      body: JSON.stringify(body),
+        ...projectMutationHeaders(mutationContext),
+      },
+      body: JSON.stringify(projectMutationBody(body, mutationContext)),
+      signal: mutationContext?.signal,
     });
+    await throwIfProjectStateChanged(resp);
     const data = await resp.json().catch(() => null);
     if (!resp.ok) {
       const message =
@@ -324,12 +335,17 @@ function SkillPluginCandidateCard({
 
   async function createDraft() {
     if (!projectId) return;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!isProjectMutationCurrent(projectId, mutationContext)) return;
     setBusy("draft");
     setNotice(null);
     try {
       const data = await post(
         `/api/projects/${encodeURIComponent(projectId)}/plugin-candidates/${encodeURIComponent(block.candidateId)}/draft`,
+        {},
+        mutationContext,
       );
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       const draftPath = String(data?.draftPath ?? "");
       if (data?.validation?.ok === false) {
         setNotice({ message: "Draft created with validation issues." });
@@ -337,7 +353,9 @@ function SkillPluginCandidateCard({
         const install = await post(
           `/api/projects/${encodeURIComponent(projectId)}/plugins/install-folder`,
           { path: draftPath },
+          mutationContext,
         );
+        if (!isProjectMutationCurrent(projectId, mutationContext)) return;
         if (install?.ok === false) {
           setNotice({ message: install?.message ?? "Plugin draft created, but install failed." });
         } else {
@@ -351,28 +369,34 @@ function SkillPluginCandidateCard({
       }
       if (draftPath && onRequestOpenFile) onRequestOpenFile(`${draftPath}/open-design.json`);
     } catch (err) {
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       setNotice({ message: err instanceof Error ? err.message : String(err) });
     } finally {
-      setBusy(null);
+      if (isProjectMutationCurrent(projectId, mutationContext)) setBusy(null);
     }
   }
 
   async function share(action: "contribute-open-design") {
     if (!projectId) return;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!isProjectMutationCurrent(projectId, mutationContext)) return;
     setBusy("contribute");
     setNotice(null);
     try {
       const data = await post(
         `/api/projects/${encodeURIComponent(projectId)}/plugin-candidates/${encodeURIComponent(block.candidateId)}/share-tasks`,
         { action },
+        mutationContext,
       );
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       setNotice({
         message: `OpenDesign contribution task started for ${data?.path ?? "the draft"}.`,
       });
     } catch (err) {
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       setNotice({ message: err instanceof Error ? err.message : String(err) });
     } finally {
-      setBusy(null);
+      if (isProjectMutationCurrent(projectId, mutationContext)) setBusy(null);
     }
   }
 

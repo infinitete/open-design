@@ -1,6 +1,7 @@
 import { boundedRequestErrorCode } from '../analytics/workspace';
 import {
   captureProjectMutation,
+  projectMutationBody,
   projectMutationHeaders,
   rethrowProjectStateChanged,
   throwIfProjectStateChanged,
@@ -1878,14 +1879,18 @@ export class LiveArtifactRefreshError extends Error {
 export async function refreshLiveArtifact(
   projectId: string,
   artifactId: string,
+  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<LiveArtifactRefreshResult> {
+  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   let resp: Response;
   try {
     resp = await fetch(
       `/api/live-artifacts/${encodeURIComponent(artifactId)}/refresh?projectId=${encodeURIComponent(projectId)}`,
       {
         method: 'POST',
-              },
+        headers: projectMutationHeaders(mutationContext),
+        signal: mutationContext?.signal,
+      },
     );
   } catch (error) {
     throw new LiveArtifactRefreshError(
@@ -1893,6 +1898,8 @@ export async function refreshLiveArtifact(
       0,
     );
   }
+
+  await throwIfProjectStateChanged(resp);
 
   if (!resp.ok) {
     const errorBody = await readApiErrorBody(resp);
@@ -1925,7 +1932,9 @@ export async function updateLiveArtifact(
     slug?: string;
     document?: LiveArtifact['document'];
   },
+  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<LiveArtifact> {
+  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   let resp: Response;
   try {
     resp = await fetch(
@@ -1934,8 +1943,10 @@ export async function updateLiveArtifact(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-                  },
-        body: JSON.stringify(input),
+          ...projectMutationHeaders(mutationContext),
+        },
+        body: JSON.stringify(projectMutationBody(input, mutationContext)),
+        signal: mutationContext?.signal,
       },
     );
   } catch (error) {
@@ -1944,6 +1955,8 @@ export async function updateLiveArtifact(
       0,
     );
   }
+
+  await throwIfProjectStateChanged(resp);
 
   if (!resp.ok) {
     const errorBody = await readApiErrorBody(resp);
@@ -1959,16 +1972,22 @@ export async function updateLiveArtifact(
 export async function deleteLiveArtifact(
   projectId: string,
   artifactId: string,
+  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<boolean> {
+  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(
       `/api/live-artifacts/${encodeURIComponent(artifactId)}?projectId=${encodeURIComponent(projectId)}`,
       {
         method: 'DELETE',
-              },
+        headers: projectMutationHeaders(mutationContext),
+        signal: mutationContext?.signal,
+      },
     );
+    await throwIfProjectStateChanged(resp);
     return resp.ok;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return false;
   }
 }
@@ -3233,23 +3252,28 @@ export async function applyLibraryAsset(
   assetId: string,
   projectId: string,
   dir?: string,
-  opts?: { includeElement?: boolean },
+  opts?: { includeElement?: boolean; mutationContext?: ProjectMutationContext },
 ): Promise<LibraryApplyResponse | null> {
+  const mutationContext = opts?.mutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(`/api/library/assets/${encodeURIComponent(assetId)}/apply`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-              },
-      body: JSON.stringify({
+        ...projectMutationHeaders(mutationContext),
+      },
+      body: JSON.stringify(projectMutationBody({
         projectId,
         ...(dir ? { dir } : {}),
         ...(opts?.includeElement ? { includeElement: true } : {}),
-      }),
+      }, mutationContext)),
+      signal: mutationContext?.signal,
     });
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     return (await resp.json()) as LibraryApplyResponse;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return null;
   }
 }

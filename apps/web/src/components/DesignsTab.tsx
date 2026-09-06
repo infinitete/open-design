@@ -17,6 +17,7 @@ import {
 	setProjectCoverSnapshot,
 } from "../lib/project-cover-cache";
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles, liveArtifactPreviewUrl } from "../providers/registry";
+import { captureProjectMutation } from "../state/project-git";
 import type {
 	DesignSystemSummary,
 	LiveArtifactSummary,
@@ -547,13 +548,14 @@ export function DesignsTab({
 		projectId: string,
 		artifact: LiveArtifactSummary,
 	) => {
+		const mutationContext = captureProjectMutation(projectId);
 		setConfirmError(null);
 		setConfirmTarget({
 			title: t("common.delete"),
 			message: `${t("common.delete")} "${artifact.title}"?`,
 			confirmLabel: t("designs.menuDelete"),
 			onConfirm: async () => {
-				const ok = await deleteLiveArtifact(projectId, artifact.id);
+				const ok = await deleteLiveArtifact(projectId, artifact.id, mutationContext);
 				if (!ok) return false;
 				setLiveArtifactsByProject((current) => ({
 					...current,

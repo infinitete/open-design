@@ -1,5 +1,7 @@
 import {
   ProjectGitCommitSchema,
+  ProjectGitAcceptedSchema,
+  ProjectGitApiErrorResponseSchema,
   ProjectGitConflictsResponseSchema,
   ProjectGitFileResponseSchema,
   ProjectGitHistoryPageSchema,
@@ -21,7 +23,11 @@ import {
   type ProjectGitStateSnapshot,
   type ProjectGitStateStore,
 } from '../state/project-git';
-import { invalidateProjectBrowserEpoch, registerProjectMutationStore } from '../state/project-git';
+import {
+  invalidateProjectBrowserEpoch,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+} from '../state/project-git';
 import { subscribeProjectEvents, type ProjectEvent } from './project-events';
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
 
@@ -76,13 +82,9 @@ async function responseJson(response: Response): Promise<unknown> {
     value = null;
   }
   if (!response.ok) {
-    const error = value && typeof value === 'object' && 'error' in value
-      ? (value as { error?: unknown }).error
-      : null;
-    const apiError: ApiError = error && typeof error === 'object'
-      && typeof (error as { code?: unknown }).code === 'string'
-      && typeof (error as { message?: unknown }).message === 'string'
-      ? error as ApiError
+    const parsed = ProjectGitApiErrorResponseSchema.safeParse(value);
+    const apiError: ApiError = parsed.success
+      ? parsed.data.error
       : { code: 'INTERNAL_ERROR', message: `Request failed (${response.status})` };
     throw new ProjectGitHttpError(response.status, apiError);
   }
@@ -145,11 +147,18 @@ export function createProjectGitClient(options: ProjectGitClientOptions = {}): P
       signal: executeOptions.signal,
     });
     const accepted = await responseJson(response);
-    if (!accepted || typeof accepted !== 'object'
-      || typeof (accepted as { operationId?: unknown }).operationId !== 'string') {
-      throw new Error('Invalid project Git response');
+    if (response.status !== 202) {
+      throw new Error(`Invalid project Git response: expected HTTP 202, received ${response.status}`);
     }
-    return (accepted as { operationId: string }).operationId;
+    return parse(ProjectGitAcceptedSchema, accepted).operationId;
+  };
+
+  const operationMatchesAction = (
+    action: ProjectGitAction,
+    operation: ProjectGitOperation,
+  ): boolean => {
+    if (action.kind !== 'retry') return operation.kind === action.kind;
+    return ['enable', 'bind', 'open', 'restore', 'resolve', 'sync'].includes(operation.kind);
   };
 
   const client: ProjectGitClient = {
@@ -202,6 +211,15 @@ export function createProjectGitClient(options: ProjectGitClientOptions = {}): P
       );
       for (;;) {
         const operation = await client.operation(operationId, executeOptions.signal);
+        if (operation.id !== operationId) {
+          throw new Error('Project Git operation id mismatch');
+        }
+        if (projectId !== null && operation.projectId !== projectId) {
+          throw new Error('Project Git operation project mismatch');
+        }
+        if (!operationMatchesAction(action, operation)) {
+          throw new Error('Project Git operation action mismatch');
+        }
         if (operation.status !== 'queued' && operation.status !== 'running') return operation;
         await waitForPoll(sleep, pollIntervalMs, executeOptions.signal);
       }
@@ -242,7 +260,7 @@ export interface ProjectGitHubOptions {
 
 export interface ProjectGitHub {
   subscribe(projectId: string, listener: (snapshot: ProjectGitStateSnapshot) => void): () => void;
-  refresh(projectId: string): Promise<void>;
+  refresh(projectId: string, options?: { fresh?: boolean; generation?: number }): Promise<void>;
   store(projectId: string): ProjectGitStateStore;
 }
 
@@ -252,6 +270,7 @@ interface HubEntry {
   stopEvents: (() => void) | null;
   inFlight: Promise<void> | null;
   readController: AbortController | null;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export function createProjectGitHub(
@@ -272,6 +291,7 @@ export function createProjectGitHub(
       stopEvents: null,
       inFlight: null,
       readController: null,
+      cleanupTimer: null,
     };
     store.subscribe(() => {
       for (const listener of entry.listeners) listener(store.snapshot());
@@ -281,15 +301,28 @@ export function createProjectGitHub(
     return entry;
   };
 
-  const refresh = async (projectId: string): Promise<void> => {
+  const refresh = async (
+    projectId: string,
+    options?: { fresh?: boolean; generation?: number },
+  ): Promise<void> => {
     const entry = getEntry(projectId);
+    if (options?.fresh) {
+      entry.readController?.abort();
+      entry.readController = null;
+      entry.inFlight = null;
+    }
     if (entry.inFlight) return entry.inFlight;
     const token = entry.store.beginRead();
+    if (options?.generation !== undefined && token.generation !== options.generation) {
+      throw new Error('Project Git read generation changed before refresh');
+    }
     const controller = new AbortController();
     entry.readController = controller;
     const pending = client.state(projectId, controller.signal)
       .then(state => {
-        if (!controller.signal.aborted) entry.store.acceptRead(token, state);
+        if (!controller.signal.aborted && entry.store.acceptRead(token, state) === 'stale') {
+          throw new Error('Stale project Git state response');
+        }
       })
       .catch(error => {
         if (controller.signal.aborted) throw error;
@@ -310,9 +343,13 @@ export function createProjectGitHub(
     store: projectId => getEntry(projectId).store,
     subscribe(projectId, listener) {
       const entry = getEntry(projectId);
+      if (entry.cleanupTimer !== null) {
+        clearTimeout(entry.cleanupTimer);
+        entry.cleanupTimer = null;
+      }
       entry.listeners.add(listener);
       listener(entry.store.snapshot());
-      if (entry.listeners.size === 1) {
+      if (entry.listeners.size === 1 && entry.stopEvents === null) {
         void refresh(projectId).catch(() => {});
         const subscribeEvents = options.subscribeEvents ?? subscribeProjectEvents;
         if (subscribeEvents) {
@@ -337,13 +374,18 @@ export function createProjectGitHub(
       }
       return () => {
         entry.listeners.delete(listener);
-        if (entry.listeners.size === 0) {
+        if (entry.listeners.size !== 0 || entry.cleanupTimer !== null) return;
+        entry.cleanupTimer = setTimeout(() => {
+          entry.cleanupTimer = null;
+          if (entries.get(projectId) !== entry || entry.listeners.size !== 0) return;
           entry.stopEvents?.();
           entry.stopEvents = null;
           entry.readController?.abort();
           entry.readController = null;
           entry.inFlight = null;
-        }
+          entries.delete(projectId);
+          unregisterProjectMutationStore(projectId, entry.store);
+        }, 0);
       };
     },
   };
@@ -371,7 +413,9 @@ export function useProjectGit(projectId: string | null | undefined) {
 
   return useMemo(() => ({
     ...snapshot,
-    refresh: () => projectId ? defaultProjectGitHub.refresh(projectId) : Promise.resolve(),
+    refresh: (options?: { fresh?: boolean; generation?: number }) => projectId
+      ? defaultProjectGitHub.refresh(projectId, options)
+      : Promise.resolve(),
     capture: () => projectId ? defaultProjectGitHub.store(projectId).capture() : undefined,
     isCurrent: (context: import('../state/project-git').ProjectMutationContext) => projectId
       ? defaultProjectGitHub.store(projectId).isCurrent(context)

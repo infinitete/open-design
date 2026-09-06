@@ -14,6 +14,11 @@ import {
   typeInComposer,
 } from '../helpers/lexical-composer';
 import type { ChatAttachment, ChatCommentAttachment } from '../../src/types';
+import type { ProjectGitState } from '@open-design/contracts';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+} from '../../src/state/project-git';
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -33,6 +38,58 @@ afterEach(() => {
 });
 
 describe('ChatComposer /search command', () => {
+  it('captures project authority before awaiting asynchronous clipboard items', async () => {
+    const projectId = 'clipboard-authority-project';
+    const state = (revision: number): ProjectGitState => ({
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+      confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
+      bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
+      operationId: null, error: null,
+      binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+    });
+    const store = createProjectGitStateStore(state(2));
+    registerProjectMutationStore(projectId, store);
+    let releaseClipboard!: (items: ClipboardItem[]) => void;
+    const clipboardRead = new Promise<ClipboardItem[]>((resolve) => { releaseClipboard = resolve; });
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { read: vi.fn(() => clipboardRead) },
+    });
+    mockedUploadProjectFiles.mockResolvedValue({ uploaded: [], failed: [] });
+    try {
+      render(
+        <ChatComposer
+          projectId={projectId}
+          projectFiles={[]}
+          streaming={false}
+          onEnsureProject={async () => projectId}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      );
+      fireEvent.paste(screen.getByTestId('chat-composer-input'), {
+        clipboardData: { files: [], items: [] },
+      });
+      await waitFor(() => expect(navigator.clipboard.read).toHaveBeenCalledTimes(1));
+      store.accept(state(3), 'event');
+      await act(async () => {
+        releaseClipboard([{
+          types: ['image/png'],
+          getType: async () => new Blob(['image'], { type: 'image/png' }),
+        } as unknown as ClipboardItem]);
+        await clipboardRead;
+      });
+      await waitFor(() => expect(mockedUploadProjectFiles).toHaveBeenCalledTimes(1));
+      const context = mockedUploadProjectFiles.mock.calls[0]?.[3];
+      expect(context?.expectedProjectRevision).toBe(2);
+      expect(context?.signal.aborted).toBe(true);
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
   it('sends staged file attachments even when the text draft is empty', async () => {
     const onSend = vi.fn();
     mockedUploadProjectFiles.mockResolvedValue({

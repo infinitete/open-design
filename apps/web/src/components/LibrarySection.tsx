@@ -52,6 +52,7 @@ import { LibraryPreviewModal } from './LibraryPreviewModal';
 import { LibraryUploadModal } from './LibraryUploadModal';
 import styles from './LibrarySection.module.css';
 import { useT } from '../i18n';
+import { captureProjectMutation } from '../state/project-git';
 
 type Translate = ReturnType<typeof useT>;
 
@@ -822,7 +823,8 @@ export function LibrarySection({ active, onOpenProject }: Props) {
       if (!chosen.length) return;
       setDsBusy(true);
       try {
-              let projectId = ds.projectId;
+        let projectId = ds.projectId;
+        let mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
         if (!projectId) {
           const detail = await fetchDesignSystem(ds.id);
           projectId = detail?.projectId;
@@ -831,13 +833,14 @@ export function LibrarySection({ active, onOpenProject }: Props) {
           setDsMenuOpen(false);
           return;
         }
+        mutationContext ??= captureProjectMutation(projectId);
         const attachments: ChatAttachment[] = [];
         for (const a of chosen) {
           const res = await applyLibraryAsset(
             a.id,
             projectId,
             undefined,
-            { includeElement: true },
+            { includeElement: true, mutationContext },
           );
           if (res?.relPath) {
             attachments.push({

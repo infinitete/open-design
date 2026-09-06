@@ -2200,6 +2200,7 @@ export function LiveArtifactViewer({
 
   async function handleRefresh() {
     if (refreshing) return;
+    const mutationContext = captureProjectMutation(projectId);
     setRefreshing(true);
     setRefreshError(null);
     setRefreshSuccess(null);
@@ -2208,6 +2209,7 @@ export function LiveArtifactViewer({
       const result = await refreshLiveArtifact(
         projectId,
         liveArtifact.artifactId,
+        mutationContext,
       );
       setDetail(result.artifact);
       void fetchLiveArtifactRefreshes(

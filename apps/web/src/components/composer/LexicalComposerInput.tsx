@@ -572,7 +572,10 @@ function PastePlugin({
           onPasteFilesRef.current?.(files);
           return true;
         }
-        // Otherwise fall through so PlainTextPlugin pastes as plain text.
+        // Let the host inspect the asynchronous Clipboard API for browsers
+        // that omit image files from the synchronous clipboardData payload.
+        // Still fall through so PlainTextPlugin can paste ordinary text.
+        onPasteFilesRef.current?.([]);
         return false;
       },
       COMMAND_PRIORITY_LOW,
