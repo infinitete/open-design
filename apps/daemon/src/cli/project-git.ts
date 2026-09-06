@@ -372,11 +372,28 @@ function redactJsonValue(value: JsonValue, secrets: string[]): JsonValue {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         redactText(key, secrets),
-        redactJsonValue(item, secrets),
+        isSensitiveDetailKey(key) ? '[redacted]' : redactJsonValue(item, secrets),
       ]),
     );
   }
   return value;
+}
+
+const SENSITIVE_DETAIL_KEY_WORDS = new Set([
+  'password', 'passwd', 'token', 'key', 'secret', 'credential', 'credentials',
+  'authorization',
+]);
+
+function isSensitiveDetailKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  const normalized = words.join('');
+  return normalized === 'accesstoken'
+    || normalized === 'apikey'
+    || words.some(word => SENSITIVE_DETAIL_KEY_WORDS.has(word));
 }
 
 async function requestJson(
@@ -608,7 +625,20 @@ function projectGitConversations(payload: unknown): unknown {
 }
 
 function validateProjectGitReadResponse(path: string, payload: unknown): unknown {
-  if (/^\/api\/project-git-operations\/[^/]+$/u.test(path)) return projectGitOperation(payload);
+  const operationMatch = /^\/api\/project-git-operations\/([^/]+)$/u.exec(path);
+  if (operationMatch) {
+    const operation = projectGitOperation(payload);
+    let requestedOperationId: string;
+    try {
+      requestedOperationId = decodeURIComponent(operationMatch[1]!);
+    } catch {
+      return invalidResponse('project Git operation identity');
+    }
+    if (operation.id !== requestedOperationId) {
+      return invalidResponse('project Git operation identity');
+    }
+    return operation;
+  }
   if (/\/git$/u.test(path)) return projectGitState(payload);
   if (/\/history(?:\?|$)/u.test(path)) return projectGitHistory(payload);
   if (/\/files\//u.test(path)) return historicalFile(payload);
@@ -762,7 +792,13 @@ async function pollOperation(base: string, operationId: string, request: Project
         operation.error?.taskId,
       );
     }
-    if (attempt === 0) process.stderr.write(`Project Git operation ${operationId} is ${operation.status}.\n`);
+    if (attempt === 0) {
+      const progress = redactText(
+        `Project Git operation ${operationId} is ${operation.status}.`,
+        [process.env.OD_TOOL_TOKEN ?? ''],
+      );
+      process.stderr.write(`${progress}\n`);
+    }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   throw new ProjectGitCliError(
@@ -808,6 +844,10 @@ function isStrictBase64(value: string): boolean {
 }
 
 async function printReadResult(request: ProjectGitCliRequest, payload: unknown): Promise<void> {
+  if (/^\/api\/project-git-operations\/[^/]+$/u.test(request.path)) {
+    printResult(payload, true);
+    return;
+  }
   if (!/\/commits\/[^/]+\/files\//u.test(request.path)) {
     printResult(payload, request.json);
     return;

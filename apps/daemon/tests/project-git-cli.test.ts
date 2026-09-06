@@ -220,7 +220,11 @@ describe('od git parser', () => {
   });
 
   it('rejects unsafe historical paths before URL construction', () => {
-    for (const path of ['a//b', '.', '..', 'a/./b', 'a/../b', 'a\\b', `a${String.fromCharCode(1)}b`]) {
+    for (const path of [
+      'a//b', '.', '..', 'a/./b', 'a/../b', 'a\\b', `a${String.fromCharCode(1)}b`,
+      '/etc/passwd', '//server/share/file', '\\\\server\\share\\file',
+      'C:\\Windows\\system.ini', 'C:/Windows/system.ini',
+    ]) {
       expect(() => parseProjectGitCommand([
         'show', '--project', 'p', '--commit', 'abc', '--path', path, '--json',
       ]), path).toThrow(/path/i);
@@ -493,7 +497,7 @@ describe('od git process boundary', () => {
     ]);
   });
 
-  it('rejects traversal locally so fetch cannot normalize it into another daemon route', async () => {
+  it('rejects traversal and absolute path forms locally before any daemon request', async () => {
     const stub = await startStub((_request, response) => {
       response.statusCode = 200;
       response.end(JSON.stringify({
@@ -503,13 +507,17 @@ describe('od git process boundary', () => {
       }));
     });
 
-    const result = await runCli([
-      'git', 'show', '--project', 'p', '--commit', 'abc',
-      '--path', '../../../../../../health', '--json', '--daemon-url', stub.baseUrl,
-    ]);
-
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/path/i);
+    for (const path of [
+      '../../../../../../health', '/api/health', '//server/share/file',
+      '\\\\server\\share\\file', 'C:\\Windows\\system.ini', 'C:/Windows/system.ini',
+    ]) {
+      const result = await runCli([
+        'git', 'show', '--project', 'p', '--commit', 'abc',
+        '--path', path, '--json', '--daemon-url', stub.baseUrl,
+      ]);
+      expect(result.code, path).toBe(2);
+      expect(result.stderr, path).toMatch(/path/i);
+    }
     expect(stub.requests).toHaveLength(0);
   });
 
@@ -537,8 +545,71 @@ describe('od git process boundary', () => {
     }
   });
 
+  it('renders the complete explicit operation DTO in human mode for every state', async () => {
+    const requested = new Map<string, unknown>();
+    for (const status of ['queued', 'running', 'waiting', 'succeeded', 'failed'] as const) {
+      const value = operation(`human-${status}`, status);
+      requested.set(`human-${status}`, status === 'failed'
+        ? {
+            ...value,
+            error: {
+              ...value.error!,
+              details: { conflictId: 'conflict-1', nextStep: 'resolve' },
+            },
+          }
+        : value);
+    }
+    const counts = new Map<string, number>();
+    const stub = await startStub((request, response) => {
+      const id = decodeURIComponent(request.url.split('/').at(-1) ?? '');
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+      response.statusCode = 200;
+      response.end(JSON.stringify(requested.get(id)));
+    });
+
+    for (const [id, expectedOperation] of requested) {
+      const result = await runCli([
+        'git', 'operation', id, '--daemon-url', stub.baseUrl,
+      ]);
+      expect(result.code, `${id}\n${result.stderr}`).toBe(0);
+      expect(JSON.parse(result.stdout), id).toEqual(expectedOperation);
+      expect(counts.get(id)).toBe(1);
+    }
+  });
+
+  it('rejects operation DTOs whose identity does not match the requested operation', async () => {
+    const stub = await startStub((request, response) => {
+      response.statusCode = 200;
+      if (request.url === '/api/projects/p/git') {
+        response.end(JSON.stringify(projectState));
+        return;
+      }
+      if (request.method === 'POST') {
+        response.statusCode = 202;
+        response.end(JSON.stringify({ operationId: 'accepted-id' }));
+        return;
+      }
+      response.end(JSON.stringify(operation('different-id')));
+    });
+
+    for (const command of [
+      ['operation', 'lookup-id'],
+      ['restore', '--project', 'p', '--preview', 'preview-id'],
+      ['retry', '--operation', 'retry-id'],
+      ['sync', '--project', 'p'],
+    ]) {
+      const result = await runCli(['git', ...command, '--json', '--daemon-url', stub.baseUrl]);
+      expect(result.code, command.join(' ')).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/INVALID_RESPONSE/);
+    }
+    expect(stub.requests.filter(request => request.method === 'POST').map(request => request.url))
+      .toEqual(['/api/projects/p/git/sync']);
+  });
+
   it('retains the operation id and latest status when mutation polling times out', async () => {
     vi.useFakeTimers();
+    const operationId = 'timeout-op?access_token=timeout-secret';
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (init?.method === 'GET' && url.endsWith('/api/projects/p/git')) {
@@ -548,12 +619,12 @@ describe('od git process boundary', () => {
         });
       }
       if (init?.method === 'POST' && url.endsWith('/api/projects/p/git/sync')) {
-        return new Response(JSON.stringify({ operationId: 'timeout-op' }), {
+        return new Response(JSON.stringify({ operationId }), {
           status: 202,
           headers: { 'content-type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify(operation('timeout-op', 'running')), {
+      return new Response(JSON.stringify(operation(operationId, 'running')), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -583,9 +654,11 @@ describe('od git process boundary', () => {
     };
     expect(failure.error).toMatchObject({
       code: 'OPERATION_PENDING',
-      details: { operationId: 'timeout-op', latestStatus: 'running' },
+      details: { operationId: 'timeout-op?access_token=[redacted]', latestStatus: 'running' },
     });
     expect(failure.error?.message).toMatch(/timeout-op.*running/i);
+    expect(stderr.join('')).not.toContain('timeout-secret');
+    expect(stderr.join('')).toContain('timeout-op?access_token=[redacted]');
   });
 
   it('keeps HTTP failures non-zero and redacts tokens and credential-bearing URLs from stderr', async () => {
@@ -627,7 +700,19 @@ describe('od git process boundary', () => {
           message,
           details: {
             operationId: 'op-1',
+            requestId: 'detail-request-1',
+            taskId: 'detail-task-1',
+            status: 'running',
             nextStep: 'retry with password=detail-secret',
+            nested: {
+              password: 'plain-password-value',
+              PASSWD: 'plain-passwd-value',
+              accessToken: 'plain-access-token-value',
+              'api-key': 'plain-api-key-value',
+              secret: { deeply: 'plain-secret-object' },
+              credential: ['plain-credential-array'],
+              authorization: 'plain-authorization-value',
+            },
             'tool-private-token': 'credential key',
           },
           retryable: true,
@@ -644,7 +729,21 @@ describe('od git process boundary', () => {
     const jsonFailure = JSON.parse(jsonResult.stderr) as { error: Record<string, unknown> };
     expect(jsonFailure.error).toMatchObject({
       code: 'PROJECT_STATE_CHANGED',
-      details: { operationId: 'op-1' },
+      details: {
+        operationId: 'op-1',
+        requestId: 'detail-request-1',
+        taskId: 'detail-task-1',
+        status: 'running',
+        nested: {
+          password: '[redacted]',
+          PASSWD: '[redacted]',
+          accessToken: '[redacted]',
+          'api-key': '[redacted]',
+          secret: '[redacted]',
+          credential: '[redacted]',
+          authorization: '[redacted]',
+        },
+      },
       retryable: true,
       requestId: 'request-1',
       taskId: 'task-1',
@@ -652,6 +751,9 @@ describe('od git process boundary', () => {
     for (const secret of [
       'user:pass', 'query-secret', 'YmFkOmNyZWRlbnRpYWw=', 'assigned-secret',
       'bearer-secret', 'detail-secret', 'tool-private-token',
+      'plain-password-value', 'plain-passwd-value', 'plain-access-token-value',
+      'plain-api-key-value', 'plain-secret-object', 'plain-credential-array',
+      'plain-authorization-value',
     ]) {
       expect(jsonResult.stderr).not.toContain(secret);
     }
@@ -665,8 +767,12 @@ describe('od git process boundary', () => {
     expect(humanResult.stderr).toContain('request-1');
     expect(humanResult.stderr).toContain('task-1');
     expect(humanResult.stderr).toContain('op-1');
+    expect(humanResult.stderr).toContain('detail-request-1');
+    expect(humanResult.stderr).toContain('detail-task-1');
     expect(() => JSON.parse(humanResult.stderr)).toThrow();
-    expect(humanResult.stderr).not.toMatch(/query-secret|assigned-secret|bearer-secret|detail-secret|tool-private-token/);
+    expect(humanResult.stderr).not.toMatch(
+      /query-secret|assigned-secret|bearer-secret|detail-secret|tool-private-token|plain-[a-z-]+-value|plain-secret-object|plain-credential-array/u,
+    );
   });
 
   it('rejects malformed operation, status, and history success DTOs immediately', async () => {
