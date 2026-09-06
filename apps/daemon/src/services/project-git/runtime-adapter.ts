@@ -13,6 +13,7 @@ interface RuntimeStore {
 
 export interface ProjectRunPermit {
   projectId: string;
+  executionAttempt: number;
   bindingGeneration: number;
   projectRevision: number;
   permit: MutationPermit;
@@ -43,7 +44,7 @@ export interface RecoveredProjectTerminals {
   projectId: string;
   bindingGeneration: number;
   projectRevision: number;
-  terminals: ReadonlyArray<{ runId: string; terminal: string }>;
+  terminals: ReadonlyArray<{ runId: string; executionAttempt: number; terminal: string }>;
 }
 
 export interface ProjectGitRuntimeAdapterDeps {
@@ -61,6 +62,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
     runId: string,
     projectId: string,
     admission: ProjectRunAdmission,
+    executionAttempt: number,
   ): { bindingGeneration: number; projectRevision: number } | null;
   detach(runId: string, admission: ProjectRunAdmission): void;
   mutationContext(runId: string, projectId: string): ProjectRunMutationContext | null;
@@ -72,6 +74,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
     bindingGeneration: number,
     projectRevision: number,
     terminal: string,
+    executionAttempt: number,
   ): void;
   reconcileTerminalsWithLocalRepair(
     group: RecoveredProjectTerminals,
@@ -136,7 +139,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
         throw error;
       }
     },
-    attach(runId, projectId, admission) {
+    attach(runId, projectId, admission, executionAttempt) {
       const state = admissionStates.get(admission);
       if (!state) throw new Error('Project run admission is not owned by this runtime.');
       if (admission.projectId !== projectId) {
@@ -152,9 +155,13 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
       if (!admission.permit) {
         throw new Error('Project run admission has no mutation permit.');
       }
+      if (!Number.isSafeInteger(executionAttempt) || executionAttempt < 0) {
+        throw new Error('Project run execution attempt must be a nonnegative safe integer.');
+      }
       state.attachedRunId = runId;
       deps.permits.set(runId, {
         projectId,
+        executionAttempt,
         bindingGeneration: admission.bindingGeneration ?? 0,
         projectRevision: admission.projectRevision,
         permit: admission.permit,
@@ -193,6 +200,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
       try {
         if (deps.store.recordRunTerminal({
           runId,
+          executionAttempt: admission.executionAttempt,
           projectId,
           bindingGeneration: admission.bindingGeneration,
           projectRevision: admission.projectRevision,
@@ -206,9 +214,10 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
       deps.permits.delete(runId);
       admission.release();
     },
-    reconcileTerminal(runId, projectId, bindingGeneration, projectRevision, terminal) {
+    reconcileTerminal(runId, projectId, bindingGeneration, projectRevision, terminal, executionAttempt) {
       if (deps.store.recordRunTerminal({
         runId,
+        executionAttempt,
         projectId,
         bindingGeneration,
         projectRevision,

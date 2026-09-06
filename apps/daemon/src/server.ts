@@ -2918,7 +2918,6 @@ export async function startServer({
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   const projectGitStore = createProjectGitStore(db);
   const projectGitCoordination = createUnavailableProjectGitCoordination(projectGitStore);
-  const projectGitRunPermits = new Map();
   type SkillCandidateHookArgs = Parameters<typeof detectSkillPluginCandidateOnRunSuccess>;
   const detectSkillPluginCandidateAfterRun = (
     ...args: [
@@ -4280,11 +4279,6 @@ export async function startServer({
       },
       onSettled: (run) => {
         projectGitCoordination.runtime.onSettled(run.id);
-        const admission = projectGitRunPermits.get(run.id);
-        if (admission) {
-          projectGitRunPermits.delete(run.id);
-          admission.release();
-        }
       },
     }),
     analytics: analyticsService,
@@ -4451,8 +4445,8 @@ export async function startServer({
     analyticsLifecycle: runAnalyticsLifecycle,
     beginProjectRunAdmission: (projectId, expectedProjectRevision) =>
       projectGitCoordination.runtime.admit(projectId, expectedProjectRevision),
-    attachProjectRun: (runId, projectId, admission) =>
-      projectGitCoordination.runtime.attach(runId, projectId, admission),
+    attachProjectRun: (runId, projectId, admission, executionAttempt) =>
+      projectGitCoordination.runtime.attach(runId, projectId, admission, executionAttempt),
     detachProjectRun: (runId, admission) =>
       projectGitCoordination.runtime.detach(runId, admission),
     coordinateProjectMutation: (admission, source, work) =>
@@ -6486,17 +6480,19 @@ export async function startServer({
           && designSystemVisibleToRun(system),
       );
       if (summary?.source === 'user' && summary.teamSynced !== true) {
-        const runAdmission = typeof runId === 'string'
-          ? projectGitRunPermits.get(runId)
-          : undefined;
+        const runMutationContext = typeof runId === 'string'
+          && typeof projectId === 'string'
+          && projectId
+          ? projectGitCoordination.runtime.mutationContext(runId, projectId)
+          : null;
         await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId, {
           projectMutation: {
             source: 'run-prompt-design-system-sync',
             ...(typeof projectId === 'string' && projectId ? { originProjectId: projectId } : {}),
-            ...(runAdmission
+            ...(runMutationContext
               ? {
-                  expectedProjectRevision: runAdmission.projectRevision,
-                  ...(runAdmission.permit ? { permit: runAdmission.permit } : {}),
+                  expectedProjectRevision: runMutationContext.expectedProjectRevision,
+                  permit: runMutationContext.permit,
                 }
               : {}),
           },
@@ -13176,7 +13172,11 @@ export async function startServer({
       return;
     }
     server.once('close', () => {
-      void shutdownDaemonRuns().finally(cleanupDaemonBackgroundWork);
+      void shutdownDaemonRuns()
+        .finally(cleanupDaemonBackgroundWork)
+        .catch((error) => {
+          console.warn('[daemon] detached shutdown failed after server close', error);
+        });
     });
     // `app.listen` throws synchronously when the port is already in use on
     // some Node versions, but emits an `error` event on others (and for

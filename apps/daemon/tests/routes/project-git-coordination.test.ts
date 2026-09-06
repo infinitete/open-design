@@ -7,7 +7,9 @@ import {
   coordinateAuthorizedProjectReadStart,
   projectOperationCoordination,
 } from '../../src/routes/project-git-coordination.js';
+import { createProjectGitMutationAdapter } from '../../src/services/project-git/mutation-adapter.js';
 import { GitDomainError } from '../../src/services/project-git/errors.js';
+import { createProjectGate } from '../../src/services/project-git/gate.js';
 
 function response() {
   const emitter = new EventEmitter() as EventEmitter & {
@@ -320,6 +322,53 @@ describe('post-authorization project Git coordination', () => {
       'BAD_REQUEST',
       'Invalid project revision.',
     );
+  });
+
+  it('rejects an explicitly missing trusted run context even when transport supplies the current managed revision', async () => {
+    const bumpContent = vi.fn(() => 1);
+    const adapter = createProjectGitMutationAdapter({
+      recoveryReady: Promise.resolve(),
+      store: {
+        getBinding: () => ({
+          projectRevision: 7,
+          contentRevision: 0,
+          generation: 1,
+          localHead: null,
+          observedRemoteHead: null,
+        }),
+        bumpContent,
+      },
+      gateFor: () => createProjectGate(),
+      notify: vi.fn(),
+    });
+    const coordinationWithRealAdapter = {
+      ...coordination(),
+      ...adapter,
+    };
+    const res = response();
+    const sendApiError = vi.fn();
+    const work = vi.fn(async () => 'wrote');
+
+    await expect(coordinateAuthorizedProjectMutation({
+      req: { body: { expectedProjectRevision: 7 }, get: vi.fn() } as never,
+      res: res as never,
+      projectId: 'project',
+      source: 'tool.write',
+      coordination: coordinationWithRealAdapter,
+      sendApiError,
+      authorize: vi.fn(async () => true),
+      trustedMutationContext: null,
+      work,
+    })).resolves.toBeUndefined();
+
+    expect(sendApiError).toHaveBeenCalledWith(
+      res,
+      409,
+      'PROJECT_STATE_CHANGED',
+      'Reload the project before editing.',
+    );
+    expect(bumpContent).not.toHaveBeenCalled();
+    expect(work).not.toHaveBeenCalled();
   });
 
   it('maps a managed domain rejection without letting an outer route rewrite its response', async () => {

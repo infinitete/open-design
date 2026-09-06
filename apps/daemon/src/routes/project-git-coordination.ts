@@ -99,19 +99,25 @@ function projectMutationScope(input: {
   source: string;
   trustedMutationContext?: ProjectRunMutationContext | null;
 }) {
+  const requiresTrustedMutationContext = Object.prototype.hasOwnProperty.call(
+    input,
+    'trustedMutationContext',
+  );
   const transportedProjectRevision = expectedProjectRevisionFromTransport({
     body: input.req.body?.expectedProjectRevision,
     header: input.req.get('X-OD-Project-Revision'),
   });
   if (
-    input.trustedMutationContext
+    requiresTrustedMutationContext
+    && input.trustedMutationContext
     && transportedProjectRevision !== undefined
     && transportedProjectRevision !== input.trustedMutationContext.expectedProjectRevision
   ) {
     throw new GitDomainError('BAD_REQUEST', 400, 'Invalid project revision.');
   }
-  const expectedProjectRevision = transportedProjectRevision
-    ?? input.trustedMutationContext?.expectedProjectRevision;
+  const expectedProjectRevision = requiresTrustedMutationContext
+    ? input.trustedMutationContext?.expectedProjectRevision
+    : transportedProjectRevision;
   return {
     projectId: input.projectId,
     ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),

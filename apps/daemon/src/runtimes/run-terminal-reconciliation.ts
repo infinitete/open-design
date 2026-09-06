@@ -47,6 +47,7 @@ interface DurableRunState extends RestartRecoverableDurableRunState {
   projectId: string | null;
   expectedProjectRevision?: number;
   projectGitBindingGeneration?: number;
+  manualResumeAttemptCount?: number;
   conversationId: string | null;
   assistantMessageId: string | null;
   agentId: string | null;
@@ -353,7 +354,12 @@ async function reconcileProjectTerminalLocals(
     current.states.push(state);
     current.group = {
       ...current.group,
-      terminals: [...current.group.terminals, { runId: state.id, terminal: state.status }],
+      terminals: [...current.group.terminals, {
+        runId: state.id,
+        executionAttempt: Number.isSafeInteger(state.manualResumeAttemptCount)
+          ? state.manualResumeAttemptCount! : 0,
+        terminal: state.status,
+      }],
     };
     groups.set(key, current);
   }
@@ -393,7 +399,7 @@ async function reconcileProjectTerminalLocals(
     current.rows.push(row);
     current.group = {
       ...current.group,
-      terminals: [...current.group.terminals, { runId, terminal: 'failed' }],
+      terminals: [...current.group.terminals, { runId, executionAttempt: 0, terminal: 'failed' }],
     };
     orphanGroups.set(key, current);
   }

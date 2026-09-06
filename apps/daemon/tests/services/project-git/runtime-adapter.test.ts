@@ -17,8 +17,9 @@ it('holds overlapping run permits until each run settles and bumps from the late
     store: {
       getBinding: () => binding,
       recordRunTerminal: input => {
-        if (receipts.has(input.runId)) return false;
-        receipts.add(input.runId);
+        const key = `${input.runId}:${input.executionAttempt}`;
+        if (receipts.has(key)) return false;
+        receipts.add(key);
         binding.contentRevision += 1;
         return true;
       },
@@ -31,8 +32,8 @@ it('holds overlapping run permits until each run settles and bumps from the late
   const one = await adapter.admit('project', 7);
   const two = await adapter.admit('project', 7);
   expect(gate.activeRuns()).toBe(2);
-  adapter.attach('run-one', 'project', one);
-  adapter.attach('run-two', 'project', two);
+  adapter.attach('run-one', 'project', one, 0);
+  adapter.attach('run-two', 'project', two, 0);
   adapter.onTerminal('run-one', 'project', 'succeeded');
   adapter.onTerminal('run-one', 'project', 'succeeded');
   adapter.onTerminal('run-two', 'project', 'failed');
@@ -42,6 +43,43 @@ it('holds overlapping run permits until each run settles and bumps from the late
   expect(gate.activeRuns()).toBe(0);
   expect(binding.contentRevision).toBe(2);
   expect(notifications).toEqual(['project', 'project']);
+});
+
+it('receipts a resumed execution of the same durable run id independently', async () => {
+  const gate = createProjectGate();
+  const binding = { projectRevision: 7, contentRevision: 0, generation: 2 };
+  const receipts = new Set<string>();
+  const notify = vi.fn();
+  const adapter = createProjectGitRuntimeAdapter({
+    recoveryReady: Promise.resolve(),
+    store: {
+      getBinding: () => binding,
+      recordRunTerminal: input => {
+        const key = `${input.runId}:${input.executionAttempt}`;
+        if (receipts.has(key)) return false;
+        receipts.add(key);
+        binding.contentRevision += 1;
+        return true;
+      },
+    },
+    gateFor: () => gate,
+    notify,
+    permits: new Map(),
+  });
+
+  const first = await adapter.admit('project', 7);
+  adapter.attach('same-run', 'project', first, 0);
+  adapter.onTerminal('same-run', 'project', 'failed');
+  adapter.onSettled('same-run');
+  const resumed = await adapter.admit('project', 7);
+  adapter.attach('same-run', 'project', resumed, 1);
+  adapter.onTerminal('same-run', 'project', 'succeeded');
+  adapter.onTerminal('same-run', 'project', 'succeeded');
+  adapter.onSettled('same-run');
+
+  expect(receipts).toEqual(new Set(['same-run:0', 'same-run:1']));
+  expect(binding.contentRevision).toBe(2);
+  expect(notify).toHaveBeenCalledTimes(2);
 });
 
 it('isolates local dirty-state failures from model terminal convergence', async () => {
@@ -58,7 +96,7 @@ it('isolates local dirty-state failures from model terminal convergence', async 
     permits,
   });
   const admission = await adapter.admit('project', 0);
-  adapter.attach('run', 'project', admission);
+  adapter.attach('run', 'project', admission, 0);
 
   expect(() => adapter.onTerminal('run', 'project', 'failed')).not.toThrow();
   adapter.onSettled('run');
@@ -97,7 +135,7 @@ it('does not let checkpoint notification failures replace terminal state converg
     permits,
   });
   const admission = await adapter.admit('project', 0);
-  adapter.attach('run', 'project', admission);
+  adapter.attach('run', 'project', admission, 0);
   expect(() => adapter.onTerminal('run', 'project', 'canceled')).not.toThrow();
   adapter.onSettled('run');
   expect(binding.contentRevision).toBe(1);
@@ -124,8 +162,8 @@ it('reconciles a durable terminal through the same receipt and notifies only on 
     permits: new Map(),
   });
 
-  adapter.reconcileTerminal('orphan', 'project', 3, 4, 'failed');
-  adapter.reconcileTerminal('orphan', 'project', 3, 4, 'failed');
+  adapter.reconcileTerminal('orphan', 'project', 3, 4, 'failed', 0);
+  adapter.reconcileTerminal('orphan', 'project', 3, 4, 'failed', 0);
 
   expect(receipts.size).toBe(1);
   expect(notifications).toEqual(['project']);
@@ -236,12 +274,12 @@ it('attaches a pre-run admission to its exact physical run only once', async () 
   });
   const admission = await runtime.admit('project', 5);
 
-  expect(() => runtime.attach('run-3', 'other-project', admission)).toThrow('project mismatch');
-  expect(runtime.attach('run-1', 'project', admission)).toEqual({
+  expect(() => runtime.attach('run-3', 'other-project', admission, 0)).toThrow('project mismatch');
+  expect(runtime.attach('run-1', 'project', admission, 0)).toEqual({
     bindingGeneration: 7,
     projectRevision: 5,
   });
-  expect(() => runtime.attach('run-2', 'project', admission)).toThrow('already attached');
+  expect(() => runtime.attach('run-2', 'project', admission, 0)).toThrow('already attached');
   expect(permits.get('run-1')).toMatchObject({
     projectId: 'project',
     bindingGeneration: 7,
@@ -273,12 +311,12 @@ it('detaches a failed pre-claim run without releasing the scoped admission', asy
     permits,
   });
   const admission = await runtime.admit('project', 5);
-  runtime.attach('failed-run', 'project', admission);
+  runtime.attach('failed-run', 'project', admission, 0);
 
   runtime.detach('failed-run', admission);
   expect(permits.has('failed-run')).toBe(false);
   expect(gate.activeRuns()).toBe(1);
-  expect(runtime.attach('retry-run', 'project', admission)).toEqual({
+  expect(runtime.attach('retry-run', 'project', admission, 0)).toEqual({
     bindingGeneration: 7,
     projectRevision: 5,
   });
@@ -298,8 +336,9 @@ it('repairs a recovered terminal under its exact durable epoch and records one r
       getBinding: () => binding,
       recordRunTerminal: input => {
         order.push('receipt');
-        if (receipts.has(input.runId)) return false;
-        receipts.add(input.runId);
+        const key = `${input.runId}:${input.executionAttempt}`;
+        if (receipts.has(key)) return false;
+        receipts.add(key);
         binding.contentRevision += 1;
         return true;
       },
@@ -311,15 +350,23 @@ it('repairs a recovered terminal under its exact durable epoch and records one r
 
   await runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 7, projectRevision: 5,
-    terminals: [{ runId: 'recovered', terminal: 'failed' }],
+    terminals: [{ runId: 'recovered', executionAttempt: 0, terminal: 'failed' }],
   }, async () => { order.push('repair'); });
   await runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 7, projectRevision: 5,
-    terminals: [{ runId: 'recovered', terminal: 'failed' }],
+    terminals: [{ runId: 'recovered', executionAttempt: 0, terminal: 'failed' }],
   }, async () => { order.push('repair:replay'); });
+  await runtime.reconcileTerminalsWithLocalRepair({
+    projectId: 'project', bindingGeneration: 7, projectRevision: 5,
+    terminals: [{ runId: 'recovered', executionAttempt: 1, terminal: 'succeeded' }],
+  }, async () => { order.push('repair:resume'); });
 
-  expect(order).toEqual(['recovery', 'repair', 'receipt', 'notify', 'repair:replay', 'receipt']);
-  expect(binding.contentRevision).toBe(3);
+  expect(order).toEqual([
+    'recovery', 'repair', 'receipt', 'notify',
+    'repair:replay', 'receipt',
+    'repair:resume', 'receipt', 'notify',
+  ]);
+  expect(binding.contentRevision).toBe(4);
   expect(gate.activeRuns()).toBe(0);
 });
 
@@ -337,7 +384,7 @@ it('rejects stale recovery epochs before work and releases the real gate once', 
 
   await expect(runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 7, projectRevision: 5,
-    terminals: [{ runId: 'stale', terminal: 'failed' }],
+    terminals: [{ runId: 'stale', executionAttempt: 0, terminal: 'failed' }],
   }, repair)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
   expect(repair).not.toHaveBeenCalled();
   expect(recordRunTerminal).not.toHaveBeenCalled();
@@ -356,7 +403,7 @@ it('withholds terminal receipt and bump when recovered local repair fails', asyn
   });
   await expect(runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 0, projectRevision: 0,
-    terminals: [{ runId: 'failed-repair', terminal: 'failed' }],
+    terminals: [{ runId: 'failed-repair', executionAttempt: 0, terminal: 'failed' }],
   }, async () => { throw new Error('local repair failed'); })).rejects.toThrow('local repair failed');
   expect(recordRunTerminal).not.toHaveBeenCalled();
   expect(gate.activeRuns()).toBe(0);
@@ -375,12 +422,12 @@ it('accepts only an explicit zero epoch for unmanaged recovered terminals', asyn
   });
   await runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 0, projectRevision: 0,
-    terminals: [{ runId: 'unmanaged', terminal: 'failed' }],
+    terminals: [{ runId: 'unmanaged', executionAttempt: 0, terminal: 'failed' }],
   }, repair);
   expect(repair).toHaveBeenCalledOnce();
   expect(recordRunTerminal).not.toHaveBeenCalled();
   await expect(runtime.reconcileTerminalsWithLocalRepair({
     projectId: 'project', bindingGeneration: 1, projectRevision: 0,
-    terminals: [{ runId: 'bad-unmanaged', terminal: 'failed' }],
+    terminals: [{ runId: 'bad-unmanaged', executionAttempt: 0, terminal: 'failed' }],
   }, repair)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
 });

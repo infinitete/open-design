@@ -60,12 +60,14 @@ export function migrateProjectGit(db: Database.Database): void {
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS project_git_run_terminals (
-      run_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      execution_attempt INTEGER NOT NULL CHECK (execution_attempt >= 0),
       project_id TEXT NOT NULL,
       binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
       project_revision INTEGER NOT NULL CHECK (project_revision >= 0),
       terminal TEXT NOT NULL CHECK (terminal IN ('succeeded', 'failed', 'canceled')),
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (run_id, execution_attempt)
     );
     CREATE TABLE IF NOT EXISTS project_git_preview_consumers (
       preview_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
@@ -103,6 +105,33 @@ export function migrateProjectGit(db: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS project_git_pending_registration
       ON project_git_registrations(project_id) WHERE state = 'pending';
     `);
+    const terminalColumns = db.prepare('PRAGMA table_info(project_git_run_terminals)').all() as {
+      name: string;
+      pk: number;
+    }[];
+    if (!terminalColumns.some(column => column.name === 'execution_attempt')) {
+      // The first terminal receipt schema keyed only by run_id. A resumed
+      // physical execution reuses that id, so preserve every old receipt as
+      // attempt zero while widening the key for later attempts.
+      db.exec(`
+        ALTER TABLE project_git_run_terminals RENAME TO project_git_run_terminals_prior;
+        CREATE TABLE project_git_run_terminals (
+          run_id TEXT NOT NULL,
+          execution_attempt INTEGER NOT NULL CHECK (execution_attempt >= 0),
+          project_id TEXT NOT NULL,
+          binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
+          project_revision INTEGER NOT NULL CHECK (project_revision >= 0),
+          terminal TEXT NOT NULL CHECK (terminal IN ('succeeded', 'failed', 'canceled')),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (run_id, execution_attempt)
+        );
+        INSERT INTO project_git_run_terminals
+          (run_id, execution_attempt, project_id, binding_generation, project_revision, terminal, created_at)
+        SELECT run_id, 0, project_id, binding_generation, project_revision, terminal, created_at
+          FROM project_git_run_terminals_prior;
+        DROP TABLE project_git_run_terminals_prior;
+      `);
+    }
     const idColumns = db.prepare('PRAGMA table_info(project_git_id_map)').all() as { name: string; pk: number }[];
     if (idColumns.find(column => column.name === 'kind')?.pk === 0) {
       // Only the mapping table changes. Keep every historical mapping and roll

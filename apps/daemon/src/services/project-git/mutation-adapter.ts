@@ -48,6 +48,7 @@ export interface ProjectGitCoordination extends ProjectGitMutationAdapter {
       runId: string,
       projectId: string,
       admission: ProjectRunAdmission,
+      executionAttempt: number,
     ): { bindingGeneration: number; projectRevision: number } | null;
     detach(runId: string, admission: ProjectRunAdmission): void;
     mutationContext(runId: string, projectId: string): ProjectRunMutationContext | null;
@@ -59,6 +60,7 @@ export interface ProjectGitCoordination extends ProjectGitMutationAdapter {
       bindingGeneration: number,
       projectRevision: number,
       terminal: string,
+      executionAttempt: number,
     ): void;
     reconcileTerminalsWithLocalRepair(
       group: RecoveredProjectTerminals,

@@ -333,7 +333,11 @@ export function createTerminalService({
         ]);
       }
       for (const session of active) if (!TERMINAL_SESSION_TERMINAL_STATUSES.has(session.status)) {
-        session.pty.kill('SIGKILL');
+        // Escalation is per child: one stale or already-dead PTY must not
+        // prevent its siblings from receiving SIGKILL. A failed signal still
+        // does not prove exit, so all sessions remain admitted below until
+        // node-pty reports their real onExit event.
+        try { session.pty.kill('SIGKILL'); } catch { /* Await the real PTY exit. */ }
       }
       await allExited;
     }

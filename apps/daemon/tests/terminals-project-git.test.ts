@@ -91,4 +91,50 @@ describe('terminal project mutation session lifecycle', () => {
     await terminals.waitForExit(session);
     expect(release).toHaveBeenCalledTimes(1);
   });
+
+  it('isolates SIGKILL failures per PTY and waits for every real exit', async () => {
+    const first = fakePty();
+    const second = fakePty();
+    first.child.kill.mockImplementation((signal: string) => {
+      if (signal === 'SIGKILL') throw new Error('first escalation failed');
+    });
+    const ptys = [first, second];
+    const releases = [vi.fn(), vi.fn()];
+    const terminals = createTerminalService({
+      loadPty: async () => ({ spawn: vi.fn(() => ptys.shift()!.child) }) as never,
+      shutdownGraceMs: 1,
+    });
+    const firstSession = await terminals.create({
+      projectId: 'project-1', cwd: '/project-1',
+      projectMutationSession: {
+        projectId: 'project-1', expectedProjectRevision: 0, permit: {} as never,
+        release: releases[0]!,
+      },
+    });
+    const secondSession = await terminals.create({
+      projectId: 'project-2', cwd: '/project-2',
+      projectMutationSession: {
+        projectId: 'project-2', expectedProjectRevision: 0, permit: {} as never,
+        release: releases[1]!,
+      },
+    });
+
+    let settled = false;
+    const shutdown = terminals.shutdownActive().then(() => { settled = true; });
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+    expect(first.child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(second.child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(settled).toBe(false);
+    expect(releases[0]).not.toHaveBeenCalled();
+    expect(releases[1]).not.toHaveBeenCalled();
+
+    second.exit({ exitCode: 137, signal: 9 });
+    await terminals.waitForExit(secondSession);
+    expect(releases[1]).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    first.exit({ exitCode: 1, signal: 15 });
+    await terminals.waitForExit(firstSession);
+    await shutdown;
+    expect(releases[0]).toHaveBeenCalledOnce();
+  });
 });

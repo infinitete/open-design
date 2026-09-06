@@ -8,6 +8,7 @@ import {
 
 interface TestRun extends InternalPhysicalRun {
   assistantMessageId: string | null;
+  manualResumeAttemptCount?: number;
   projectGitBindingGeneration?: number;
 }
 
@@ -48,6 +49,7 @@ function createHarness(initial: {
     prepareRestart: vi.fn(() => {
       if (initial.restartOk === false) return null;
       run.status = 'queued';
+      run.manualResumeAttemptCount = (run.manualResumeAttemptCount ?? 0) + 1;
       return run;
     }),
     get: vi.fn(() => null),
@@ -297,6 +299,7 @@ describe('internal run creation service', () => {
   it('admits a resume with the request epoch before it reclaims and rearms the run', async () => {
     const harness = createHarness({ creation: 'reused' });
     harness.run.expectedProjectRevision = 2;
+    harness.run.manualResumeAttemptCount = 2;
 
     expect(await harness.service.prepare({
       meta: { projectId: 'project-1', expectedProjectRevision: 8 },
@@ -308,11 +311,18 @@ describe('internal run creation service', () => {
       resumed: true,
     });
     expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1', 8);
+    expect(harness.attachProjectRun).toHaveBeenCalledWith(
+      'run-1',
+      'project-1',
+      harness.preRunHandle,
+      3,
+    );
     expect(harness.claimAssistantMessage).toHaveBeenCalledWith(
       harness.run,
       expect.objectContaining({ status: 'queued' }),
     );
     expect(harness.registry.prepareRestart).toHaveBeenCalledWith(harness.run);
+    expect(harness.run.manualResumeAttemptCount).toBe(3);
   });
 
   it('preserves a reused terminal run when resume eligibility fails before admission', async () => {
@@ -391,6 +401,7 @@ describe('internal run creation service', () => {
       'run-1',
       'project-1',
       harness.preRunHandle,
+      0,
     );
     expect(harness.coordinateProjectMutation).toHaveBeenCalledWith(
       harness.preRunHandle,

@@ -248,6 +248,7 @@ describe('project Git durable store', () => {
     const b = store.saveBinding(binding());
     expect(store.recordRunTerminal({
       runId: 'run-1',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation,
       projectRevision: b.projectRevision,
@@ -256,6 +257,7 @@ describe('project Git durable store', () => {
     expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: true });
     expect(store.recordRunTerminal({
       runId: 'run-1',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation,
       projectRevision: b.projectRevision,
@@ -264,6 +266,7 @@ describe('project Git durable store', () => {
     expect(store.getBinding('p1')?.contentRevision).toBe(1);
     expect(() => store.recordRunTerminal({
       runId: 'run-1',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation,
       projectRevision: b.projectRevision,
@@ -272,6 +275,7 @@ describe('project Git durable store', () => {
 
     expect(() => store.recordRunTerminal({
       runId: 'run-2',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation + 1,
       projectRevision: b.projectRevision,
@@ -281,6 +285,7 @@ describe('project Git durable store', () => {
       .toEqual({ count: 1 });
     expect(store.recordRunTerminal({
       runId: 'run-2',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation,
       projectRevision: b.projectRevision,
@@ -293,19 +298,79 @@ describe('project Git durable store', () => {
     store = createProjectGitStore(db);
     expect(store.recordRunTerminal({
       runId: 'run-2',
+      executionAttempt: 0,
       projectId: 'p1',
       bindingGeneration: b.generation,
       projectRevision: b.projectRevision,
       terminal: 'succeeded',
     })).toBe(false);
+    const cleanBasis = store.getBinding('p1')!;
+    store.markExported('p1', basis(cleanBasis), cleanBasis.contentRevision);
+    expect(store.getBinding('p1')?.dirty).toBe(false);
+    expect(store.recordRunTerminal({
+      runId: 'run-2',
+      executionAttempt: 1,
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'failed',
+    })).toBe(true);
+    expect(store.getBinding('p1')?.dirty).toBe(true);
+    expect(store.recordRunTerminal({
+      runId: 'run-2',
+      executionAttempt: 1,
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'failed',
+    })).toBe(false);
+    expect(() => store.recordRunTerminal({
+      runId: 'run-2',
+      executionAttempt: 1,
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'canceled',
+    })).toThrowError(expect.objectContaining({ code: 'RECOVERY_REQUIRED' }));
     expect(store.recordRunTerminal({
       runId: 'unmanaged-run',
+      executionAttempt: 0,
       projectId: 'unmanaged',
       bindingGeneration: 0,
       projectRevision: 0,
       terminal: 'failed',
     })).toBe(false);
-    expect(store.getBinding('p1')?.contentRevision).toBe(2);
+    expect(store.getBinding('p1')?.contentRevision).toBe(3);
+  });
+
+  it('losslessly migrates legacy run terminal receipts to execution attempt zero', () => {
+    db.exec(`DROP TABLE project_git_run_terminals;
+      CREATE TABLE project_git_run_terminals (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        binding_generation INTEGER NOT NULL,
+        project_revision INTEGER NOT NULL,
+        terminal TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO project_git_run_terminals VALUES ('legacy-run', 'p1', 2, 3, 'failed', 123);`);
+
+    migrateProjectGit(db);
+
+    expect(db.prepare(`SELECT run_id AS runId, execution_attempt AS executionAttempt,
+      project_id AS projectId, binding_generation AS bindingGeneration,
+      project_revision AS projectRevision, terminal, created_at AS createdAt
+      FROM project_git_run_terminals`).all()).toEqual([{
+      runId: 'legacy-run', executionAttempt: 0, projectId: 'p1', bindingGeneration: 2,
+      projectRevision: 3, terminal: 'failed', createdAt: 123,
+    }]);
+    expect((db.prepare('PRAGMA table_info(project_git_run_terminals)').all() as Array<{
+      name: string;
+      pk: number;
+    }>)
+      .filter((column: { pk: number }) => column.pk > 0)
+      .map((column: { name: string; pk: number }) => [column.name, column.pk]))
+      .toEqual([['run_id', 1], ['execution_attempt', 2]]);
   });
 
   it('keeps generation tombstones across local invalidation and rejects stale targets after rebind', () => {

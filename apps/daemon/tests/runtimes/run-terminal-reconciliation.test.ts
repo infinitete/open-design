@@ -33,7 +33,7 @@ describe('durable run terminal reconciliation', () => {
   it('groups durable local repairs by exact project epoch and detaches delivery only after local ready', async () => {
     const states = [
       { id: 'run-a', projectId: 'p1', messageId: 'm-a', generation: 3, revision: 7 },
-      { id: 'run-b', projectId: 'p1', messageId: 'm-b', generation: 3, revision: 7 },
+      { id: 'run-b', projectId: 'p1', messageId: 'm-b', generation: 3, revision: 7, attempt: 2 },
       { id: 'run-c', projectId: 'p2', messageId: 'm-c', generation: 5, revision: 9 },
     ];
     for (const state of states) {
@@ -44,6 +44,7 @@ describe('durable run terminal reconciliation', () => {
         agentId: 'codex', status: 'failed', createdAt: 1, updatedAt: 2,
         expectedProjectRevision: state.revision,
         projectGitBindingGeneration: state.generation,
+        ...(state.attempt === undefined ? {} : { manualResumeAttemptCount: state.attempt }),
       }));
       db.prepare('INSERT INTO conversations (id, project_id) VALUES (?, ?)').run(`c-${state.id}`, state.projectId);
       db.prepare(`INSERT INTO messages (id, conversation_id, run_id, run_status, events_json)
@@ -59,7 +60,8 @@ describe('durable run terminal reconciliation', () => {
         : { bindingGeneration: 5, projectRevision: 9 },
       reconcileTerminalsWithLocalRepair: async (group, repair) => {
         groups.push({ projectId: group.projectId, generation: group.bindingGeneration,
-          revision: group.projectRevision, runs: group.terminals.map(item => item.runId).sort() });
+          revision: group.projectRevision,
+          runs: group.terminals.map(item => `${item.runId}:${item.executionAttempt}`).sort() });
         await repair();
       },
       reportLangfuse: vi.fn(async () => {
@@ -74,8 +76,8 @@ describe('durable run terminal reconciliation', () => {
     expect(local.messagesReconciled).toBe(3);
     expect(deliverySettled).toBe(false);
     expect(groups.sort((a, b) => a.projectId.localeCompare(b.projectId))).toEqual([
-      { projectId: 'p1', generation: 3, revision: 7, runs: ['run-a', 'run-b'] },
-      { projectId: 'p2', generation: 5, revision: 9, runs: ['run-c'] },
+      { projectId: 'p1', generation: 3, revision: 7, runs: ['run-a:0', 'run-b:2'] },
+      { projectId: 'p2', generation: 5, revision: 9, runs: ['run-c:0'] },
     ]);
     expect(db.prepare('SELECT run_status AS status FROM messages ORDER BY id').all())
       .toEqual([{ status: 'failed' }, { status: 'failed' }, { status: 'failed' }]);
@@ -122,7 +124,7 @@ describe('durable run terminal reconciliation', () => {
     expect(local.messagesReconciled).toBe(1);
     expect(groups).toEqual([{
       projectId: 'p1', bindingGeneration: 4, projectRevision: 11,
-      terminals: [{ runId: 'orphan-run', terminal: 'failed' }],
+      terminals: [{ runId: 'orphan-run', executionAttempt: 0, terminal: 'failed' }],
     }]);
     expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm1'").get())
       .toEqual({ status: 'failed' });

@@ -48,6 +48,7 @@ export interface InternalPhysicalRun {
   projectId?: string | null;
   expectedProjectRevision?: number;
   projectGitBindingGeneration?: number;
+  manualResumeAttemptCount?: number;
 }
 
 export interface InternalRunAnalyticsLifecycle<TRun> {
@@ -161,6 +162,7 @@ export function createInternalRunCreationService<
     runId: string,
     projectId: string,
     admission: ProjectRunAdmissionHandle,
+    executionAttempt: number,
   ) => { bindingGeneration: number; projectRevision: number } | null;
   detachProjectRun(runId: string, admission: ProjectRunAdmissionHandle): void;
   coordinateProjectMutation<T>(
@@ -277,7 +279,15 @@ export function createInternalRunCreationService<
           throw new Error('Pre-run project admission does not match the run project epoch.');
         }
         const state = admissionState(projectAdmission);
-        const epoch = deps.attachProjectRun(run.id, input.meta.projectId, state.handle);
+        const executionAttempt = creation.kind === 'reused'
+          ? (run.manualResumeAttemptCount ?? 0) + 1
+          : (run.manualResumeAttemptCount ?? 0);
+        const epoch = deps.attachProjectRun(
+          run.id,
+          input.meta.projectId,
+          state.handle,
+          executionAttempt,
+        );
         state.attachedRunId = run.id;
         admitted = true;
         if (epoch) {

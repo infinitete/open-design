@@ -38,7 +38,15 @@ import {
 } from '../../src/design-systems/index.js';
 import { createDesignSystemServerServices } from '../../src/design-systems/server-services.js';
 import { GitDomainError } from '../../src/services/project-git/errors.js';
-import type { ProjectMutationInput } from '../../src/services/project-git/mutation-adapter.js';
+import { createProjectGate, type MutationPermit } from '../../src/services/project-git/gate.js';
+import {
+  createProjectGitMutationAdapter,
+  type ProjectMutationInput,
+} from '../../src/services/project-git/mutation-adapter.js';
+import {
+  createProjectGitRuntimeAdapter,
+  type ProjectRunPermit,
+} from '../../src/services/project-git/runtime-adapter.js';
 import {
   closeDatabase,
   getProject,
@@ -262,7 +270,7 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
     expect(meta.artifactMode).toBe('agent-managed');
   });
 
-  it('coordinates unmanaged workspace creation with the caller revision transport', async () => {
+  it('retains the exact same-project run epoch and permit for nested workspace creation', async () => {
     const created = await createUserDesignSystem(userDesignSystemsDir, {
       title: 'Coordinated Brand',
       body: '# Coordinated Brand\n\nBrand body copy.',
@@ -272,16 +280,74 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
       calls.push(input);
       return work();
     };
+    const permit = {} as MutationPermit;
 
     const result = await services.ensureUserDesignSystemWorkspaceProject(db, created.id, {
       projectMutation: {
         source: 'http-workspace',
         expectedProjectRevision: 7,
+        originProjectId: 'ds-coordinated-brand',
+        permit,
       },
     });
 
     expect(result?.project.id).toBe('ds-coordinated-brand');
-    expect(calls).toEqual([{ projectId: 'ds-coordinated-brand', source: 'http-workspace', expectedProjectRevision: 7 }]);
+    expect(calls).toEqual([{
+      projectId: 'ds-coordinated-brand', source: 'http-workspace',
+      expectedProjectRevision: 7, permit,
+    }]);
+  });
+
+  it('reuses the real active run permit without reacquisition until settlement', async () => {
+    const created = await createUserDesignSystem(userDesignSystemsDir, {
+      title: 'Runtime Brand',
+      body: '# Runtime Brand\n\nBrand body copy.',
+    });
+    const projectId = 'ds-runtime-brand';
+    const gate = createProjectGate();
+    const binding = {
+      projectRevision: 7,
+      contentRevision: 0,
+      generation: 2,
+      localHead: null,
+      observedRemoteHead: null,
+    };
+    const runtime = createProjectGitRuntimeAdapter({
+      recoveryReady: Promise.resolve(),
+      store: { getBinding: () => binding, recordRunTerminal: () => false },
+      gateFor: () => gate,
+      notify: () => {},
+      permits: new Map<string, ProjectRunPermit>(),
+    });
+    const mutation = createProjectGitMutationAdapter({
+      recoveryReady: Promise.resolve(),
+      store: {
+        getBinding: () => binding,
+        bumpContent: () => { binding.contentRevision += 1; return binding as never; },
+      },
+      gateFor: () => gate,
+      notify: () => {},
+    });
+    coordinateProjectMutation = mutation.withProjectMutation;
+    const admission = await runtime.admit(projectId, 7);
+    runtime.attach('run', projectId, admission, 0);
+    const context = runtime.mutationContext('run', projectId);
+    if (!context) throw new Error('expected exact active run mutation context');
+
+    await expect(services.ensureUserDesignSystemWorkspaceProject(db, created.id, {
+      projectMutation: {
+        source: 'run-prompt-design-system-sync',
+        originProjectId: projectId,
+        expectedProjectRevision: context.expectedProjectRevision,
+        permit: context.permit,
+      },
+    })).resolves.toMatchObject({ project: { id: projectId } });
+
+    expect(binding.contentRevision).toBe(1);
+    expect(gate.activeRuns()).toBe(1);
+    runtime.onSettled('run');
+    expect(runtime.mutationContext('run', projectId)).toBeNull();
+    expect(gate.activeRuns()).toBe(0);
   });
 
   it('fails a managed cross-project run sync before any project row or file write', async () => {

@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GitDomainError } from '../../src/services/project-git/errors.js';
+import { createProjectGitMutationAdapter } from '../../src/services/project-git/mutation-adapter.js';
+import { createProjectGate } from '../../src/services/project-git/gate.js';
 
 const mocks = vi.hoisted(() => ({
   applyDiffReviewDecisionToCwd: vi.fn(async () => ({ ok: true })),
@@ -55,19 +57,37 @@ describe('diff-review GenUI project mutation coordination', () => {
   });
   afterEach(() => { db.close(); vi.clearAllMocks(); });
 
-  function fixture(input: { authorize?: boolean; context?: { expectedProjectRevision: number; permit: object } | null; failStale?: boolean; failMissing?: boolean } = {}) {
+  function fixture(input: { authorize?: boolean; context?: { expectedProjectRevision: number; permit: object } | null; failStale?: boolean; realManaged?: boolean } = {}) {
     const routes = captureApp();
     const order: string[] = [];
     const permit = input.context?.permit ?? { brand: 'permit' };
     const mutationContext = vi.fn(() => input.context === undefined
       ? { expectedProjectRevision: 7, permit }
       : input.context);
-    const withProjectMutation = vi.fn(async (scope, work: () => Promise<unknown>) => {
+    const fakeProjectMutation = vi.fn(async (_scope, work: () => Promise<unknown>) => {
       order.push('mutation');
       if (input.failStale) throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Reload the project before editing.');
-      if (input.failMissing && !scope.permit) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'Managed run context unavailable.');
       return work();
     });
+    const bumpContent = vi.fn(() => 1);
+    const realAdapter = createProjectGitMutationAdapter({
+      recoveryReady: Promise.resolve(),
+      store: {
+        getBinding: () => ({
+          projectRevision: 7,
+          contentRevision: 0,
+          generation: 1,
+          localHead: null,
+          observedRemoteHead: null,
+        }),
+        bumpContent,
+      },
+      gateFor: () => createProjectGate(),
+      notify: vi.fn(),
+    });
+    const withProjectMutation = input.realManaged
+      ? vi.fn(realAdapter.withProjectMutation)
+      : fakeProjectMutation;
     const authorizeProjectRequest = vi.fn(async () => { order.push('auth'); return input.authorize ?? true; });
     const sendApiError = vi.fn((res: Response, status: number, code: string, message: string) => res.status(status).json({ error: { code, message } }));
     registerGenuiRoutes(routes.app, {
@@ -86,7 +106,7 @@ describe('diff-review GenUI project mutation coordination', () => {
       body: { value: { decision: 'accept' }, expectedProjectRevision: 7 },
       get: vi.fn(() => undefined),
     } as unknown as Request;
-    return { routes, req, order, permit, mutationContext, withProjectMutation, authorizeProjectRequest, sendApiError };
+    return { routes, req, order, permit, mutationContext, withProjectMutation, authorizeProjectRequest, sendApiError, bumpContent };
   }
 
   const status = () => (db.prepare("SELECT status FROM genui_surfaces WHERE id = 'row'").get() as { status: string }).status;
@@ -122,12 +142,16 @@ describe('diff-review GenUI project mutation coordination', () => {
   });
 
   it('fails closed without an exact run/project context and performs zero effects', async () => {
-    const f = fixture({ context: null, failMissing: true }); const res = response();
+    const f = fixture({ context: null, realManaged: true }); const res = response();
     await f.routes.handler('POST', '/api/runs/:runId/genui/:surfaceId/respond')(f.req, res);
-    expect(f.withProjectMutation).toHaveBeenCalledWith(expect.not.objectContaining({ permit: expect.anything() }), expect.any(Function));
+    expect(f.withProjectMutation).toHaveBeenCalledWith(
+      { projectId: 'project', source: 'genui.diff-review.respond' },
+      expect.any(Function),
+    );
     expect(status()).toBe('pending');
     expect(mocks.applyDiffReviewDecisionToCwd).not.toHaveBeenCalled();
-    expect(f.sendApiError).toHaveBeenCalledWith(res, 409, 'RECOVERY_REQUIRED', 'Managed run context unavailable.');
+    expect(f.bumpContent).not.toHaveBeenCalled();
+    expect(f.sendApiError).toHaveBeenCalledWith(res, 409, 'PROJECT_STATE_CHANGED', 'Reload the project before editing.');
   });
 
   it('rejects a transported revision that differs from the trusted run epoch before effects', async () => {
