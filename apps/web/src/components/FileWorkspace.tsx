@@ -26,6 +26,7 @@ import {
 import { deriveUploadCohort } from '../analytics/upload-tracking';
 import { useI18n, useT, type Locale } from '../i18n';
 import { useStableHandler } from '../lib/use-stable-handler';
+import { captureProjectMutation, type ProjectMutationContext } from '../state/project-git';
 import { useDeckPreviewScale } from '../lib/use-deck-preview-scale';
 import { isMacPlatform } from '../utils/platform';
 import {
@@ -1171,6 +1172,7 @@ interface SaveSketchOptions {
   activate?: boolean;
   refreshFiles?: boolean;
   showSaving?: boolean;
+  mutationContext?: ProjectMutationContext;
 }
 
 interface PendingSketchSave {
@@ -1191,6 +1193,7 @@ function mergeSketchSaveOptions(a: SaveSketchOptions, b: SaveSketchOptions): Sav
     activate: a.activate !== false || b.activate !== false,
     refreshFiles: a.refreshFiles !== false || b.refreshFiles !== false,
     showSaving: a.showSaving !== false || b.showSaving !== false,
+    mutationContext: b.mutationContext ?? a.mutationContext,
   };
 }
 
@@ -2348,6 +2351,7 @@ export function FileWorkspace({
 
   async function uploadFiles(picked: File[]) {
     if (picked.length === 0) return;
+    const mutationContext = captureProjectMutation(projectId);
 
     setUploadError(null);
     // Cohort math is shared across all three upload surfaces; see
@@ -2355,7 +2359,7 @@ export function FileWorkspace({
     const cohort = deriveUploadCohort(picked);
     let result: UploadProjectFilesResult;
     try {
-      result = await uploadProjectFiles(projectId, picked, uploadDir);
+      result = await uploadProjectFiles(projectId, picked, uploadDir, mutationContext);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setUploadError(`Upload failed for ${picked.length} file(s) (${detail}).`);
@@ -2540,7 +2544,8 @@ export function FileWorkspace({
   async function handleDelete(name: string) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
     if (!confirm(t('workspace.deleteFileConfirm', { name }))) return;
-    const ok = await deleteProjectFile(projectId, name);
+    const mutationContext = captureProjectMutation(projectId);
+    const ok = await deleteProjectFile(projectId, name, mutationContext);
     if (ok) {
       await onRefreshFiles();
       const nextTabs = persistedTabs.filter((n) => n !== name);
@@ -2573,10 +2578,11 @@ export function FileWorkspace({
     if (viewerOnly) return; // read-only viewer of a team-shared project
     if (names.length === 0) return;
     if (!confirm(t('workspace.deleteSelectedFilesConfirm', { n: names.length }))) return;
+    const mutationContext = captureProjectMutation(projectId);
     const deleted: string[] = [];
     const failed: string[] = [];
     for (const name of names) {
-      const ok = await deleteProjectFile(projectId, name);
+      const ok = await deleteProjectFile(projectId, name, mutationContext);
       if (ok) deleted.push(name);
       else failed.push(name);
     }
@@ -2619,7 +2625,8 @@ export function FileWorkspace({
       );
     }
 
-    const result = await renameProjectFile(projectId, oldName, nextName);
+    const mutationContext = captureProjectMutation(projectId);
+    const result = await renameProjectFile(projectId, oldName, nextName, mutationContext);
     const renamed = result.file;
     await onRefreshFiles();
     await refreshProjectFolders();
@@ -2690,12 +2697,13 @@ export function FileWorkspace({
   }
 
   async function createMarkdownDocument() {
+    const mutationContext = captureProjectMutation(projectId);
     const target = nextMarkdownDocumentPath(files, uploadDir);
     const file = await writeProjectTextFile(
       projectId,
       target,
       initialMarkdownDocument(target, projectKind, t),
-      undefined,
+      { mutationContext },
     );
     if (!file) return;
     await onRefreshFiles();
@@ -2707,6 +2715,7 @@ export function FileWorkspace({
     if (pageCreating) return;
     const preset = projectPagePresetById(presetId, projectPagePresets) ?? projectPagePresets[0] ?? PROJECT_PAGE_PRESETS[0]!;
     const target = nextHtmlPagePath(visibleFiles, pagePresetFileBaseName(preset, t, locale));
+    const mutationContext = captureProjectMutation(projectId);
     setPageCreating(true);
     try {
       const content = await contentForPagePreset(
@@ -2718,6 +2727,7 @@ export function FileWorkspace({
       const file = await writeProjectTextFile(projectId, target, content, {
         versionSource: 'manual',
         versionPrompt: pagePresetVersionPrompt(preset, t, locale),
+        mutationContext,
       });
       if (!file) {
         // Never let a failed create read as a silent no-op click.
@@ -2823,6 +2833,7 @@ export function FileWorkspace({
     options: SaveSketchOptions = {},
     revisionOverride?: number,
   ): Promise<boolean | undefined> {
+    options = { ...options, mutationContext: options.mutationContext ?? captureProjectMutation(projectId) };
     const entry = sketches[name] ?? (sceneOverride ? defaultSketchState(name, sceneOverride) : null);
     if (!entry) return;
     const scene = sceneOverride ?? entry.scene;
@@ -2874,7 +2885,9 @@ export function FileWorkspace({
     const startedAt = Date.now();
     let result: boolean | undefined;
     try {
-      const file = await writeProjectTextFile(projectId, name, text, undefined);
+      const file = await writeProjectTextFile(projectId, name, text, {
+        mutationContext: options.mutationContext,
+      });
       const elapsed = Date.now() - startedAt;
       // Ensures saving UI shows so the button does not flicker
       if (showSaving && elapsed < 500) await new Promise((resolve) => setTimeout(resolve, 500 - elapsed));
@@ -2958,6 +2971,7 @@ export function FileWorkspace({
       activate: false,
       refreshFiles: false,
       showSaving: false,
+      mutationContext: captureProjectMutation(projectId),
     };
     if (sketchSaveInFlightRef.current.has(name)) {
       const pending = pendingSketchSavesRef.current.get(name);
@@ -3003,9 +3017,10 @@ export function FileWorkspace({
     base64: string,
     imageFileName: string,
   ): Promise<{ fileName: string } | false> {
+    const mutationContext = captureProjectMutation(projectId);
     const targetDir = parentDirForProjectFile(sketchName);
     const targetName = targetDir ? `${targetDir}/${imageFileName}` : imageFileName;
-    const file = await writeProjectBase64File(projectId, targetName, base64);
+    const file = await writeProjectBase64File(projectId, targetName, base64, mutationContext);
     if (!file) {
       setUploadError(t('common.exportImageFailed'));
       return false;
@@ -4805,12 +4820,14 @@ function DesignSystemProjectPanel({
     reloadKey: kitReloadKey,
   });
   async function persistDesignMd(nextBody: string) {
+    const mutationContext = captureProjectMutation(projectId);
     const updated = await updateDesignSystemDraft(
       system.id,
       { body: nextBody },
+      mutationContext,
     );
     if (!updated) throw new Error(t('ds.actionFailed'));
-    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, undefined);
+    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, { mutationContext });
     if (!file) throw new Error(t('ds.actionFailed'));
     setDesignMdBody(nextBody);
     await refreshKitDependencies();

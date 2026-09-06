@@ -7,6 +7,11 @@ import {
   parseProjectGitEnableRequest,
   ProjectGitBindRequestSchema,
   ProjectGitPreviewSchema,
+  ProjectGitStateSchema,
+  ProjectGitOperationSchema,
+  ProjectGitHistoryPageSchema,
+  ProjectGitFileResponseSchema,
+  ProjectGitConflictsResponseSchema,
   ProjectGitOperationResultSchema,
   type ProjectGitAction,
   type ProjectMutationRevision,
@@ -17,6 +22,63 @@ import {
 } from '../src/api/project-git-portable.js';
 
 const digest = 'a'.repeat(64);
+
+describe('project Git browser response schemas', () => {
+  const basis = {
+    projectRevision: 2,
+    contentRevision: 5,
+    localHead: 'a'.repeat(40),
+    remoteHead: null,
+    bindingGeneration: 1,
+  };
+  const state = {
+    enabled: true,
+    phase: 'pending_push',
+    localHead: 'a'.repeat(40),
+    observedRemoteHead: null,
+    confirmedRemoteHead: null,
+    projectRevision: 2,
+    contentRevision: 5,
+    bindingGeneration: 1,
+    dirty: false,
+    pendingPush: true,
+    autoSync: true,
+    operationId: null,
+    error: null,
+    binding: { remoteConfigured: false, remoteLabel: null, branch: null },
+    dependencies: [],
+  } as const;
+
+  it('accepts the legal pending-push state and rejects impossible or extra fields', () => {
+    expect(ProjectGitStateSchema.parse(state)).toEqual(state);
+    expect(ProjectGitStateSchema.safeParse({ ...state, localHead: null }).success).toBe(false);
+    expect(ProjectGitStateSchema.safeParse({ ...state, secret: 'nope' }).success).toBe(false);
+  });
+
+  it('validates operation, history, file, and conflict responses at the browser boundary', () => {
+    const operation = {
+      id: 'operation-1',
+      kind: 'sync',
+      status: 'waiting',
+      phase: 'auth_required',
+      projectId: 'project-1',
+      basis,
+      result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Sign in', retryable: true },
+    } as const;
+    expect(ProjectGitOperationSchema.parse(operation)).toEqual(operation);
+    expect(ProjectGitHistoryPageSchema.parse({ commits: [], nextCursor: null })).toEqual({ commits: [], nextCursor: null });
+    expect(ProjectGitFileResponseSchema.parse({ encoding: 'base64', content: 'SGk=', mediaType: 'text/plain' }))
+      .toEqual({ encoding: 'base64', content: 'SGk=', mediaType: 'text/plain' });
+    expect(ProjectGitConflictsResponseSchema.parse({ conflicts: [] })).toEqual({ conflicts: [] });
+    expect(ProjectGitOperationSchema.safeParse({ ...operation, status: 'done' }).success).toBe(false);
+  });
+
+  it('declares the daemon-supported optional history path', () => {
+    const request = { cursor: 'next', path: 'src/index.ts' } satisfies import('../src/api/project-git.js').ProjectGitHistoryRequest;
+    expect(request).toEqual({ cursor: 'next', path: 'src/index.ts' });
+  });
+});
 
 it('validates existing-copy operation results without exposing clone identity', () => {
   expect(ProjectGitOperationResultSchema.parse({ projectId: 'new', existingProjectIds: ['first', 'second'] }))

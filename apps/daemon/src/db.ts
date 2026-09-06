@@ -1230,6 +1230,12 @@ export function listProjectsAwaitingInput(db: SqliteDb) {
          JOIN conversations c ON c.id = m.conversation_id
         WHERE m.role = 'assistant'
           AND ${AWAITING_INPUT_MARKER_PREFILTER}
+          AND NOT EXISTS (
+            SELECT 1 FROM project_git_portable_records restored
+             WHERE restored.project_id = c.project_id
+               AND restored.kind = 'message'
+               AND restored.local_id = m.id
+          )
         ORDER BY m.created_at DESC, m.position DESC`,
     )
     .iterate() as Iterable<AwaitingInputCandidate>;
@@ -1245,8 +1251,15 @@ export function listConversationsAwaitingInput(db: SqliteDb) {
               m.position AS position,
               m.content AS content
          FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
         WHERE m.role = 'assistant'
           AND ${AWAITING_INPUT_MARKER_PREFILTER}
+          AND NOT EXISTS (
+            SELECT 1 FROM project_git_portable_records restored
+             WHERE restored.project_id = c.project_id
+               AND restored.kind = 'message'
+               AND restored.local_id = m.id
+          )
         ORDER BY m.created_at DESC, m.position DESC`,
     )
     .iterate() as Iterable<AwaitingInputCandidate>;

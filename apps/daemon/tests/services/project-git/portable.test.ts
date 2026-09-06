@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { JsonValue, PortableSnapshot } from '@open-design/contracts';
 import { canonicalJson, exportProjectPreferences, exportPortableProject, portableImportMarker, portableIdSegment, parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
-import { importPortableRecords, readPortableRecords } from '../../../src/services/project-git/portable-db.js';
+import { importPortableRecords, readPortableRecords, readRestoredMessagePresentations } from '../../../src/services/project-git/portable-db.js';
 import { appendMessageAgentEvent, closeDatabase, getProject, listProjects, insertConversation, insertProject, listMessages,
   openDatabase, upsertMessage } from '../../../src/db.js';
 import { createProjectGitStore, type ProjectGitRecoveryData, type ProjectGitStore } from '../../../src/storage/project-git.js';
@@ -261,6 +261,51 @@ describe('portable database roundtrip', () => {
       .toHaveProperty('feedback', { rating: 'positive', createdAt: 4 });
     target.db.prepare('UPDATE messages SET feedback_json = NULL').run();
     expect((await exportPortableProject(input)).snapshot.messages[0]!.context).not.toHaveProperty('feedback');
+  });
+
+  it('projects one strict inert restored presentation batch with resolved resource URLs', async () => {
+    const source = await database(); const target = await database();
+    insertProject(source.db, { id: 'p', name: 'Restored', createdAt: 1, updatedAt: 1 });
+    insertConversation(source.db, { id: 'c', projectId: 'p', title: 'History', createdAt: 1, updatedAt: 1 });
+    await writeFile(join(source.root, 'reference.png'), 'reference');
+    await writeFile(join(source.root, 'comment.png'), 'comment');
+    upsertMessage(source.db, 'c', { id: 'u', role: 'user', content: 'Use this', createdAt: 2,
+      attachments: [{ path: 'reference.png', name: 'Reference', kind: 'image', order: 0 }],
+      commentAttachments: [{ id: 'local-comment', order: 0, filePath: 'index.html', elementId: 'hero', selector: '#hero',
+        label: 'Hero', comment: 'Increase contrast', currentText: 'Welcome', htmlHint: '<h1>Welcome</h1>',
+        selectionKind: 'element', imageAttachments: [{ path: 'comment.png', name: 'Comment image' }] }] });
+    const form = '<question-form id="restored" title="Choose">{"questions":[{"id":"tone","label":"Tone","type":"text","required":true}]}</question-form>';
+    const feedback = { rating: 'negative' as const, reasonCodes: ['weak_visual' as const], createdAt: 3, updatedAt: 4 };
+    upsertMessage(source.db, 'c', { id: 'a', role: 'assistant', content: form, createdAt: 3,
+      runId: 'private-run', runStatus: 'succeeded', feedback,
+      events: [{ kind: 'text', text: 'Historical answer' }] });
+    const exported = await exportPortableProject({ ...source, projectId: 'p', cloneId: 'clone-one', repositoryProjectId: 'repository' });
+    await materialize(target.root, exported.entries);
+    const operationId = recordsOperation(target.store, target.root, 'restored-project', portableImportMarker(exported.snapshot));
+    importPortableRecords({ ...target, projectId: 'restored-project', cloneId: 'clone-two', snapshot: exported.snapshot, operationId });
+
+    const restored = readRestoredMessagePresentations(target.db, 'restored-project');
+    const localUserId = String((target.db.prepare("SELECT id FROM messages WHERE role = 'user'").get() as { id: string }).id);
+    const localAssistantId = String((target.db.prepare("SELECT id FROM messages WHERE role = 'assistant'").get() as { id: string }).id);
+    const portableUserId = exported.snapshot.messages.find((message) => message.role === 'user')!.id;
+    const portableAssistantId = exported.snapshot.messages.find((message) => message.role === 'assistant')!.id;
+    expect(restored.get(localUserId)).toMatchObject({
+      portableId: portableUserId,
+      attachments: [{ name: 'Reference', kind: 'image', url: expect.stringMatching(/^\/api\/projects\/restored-project\/raw\/\.open-design\/resources\//) }],
+      commentSelections: [{ label: 'Hero', comment: 'Increase contrast', currentText: 'Welcome',
+        imageAttachments: [{ name: 'Comment image', url: expect.stringMatching(/^\/api\/projects\/restored-project\/raw\/\.open-design\/resources\//) }] }],
+    });
+    expect(restored.get(localUserId)?.commentSelections[0]).not.toHaveProperty('selector');
+    expect(restored.get(localUserId)?.commentSelections[0]).not.toHaveProperty('elementId');
+    expect(restored.get(localAssistantId)).toMatchObject({
+      portableId: portableAssistantId, turnId: expect.any(String), terminal: 'succeeded', feedback,
+      displayEvents: expect.arrayContaining([
+        { kind: 'history-form', title: 'Historical questions', summary: form, status: 'historical' },
+        { kind: 'text', text: 'Historical answer' },
+      ]),
+    });
+    expect(JSON.stringify([...restored.values()])).not.toContain('private-run');
+    expect(JSON.stringify([...restored.values()])).not.toContain('/api/projects/restored-project/raw//api/projects');
   });
 
   it('encodes arbitrary record IDs safely and rejects mismatched paths, corrupt UTF-8 and missing bytes', async () => {

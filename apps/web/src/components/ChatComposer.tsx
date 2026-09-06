@@ -44,6 +44,7 @@ import {
   patchProject,
 } from "../state/projects";
 import { navigate } from '../router';
+import { captureProjectMutation } from '../state/project-git';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
@@ -1406,6 +1407,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function addLinkedDirs(dirs: string[]): Promise<Map<string, TrackedWorkspaceLinkedDir | null> | false> {
       if (!projectId) return false;
+      const mutationContext = captureProjectMutation(projectId);
       const trimmedDirs = Array.from(new Set(dirs.map((dir) => dir.trim()).filter(Boolean)));
       if (trimmedDirs.length === 0) return new Map();
       const base = projectMetadata ?? { kind: 'prototype' as const };
@@ -1427,7 +1429,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       }
       if (changed) {
         const metadata: ProjectMetadata = { ...base, linkedDirs: nextLinkedDirs };
-        const result = await patchProject(projectId, { metadata });
+        const result = await patchProject(projectId, { metadata }, mutationContext);
         if (!result?.metadata) {
           onShowToast?.(t('homeWorkingDir.applyFailed'));
           return false;
@@ -1746,6 +1748,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       tracked: TrackedWorkspaceLinkedDir,
     ): Promise<boolean> {
       if (!projectId) return true;
+      const mutationContext = captureProjectMutation(projectId);
       if (workspaceContextDirStillReferenced(id, tracked.dir)) {
         setWorkspaceLinkedDirAdds((current) => {
           const { [id]: _removed, ...rest } = current;
@@ -1757,7 +1760,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       const currentLinkedDirs = base.linkedDirs ?? [...tracked.previousLinkedDirs, tracked.dir];
       const nextLinkedDirs = currentLinkedDirs.filter((dir) => dir !== tracked.dir);
       const metadata: ProjectMetadata = { ...base, linkedDirs: nextLinkedDirs };
-      const result = await patchProject(projectId, { metadata });
+      const result = await patchProject(projectId, { metadata }, mutationContext);
       if (!result?.metadata) {
         onShowToast?.(t('homeWorkingDir.applyFailed'));
         return false;
@@ -1804,8 +1807,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function uploadFiles(files: File[]) {
       if (files.length === 0) return;
+      const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
       const id = await ensureProject();
       if (!id) return;
+      const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
       setUploading(true);
       setUploadError(null);
       // Cohort math is identical to the Design Files Upload button; see
@@ -1815,7 +1820,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       const cohort = deriveUploadCohort(files);
       const orderStart = reserveAttachmentOrders(files.length);
       try {
-        const result = await uploadProjectFiles(id, files, undefined);
+        const result = await uploadProjectFiles(id, files, undefined, mutationContext);
         if (result.uploaded.length > 0) {
           const orderedUploaded = assignChatAttachmentOrders(result.uploaded, orderStart);
           appendOrderedStagedAttachments(orderedUploaded);
@@ -1957,6 +1962,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           let visualAttachmentInput: Parameters<typeof buildVisualAnnotationAttachment>[0] | null = null;
           let visualAttachment: ChatCommentAttachment | null = null;
           try {
+            const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
             // Upload the annotation screenshot together with any images the
             // user attached in the markup composer. The screenshot (when
             // present) is first so it keeps backing the structured visual
@@ -1972,7 +1978,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 return;
               }
               setUploading(true);
-              const result = await uploadProjectFiles(id, annotationFiles, undefined);
+              const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
+              const result = await uploadProjectFiles(id, annotationFiles, undefined, mutationContext);
               if (result.uploaded.length > 0) {
                 uploaded = assignChatAttachmentOrders(result.uploaded, orderStart);
               }
@@ -2243,14 +2250,18 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // while preserving staged workspace-context dirs. The folder is read-only
     // awareness for the agent (→ `--add-dir`), not a Design Files import, and
     // `baseDir` is never touched.
-    async function setWorkingDirFolder(dir: string) {
+    async function setWorkingDirFolder(
+      dir: string,
+      suppliedMutationContext = projectId ? captureProjectMutation(projectId) : undefined,
+    ) {
       if (!projectId) return;
+      const mutationContext = suppliedMutationContext;
       const base = projectMetadata ?? { kind: 'prototype' as const };
       const metadata: ProjectMetadata = {
         ...base,
         linkedDirs: linkedDirsWithWorkspaceContext(dir),
       };
-      const result = await patchProject(projectId, { metadata });
+      const result = await patchProject(projectId, { metadata }, mutationContext);
       // The daemon rejects stale/inaccessible/system dirs with
       // INVALID_LINKED_DIR (patchProject → null). Only commit the selection
       // and promote it in recents when the project accepted it; otherwise
@@ -2276,17 +2287,19 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       void rememberRecentDir(dir);
     }
     async function handlePickWorkingDir() {
+      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
       const selected = await openFolderDialog();
-      if (selected) await setWorkingDirFolder(selected);
+      if (selected) await setWorkingDirFolder(selected, mutationContext);
     }
     async function clearWorkingDir() {
       if (!projectId) return;
+      const mutationContext = captureProjectMutation(projectId);
       const base = projectMetadata ?? { kind: 'prototype' as const };
       const metadata: ProjectMetadata = {
         ...base,
         linkedDirs: linkedDirsWithWorkspaceContext(null),
       };
-      const result = await patchProject(projectId, { metadata });
+      const result = await patchProject(projectId, { metadata }, mutationContext);
       if (result?.metadata) {
         setPromotedWorkspaceContextDir(null);
         onProjectMetadataChange?.(result);
@@ -2533,7 +2546,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function applyProjectSkill(skill: SkillSummary): Promise<boolean> {
       if (!projectId) return false;
-      const result = await patchProject(projectId, { skillId: skill.id });
+      const mutationContext = captureProjectMutation(projectId);
+      const result = await patchProject(projectId, { skillId: skill.id }, mutationContext);
       if (!result) return false;
       onProjectSkillChange?.(result.skillId ?? skill.id);
       return true;

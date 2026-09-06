@@ -39,6 +39,7 @@ import {
   type TrackingDeployProvider,
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
+import { captureProjectMutation, type ProjectMutationContext } from '../state/project-git';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
 import {
@@ -3890,6 +3891,7 @@ function FileVersionManagerModal({
     setError(null);
     let closingAfterRestore = false;
     const restoreStarted = performance.now();
+    const mutationContext = captureProjectMutation(projectId);
     // `versions` is sorted newest-first, so the index is "how many versions
     // back from the newest" the restore target sits.
     const fireRestoreResult = (result: 'success' | 'failed', errorCode?: string) => {
@@ -3913,6 +3915,7 @@ function FileVersionManagerModal({
         projectId,
         file.name,
         selectedVersion,
+        mutationContext,
       );
       if (!result) {
         fireRestoreResult('failed', 'restore_request_failed');
@@ -13094,6 +13097,7 @@ function HtmlViewer({
 
   async function applyManualEdit(patch: ManualEditPatch, label: string): Promise<boolean> {
     const startedAt = performance.now();
+    const mutationContext = captureProjectMutation(projectId);
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13143,6 +13147,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: label,
         ...(parentVersionId ? { parentVersionId } : {}),
+        mutationContext,
       });
       if (!saved.ok) {
         const status = 'status' in saved ? saved.status : undefined;
@@ -13261,6 +13266,7 @@ function HtmlViewer({
     const [latest, ...rest] = manualEditHistory;
     if (!latest) return;
     const startedAt = performance.now();
+    const mutationContext = captureProjectMutation(projectId);
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13290,6 +13296,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Undo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
+        mutationContext,
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the undo result', saved));
@@ -13325,6 +13332,7 @@ function HtmlViewer({
     const [latest, ...rest] = manualEditUndone;
     if (!latest) return;
     const startedAt = performance.now();
+    const mutationContext = captureProjectMutation(projectId);
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13354,6 +13362,7 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Redo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
+        mutationContext,
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the redo result', saved));
@@ -13498,6 +13507,7 @@ function HtmlViewer({
     nextNotes: readonly string[],
     options?: { editSurface?: 'preview' | 'presenter' },
   ) {
+    const mutationContext = captureProjectMutation(projectId);
     const editSurface = options?.editSurface ?? 'preview';
     const currentSource = sourceRef.current ?? source;
     if (!currentSource) return false;
@@ -13511,6 +13521,7 @@ function HtmlViewer({
     try {
       const saved = await writeProjectTextFile(projectId, file.name, nextSource, {
         artifactManifest: file.artifactManifest,
+        mutationContext,
       });
       if (!saved) throw new Error('speaker_notes_save_failed');
       setSource(nextSource);
@@ -13658,6 +13669,7 @@ function HtmlViewer({
   // writeProjectFile (multipart-or-JSON; we use JSON).
   async function saveInspectToSource() {
     if (!source) return;
+    const mutationContext = captureProjectMutation(projectId);
     setSavingInspect(true);
     setInspectError(null);
     try {
@@ -13666,6 +13678,7 @@ function HtmlViewer({
       const saved = await writeProjectTextFileDetailed(projectId, file.name, next, {
         versionSource: 'manual',
         versionLabel: t('fileViewer.edit'),
+        mutationContext,
       });
       if (!saved.ok) {
         throw new Error(saved.message || `Save failed (${saved.status ?? ''})`);
@@ -15748,7 +15761,8 @@ function HtmlViewer({
         : { top: 12, right: 12, width: 320 }}
       onFloatingPositionChange={selectedManualEditTarget ? setManualEditPanelPosition : undefined}
       onPickImage={async (pickedFile) => {
-        const result = await uploadProjectFiles(projectId, [pickedFile], undefined);
+        const mutationContext = captureProjectMutation(projectId);
+        const result = await uploadProjectFiles(projectId, [pickedFile], undefined, mutationContext);
         const uploaded = result.uploaded[0];
         if (!uploaded?.path) {
           setManualEditError(result.error ?? t('manualEdit.uploadImageFailed'));
@@ -19014,6 +19028,7 @@ type MarkdownScrollPane = 'editor' | 'preview';
 type MarkdownSaveOptions = {
   refreshFiles?: boolean;
   showSaving?: boolean;
+  mutationContext?: ProjectMutationContext;
 };
 
 function markdownScrollRange(element: HTMLElement): number {
@@ -19034,6 +19049,7 @@ function mergeMarkdownSaveOptions(a: MarkdownSaveOptions, b: MarkdownSaveOptions
   return {
     refreshFiles: a.refreshFiles !== false || b.refreshFiles !== false,
     showSaving: a.showSaving !== false || b.showSaving !== false,
+    mutationContext: b.mutationContext ?? a.mutationContext,
   };
 }
 
@@ -19167,6 +19183,10 @@ function MarkdownViewer({
   const saveMarkdownText = useCallback(
     (value: string, options: MarkdownSaveOptions = {}) => {
       if (viewerOnly) return;
+      options = {
+        ...options,
+        mutationContext: options.mutationContext ?? captureProjectMutation(projectId),
+      };
       const run = async (nextValue: string, saveOptions: MarkdownSaveOptions): Promise<void> => {
         if (lastSavedTextRef.current === nextValue) {
           const showSaving = saveOptions.showSaving !== false;
@@ -19186,7 +19206,9 @@ function MarkdownViewer({
         const showSaving = saveOptions.showSaving !== false;
         if (showSaving) setSaveState('saving');
         try {
-          const saved = await writeProjectTextFile(projectId, file.name, nextValue, undefined);
+          const saved = await writeProjectTextFile(projectId, file.name, nextValue, {
+            mutationContext: saveOptions.mutationContext,
+          });
           if (!saved) throw new Error('write failed');
           lastSavedTextRef.current = nextValue;
           bumpSavedRevision((n) => n + 1);
@@ -19247,9 +19269,14 @@ function MarkdownViewer({
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
+    const mutationContext = captureProjectMutation(projectId);
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
-      saveMarkdownText(textRef.current, { refreshFiles: false, showSaving: false });
+      saveMarkdownText(textRef.current, {
+        refreshFiles: false,
+        showSaving: false,
+        mutationContext,
+      });
     }, 700);
     return () => {
       if (saveTimerRef.current) {
@@ -19257,7 +19284,7 @@ function MarkdownViewer({
         saveTimerRef.current = null;
       }
     };
-  }, [saveMarkdownText, text, viewerOnly]);
+  }, [projectId, saveMarkdownText, text, viewerOnly]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -19304,8 +19331,9 @@ function MarkdownViewer({
       if (viewerOnly) return false;
       const images = files.filter((item) => isMarkdownImageFile(item));
       if (images.length === 0) return false;
+      const mutationContext = captureProjectMutation(projectId);
       const targetDir = markdownDirectory(file.name);
-      const result = await uploadProjectFiles(projectId, images, targetDir);
+      const result = await uploadProjectFiles(projectId, images, targetDir, mutationContext);
       if (result.uploaded.length > 0) {
         await onFileSaved?.();
         const snippet = result.uploaded

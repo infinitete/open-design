@@ -623,6 +623,7 @@ describe('AssistantMessage question forms', () => {
       undefined,
       undefined,
       'discovery',
+      undefined,
     );
     expect(screen.queryByText('Quick brief — 30 seconds')).toBeNull();
     expect(screen.queryByText('What are we making?')).toBeNull();
@@ -808,6 +809,7 @@ describe('AssistantMessage question forms', () => {
         },
         undefined,
         'references',
+        undefined,
       );
     });
   });
@@ -871,6 +873,7 @@ describe('AssistantMessage question forms', () => {
       expect(deleteProjectFileMock).toHaveBeenCalledWith(
         'proj-1',
         'uploads/mood.png',
+        undefined,
       );
     });
     expect(send.disabled).toBe(false);
@@ -962,10 +965,12 @@ describe('AssistantMessage question forms', () => {
         'proj-1',
         [mood, brief],
         undefined,
+        undefined,
       );
       expect(deleteProjectFileMock).toHaveBeenCalledWith(
         'proj-1',
         'uploads/mood.png',
+        undefined,
       );
     });
     expect(onSubmitQuestionForm).not.toHaveBeenCalled();
@@ -983,6 +988,7 @@ describe('AssistantMessage question forms', () => {
         expect.any(Object),
         undefined,
         'references',
+        undefined,
       );
     });
     expect(deleteProjectFileMock).toHaveBeenCalledTimes(1);

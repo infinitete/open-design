@@ -2,16 +2,22 @@ import type Database from 'better-sqlite3';
 import {
   parsePortableConversation, parsePortableManifest, parsePortableMessage, parsePortableProject,
   parsePortableSnapshot, type PortableSnapshot, type ProjectMetadata,
+  type ChatMessageFeedback, type PortableDisplayEvent, type RestoredMessagePresentation, type RestoredPresentationEvent,
 } from '@open-design/contracts';
 import { getProject } from '../../db.js';
 import type { ProjectGitStore } from '../../storage/project-git.js';
 import { GitDomainError } from './errors.js';
 import { portableImportMarker } from './portable.js';
 
-/** One batched adjunct read for history surfaces; live application rows remain authoritative. */
-export function readPortableRecords(db: Database.Database, projectId: string): PortableSnapshot | null {
-  const rows = db.prepare('SELECT kind, record_json, snapshot_digest FROM project_git_portable_records WHERE project_id = ? ORDER BY kind, ordinal')
-    .all(projectId) as { kind: string; record_json: string; snapshot_digest: string | null }[];
+interface PortableRecordRow {
+  kind: string;
+  local_id: string;
+  record_json: string;
+  snapshot_digest: string | null;
+  ordinal: number;
+}
+
+function parsePortableRecordRows(rows: PortableRecordRow[]): PortableSnapshot | null {
   if (!rows.length) return null;
   const projects = rows.filter(row => row.kind === 'project');
   const manifests = rows.filter(row => row.kind === 'manifest');
@@ -24,6 +30,127 @@ export function readPortableRecords(db: Database.Database, projectId: string): P
   });
   if (projects[0]!.snapshot_digest !== portableImportMarker(snapshot)) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Portable history records are incomplete or corrupt');
   return snapshot;
+}
+
+function portableRecordRows(db: Database.Database, projectId: string): PortableRecordRow[] {
+  return db.prepare(`SELECT kind, local_id, record_json, snapshot_digest, ordinal
+    FROM project_git_portable_records WHERE project_id = ? ORDER BY kind, ordinal`)
+    .all(projectId) as PortableRecordRow[];
+}
+
+/** One batched adjunct read for history surfaces; live application rows remain authoritative. */
+export function readPortableRecords(db: Database.Database, projectId: string): PortableSnapshot | null {
+  return parsePortableRecordRows(portableRecordRows(db, projectId));
+}
+
+function rawResourceUrl(projectId: string, path: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/raw/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function restoredDisplayEvent(
+  event: PortableDisplayEvent,
+  resolveResource: (digest: string) => { url: string; name: string },
+): RestoredPresentationEvent {
+  switch (event.kind) {
+    case 'text': return { kind: 'text', text: event.text };
+    case 'thinking': return { kind: 'thinking', text: event.text,
+      ...(event.unavailable === undefined ? {} : { unavailable: event.unavailable }) };
+    case 'conversation_title': return { kind: 'conversation_title', title: event.title };
+    case 'status': return { kind: 'status', text: event.text,
+      ...(event.status === undefined ? {} : { status: event.status }) };
+    case 'tool_summary': return { kind: 'tool_summary', label: event.label, status: event.status,
+      ...(event.unavailable === undefined ? {} : { unavailable: event.unavailable }) };
+    case 'result': return { kind: 'result',
+      ...(event.text === undefined ? {} : { text: event.text }),
+      ...(event.resourceRefs?.length ? { resources: event.resourceRefs.map(resolveResource) } : {}),
+      ...(event.unavailable === undefined ? {} : { unavailable: event.unavailable }) };
+    case 'history-form': return { kind: 'history-form', title: event.title, status: event.status,
+      ...(event.summary === undefined ? {} : { summary: event.summary }) };
+  }
+}
+
+function restoredFeedback(
+  feedback: NonNullable<PortableSnapshot['messages'][number]['context']['feedback']>,
+): ChatMessageFeedback {
+  return {
+    rating: feedback.rating,
+    createdAt: feedback.createdAt,
+    ...(feedback.reasonCodes === undefined ? {} : { reasonCodes: feedback.reasonCodes }),
+    ...(feedback.customReason === undefined ? {} : { customReason: feedback.customReason }),
+    ...(feedback.reasonsSubmittedAt === undefined ? {} : { reasonsSubmittedAt: feedback.reasonsSubmittedAt }),
+    ...(feedback.updatedAt === undefined ? {} : { updatedAt: feedback.updatedAt }),
+  };
+}
+
+/**
+ * Strict display-only projection indexed by the local message id. The query is
+ * deliberately shared with snapshot validation so one conversation read never
+ * reparses or re-exports the project once per message.
+ */
+export function readRestoredMessagePresentations(
+  db: Database.Database,
+  projectId: string,
+): Map<string, RestoredMessagePresentation> {
+  const rows = portableRecordRows(db, projectId);
+  const snapshot = parsePortableRecordRows(rows);
+  if (!snapshot) return new Map();
+  const messageRows = rows.filter((row) => row.kind === 'message');
+  const localMessageIdsByOrdinal = new Map(messageRows.map((row) => [row.ordinal, row.local_id]));
+  const resources = new Map(snapshot.manifest.resources.map((resource) => [resource.digest, resource]));
+  const resource = (digest: string, purpose?: string) => {
+    const descriptor = resources.get(digest);
+    if (!descriptor) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Portable message resource is unavailable');
+    const location = descriptor.locations.find((candidate) => candidate.purpose === purpose)
+      ?? descriptor.locations[0]!;
+    return {
+      url: rawResourceUrl(projectId, location.path),
+      name: location.sourceLabel ?? location.path.split('/').at(-1) ?? 'Historical resource',
+    };
+  };
+  const result = new Map<string, RestoredMessagePresentation>();
+  for (const [ordinal, message] of snapshot.messages.entries()) {
+    const localId = localMessageIdsByOrdinal.get(ordinal);
+    if (!localId) throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Portable message mapping is incomplete');
+    result.set(localId, {
+      portableId: message.id,
+      turnId: message.turnId,
+      terminal: message.terminal,
+      displayEvents: message.displayEvents.map((event) => restoredDisplayEvent(event, resource)),
+      contextItems: (message.context.contentItems ?? []).map((item) => ({
+        kind: item.kind,
+        label: item.label,
+        ...(item.unavailable === undefined ? {} : { unavailable: item.unavailable }),
+      })),
+      attachments: (message.context.attachments ?? []).map((attachment) => ({
+        url: resource(attachment.resourceRef, 'attachment').url,
+        name: attachment.name,
+        kind: attachment.kind,
+        ...(attachment.size === undefined ? {} : { size: attachment.size }),
+        ...(attachment.order === undefined ? {} : { order: attachment.order }),
+      })),
+      commentSelections: (message.context.commentAttachments ?? []).map((comment) => ({
+        order: comment.order,
+        label: comment.label,
+        comment: comment.comment,
+        currentText: comment.currentText,
+        ...(comment.selectionKind === undefined ? {} : { selectionKind: comment.selectionKind }),
+        ...(comment.memberCount === undefined ? {} : { memberCount: comment.memberCount }),
+        ...(comment.slideIndex === undefined ? {} : { slideIndex: comment.slideIndex }),
+        ...(comment.screenshotResourceRef === undefined
+          ? {}
+          : { screenshotUrl: resource(comment.screenshotResourceRef, 'attachment').url }),
+        ...(comment.imageAttachments === undefined
+          ? {}
+          : { imageAttachments: comment.imageAttachments.map((image) => ({
+              ...resource(image.resourceRef, 'attachment'),
+              name: image.name,
+            })) }),
+        ...(comment.unavailable === undefined ? {} : { unavailable: comment.unavailable }),
+      })),
+      ...(message.context.feedback === undefined ? {} : { feedback: restoredFeedback(message.context.feedback) }),
+    });
+  }
+  return result;
 }
 
 /** Caller has already materialized verified bytes and recorded records_applied intent under the gate. */

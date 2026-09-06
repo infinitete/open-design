@@ -16,7 +16,10 @@ export interface ProjectDetailState {
   resolvedDir: string | null;
   loading: boolean;
   error: Error | null;
-  refresh: () => Promise<void>;
+  refresh: (options?: {
+    signal?: AbortSignal;
+    throwOnError?: boolean;
+  }) => Promise<void>;
 }
 
 export interface ProjectDetailSeed {
@@ -40,9 +43,16 @@ export function useProjectDetail(
   const [loading, setLoading] = useState(!initialDetailCanSeed);
   const [error, setError] = useState<Error | null>(null);
   const initialDetailConsumedRef = useRef(false);
+  const requestGenerationRef = useRef(0);
 
   const fetchOnce = useCallback(
-    async (signal?: AbortSignal) => {
+    async (options?: {
+      signal?: AbortSignal;
+      throwOnError?: boolean;
+    }) => {
+      const signal = options?.signal;
+      const requestGeneration = ++requestGenerationRef.current;
+      const isCurrent = () => requestGeneration === requestGenerationRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -53,7 +63,7 @@ export function useProjectDetail(
           throw new Error(`GET /api/projects/${projectId} → HTTP ${resp.status}`);
         }
         const body = (await resp.json()) as Partial<ProjectDetailResponse>;
-        if (signal?.aborted) return;
+        if (signal?.aborted || !isCurrent()) return;
         const nextProject = body.project ?? null;
         setProject(nextProject);
         const reported = typeof body.resolvedDir === 'string' ? body.resolvedDir : null;
@@ -63,10 +73,12 @@ export function useProjectDetail(
             : null;
         setResolvedDir(reported ?? fallback);
       } catch (err) {
-        if (signal?.aborted) return;
-        setError(err instanceof Error ? err : new Error(String(err)));
+        if (signal?.aborted || !isCurrent()) return;
+        const failure = err instanceof Error ? err : new Error(String(err));
+        setError(failure);
+        if (options?.throwOnError) throw failure;
       } finally {
-        if (!signal?.aborted) setLoading(false);
+        if (!signal?.aborted && isCurrent()) setLoading(false);
       }
     },
     [
@@ -80,11 +92,14 @@ export function useProjectDetail(
       return;
     }
     const controller = new AbortController();
-    void fetchOnce(controller.signal);
+    void fetchOnce({ signal: controller.signal });
     return () => controller.abort();
   }, [fetchOnce, initialDetailCanSeed]);
 
-  const refresh = useCallback(() => fetchOnce(), [fetchOnce]);
+  const refresh = useCallback((options?: {
+    signal?: AbortSignal;
+    throwOnError?: boolean;
+  }) => fetchOnce(options), [fetchOnce]);
 
   return { project, resolvedDir, loading, error, refresh };
 }

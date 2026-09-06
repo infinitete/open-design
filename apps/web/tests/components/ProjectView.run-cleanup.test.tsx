@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps } from 'react';
+import type { ProjectGitState } from '@open-design/contracts';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -22,6 +23,7 @@ import {
   registerBrandBrowser,
 } from '../../src/runtime/brand-browser-bridge';
 import type { Artifact, ChatMessage, ProjectFile } from '../../src/types';
+import type { ProjectEvent } from '../../src/providers/project-events';
 
 const listConversations = vi.fn();
 const listMessages = vi.fn();
@@ -30,6 +32,7 @@ const loadTabs = vi.fn();
 const fetchProjectFiles = vi.fn();
 const fetchProjectDesignSystemPackageAudit = vi.fn();
 const fetchLiveArtifacts = vi.fn();
+const fetchConnectorStatuses = vi.fn();
 const fetchSkill = vi.fn();
 const fetchDesignSystem = vi.fn();
 const getTemplate = vi.fn();
@@ -49,6 +52,11 @@ const writeProjectTextFile = vi.fn();
 const fetchProjectFileText = vi.fn();
 const cancelBrandExtraction = vi.fn();
 const continueBrandExtraction = vi.fn();
+const subscribeProjectEvents = vi.fn((
+  _projectId: string,
+  _listener: (event: ProjectEvent) => void,
+  _options?: { onReady?: () => void },
+) => () => {});
 const originalFetch = globalThis.fetch;
 
 const replayArtifact: Artifact = {
@@ -138,8 +146,10 @@ vi.mock('../../src/providers/daemon', async () => {
 
 vi.mock('../../src/providers/registry', () => ({
   deletePreviewComment: vi.fn(),
+  invalidateProjectFilesCache: vi.fn(),
   fetchPreviewComments: (...args: unknown[]) => fetchPreviewComments(...args),
   fetchDesignSystem: (...args: unknown[]) => fetchDesignSystem(...args),
+  fetchConnectorStatuses: (...args: unknown[]) => fetchConnectorStatuses(...args),
   fetchProjectDesignSystemPackageAudit: (...args: unknown[]) => fetchProjectDesignSystemPackageAudit(...args),
   fetchLiveArtifacts: (...args: unknown[]) => fetchLiveArtifacts(...args),
   fetchProjectFiles: (...args: unknown[]) => fetchProjectFiles(...args),
@@ -152,6 +162,11 @@ vi.mock('../../src/providers/registry', () => ({
 
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
+  subscribeProjectEvents: (
+    projectId: string,
+    listener: (event: ProjectEvent) => void,
+    options?: { onReady?: () => void },
+  ) => subscribeProjectEvents(projectId, listener, options),
 }));
 
 vi.mock('../../src/runtime/brands', async () => {
@@ -496,7 +511,121 @@ describe('retry target resolution', () => {
 describe('ProjectView daemon cleanup', () => {
   beforeEach(() => {
     listProjectRuns.mockResolvedValue([]);
+    fetchConnectorStatuses.mockResolvedValue({});
     cancelBrandExtraction.mockResolvedValue({ ok: true, status: 'failed' });
+  });
+
+  it('keeps the mounted workspace read-only when any revision reconciliation read fails', async () => {
+    const projectId = 'project-reconciliation-failure';
+    const initialGitState: ProjectGitState = {
+      enabled: false,
+      phase: 'enable_pending',
+      localHead: null,
+      observedRemoteHead: null,
+      confirmedRemoteHead: null,
+      projectRevision: 0,
+      contentRevision: 0,
+      bindingGeneration: 0,
+      dirty: false,
+      pendingPush: false,
+      autoSync: false,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: false, remoteLabel: null, branch: null },
+      dependencies: [],
+    };
+    let gitState: ProjectGitState = initialGitState;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) {
+        return new Response(JSON.stringify(gitState), { status: 200 });
+      }
+      if (url === `/api/projects/${projectId}`) {
+        return new Response(JSON.stringify({
+          project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+          resolvedDir: '/project',
+        }), { status: 200 });
+      }
+      if (url === `/api/projects/${projectId}/files`) {
+        return new Response(JSON.stringify({ files: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    const onProjectsRefresh = vi.fn(async (options?: { throwOnError?: boolean }) => {
+      if (options?.throwOnError) throw new Error('project list unavailable');
+    });
+
+    render(
+      <ProjectView
+        project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={onProjectsRefresh}
+      />,
+    );
+
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.sendDisabled).toBe(false));
+    const subscription = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId);
+    expect(subscription).toBeDefined();
+    const listener = subscription?.[1] as ((event: ProjectEvent) => void) | undefined;
+    act(() => {
+      listener?.({ type: 'project-git-state', projectId, state: initialGitState });
+    });
+    gitState = {
+      ...initialGitState,
+      enabled: true,
+      phase: 'synced',
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40),
+      projectRevision: 1,
+      bindingGeneration: 1,
+      autoSync: true,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+    };
+    act(() => {
+      listener?.({ type: 'project-git-state', projectId, state: gitState });
+    });
+
+    await waitFor(() => expect(onProjectsRefresh).toHaveBeenCalledWith({ throwOnError: true }));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.sendDisabled).toBe(true));
+    expect(fetchProjectFiles).toHaveBeenCalledWith(projectId, expect.objectContaining({
+      fresh: true,
+      requireAuthoritative: true,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(fetchLiveArtifacts).toHaveBeenCalledWith(projectId, expect.objectContaining({
+      requireAuthoritative: true,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(fetchPreviewComments).toHaveBeenCalledWith(projectId, 'conv-1', expect.objectContaining({
+      requireAuthoritative: true,
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   afterEach(() => {
@@ -569,6 +698,7 @@ describe('ProjectView daemon cleanup', () => {
       'project-comment-route',
       'conv-route',
       expect.objectContaining({ note: 'Member QA comment' }),
+      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
     );
   });
 
@@ -3881,6 +4011,7 @@ describe('ProjectView daemon cleanup', () => {
         'conv-1',
         'comment-1',
         'needs_review',
+        expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
       );
     });
   });

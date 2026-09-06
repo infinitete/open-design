@@ -55,6 +55,7 @@ vi.mock('../../src/providers/daemon', () => ({
 
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
+  subscribeProjectEvents: vi.fn(() => () => {}),
 }));
 
 vi.mock('../../src/utils/notifications', async () => {
@@ -482,6 +483,7 @@ describe('ProjectView API empty response handling', () => {
         'conv-project-1',
         'comment-1',
         'failed',
+        expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
       );
     });
     await waitFor(() => {

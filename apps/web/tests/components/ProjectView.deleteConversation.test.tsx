@@ -254,7 +254,11 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
+    expect(deleteConversation).toHaveBeenCalledWith(
+      'project-1',
+      'conv-1',
+      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
+    );
     expect(onProjectsRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -287,7 +291,11 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
+    expect(deleteConversation).toHaveBeenCalledWith(
+      'project-1',
+      'conv-1',
+      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
+    );
     expect(onProjectsRefresh).not.toHaveBeenCalled();
   });
 
@@ -318,7 +326,11 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
+    expect(deleteConversation).toHaveBeenCalledWith(
+      'project-1',
+      'conv-1',
+      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
+    );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-2'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-2']);
   });
@@ -352,7 +364,12 @@ describe('ProjectView conversation delete', () => {
       expect(createConversation).toHaveBeenCalledWith(
         'project-1',
         undefined,
-        {},
+        {
+          mutationContext: expect.objectContaining({
+            generation: 0,
+            signal: expect.any(Object),
+          }),
+        },
       ),
     );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));

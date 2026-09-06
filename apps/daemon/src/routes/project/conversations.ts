@@ -12,6 +12,7 @@ type BoundWorkspaceResourceMutationGate = any;
 type AuthorizeProjectRequest = any;
 import { TERMINAL_RUN_STATUSES } from '../../runtimes/runs.js';
 import { strategyTaskTurnsForRunIds } from '../../strategies/task-store.js';
+import { readRestoredMessagePresentations } from '../../services/project-git/portable-db.js';
 
 import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
@@ -203,6 +204,14 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     } else if (requestedForkMessageId) {
       return res.status(404).json({ error: 'fork source conversation not found' });
     }
+    if (requestedForkMessageId && seedMessages.some((message) => {
+      if (!message || typeof message.id !== 'string') return false;
+      return Boolean(db.prepare(`SELECT 1 FROM project_git_portable_records
+        WHERE project_id = ? AND kind = 'message' AND local_id = ? LIMIT 1`)
+        .get(req.params.id, message.id));
+    })) {
+      return sendApiError(res, 409, 'CONFLICT', 'Restored historical messages cannot be forked');
+    }
     const sessionMode =
       hasExplicitSessionMode
         ? req.body.sessionMode
@@ -290,6 +299,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     // continuation carries no user prompt, so the client needs each message's
     // logical-task position to render one turn instead of an orphan answer.
     const messages = listMessages(db, req.params.cid) as Array<Record<string, unknown>>;
+    const restoredPresentations = readRestoredMessagePresentations(db, req.params.id);
     const turns = strategyTaskTurnsForRunIds(
       db,
       messages
@@ -300,12 +310,24 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       messages: messages.map((message) => {
         const runId = typeof message['runId'] === 'string' ? message['runId'] : null;
         const turn = runId ? turns.get(runId) : undefined;
-        if (!turn) return message;
-        return {
+        const withTask = !turn ? message : {
           ...message,
           strategyTaskExecutionId: turn.taskExecutionId,
           strategyTaskRunIndex: turn.taskRunIndex,
           ...(turn.delivered ? { strategyTaskDelivered: true } : {}),
+        };
+        const restored = restoredPresentations.get(String(message['id']));
+        if (!restored) return withTask;
+        const { feedback: _portableFeedback, ...displayOnly } = restored;
+        const nativeFeedback = message['feedback'];
+        return {
+          ...withTask,
+          restoredPresentation: {
+            ...displayOnly,
+            ...(nativeFeedback && typeof nativeFeedback === 'object'
+              ? { feedback: nativeFeedback }
+              : {}),
+          },
         };
       }),
     });

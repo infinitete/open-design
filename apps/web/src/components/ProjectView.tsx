@@ -48,6 +48,12 @@ import {
   writeProjectTextFile,
 } from '../providers/registry';
 import { useProjectFileEvents, type ProjectEvent } from '../providers/project-events';
+import { useProjectGit } from '../providers/project-git';
+import {
+  captureProjectMutation,
+  registerProjectEpochInvalidator,
+  type ProjectMutationContext,
+} from '../state/project-git';
 import { claimProjectTurnIndex, claimRunTurnIndex } from '../analytics/identity';
 import {
   buildInitialTaskAnalytics,
@@ -613,7 +619,7 @@ interface Props {
     token: ProjectRenameFenceToken | null,
     confirmed: Project,
   ) => void;
-  onProjectsRefresh: () => void;
+  onProjectsRefresh: (options?: { throwOnError?: boolean }) => Promise<void> | void;
   onDeleteProject?: (id: string) => Promise<boolean> | boolean;
   onChangeDefaultDesignSystem?: (designSystemId: string | null) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
@@ -644,6 +650,7 @@ interface QueuedChatSend {
   commentAttachments: ChatCommentAttachment[];
   meta?: ProjectChatSendMeta;
   createdAt: number;
+  expectedProjectRevision?: number;
 }
 
 interface QueuedChatSendUpdate {
@@ -1648,6 +1655,7 @@ function projectEventToAgentEvent(evt: ProjectEvent): LiveArtifactEventItem['eve
       refreshStatus: evt.refreshStatus,
     };
   }
+  if (evt.type !== 'live_artifact_refresh') return null;
   return {
     kind: 'live_artifact_refresh',
     phase: evt.phase,
@@ -1754,6 +1762,7 @@ export function ProjectView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
+  const projectGit = useProjectGit(project.id);
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
   // The prompt the recommendation prefilled into the composer. Prefer the seed
@@ -1794,7 +1803,7 @@ export function ProjectView({
     invalidateHtmlSourceSnapshotProject(project.id);
   }, [project.id]);
   const projectRunWorkspaceContextRef = useRef<null>(null);
-  const projectMutationReadOnly = false;
+  const projectMutationReadOnly = projectGit.loading || projectGit.writeLocked;
   const projectRunWorkspaceContext = null;
   const projectRunAuthorityKey = project.id;
   const projectDetail = useProjectDetail(
@@ -2212,6 +2221,7 @@ export function ProjectView({
   >(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
+  const activeMutationContextRef = useRef<ProjectMutationContext | undefined>(undefined);
   // Runs explicitly superseded by a "send now" interrupt. Their abort
   // controller is recorded here synchronously — before handleStop() clears the
   // active refs — so the run's late terminal callbacks (which the daemon still
@@ -2258,6 +2268,10 @@ export function ProjectView({
   const [recoveryTick, setRecoveryTick] = useState(0);
   const recoveredArtifactMessagesRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef<ChatMessage[]>([]);
+  // Every full transcript read claims a generation before crossing the
+  // network. Revision invalidation advances it synchronously, so a pre-restore
+  // response cannot publish after the reconciliation read has started.
+  const messagesRequestGenerationRef = useRef(0);
   const startingQueuedChatSendIdRef = useRef<string | null>(null);
   const [queuedAutoStartTick, setQueuedAutoStartTick] = useState(0);
   // We auto-save the most recent artifact to the project folder. Track the
@@ -2379,6 +2393,7 @@ export function ProjectView({
   // dropped), create one on the fly.
   useEffect(() => {
     let cancelled = false;
+    const conversationsRequestToken = ++conversationsRefreshTokenRef.current;
     const revalidatingCurrentProject =
       conversationsLoadedProjectIdRef.current === project.id;
     const generation = conversationMaterializationGenerationController.begin();
@@ -2407,7 +2422,10 @@ export function ProjectView({
         const list = await listConversationsWithRetry(
           project.id,
         );
-        if (cancelled) return;
+        if (
+          cancelled
+          || conversationsRefreshTokenRef.current !== conversationsRequestToken
+        ) return;
         conversationsLoadedProjectIdRef.current = project.id;
         if (list.length === 0) {
           // Conversation reads can settle before collaboration ownership. Keep
@@ -2440,7 +2458,10 @@ export function ProjectView({
           );
         }
       } catch (err) {
-        if (cancelled) return;
+        if (
+          cancelled
+          || conversationsRefreshTokenRef.current !== conversationsRequestToken
+        ) return;
         const message = err instanceof Error ? err.message : 'Could not load conversations for this project.';
         const materializationRecovery = null;
         conversationMaterializationRecoveryRef.current = materializationRecovery;
@@ -2472,13 +2493,16 @@ export function ProjectView({
       !pendingEmptyConversationSeed
       || pendingEmptyConversationSeed.projectId !== project.id
       || pendingEmptyConversationSeed.authorityKey !== 'current'
+      || projectMutationReadOnly
     ) {
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const fresh = await createConversation(project.id, undefined, {});
+        const fresh = await createConversation(project.id, undefined, {
+          mutationContext: captureProjectMutation(project.id),
+        });
         if (cancelled) return;
         if (!fresh) {
           throw new Error('Could not create a conversation for this project.');
@@ -2503,6 +2527,7 @@ export function ProjectView({
   }, [
     pendingEmptyConversationSeed,
     project.id,
+    projectMutationReadOnly,
   ]);
 
   // Issue #1505: when the URL changes the routed conversation id while
@@ -2547,6 +2572,7 @@ export function ProjectView({
   // on project mount (after conversations load) and on user-triggered
   // conversation switches.
   useEffect(() => {
+    const messagesRequestGeneration = ++messagesRequestGenerationRef.current;
     if (!activeConversationId) {
       setMessages([]);
       setMessagesInitialized(false);
@@ -2641,7 +2667,7 @@ export function ProjectView({
           project.id,
           activeConversationId,
         );
-        if (cancelled) return;
+        if (cancelled || messagesRequestGenerationRef.current !== messagesRequestGeneration) return;
         setMessages((current) =>
           preservingLiveConversation
             ? mergeServerMessagesIntoConversation(
@@ -2660,7 +2686,7 @@ export function ProjectView({
         setMessagesConversationId(activeConversationId);
         setFailedMessagesConversationId(null);
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || messagesRequestGenerationRef.current !== messagesRequestGeneration) return;
         const message = err instanceof Error ? err.message : 'Could not load messages for this conversation.';
         if (!reloadingCurrentConversation) {
           setMessages((current) =>
@@ -2886,6 +2912,7 @@ export function ProjectView({
   const pendingDaemonTabsRef = useRef<{
     projectId: string;
     state: OpenTabsState;
+    mutationContext?: ProjectMutationContext;
   } | null>(null);
   const flushTabsDaemonSave = useCallback(() => {
     if (tabsDaemonSaveTimerRef.current != null) {
@@ -2898,6 +2925,7 @@ export function ProjectView({
       void persistTabsToDaemonNow(
         pending.projectId,
         pending.state,
+        pending.mutationContext,
       );
     }
   }, []);
@@ -2914,6 +2942,7 @@ export function ProjectView({
       pendingDaemonTabsRef.current = {
         projectId: project.id,
         state: stamped,
+        mutationContext: captureProjectMutation(project.id),
       };
       if (tabsDaemonSaveTimerRef.current != null) {
         clearTimeout(tabsDaemonSaveTimerRef.current);
@@ -2926,6 +2955,7 @@ export function ProjectView({
           void persistTabsToDaemonNow(
             pending.projectId,
             pending.state,
+            pending.mutationContext,
           );
         }
       }, TAB_PERSIST_DEBOUNCE_MS);
@@ -2966,7 +2996,11 @@ export function ProjectView({
   }, []);
 
   const refreshProjectFiles = useCallback(async (
-    options?: { fresh?: boolean },
+    options?: {
+      fresh?: boolean;
+      signal?: AbortSignal;
+      requireAuthoritative?: boolean;
+    },
     onAcceptedGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
     const requestSeq = ++projectFilesRequestSeqRef.current;
@@ -2976,8 +3010,10 @@ export function ProjectView({
       next = await fetchProjectFiles(project.id, {
         requireAuthoritative: true,
         ...(options?.fresh ? { fresh: true } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (options?.requireAuthoritative) throw error;
       // A transport/HTTP failure is not an authoritative empty directory.
       // Keep the last accepted snapshot and generation, while preserving the
       // refresh helper's historical resolved-list contract for its callers.
@@ -3030,20 +3066,35 @@ export function ProjectView({
     [project.id, projectRunAuthorityKey],
   );
 
-  const refreshLiveArtifacts = useCallback(async (): Promise<LiveArtifactSummary[]> => {
+  const refreshLiveArtifacts = useCallback(async (options?: {
+    signal?: AbortSignal;
+    requireAuthoritative?: boolean;
+  }): Promise<LiveArtifactSummary[]> => {
     const next = await fetchLiveArtifacts(project.id, {
+      ...options,
     });
     setLiveArtifacts(next);
     return next;
   }, [project.id, projectRunAuthorityKey]);
 
   const refreshWorkspaceItems = useCallback(async (
-    options?: { freshProjectFiles?: boolean },
+    options?: {
+      freshProjectFiles?: boolean;
+      signal?: AbortSignal;
+      requireAuthoritative?: boolean;
+    },
     onAcceptedFilesGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
     const [nextFiles] = await Promise.all([
-      refreshProjectFiles({ fresh: options?.freshProjectFiles }, onAcceptedFilesGeneration),
-      refreshLiveArtifacts(),
+      refreshProjectFiles({
+        fresh: options?.freshProjectFiles,
+        signal: options?.signal,
+        requireAuthoritative: options?.requireAuthoritative,
+      }, onAcceptedFilesGeneration),
+      refreshLiveArtifacts({
+        signal: options?.signal,
+        requireAuthoritative: options?.requireAuthoritative,
+      }),
     ]);
     return nextFiles;
   }, [refreshLiveArtifacts, refreshProjectFiles]);
@@ -3235,6 +3286,7 @@ export function ProjectView({
             });
       const file = await writeProjectTextFile(project.id, fileName, artifactToPersist.html, {
         artifactManifest: manifest ?? undefined,
+        mutationContext: activeMutationContextRef.current,
       });
       if (file) {
         savedArtifactRef.current = file.name;
@@ -3595,6 +3647,7 @@ export function ProjectView({
       if (isPhantomDaemonRunMessage(m)) return;
       void saveMessage(project.id, activeConversationId, m, {
         ...options,
+        mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
       });
     },
     [project.id, activeConversationId, projectRunWorkspaceContext],
@@ -3608,6 +3661,7 @@ export function ProjectView({
         if (found && !isPhantomDaemonRunMessage(found)) {
           void saveMessage(project.id, activeConversationId, found, {
             ...options,
+            mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
           });
         }
         return curr;
@@ -3638,6 +3692,7 @@ export function ProjectView({
         if (persist && saved && activeConversationId && !isPhantomDaemonRunMessage(saved)) {
           void saveMessage(project.id, activeConversationId, saved, {
             ...persistOptions,
+            mutationContext: persistOptions?.mutationContext ?? activeMutationContextRef.current,
           });
         }
         return next;
@@ -3662,6 +3717,7 @@ export function ProjectView({
       if (persist) {
         void saveMessage(project.id, conversationId, message, {
           ...options,
+          mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
         });
       }
     },
@@ -3933,6 +3989,7 @@ export function ProjectView({
       if (persist) {
         void saveMessage(project.id, conversationId, message, {
           ...options,
+          mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
         });
       }
     },
@@ -3940,19 +3997,32 @@ export function ProjectView({
   );
 
   const refreshConversationMessagesFromServer = useCallback(
-    async (conversationId: string) => {
+    async (conversationId: string, options?: {
+      signal?: AbortSignal;
+      requireAuthoritative?: boolean;
+      mutationContext?: ProjectMutationContext;
+    }) => {
+      const requestGeneration = ++messagesRequestGenerationRef.current;
       if (messagesConversationIdRef.current !== conversationId) return;
       try {
         const serverMessages = await listMessages(
           project.id,
           conversationId,
+          { signal: options?.signal },
         );
-        if (messagesConversationIdRef.current !== conversationId) return;
+        if (options?.mutationContext && !projectGit.isCurrent(options.mutationContext)) return;
+        if (
+          messagesConversationIdRef.current !== conversationId
+          || messagesRequestGenerationRef.current !== requestGeneration
+        ) return;
         setMessages((current) => mergeServerMessagesIntoConversation(current, serverMessages));
         setMessagesInitialized(true);
         setMessagesConversationId(conversationId);
         setFailedMessagesConversationId(null);
       } catch (err) {
+        if (options?.mutationContext && !projectGit.isCurrent(options.mutationContext)) return;
+        if (messagesRequestGenerationRef.current !== requestGeneration) return;
+        if (options?.requireAuthoritative) throw err;
         console.warn('Failed to refresh conversation messages after run completion', err);
       }
     },
@@ -4268,6 +4338,7 @@ export function ProjectView({
       images: File[] = [],
       commentId?: string,
     ) => {
+      const mutationContext = captureProjectMutation(project.id);
       const commentConversationId = activeConversationId ?? routeConversationId;
       if (!commentConversationId) {
         setProjectActionsToast({
@@ -4286,6 +4357,8 @@ export function ProjectView({
         const result = await uploadProjectFiles(
           project.id,
           images,
+          undefined,
+          mutationContext,
         );
         if (result.uploaded.length !== images.length) {
           setProjectActionsToast({
@@ -4311,6 +4384,7 @@ export function ProjectView({
           note,
           ...(attachments.length > 0 ? { attachments } : {}),
         },
+        mutationContext,
       );
       if (!saved) {
         // Do not fail silently (recvq5BVsolIxi follow-up): a missing/expired
@@ -4441,7 +4515,11 @@ export function ProjectView({
   }, []);
 
   const patchAttachedStatuses = useCallback(
-    async (attachments: ChatCommentAttachment[], status: PreviewComment['status']) => {
+    async (
+      attachments: ChatCommentAttachment[],
+      status: PreviewComment['status'],
+      mutationContext?: ProjectMutationContext,
+    ) => {
       if (!activeConversationId || attachments.length === 0) return;
       const persistedAttachments = attachments.filter(
         (attachment) => attachment.source !== 'board-batch',
@@ -4461,6 +4539,7 @@ export function ProjectView({
             activeConversationId,
             attachment.id,
             status,
+            mutationContext,
           ),
         ),
       );
@@ -5979,6 +6058,7 @@ export function ProjectView({
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
+    const mutationContext = captureProjectMutation(project.id);
     const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
     const queuedMeta = stripQueueOnlyFromMeta({
       ...(input.meta ?? {}),
@@ -5992,6 +6072,9 @@ export function ProjectView({
       commentAttachments: input.commentAttachments,
       ...(queuedMeta === undefined ? {} : { meta: queuedMeta }),
       createdAt: Date.now(),
+      ...(mutationContext?.expectedProjectRevision === undefined
+        ? {}
+        : { expectedProjectRevision: mutationContext.expectedProjectRevision }),
     });
     if (!enqueued) return;
     if (input.commentAttachments.length > 0) {
@@ -6018,6 +6101,7 @@ export function ProjectView({
               input.conversationId,
               commentId,
               'applying',
+              mutationContext,
             ),
           ),
         ).catch(() => {});
@@ -6032,10 +6116,14 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[] = commentsToAttachments(attachedComments),
       meta?: ProjectChatSendMeta,
       baseMessages?: ChatMessage[],
+      suppliedMutationContext?: ProjectMutationContext,
     ) => {
       if (projectMutationReadOnly) return false;
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
+      const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
+      if (mutationContext?.signal.aborted) return false;
+      activeMutationContextRef.current = mutationContext;
       const clientRequestId = meta?.clientRequestId ?? randomUUID();
       meta = {
         ...(meta ?? {}),
@@ -6301,6 +6389,7 @@ export function ProjectView({
           void Promise.resolve(
             saveMessage(project.id, runConversationId, userMsg, {
               createOnly: true,
+              mutationContext,
             }),
           ).then((stored) => {
             if (!stored || stored.content === userMsg.content) return;
@@ -6322,7 +6411,7 @@ export function ProjectView({
       // as soon as the first delta lands.
       persistMessage(assistantMsg);
       if (runCommentAttachments.length > 0) {
-        void patchAttachedStatuses(runCommentAttachments, 'applying');
+        void patchAttachedStatuses(runCommentAttachments, 'applying', mutationContext);
         const consumedCommentIds = new Set(runCommentAttachments.map((attachment) => attachment.id));
         setAttachedComments((current) =>
           current.filter((comment) => !consumedCommentIds.has(comment.id)),
@@ -6348,6 +6437,7 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title },
+            mutationContext,
           );
         }
         const projectName = fallbackProjectName;
@@ -6369,7 +6459,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: projectName,
             ...(metadata ? { metadata } : {}),
-          });
+          }, mutationContext);
         }
       }
       const canReplaceConversationTitle = (title: string | null | undefined) => {
@@ -6400,6 +6490,7 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title: agentTitle },
+            mutationContext,
           );
         }
         if (
@@ -6419,7 +6510,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: agentTitle,
             ...(metadata ? { metadata } : {}),
-          });
+          }, mutationContext);
         }
       };
 
@@ -6792,7 +6883,7 @@ export function ProjectView({
               { telemetryFinalized: true },
             );
             if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed');
+              void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
             }
             const ownsCurrentRun = clearCurrentRunStreamingMarker(
               runConversationId,
@@ -6820,7 +6911,7 @@ export function ProjectView({
           const finalizingRunId = currentRunId;
           if (finalizingRunId) finalizingLocalRunIdsRef.current.add(finalizingRunId);
           if (runCommentAttachments.length > 0) {
-            void patchAttachedStatuses(runCommentAttachments, 'needs_review');
+            void patchAttachedStatuses(runCommentAttachments, 'needs_review', mutationContext);
           }
           const ownsCurrentRun = clearCurrentRunStreamingMarker(
             runConversationId,
@@ -6990,7 +7081,7 @@ export function ProjectView({
               if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
                 setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
                 if (runCommentAttachments.length > 0) {
-                  void patchAttachedStatuses(runCommentAttachments, 'failed');
+                  void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
                 }
               }
               await auditDesignSystemWorkspaceAfterRun(assistantId);
@@ -7053,7 +7144,7 @@ export function ProjectView({
               resumable,
             }));
             if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed');
+              void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
             }
           }
           // Mark the run as completed in the reattach registry so that
@@ -7137,7 +7228,7 @@ export function ProjectView({
                     conversationFinalizedInline = true;
                   }
                   if (runCommentAttachments.length > 0) {
-                    void patchAttachedStatuses(runCommentAttachments, 'needs_review');
+                    void patchAttachedStatuses(runCommentAttachments, 'needs_review', mutationContext);
                   }
                   finalRunStatusAfterError = 'succeeded';
                   refreshConversationAfterError = true;
@@ -7311,6 +7402,7 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           handlers,
           projectId: project.id,
+          mutationContext,
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
@@ -7397,6 +7489,7 @@ export function ProjectView({
             // The view may already be on a different project/conversation;
             // pin the daemon run to the original row so returning can reattach.
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
+              mutationContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -7523,6 +7616,7 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           handlers,
           projectId: project.id,
+          mutationContext,
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
@@ -7601,6 +7695,7 @@ export function ProjectView({
             };
             latestAssistantMsg = pinnedAssistant;
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
+              mutationContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -7782,6 +7877,7 @@ export function ProjectView({
   const sendQueuedChatSendNow = useCallback((id: string) => {
     const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
+    const mutationContext = captureProjectMutation(project.id);
     if (currentConversationBusy) {
       // "Send now" while the agent is still working: the user has explicitly
       // chosen this turn over the in-flight one, so interrupt the running run
@@ -7829,6 +7925,7 @@ export function ProjectView({
               comment.conversationId,
               comment.id,
               'open',
+              mutationContext,
             ),
           ),
         ).catch(() => {});
@@ -7839,11 +7936,18 @@ export function ProjectView({
     }
     void (async () => {
       armSlideNavForQueuedSend(item);
+      if (item.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
+        removeQueuedChatSend(id);
+        setError('Project history changed. The queued draft was kept in history but was not sent; reload and send it again.');
+        return;
+      }
       const started = await handleSend(
         item.prompt,
         item.attachments,
         item.commentAttachments,
         { ...(item.meta ?? {}), queueDrain: true },
+        undefined,
+        mutationContext,
       );
       if (started) removeQueuedChatSend(id);
     })();
@@ -7864,11 +7968,20 @@ export function ProjectView({
     startingQueuedChatSendIdRef.current = next.id;
     armSlideNavForQueuedSend(next);
     void (async () => {
+      const mutationContext = captureProjectMutation(project.id);
+      if (next.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
+        removeQueuedChatSend(next.id);
+        startingQueuedChatSendIdRef.current = null;
+        setError('Project history changed. The queued draft was not sent; reload and send it again.');
+        return;
+      }
       const started = await handleSend(
         next.prompt,
         next.attachments,
         next.commentAttachments,
         { ...(next.meta ?? {}), queueDrain: true },
+        undefined,
+        mutationContext,
       );
       if (!started) {
         if (startingQueuedChatSendIdRef.current === next.id) {
@@ -7982,6 +8095,7 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       images: File[] = [],
     ): Promise<CommentSendResult> => {
+      const mutationContext = captureProjectMutation(project.id);
       if (currentConversationQueueDisabled) {
         return { status: 'rejected', commentIds: [] };
       }
@@ -7998,6 +8112,8 @@ export function ProjectView({
         const result = await uploadProjectFiles(
           project.id,
           images,
+          undefined,
+          mutationContext,
         );
         if (result.uploaded.length !== images.length) {
           return { status: 'rejected', commentIds: [] };
@@ -8006,7 +8122,7 @@ export function ProjectView({
       }
       if (commentAttachments.length === 0) {
         const queued = uploaded.length > 0
-          ? await handleSend('', uploaded, [], { queueOnly: true, entryFrom: 'comment' })
+          ? await handleSend('', uploaded, [], { queueOnly: true, entryFrom: 'comment' }, undefined, mutationContext)
           : false;
         return {
           status: queued ? 'queued' : 'rejected',
@@ -8025,6 +8141,8 @@ export function ProjectView({
           mergeChatAttachments(i === 0 ? uploaded : [], savedImages),
           [commentTaskContextAttachment(commentAttachment)],
           { queueOnly: true, entryFrom: 'comment' },
+          undefined,
+          mutationContext,
         );
         if (!queued) {
           return { status: 'rejected', commentIds: queuedCommentIds };
@@ -8082,6 +8200,7 @@ export function ProjectView({
   const handlePluginFolderAgentAction = useCallback(
     async (relativePath: string, action: PluginFolderAgentAction) => {
       if (currentConversationActionDisabled || !activeConversationId) return;
+      const mutationContext = captureProjectMutation(project.id);
       const pluginWorkflowWorkspaceContext = projectRunWorkspaceContext;
       setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
       if (action === 'install') {
@@ -8091,6 +8210,7 @@ export function ProjectView({
           outcome = await installGeneratedPluginFolder(
             project.id,
             relativePath,
+            mutationContext,
           );
         } finally {
           setActivePluginActionPaths((prev) => {
@@ -8116,6 +8236,7 @@ export function ProjectView({
           project.id,
           relativePath,
           shareAction,
+          mutationContext,
         );
       } catch (error) {
         setActivePluginActionPaths((prev) => {
@@ -8179,7 +8300,9 @@ export function ProjectView({
             taskStart.taskId,
             since,
             25_000,
+            mutationContext?.signal,
           );
+          if (mutationContext?.signal.aborted) return;
           since = snapshot.nextSince;
           if (snapshot.progress.length > 0) {
             const newTextEvents = snapshot.progress
@@ -8245,7 +8368,7 @@ export function ProjectView({
                 endedAt,
                 runStatus: 'succeeded',
               },
-              { telemetryFinalized: true },
+              { telemetryFinalized: true, mutationContext },
             );
             updateConversationLatestRun('succeeded', endedAt);
             return;
@@ -8278,7 +8401,7 @@ export function ProjectView({
               endedAt,
               runStatus: 'failed',
             },
-            { telemetryFinalized: true },
+            { telemetryFinalized: true, mutationContext },
           );
           updateConversationLatestRun('failed', endedAt);
           return;
@@ -8300,6 +8423,7 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
+        if (mutationContext?.signal.aborted) return;
         replaceConversationMessage(
           conversationId,
           {
@@ -8320,7 +8444,7 @@ export function ProjectView({
             endedAt,
             runStatus: 'failed',
           },
-          { telemetryFinalized: true },
+          { telemetryFinalized: true, mutationContext },
         );
         updateConversationLatestRun('failed', endedAt);
       });
@@ -8487,7 +8611,9 @@ export function ProjectView({
     setCreatingConversation(true);
     setConversationLoadError(null);
     try {
+      const mutationContext = captureProjectMutation(project.id);
       const fresh = await createConversation(project.id, undefined, {
+        mutationContext,
       });
       if (!fresh) throw new Error('Could not create a conversation for this project.');
       // Eagerly clear messages and update ref so rapid clicks don't create
@@ -8599,9 +8725,11 @@ export function ProjectView({
   const handleDeleteConversation = useCallback(
     async (id: string) => {
       if (projectMutationReadOnly) return;
+      const mutationContext = captureProjectMutation(project.id);
       const ok = await deleteConversationApi(
         project.id,
         id,
+        mutationContext,
       );
       if (!ok) return;
       // The deleted conversation may have owned an unanswered
@@ -8617,6 +8745,7 @@ export function ProjectView({
           // Re-seed so the project always has at least one conversation
           // to write into.
           void createConversation(project.id, undefined, {
+            mutationContext,
           }).then((fresh) => {
             if (fresh) {
               setConversations([fresh]);
@@ -8640,6 +8769,7 @@ export function ProjectView({
   const handleRenameConversation = useCallback(
     async (id: string, title: string) => {
       if (projectMutationReadOnly) return;
+      const mutationContext = captureProjectMutation(project.id);
       const trimmed = title.trim() || null;
       setConversations((curr) =>
         curr.map((c) => (c.id === id ? { ...c, title: trimmed } : c)),
@@ -8648,6 +8778,7 @@ export function ProjectView({
         project.id,
         id,
         { title: trimmed },
+        mutationContext,
       );
     },
     [project.id, projectMutationReadOnly],
@@ -8656,6 +8787,7 @@ export function ProjectView({
   const handleConversationSessionModeChange = useCallback(
     async (id: string, sessionMode: ChatSessionMode) => {
       if (projectMutationReadOnly) return;
+      const mutationContext = captureProjectMutation(project.id);
       setConversations((curr) =>
         curr.map((conversation) =>
           conversation.id === id ? { ...conversation, sessionMode } : conversation,
@@ -8665,6 +8797,7 @@ export function ProjectView({
         project.id,
         id,
         { sessionMode },
+        mutationContext,
       );
       if (updated) {
         setConversations((curr) =>
@@ -8712,6 +8845,7 @@ export function ProjectView({
       trackConversationForkClick(analytics.track, forkContext, { requestId });
       setForkingMessageId(assistantMessage.id);
       setConversationLoadError(null);
+      const mutationContext = captureProjectMutation(project.id);
       let emptyResponse = false;
       try {
         const sourceTitle = activeConversation?.title?.trim();
@@ -8729,6 +8863,7 @@ export function ProjectView({
             forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
           forkFallbackPredecessorMessageId,
           throwOnError: true,
+          mutationContext,
         });
         if (!fresh) {
           emptyResponse = true;
@@ -8818,6 +8953,7 @@ export function ProjectView({
       const trimmed = newName.trim();
       if (!trimmed || trimmed === project.name) return;
       const previousName = project.name;
+      const mutationContext = captureProjectMutation(project.id);
       const renameKey = JSON.stringify([project.id]);
       let renameState = projectRenameStatesRef.current.get(renameKey);
       if (!renameState || renameState.pending === 0) {
@@ -8847,7 +8983,7 @@ export function ProjectView({
         const persisted = await patchProject(project.id, {
           name: trimmed,
           ...(metadata ? { metadata } : {}),
-        });
+        }, mutationContext);
         if (persisted) renameState.confirmed = persisted;
         const isLatestQueuedRename =
           projectRenameStatesRef.current.get(renameKey) !== renameState
@@ -10178,6 +10314,119 @@ export function ProjectView({
   // immediately after the first dispatch.
   const autoSentRef = useRef(false);
   const autoSendInFlightRef = useRef(false);
+
+  useEffect(() => registerProjectEpochInvalidator(project.id, () => {
+    // Detach browser work synchronously with the epoch transition. Deliberately
+    // leave cancelRef/cancel controllers alone: those map to the daemon's
+    // user-visible run cancellation endpoint, while a restore only revokes
+    // this browser's stale authority.
+    for (const timer of trackedTimeoutsRef.current) clearTimeout(timer);
+    trackedTimeoutsRef.current.clear();
+    if (tabsDaemonSaveTimerRef.current !== null) clearTimeout(tabsDaemonSaveTimerRef.current);
+    tabsDaemonSaveTimerRef.current = null;
+    pendingDaemonTabsRef.current = null;
+    sendTextBufferRef.current?.cancel();
+    sendTextBufferRef.current = null;
+    for (const buffer of reattachTextBuffersRef.current) buffer.cancel();
+    reattachTextBuffersRef.current.clear();
+    abortRef.current?.abort();
+    abortRef.current = null;
+    for (const controller of reattachControllersRef.current.values()) controller.abort();
+    reattachControllersRef.current.clear();
+    conversationsRefreshTokenRef.current += 1;
+    messagesRequestGenerationRef.current += 1;
+    previewCommentsGenerationRef.current += 1;
+    projectFilesRequestSeqRef.current += 1;
+    invalidateProjectFilesCache(project.id);
+    htmlContentCacheRef.current.clear();
+    invalidateHtmlSourceSnapshotProject(project.id);
+    iframeKeepAlivePool.evictProject(project.id, { includeActive: true });
+    activeMutationContextRef.current = undefined;
+    startingQueuedChatSendIdRef.current = null;
+    blockedRunTaskRef.current = null;
+    savedArtifactRef.current = null;
+    clearAutoSendSession(project.id);
+    autoSendSeedRef.current = '';
+    autoSendAttachmentsRef.current = [];
+    autoSendContextRef.current = null;
+    autoSendFirstMessageRef.current = false;
+    autoSendInFlightRef.current = false;
+    autoSentRef.current = true;
+    setError('Project history changed. Reloaded content is being reconciled; your manual draft is preserved.');
+  }), [iframeKeepAlivePool, project.id, setError]);
+
+  useEffect(() => {
+    if (!projectGit.writeLocked) return;
+    const generation = projectGit.generation;
+    const reconciliationContext = projectGit.capture();
+    if (!reconciliationContext) return;
+    const conversationId = activeConversationIdRef.current;
+    const conversationsRequestToken = ++conversationsRefreshTokenRef.current;
+    const commentsGeneration = ++previewCommentsGenerationRef.current;
+    void Promise.all([
+      projectGit.refresh(),
+      projectDetail.refresh({
+        signal: reconciliationContext.signal,
+        throwOnError: true,
+      }),
+      Promise.resolve(onProjectsRefresh({ throwOnError: true })),
+      refreshWorkspaceItems({
+        freshProjectFiles: true,
+        signal: reconciliationContext.signal,
+        requireAuthoritative: true,
+      }),
+      listConversations(project.id, { throwOnError: true }).then((next) => {
+        if (
+          projectIdRef.current === project.id
+          && conversationsRefreshTokenRef.current === conversationsRequestToken
+          && projectGit.isCurrent(reconciliationContext)
+        ) {
+          setConversations(next);
+        }
+      }),
+      conversationId ? refreshConversationMessagesFromServer(conversationId, {
+        signal: reconciliationContext.signal,
+        requireAuthoritative: true,
+        mutationContext: reconciliationContext,
+      }) : Promise.resolve(),
+      conversationId ? fetchPreviewComments(project.id, conversationId, {
+        signal: reconciliationContext.signal,
+        requireAuthoritative: true,
+      }).then((next) => {
+        if (
+          previewCommentsGenerationRef.current !== commentsGeneration
+          || !projectGit.isCurrent(reconciliationContext)
+        ) return;
+        setPreviewComments(next);
+        setAttachedComments((current) => current
+          .map((attached) => next.find((comment) => comment.id === attached.id))
+          .filter((comment): comment is PreviewComment => Boolean(comment)));
+      }) : Promise.resolve(),
+      fetchConnectorStatuses({
+        signal: reconciliationContext.signal,
+        requireAuthoritative: true,
+      }),
+    ]).then(() => {
+      if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
+      projectGit.completeReconciliation(generation);
+      setError(null);
+    }).catch(() => {
+      if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
+      setError('Project history changed, but the refreshed project could not be fully loaded. Reload to retry safely.');
+    });
+  }, [
+    onProjectsRefresh,
+    project.id,
+    projectDetail.refresh,
+    projectGit.generation,
+    projectGit.writeLocked,
+    refreshConversationMessagesFromServer,
+    refreshLiveArtifacts,
+    refreshProjectFiles,
+    refreshWorkspaceItems,
+    setError,
+  ]);
+
   useEffect(() => {
     if (autoSentRef.current) return;
     if (autoSendInFlightRef.current) return;
@@ -10454,7 +10703,7 @@ export function ProjectView({
               initialDraft={chatInitialDraft}
               onboardingStarterPath={onboardingEntryRef.current?.productType ?? null}
               questionFormSubmitDisabled={currentConversationActionDisabled}
-              onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId) => {
+              onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId, mutationContext) => {
                 if (currentConversationActionDisabled) return false;
                 let sourceAssistant = sourceAssistantMessageId
                   ? messages.find((message) => message.id === sourceAssistantMessageId)
@@ -10515,7 +10764,7 @@ export function ProjectView({
                   ...(strategyTaskExecutionId
                     ? { strategyTaskExecutionId }
                     : {}),
-                });
+                }, undefined, mutationContext);
               }}
               onContinueRemainingTasks={handleContinueRemainingTasks}
               onAssistantFeedback={handleAssistantFeedback}
@@ -11260,7 +11509,9 @@ function isQueuedChatSend(value: unknown): value is QueuedChatSend {
     typeof record.prompt === 'string' &&
     Array.isArray(record.attachments) &&
     Array.isArray(record.commentAttachments) &&
-    typeof record.createdAt === 'number'
+    typeof record.createdAt === 'number' &&
+    (record.expectedProjectRevision === undefined
+      || (Number.isSafeInteger(record.expectedProjectRevision) && record.expectedProjectRevision >= 0))
   );
 }
 

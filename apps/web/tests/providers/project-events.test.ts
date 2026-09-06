@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createProjectEventsConnection,
   projectEventsUrl,
+  subscribeProjectEvents,
   type ProjectEvent,
 } from '../../src/providers/project-events';
 
@@ -47,6 +48,62 @@ describe('projectEventsUrl', () => {
 });
 
 describe('createProjectEventsConnection', () => {
+  it('strictly parses project Git state and operation events', () => {
+    const seen: ProjectEvent[] = [];
+    const conn = createProjectEventsConnection(
+      'git-project',
+      event => seen.push(event),
+      { EventSourceCtor: MockEventSource as unknown as typeof EventSource },
+    );
+    const source = MockEventSource.instances[0]!;
+    const state = {
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+      confirmedRemoteHead: null, projectRevision: 2, contentRevision: 3, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+    };
+    source.dispatch('project-git-state', {
+      data: JSON.stringify({ type: 'project-git-state', projectId: 'git-project', state }),
+    });
+    source.dispatch('project-git-operation', {
+      data: JSON.stringify({ type: 'project-git-operation', projectId: 'git-project', operation: {
+        id: 'op', kind: 'sync', status: 'running', phase: 'syncing', projectId: 'git-project',
+        basis: { projectRevision: 2, contentRevision: 3, localHead: state.localHead,
+          remoteHead: null, bindingGeneration: 1 }, result: null, error: null,
+      } }),
+    });
+    source.dispatch('project-git-state', {
+      data: JSON.stringify({ type: 'project-git-state', projectId: 'git-project', state: {
+        ...state, pendingPush: true, localHead: null,
+      } }),
+    });
+
+    expect(seen.map(event => event.type)).toEqual(['project-git-state', 'project-git-operation']);
+    conn.close();
+  });
+
+  it('ref-counts one shared EventSource for multiple same-project subscribers', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const projectId = `shared-${Math.random()}`;
+    const offFirst = subscribeProjectEvents(projectId, first, {
+      EventSourceCtor: MockEventSource as unknown as typeof EventSource,
+    });
+    const offSecond = subscribeProjectEvents(projectId, second, {
+      EventSourceCtor: MockEventSource as unknown as typeof EventSource,
+    });
+    expect(MockEventSource.instances).toHaveLength(1);
+    MockEventSource.instances[0]!.dispatch('file-changed', {
+      data: JSON.stringify({ type: 'file-changed', path: 'index.html', kind: 'change' }),
+    });
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    offFirst();
+    expect(MockEventSource.instances[0]!.closed).toBe(false);
+    offSecond();
+    expect(MockEventSource.instances[0]!.closed).toBe(true);
+  });
+
   it('opens an EventSource against the events URL on creation', () => {
     const conn = createProjectEventsConnection(
       'p1',

@@ -134,6 +134,7 @@ import {
   duplicatePluginAsProject,
   patchProject,
 } from './state/projects';
+import { captureProjectMutation } from './state/project-git';
 import { useModalWindowDragGuard } from './hooks/useModalWindowDragGuard';
 import { resumeThumbnailLoads, suspendThumbnailLoads } from './lib/thumbnail-load-gate';
 import type {
@@ -1251,9 +1252,9 @@ function AppInner() {
     });
   }, [daemonConfigLoaded, dsLoading, designSystems, config.designSystemId]);
 
-  const refreshProjects = useCallback(async () => {
+  const refreshProjects = useCallback(async (options?: { throwOnError?: boolean }) => {
     const request = beginProjectListRequest();
-    const list = await listCurrentProjects();
+    const list = await listCurrentProjects(options);
     reconcileFetchedProjects(list, request);
   }, [beginProjectListRequest, listCurrentProjects, reconcileFetchedProjects]);
 
@@ -2229,6 +2230,7 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    const mutationContext = captureProjectMutation(id);
     const previous = projectsRef.current.find((project) => project.id === id) ?? null;
     const renameProjectionKey = JSON.stringify([id]);
     let renameState = projectRenameStatesRef.current.get(renameProjectionKey);
@@ -2260,7 +2262,7 @@ function AppInner() {
         project.id === id ? { ...project, name: trimmed } : project),
     });
     const runRename = async () => {
-      const persisted = await patchProject(id, { name: trimmed });
+      const persisted = await patchProject(id, { name: trimmed }, mutationContext);
       if (persisted) renameState.confirmed = persisted;
       const isLatestQueuedRename =
         projectRenameStatesRef.current.get(renameProjectionKey) === renameState

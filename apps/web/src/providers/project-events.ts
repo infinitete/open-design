@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { BackoffController } from '../lib/backoff';
 import {
+  ProjectGitOperationSchema,
+  ProjectGitStateSchema,
   type LiveArtifactRefreshSsePayload,
   type LiveArtifactSsePayload,
   type ProjectConversationCreatedSsePayload,
+  type ProjectGitEvent,
 } from '@open-design/contracts';
 export interface ProjectFileChangeEvent {
   type: 'file-changed';
@@ -22,7 +25,8 @@ export type ProjectLiveArtifactEvent = LiveArtifactSsePayload | LiveArtifactRefr
 export type ProjectEvent =
   | ProjectFileChangeEvent
   | ProjectConversationCreatedEvent
-  | ProjectLiveArtifactEvent;
+  | ProjectLiveArtifactEvent
+  | ProjectGitEvent;
 
 export interface ProjectEventsConnectionOptions {
   /** Test seam: substitute a mock EventSource constructor. */
@@ -151,6 +155,40 @@ export function createProjectEventsConnection(
         }
       }
     });
+    es.addEventListener('project-git-state', (evt) => {
+      try {
+        const envelope = JSON.parse((evt as MessageEvent).data) as unknown;
+        if (!envelope || typeof envelope !== 'object'
+          || (envelope as { type?: unknown }).type !== 'project-git-state'
+          || (envelope as { projectId?: unknown }).projectId !== projectId) return;
+        const parsed = ProjectGitStateSchema.safeParse((envelope as { state?: unknown }).state);
+        if (!parsed.success) return;
+        onChange({
+          type: 'project-git-state',
+          projectId: (envelope as { projectId: string }).projectId,
+          state: parsed.data,
+        });
+      } catch {
+        // A malformed event is not allowed to poison the shared stream.
+      }
+    });
+    es.addEventListener('project-git-operation', (evt) => {
+      try {
+        const envelope = JSON.parse((evt as MessageEvent).data) as unknown;
+        if (!envelope || typeof envelope !== 'object'
+          || (envelope as { type?: unknown }).type !== 'project-git-operation'
+          || (envelope as { projectId?: unknown }).projectId !== projectId) return;
+        const parsed = ProjectGitOperationSchema.safeParse((envelope as { operation?: unknown }).operation);
+        if (!parsed.success) return;
+        onChange({
+          type: 'project-git-operation',
+          projectId: (envelope as { projectId: string }).projectId,
+          operation: parsed.data,
+        });
+      } catch {
+        // A malformed event is not allowed to poison the shared stream.
+      }
+    });
     es.addEventListener('error', () => {
       if (cancelled) return;
       options.onConnectedChange?.(false);
@@ -168,6 +206,65 @@ export function createProjectEventsConnection(
       if (reconnectTimer) clearT(reconnectTimer);
       if (source) source.close();
     },
+  };
+}
+
+interface SharedProjectEventsEntry {
+  listeners: Set<(event: ProjectEvent) => void>;
+  statusListeners: Set<(connected: boolean) => void>;
+  readyListeners: Set<() => void>;
+  connection: ProjectEventsConnection;
+}
+
+const sharedProjectEvents = new Map<string, SharedProjectEventsEntry>();
+
+/**
+ * Process-wide, ref-counted subscription for a project event stream. File,
+ * conversation, artifact, and Git consumers all attach to this one transport.
+ */
+export function subscribeProjectEvents(
+  projectId: string,
+  listener: (event: ProjectEvent) => void,
+  options: ProjectEventsConnectionOptions = {},
+): () => void {
+  let entry = sharedProjectEvents.get(projectId);
+  if (!entry) {
+    const listeners = new Set<(event: ProjectEvent) => void>();
+    const statusListeners = new Set<(connected: boolean) => void>();
+    const readyListeners = new Set<() => void>();
+    const connection = createProjectEventsConnection(
+      projectId,
+      event => {
+        for (const current of listeners) current(event);
+      },
+      {
+        ...options,
+        onConnectedChange: connected => {
+          for (const current of statusListeners) current(connected);
+        },
+        onReady: () => {
+          for (const current of readyListeners) current();
+        },
+      },
+    );
+    entry = { listeners, statusListeners, readyListeners, connection };
+    sharedProjectEvents.set(projectId, entry);
+  }
+  entry.listeners.add(listener);
+  if (options.onConnectedChange) entry.statusListeners.add(options.onConnectedChange);
+  if (options.onReady) entry.readyListeners.add(options.onReady);
+
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    entry!.listeners.delete(listener);
+    if (options.onConnectedChange) entry!.statusListeners.delete(options.onConnectedChange);
+    if (options.onReady) entry!.readyListeners.delete(options.onReady);
+    if (entry!.listeners.size === 0) {
+      entry!.connection.close();
+      sharedProjectEvents.delete(projectId);
+    }
   };
 }
 
@@ -211,7 +308,7 @@ export function useProjectFileEvents(
   useEffect(() => {
     if (!enabled || !projectId) return;
     if (typeof window === 'undefined') return;
-    const conn = createProjectEventsConnection(
+    const unsubscribe = subscribeProjectEvents(
       projectId,
       (evt) => onChangeRef.current(evt),
       {
@@ -221,7 +318,7 @@ export function useProjectFileEvents(
       },
     );
     return () => {
-      conn.close();
+      unsubscribe();
       // Reset to "not connected" on teardown so a consumer's poll resumes full
       // cadence between projects / when the stream is intentionally closed.
       onConnectedChangeRef.current?.(false);

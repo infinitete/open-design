@@ -73,7 +73,7 @@ import {
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, SkillSummary } from '../types';
 import { agentDisplayName } from '../utils/agentLabels';
 import { commentTargetDisplayName, commentsToAttachments, simplePositionLabel } from '../comments';
-import { AssistantMessage, type QuestionFormSubmitHandler } from './AssistantMessage';
+import { AssistantMessage, RestoredHistoricalMessage, type QuestionFormSubmitHandler } from './AssistantMessage';
 import { TodoCard } from './ToolCard';
 import type { BrandBrowserAssistConfirm } from './OdCard';
 import {
@@ -3257,6 +3257,7 @@ function ChatRows({
 
   const renderItem = (item: ChatRenderItem) => {
     const m = item.message;
+    if (m.restoredPresentation) return <RestoredHistoricalMessage message={m} />;
     const messageStreaming = isAssistantMessageStreaming(
       m,
       streaming,
@@ -3312,13 +3313,14 @@ function ChatRows({
         hasDesignSystemContext={hasActiveDesignSystem || !!activeDesignSystem}
         onSubmitQuestionForm={
           onSubmitQuestionForm
-            ? (text, attachments, context, _sourceAssistantMessageId, formId) =>
+            ? (text, attachments, context, _sourceAssistantMessageId, formId, mutationContext) =>
                 assistantCallbacksRef.current.onSubmitQuestionForm?.(
                   text,
                   attachments,
                   context,
                   m.id,
                   formId,
+                  mutationContext,
                 )
             : undefined
         }
@@ -3455,14 +3457,16 @@ function VirtualChatRow({
   );
 }
 
-function buildChatRenderItems(messages: ChatMessage[]): ChatRenderItem[] {
+export function buildChatRenderItems(messages: ChatMessage[]): ChatRenderItem[] {
   const items: ChatRenderItem[] = [];
   for (let i = 0; i < messages.length; i += 1) {
     const message = messages[i]!;
     // Structured form answers are rendered as a compact summary on the
     // preceding assistant message. Keeping the raw machine payload in a
     // separate user bubble duplicates the same decision and exposes stable IDs.
-    if (message.role === 'user' && /^\[form answers\b/i.test(message.content.trim())) {
+    if (!message.restoredPresentation
+      && message.role === 'user'
+      && /^\[form answers\b/i.test(message.content.trim())) {
       continue;
     }
     items.push({

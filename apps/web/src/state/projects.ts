@@ -41,6 +41,13 @@ import type {
 } from '../types';
 import { removeDesignBrowserProjectCache } from '../components/design-browser-storage';
 import { boundedRequestErrorCode } from '../analytics/workspace';
+import {
+  captureProjectMutation,
+  projectMutationHeaders,
+  rethrowProjectStateChanged,
+  throwIfProjectStateChanged,
+  type ProjectMutationContext,
+} from './project-git';
 
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';
@@ -591,15 +598,19 @@ type ProjectPatch = Omit<Partial<Project>, 'pendingPrompt' | 'customInstructions
 export async function patchProject(
   id: string,
   patch: ProjectPatch,
+  mutationContext = captureProjectMutation(id),
 ): Promise<Project | null> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
+        ...projectMutationHeaders(mutationContext),
       },
       body: JSON.stringify(patch),
+      signal: mutationContext?.signal,
     });
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { project: Project };
     // Any successful project patch can change fields rendered by the project
@@ -608,7 +619,8 @@ export async function patchProject(
     // pre-write value from coalescedGet's one-second burst window.
     evictCoalescedGet('local-projects');
     return json.project;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return null;
   }
 }
@@ -617,11 +629,17 @@ export async function patchProject(
  * Delete a project. The local daemon is the single authority, so the DELETE
  * goes straight to the project row.
  */
-export async function deleteProject(id: string): Promise<true> {
+export async function deleteProject(
+  id: string,
+  mutationContext = captureProjectMutation(id),
+): Promise<true> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+      headers: projectMutationHeaders(mutationContext),
+      signal: mutationContext?.signal,
     });
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) {
       let message = `project delete failed with status ${resp.status}`;
       let code: string | undefined;
@@ -664,6 +682,7 @@ export async function deleteProject(id: string): Promise<true> {
     removeDesignBrowserProjectCache(id);
     return true;
   } catch (error) {
+    rethrowProjectStateChanged(error);
     if (error instanceof ProjectDeleteError) throw error;
     throw new ProjectDeleteError(
       error instanceof Error ? error.message : 'Project delete request failed.',
@@ -693,6 +712,7 @@ type CreateConversationOptions = {
   forkFallbackMessage?: ChatMessage;
   forkFallbackPredecessorMessageId?: string | null;
   throwOnError?: boolean;
+  mutationContext?: ProjectMutationContext;
 };
 
 export async function listConversations(
@@ -735,6 +755,7 @@ export async function createConversation(
   // specific point in the source history.
   opts?: CreateConversationOptions,
 ): Promise<Conversation | null> {
+  const mutationContext = opts?.mutationContext ?? captureProjectMutation(projectId);
   try {
     const body: CreateConversationRequest = { title };
     if (opts?.sessionMode) {
@@ -746,7 +767,8 @@ export async function createConversation(
     if (opts?.forkAfterMessageId) {
       body.forkAfterMessageId = opts.forkAfterMessageId;
     }
-    let resp = await postConversation(projectId, body);
+    let resp = await postConversation(projectId, body, mutationContext);
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) {
       const message = await readErrorMessage(resp);
       const fallbackMessage = compactForkFallbackMessage(opts);
@@ -758,7 +780,9 @@ export async function createConversation(
             forkFallbackMessage: fallbackMessage,
             forkFallbackPredecessorMessageId: opts?.forkFallbackPredecessorMessageId,
           },
+          mutationContext,
         );
+        await throwIfProjectStateChanged(resp);
       } else {
         throw new ProjectConversationsHttpError(resp.status, message);
       }
@@ -770,6 +794,7 @@ export async function createConversation(
     evictConversationsRead(projectId);
     return json.conversation;
   } catch (error) {
+    rethrowProjectStateChanged(error);
     if (opts?.throwOnError) throw error;
     return null;
   }
@@ -778,6 +803,7 @@ export async function createConversation(
 function postConversation(
   projectId: string,
   body: CreateConversationRequest,
+  mutationContext?: ProjectMutationContext,
 ): Promise<Response> {
   return fetch(
     `/api/projects/${encodeURIComponent(projectId)}/conversations`,
@@ -785,8 +811,10 @@ function postConversation(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...projectMutationHeaders(mutationContext),
       },
       body: JSON.stringify(body),
+      signal: mutationContext?.signal,
     },
   );
 }
@@ -807,6 +835,7 @@ export async function patchConversation(
   projectId: string,
   conversationId: string,
   patch: Partial<Conversation>,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<Conversation | null> {
   try {
     const resp = await fetch(
@@ -815,15 +844,19 @@ export async function patchConversation(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          ...projectMutationHeaders(mutationContext),
         },
         body: JSON.stringify(patch),
+        signal: mutationContext?.signal,
       },
     );
+    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { conversation: Conversation };
     evictConversationsRead(projectId);
     return json.conversation;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return null;
   }
 }
@@ -831,15 +864,22 @@ export async function patchConversation(
 export async function deleteConversation(
   projectId: string,
   conversationId: string,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<boolean> {
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`,
-      { method: 'DELETE' },
+      {
+        method: 'DELETE',
+        headers: projectMutationHeaders(mutationContext),
+        signal: mutationContext?.signal,
+      },
     );
+    await throwIfProjectStateChanged(resp);
     if (resp.ok) evictConversationsRead(projectId);
     return resp.ok;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     return false;
   }
 }
@@ -900,10 +940,12 @@ async function readProjectMessageListError(resp: Response): Promise<{
 export async function listMessages(
   projectId: string,
   conversationId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<ChatMessage[]> {
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { signal: options?.signal },
     );
     if (!resp.ok) {
       const failure = await readProjectMessageListError(resp);
@@ -936,6 +978,7 @@ export interface SaveMessageOptions {
   // response arrives. Without keepalive the browser cancels the fetch
   // and the daemon never sees the final buffered text chunk.
   keepalive?: boolean;
+  mutationContext?: ProjectMutationContext;
 }
 
 export async function saveMessage(
@@ -944,6 +987,7 @@ export async function saveMessage(
   message: ChatMessage,
   options: SaveMessageOptions = {},
 ): Promise<ChatMessage | null> {
+  const mutationContext = options.mutationContext ?? captureProjectMutation(projectId);
   try {
     const body = {
       ...message,
@@ -956,17 +1000,21 @@ export async function saveMessage(
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          ...projectMutationHeaders(mutationContext),
         },
         body: JSON.stringify(body),
         ...(options.keepalive ? { keepalive: true } : {}),
+        signal: mutationContext?.signal,
       },
     );
+    await throwIfProjectStateChanged(response);
     if (!response.ok) return null;
     // The stored row, which a create-only claim may have kept from an earlier
     // writer. Callers that care compare it against what they sent.
     const saved = (await response.json()) as { message?: ChatMessage };
     return saved.message ?? null;
-  } catch {
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     // best-effort persistence — UI keeps the message in-memory either way
     return null;
   }
@@ -1170,18 +1218,22 @@ function newestTabsState(
 async function persistTabsToDaemon(
   projectId: string,
   state: OpenTabsState,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<void> {
   const requestKey = `project-tabs:${projectId}`;
   // Thin invalidation: a write makes any burst-shared read stale.
   evictCoalescedGet(requestKey);
-  await fetch(`/api/projects/${encodeURIComponent(projectId)}/tabs`, {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/tabs`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
+      ...projectMutationHeaders(mutationContext),
     },
     body: JSON.stringify(state),
     keepalive: true,
+    signal: mutationContext?.signal,
   });
+  await throwIfProjectStateChanged(response);
 }
 
 export async function loadTabs(
@@ -1190,6 +1242,7 @@ export async function loadTabs(
     reconcileNewerCacheToDaemon?: boolean;
   } = {},
 ): Promise<OpenTabsState> {
+  const mutationContext = captureProjectMutation(projectId);
   const cached = readCachedTabs(projectId);
   const requestKey = `project-tabs:${projectId}`;
   try {
@@ -1209,7 +1262,7 @@ export async function loadTabs(
       && latest === cached
       && (cached.updatedAt ?? 0) > (saved?.updatedAt ?? 0)
     ) {
-      void persistTabsToDaemon(projectId, cached).catch(() => {});
+      void persistTabsToDaemon(projectId, cached, mutationContext).catch(() => {});
     }
     return latest;
   } catch {
@@ -1221,10 +1274,12 @@ export async function saveTabs(
   projectId: string,
   state: OpenTabsState,
 ): Promise<void> {
+  const mutationContext = captureProjectMutation(projectId);
   const next = writeCachedTabs(projectId, state);
   try {
-    await persistTabsToDaemon(projectId, next);
-  } catch {
+    await persistTabsToDaemon(projectId, next, mutationContext);
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     // best-effort
   }
 }
@@ -1247,10 +1302,12 @@ export function cacheTabsLocally(
 export async function persistTabsToDaemonNow(
   projectId: string,
   state: OpenTabsState,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<void> {
   try {
-    await persistTabsToDaemon(projectId, state);
-  } catch {
+    await persistTabsToDaemon(projectId, state, mutationContext);
+  } catch (error) {
+    rethrowProjectStateChanged(error);
     // best-effort; the local cache (written via cacheTabsLocally) is canonical
     // and will re-push on the next loadTabs reconciliation.
   }
@@ -1490,6 +1547,7 @@ export async function uploadPluginFolder(files: File[]): Promise<PluginInstallOu
 export async function installGeneratedPluginFolder(
   projectId: string,
   relativePath: string,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<PluginInstallOutcome> {
   try {
     const request: ProjectPluginFolderInstallRequest = { path: relativePath };
@@ -1499,10 +1557,13 @@ export async function installGeneratedPluginFolder(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...projectMutationHeaders(mutationContext),
         },
         body: JSON.stringify(request),
+        signal: mutationContext?.signal,
       },
     );
+    await throwIfProjectStateChanged(resp);
     const outcome = await readPluginInstallOutcome(resp);
     if (outcome.ok) {
       // The event refreshes mounted consumers, but it is not durable: Home may
@@ -1516,6 +1577,7 @@ export async function installGeneratedPluginFolder(
     }
     return outcome;
   } catch (err) {
+    rethrowProjectStateChanged(err);
     return {
       ok: false,
       warnings: [],
@@ -1569,21 +1631,24 @@ export interface PluginShareTaskSnapshot {
 export async function publishGeneratedPluginToGitHub(
   projectId: string,
   relativePath: string,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<PluginShareOutcome> {
-  return postGeneratedPluginShareAction(projectId, relativePath, 'publish-github');
+  return postGeneratedPluginShareAction(projectId, relativePath, 'publish-github', mutationContext);
 }
 
 export async function contributeGeneratedPluginToOpenDesign(
   projectId: string,
   relativePath: string,
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<PluginShareOutcome> {
-  return postGeneratedPluginShareAction(projectId, relativePath, 'contribute-open-design');
+  return postGeneratedPluginShareAction(projectId, relativePath, 'contribute-open-design', mutationContext);
 }
 
 export async function startGeneratedPluginShareTask(
   projectId: string,
   relativePath: string,
   action: 'publish-github' | 'contribute-open-design',
+  mutationContext = captureProjectMutation(projectId),
 ): Promise<PluginShareTaskStart> {
   const resp = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/plugins/share-tasks`,
@@ -1591,10 +1656,13 @@ export async function startGeneratedPluginShareTask(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...projectMutationHeaders(mutationContext),
       },
       body: JSON.stringify({ path: relativePath, action }),
+      signal: mutationContext?.signal,
     },
   );
+  await throwIfProjectStateChanged(resp);
   const body = await resp.json().catch(() => null) as Partial<PluginShareTaskStart> & {
     error?: string | { message?: string };
     message?: string;
@@ -1619,6 +1687,7 @@ export async function waitGeneratedPluginShareTask(
   taskId: string,
   since: number,
   timeoutMs = 25_000,
+  signal?: AbortSignal,
 ): Promise<PluginShareTaskSnapshot> {
   const resp = await fetch(`/api/plugins/share-tasks/${encodeURIComponent(taskId)}/wait`, {
     method: 'POST',
@@ -1626,6 +1695,7 @@ export async function waitGeneratedPluginShareTask(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ since, timeoutMs }),
+    signal,
   });
   const body = await resp.json().catch(() => null) as PluginShareTaskSnapshot & {
     error?: string | { message?: string };
@@ -1703,6 +1773,7 @@ async function postGeneratedPluginShareAction(
   projectId: string,
   relativePath: string,
   action: 'publish-github' | 'contribute-open-design',
+  mutationContext?: ProjectMutationContext,
 ): Promise<PluginShareOutcome> {
   try {
     const resp = await fetch(
@@ -1711,10 +1782,13 @@ async function postGeneratedPluginShareAction(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...projectMutationHeaders(mutationContext),
         },
         body: JSON.stringify({ path: relativePath }),
+        signal: mutationContext?.signal,
       },
     );
+    await throwIfProjectStateChanged(resp);
     const body = (await resp.json().catch(() => null)) as Partial<PluginShareOutcome> | null;
     return {
       ok: Boolean(resp.ok && body?.ok),
@@ -1724,6 +1798,7 @@ async function postGeneratedPluginShareAction(
       ...(body?.code ? { code: body.code } : {}),
     };
   } catch (err) {
+    rethrowProjectStateChanged(err);
     return {
       ok: false,
       message: (err as Error).message,

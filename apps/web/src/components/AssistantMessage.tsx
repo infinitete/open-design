@@ -12,6 +12,10 @@ import {
 } from "../runtime/in-project-link";
 import { navigate } from "../router";
 import { deleteProjectFile, projectFileUrl, uploadProjectFiles } from "../providers/registry";
+import {
+  captureProjectMutation,
+  type ProjectMutationContext,
+} from "../state/project-git";
 import { useAnalytics } from "../analytics/provider";
 import {
   trackAssistantFeedbackButtonClick,
@@ -106,6 +110,82 @@ type TranslateFn = (
   vars?: Record<string, string | number>
 ) => string;
 
+/**
+ * A deliberately inert rendering of portable Git history. It never feeds the
+ * restored body through live message parsers: old question forms, tool cards,
+ * and feedback remain visible source/presentation rather than becoming active
+ * controls in the current project.
+ */
+export function RestoredHistoricalMessage({ message }: { message: ChatMessage }) {
+  const restored = message.restoredPresentation;
+  if (!restored) return null;
+  const feedback = message.feedback ?? restored.feedback;
+  return (
+    <article
+      className={`chat-message chat-message-${message.role} restored-historical-message`}
+      data-chat-message-id={message.id}
+      data-testid="restored-historical-message"
+    >
+      <div className="restored-historical-message__notice">Restored history · read only</div>
+      <pre className="restored-historical-message__source">{message.content}</pre>
+      {restored.contextItems.length ? (
+        <div className="restored-historical-message__context" aria-label="Historical context">
+          {restored.contextItems.map((item, index) => (
+            <span key={`${item.kind}:${item.label}:${index}`}>
+              {item.label}{item.unavailable ? ' (unavailable)' : ''}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {restored.displayEvents.length ? (
+        <div className="restored-historical-message__events" aria-label="Historical events">
+          {restored.displayEvents.map((event, index) => (
+            <div key={`${event.kind}:${index}`}>
+              {'text' in event ? event.text : 'title' in event ? event.title : 'label' in event ? event.label : event.kind}
+              {'resources' in event ? event.resources?.map(resource => (
+                <a key={resource.url} href={resource.url}>{resource.name}</a>
+              )) : null}
+              {'unavailable' in event && event.unavailable ? ' (unavailable)' : ''}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {restored.attachments.length ? (
+        <div className="restored-historical-message__attachments" aria-label="Historical attachments">
+          {restored.attachments.map(attachment => (
+            <a key={attachment.url} href={attachment.url}>
+              {attachment.kind === 'image' ? <img src={attachment.url} alt="" /> : null}
+              <span>{attachment.name}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+      {restored.commentSelections.length ? (
+        <div className="restored-historical-message__comments" aria-label="Historical comments">
+          {restored.commentSelections.map(selection => (
+            <section key={`${selection.order}:${selection.label}`}>
+              <strong>{selection.label}</strong>
+              <p>{selection.comment}</p>
+              <blockquote>{selection.currentText}</blockquote>
+              {selection.screenshotUrl ? <img src={selection.screenshotUrl} alt="" /> : null}
+              {selection.imageAttachments?.map(resource => (
+                <a key={resource.url} href={resource.url}>{resource.name}</a>
+              ))}
+            </section>
+          ))}
+        </div>
+      ) : null}
+      {feedback ? (
+        <div className="restored-historical-message__feedback" aria-label="Historical feedback">
+          <span>{feedback.rating}</span>
+          {feedback.reasonCodes?.map(reason => <span key={reason}>{reason}</span>)}
+          {feedback.customReason ? <p>{feedback.customReason}</p> : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 // The host reports whether it accepted the answer into a real chat turn. A
 // `false` result means a pre-run guard
 // prevented the send, so the inline form must remain editable.
@@ -115,6 +195,7 @@ export type QuestionFormSubmitHandler = (
   context?: RunContextSelection,
   sourceAssistantMessageId?: string,
   formId?: string,
+  mutationContext?: ProjectMutationContext,
 ) => boolean | void | Promise<boolean | void>;
 
 const DISCORD_INVITE_URL = "https://discord.gg/mHAjSMV6gz";
@@ -2929,13 +3010,17 @@ function FormBlock({
     [analytics.track, form.id, projectId],
   );
 
-  const rollbackPendingUploads = useCallback(async () => {
+  const rollbackPendingUploads = useCallback(async (
+    mutationContext: ProjectMutationContext | undefined = projectId
+      ? captureProjectMutation(projectId)
+      : undefined,
+  ) => {
     const pending = pendingUploadCleanupRef.current;
     if (pending.length === 0) return true;
     if (!projectId) return false;
     const deleted = await Promise.all(
       pending.map((attachment) =>
-        deleteProjectFile(projectId, attachment.path),
+        deleteProjectFile(projectId, attachment.path, mutationContext),
       ),
     );
     pendingUploadCleanupRef.current = pending.filter((_, index) => !deleted[index]);
@@ -2950,6 +3035,7 @@ function FormBlock({
       fileSubmissions: QuestionFormFileSubmission[] = [],
     ) => {
       if (submittingRef.current) return;
+      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
       // The occurrence is locked the moment the answer leaves the form, not
       // when the host finally settles it. Every await below — rolling back a
       // previous upload, uploading this answer's files, and above all the
@@ -2970,7 +3056,7 @@ function FormBlock({
       beginSubmission();
       if (
         pendingUploadCleanupRef.current.length > 0 &&
-        !(await rollbackPendingUploads())
+        !(await rollbackPendingUploads(mutationContext))
       ) {
         setUploadError(
           t("questions.uploadFailed", { failed: Math.max(1, pendingUploadCleanupRef.current.length) }),
@@ -2998,6 +3084,7 @@ function FormBlock({
           projectId,
           flatFiles.map((entry) => entry.file),
           undefined,
+          mutationContext,
         ).catch((error) => ({
           uploaded: [],
           failed: flatFiles.map((entry) => ({
@@ -3008,7 +3095,7 @@ function FormBlock({
         }));
         if (result.failed.length > 0 || result.uploaded.length !== flatFiles.length) {
           pendingUploadCleanupRef.current = result.uploaded;
-          await rollbackPendingUploads();
+          await rollbackPendingUploads(mutationContext);
           const detail = result.error ? ` (${result.error})` : "";
           setUploadError(t("questions.uploadFailed", { failed: flatFiles.length }) + detail);
           releaseSubmitLock();
@@ -3052,7 +3139,7 @@ function FormBlock({
       const rejectSubmission = async () => {
         if (attachments.length > 0) {
           pendingUploadCleanupRef.current = attachments;
-          if (!(await rollbackPendingUploads())) {
+          if (!(await rollbackPendingUploads(mutationContext))) {
             setUploadError(
               t("questions.uploadFailed", {
                 failed: Math.max(1, pendingUploadCleanupRef.current.length),
@@ -3070,8 +3157,8 @@ function FormBlock({
       try {
         submitOutcome =
           attachments.length > 0 || context
-            ? onSubmit?.(submittedText, attachments, context, undefined, form.id)
-            : onSubmit?.(submittedText, undefined, undefined, undefined, form.id);
+            ? onSubmit?.(submittedText, attachments, context, undefined, form.id, mutationContext)
+            : onSubmit?.(submittedText, undefined, undefined, undefined, form.id, mutationContext);
       } catch {
         void rejectSubmission();
         return;

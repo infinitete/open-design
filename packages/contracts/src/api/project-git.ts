@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { JsonValue } from '../common.js';
-import type { ApiError } from '../errors.js';
+import { API_ERROR_CODES, type ApiError } from '../errors.js';
 import type { PortableSnapshot } from './project-git-portable.js';
 
 export interface ProjectMutationRevision {
@@ -278,6 +278,7 @@ export type ProjectGitOpenResponse = ProjectGitAccepted;
 
 export interface ProjectGitHistoryRequest {
   cursor?: string;
+  path?: string;
 }
 export type ProjectGitHistoryResponse = ProjectGitHistoryPage;
 
@@ -337,7 +338,7 @@ const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
   z.record(jsonValueSchema),
 ]));
 
-const projectGitFileResponseSchema = z.object({
+export const ProjectGitFileResponseSchema = z.object({
   encoding: z.literal('base64'),
   content: z.string(),
   mediaType: z.string(),
@@ -362,7 +363,7 @@ export const ProjectGitResolutionSchema = z.union([
   z.object({
     conflictId: z.string().min(1),
     kind: z.literal('edit'),
-    file: projectGitFileResponseSchema,
+    file: ProjectGitFileResponseSchema,
   }).strict(),
   z.object({ conflictId: z.string().min(1), kind: z.literal('delete') }).strict(),
   z.object({
@@ -377,7 +378,7 @@ export const ProjectGitConflictContentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('text'), content: z.string() }).strict(),
   z.object({ kind: z.literal('json'), value: jsonValueSchema }).strict(),
   z.object({ kind: z.literal('resource'), resourceRef: z.string().min(1) }).strict(),
-  z.object({ kind: z.literal('file'), file: projectGitFileResponseSchema }).strict(),
+  z.object({ kind: z.literal('file'), file: ProjectGitFileResponseSchema }).strict(),
 ]);
 
 const projectGitConflictBaseSchema = z.object({
@@ -487,6 +488,89 @@ export const ProjectGitOperationResultSchema = z.object({
   dependencies: z.array(ProjectGitDependencySchema).optional(),
 }).strict().refine(value => value.existingProjectIds === undefined || (new Set(value.existingProjectIds).size === value.existingProjectIds.length
   && !value.existingProjectIds.includes(value.projectId ?? '')), 'Existing copies must be distinct from the opened project.');
+
+const ProjectGitApiErrorSchema = z.object({
+  code: z.enum(API_ERROR_CODES),
+  message: z.string(),
+  details: jsonValueSchema.optional(),
+  retryable: z.boolean().optional(),
+  requestId: z.string().optional(),
+  taskId: z.string().optional(),
+}).strict();
+
+const ProjectGitPhaseSchema = z.enum([
+  'enable_pending', 'waiting_idle', 'dirty', 'checkpointing', 'local_saved',
+  'pending_push', 'syncing', 'synced', 'paused', 'conflict', 'auth_required',
+  'external_git_busy', 'recovering', 'failed',
+]);
+
+export const ProjectGitStateSchema = z.object({
+  enabled: z.boolean(),
+  phase: ProjectGitPhaseSchema,
+  localHead: z.string().nullable(),
+  observedRemoteHead: z.string().nullable(),
+  confirmedRemoteHead: z.string().nullable(),
+  projectRevision: z.number().int().nonnegative(),
+  contentRevision: z.number().int().nonnegative(),
+  bindingGeneration: z.number().int().nonnegative(),
+  dirty: z.boolean(),
+  pendingPush: z.boolean(),
+  autoSync: z.boolean(),
+  operationId: z.string().nullable(),
+  error: ProjectGitApiErrorSchema.nullable(),
+  binding: z.object({
+    remoteConfigured: z.boolean(),
+    remoteLabel: z.string().nullable(),
+    branch: z.string().nullable(),
+  }).strict(),
+  dependencies: z.array(ProjectGitDependencySchema),
+}).strict().superRefine((state, context) => {
+  if (state.pendingPush && state.localHead === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['localHead'],
+      message: 'pending push requires a local head',
+    });
+  }
+});
+
+export const ProjectGitOperationSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum([
+    'enable_preview', 'enable', 'binding_preview', 'bind', 'unbind', 'pause',
+    'resume', 'sync', 'open', 'restore_preview', 'restore', 'resolve', 'retry',
+  ]),
+  status: z.enum(['queued', 'running', 'waiting', 'succeeded', 'failed']),
+  phase: ProjectGitPhaseSchema,
+  projectId: z.string().nullable(),
+  basis: ProjectGitBasisSchema,
+  result: ProjectGitOperationResultSchema.nullable(),
+  error: ProjectGitApiErrorSchema.nullable(),
+}).strict();
+
+export const ProjectGitCommitSchema = z.object({
+  oid: z.string().min(1),
+  parents: z.array(z.string()),
+  author: z.object({ name: z.string(), email: z.string().nullable() }).strict(),
+  authoredAt: z.number().finite(),
+  message: z.string(),
+  source: z.enum(['open-design', 'external']),
+  snapshotKind: z.enum(['complete', 'files_only']),
+  changedPaths: z.object({
+    added: z.array(z.string()),
+    modified: z.array(z.string()),
+    deleted: z.array(z.string()),
+  }).strict(),
+}).strict();
+
+export const ProjectGitHistoryPageSchema = z.object({
+  commits: z.array(ProjectGitCommitSchema),
+  nextCursor: z.string().nullable(),
+}).strict();
+
+export const ProjectGitConflictsResponseSchema = z.object({
+  conflicts: z.array(ProjectGitConflictSchema),
+}).strict();
 
 export const ProjectGitEnableRequestSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('preview'), ...projectMutationRevisionSchema }).strict(),

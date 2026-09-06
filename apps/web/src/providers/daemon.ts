@@ -30,6 +30,11 @@ import type {
   StrategyTaskProjectionV2,
 } from '@open-design/contracts';
 import type { StreamHandlers } from './anthropic';
+import {
+  captureProjectMutation,
+  projectMutationHeaders,
+  type ProjectMutationContext,
+} from '../state/project-git';
 
 /**
  * Returns the front-end carrier that's about to send this request:
@@ -302,6 +307,8 @@ export interface DaemonStreamOptions {
   // with cwd = the project folder so its file tools target the right
   // workspace.
   projectId?: string | null;
+  /** Frozen at the user/queue boundary; never recaptured after preparation. */
+  mutationContext?: ProjectMutationContext;
   conversationId?: string | null;
   sessionMode?: ChatSessionMode;
   userMessageId?: string | null;
@@ -658,6 +665,7 @@ export async function streamViaDaemon({
   cancelSignal,
   handlers,
   projectId,
+  mutationContext: suppliedMutationContext,
   conversationId,
   sessionMode,
   userMessageId,
@@ -688,6 +696,11 @@ export async function streamViaDaemon({
   taskExecutionId,
   onStrategyTaskSettled,
 }: DaemonStreamOptions): Promise<void> {
+  const mutationContext = suppliedMutationContext
+    ?? (projectId ? captureProjectMutation(projectId) : undefined);
+  const browserSignal = mutationContext
+    ? AbortSignal.any([signal, mutationContext.signal])
+    : signal;
   const emitRunStatus = (status: ChatRunStatus) => {
     onRunStatus?.(status);
     notifyRunsChanged();
@@ -725,6 +738,9 @@ export async function streamViaDaemon({
     ...(mediaExecution ? { mediaExecution } : {}),
     ...(titleGeneration?.enabled ? { titleGeneration: { enabled: true } } : {}),
     ...(analyticsHints ? { analyticsHints } : {}),
+    ...(mutationContext?.expectedProjectRevision === undefined
+      ? {}
+      : { expectedProjectRevision: mutationContext.expectedProjectRevision }),
   };
   const body = JSON.stringify(request);
 
@@ -738,8 +754,10 @@ export async function streamViaDaemon({
         // The daemon falls back to a User-Agent sniff when this header is
         // absent (e.g. third-party clients), so omitting it in tests is OK.
         'X-OD-Client': detectClientType(),
+        ...projectMutationHeaders(mutationContext),
       },
       body,
+      signal: browserSignal,
     });
 
     if (!createResp.ok) {
@@ -767,7 +785,7 @@ export async function streamViaDaemon({
     await consumeDaemonRun({
       agentId,
       runId,
-      signal,
+      signal: browserSignal,
       cancelSignal,
       handlers,
       initialLastEventId,

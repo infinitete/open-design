@@ -1,0 +1,403 @@
+import {
+  ProjectGitCommitSchema,
+  ProjectGitConflictsResponseSchema,
+  ProjectGitFileResponseSchema,
+  ProjectGitHistoryPageSchema,
+  ProjectGitOperationSchema,
+  ProjectGitStateSchema,
+  parsePortableSnapshot,
+  type ApiError,
+  type ProjectGitAction,
+  type ProjectGitCommit,
+  type ProjectGitConflictsResponse,
+  type ProjectGitFileResponse,
+  type ProjectGitHistoryPage,
+  type ProjectGitOperation,
+  type ProjectGitState,
+  type PortableSnapshot,
+} from '@open-design/contracts';
+import {
+  createProjectGitStateStore,
+  type ProjectGitStateSnapshot,
+  type ProjectGitStateStore,
+} from '../state/project-git';
+import { invalidateProjectBrowserEpoch, registerProjectMutationStore } from '../state/project-git';
+import { subscribeProjectEvents, type ProjectEvent } from './project-events';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
+
+export class ProjectGitHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly apiError: ApiError,
+  ) {
+    super(apiError.message);
+    this.name = 'ProjectGitHttpError';
+  }
+}
+
+type Fetch = typeof fetch;
+
+export interface ProjectGitClientOptions {
+  fetchFn?: Fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  pollIntervalMs?: number;
+}
+
+export interface ProjectGitExecuteOptions {
+  idempotencyKey: string;
+  signal?: AbortSignal;
+}
+
+export interface ProjectGitClient {
+  state(projectId: string, signal?: AbortSignal): Promise<ProjectGitState>;
+  execute(
+    projectId: string | null,
+    action: ProjectGitAction,
+    expectedProjectRevision: number | undefined,
+    options: ProjectGitExecuteOptions,
+  ): Promise<ProjectGitOperation>;
+  operation(operationId: string, signal?: AbortSignal): Promise<ProjectGitOperation>;
+  history(projectId: string, cursor?: string, path?: string, signal?: AbortSignal): Promise<ProjectGitHistoryPage>;
+  commit(projectId: string, oid: string, signal?: AbortSignal): Promise<ProjectGitCommit>;
+  file(projectId: string, oid: string, path: string, signal?: AbortSignal): Promise<ProjectGitFileResponse>;
+  conversations(projectId: string, oid: string, signal?: AbortSignal): Promise<PortableSnapshot | null>;
+  conflicts(projectId: string, signal?: AbortSignal): Promise<ProjectGitConflictsResponse>;
+}
+
+function projectPath(projectId: string, suffix = ''): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/git${suffix}`;
+}
+
+async function responseJson(response: Response): Promise<unknown> {
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    value = null;
+  }
+  if (!response.ok) {
+    const error = value && typeof value === 'object' && 'error' in value
+      ? (value as { error?: unknown }).error
+      : null;
+    const apiError: ApiError = error && typeof error === 'object'
+      && typeof (error as { code?: unknown }).code === 'string'
+      && typeof (error as { message?: unknown }).message === 'string'
+      ? error as ApiError
+      : { code: 'INTERNAL_ERROR', message: `Request failed (${response.status})` };
+    throw new ProjectGitHttpError(response.status, apiError);
+  }
+  return value;
+}
+
+function parse<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } }, value: unknown): T {
+  const result = schema.safeParse(value);
+  if (!result.success) throw new Error('Invalid project Git response');
+  return result.data;
+}
+
+async function waitForPoll(
+  sleep: (milliseconds: number) => Promise<void>,
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!signal) return sleep(milliseconds);
+  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  let onAbort: (() => void) | undefined;
+  try {
+    await Promise.race([
+      sleep(milliseconds),
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+export function createProjectGitClient(options: ProjectGitClientOptions = {}): ProjectGitClient {
+  const fetchFn = options.fetchFn ?? fetch;
+  const sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+
+  const get = async (url: string, signal?: AbortSignal): Promise<unknown> => responseJson(await fetchFn(url, { signal }));
+  const mutate = async (
+    url: string,
+    method: 'POST' | 'PATCH',
+    body: Record<string, unknown>,
+    expectedProjectRevision: number | undefined,
+    executeOptions: ProjectGitExecuteOptions,
+  ): Promise<string> => {
+    const response = await fetchFn(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': executeOptions.idempotencyKey,
+        ...(expectedProjectRevision === undefined
+          ? {}
+          : { 'X-OD-Project-Revision': String(expectedProjectRevision) }),
+      },
+      body: JSON.stringify({
+        ...body,
+        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
+      }),
+      signal: executeOptions.signal,
+    });
+    const accepted = await responseJson(response);
+    if (!accepted || typeof accepted !== 'object'
+      || typeof (accepted as { operationId?: unknown }).operationId !== 'string') {
+      throw new Error('Invalid project Git response');
+    }
+    return (accepted as { operationId: string }).operationId;
+  };
+
+  const client: ProjectGitClient = {
+    async state(projectId, signal) {
+      return parse(ProjectGitStateSchema, await get(projectPath(projectId), signal));
+    },
+    async operation(operationId, signal) {
+      return parse(ProjectGitOperationSchema, await get(`/api/project-git-operations/${encodeURIComponent(operationId)}`, signal));
+    },
+    async execute(projectId, action, expectedProjectRevision, executeOptions) {
+      let url: string;
+      let method: 'POST' | 'PATCH' = 'POST';
+      let body: Record<string, unknown>;
+      switch (action.kind) {
+        case 'enable_preview':
+          url = projectPath(projectId!, '/enable'); body = { mode: 'preview' }; break;
+        case 'enable':
+          url = projectPath(projectId!, '/enable'); body = { mode: 'confirm', previewId: action.previewId }; break;
+        case 'binding_preview':
+          url = projectPath(projectId!, '/binding-preview'); body = { url: action.url, branch: action.branch }; break;
+        case 'bind':
+          url = projectPath(projectId!, '/bind'); body = { previewId: action.previewId, ...(action.confirmation ? { confirmation: action.confirmation } : {}) }; break;
+        case 'unbind':
+          url = projectPath(projectId!, '/unbind'); body = {}; break;
+        case 'pause': case 'resume':
+          url = projectPath(projectId!); method = 'PATCH'; body = { action: action.kind }; break;
+        case 'sync':
+          url = projectPath(projectId!, '/sync'); body = {}; break;
+        case 'open':
+          url = '/api/import/git'; body = { url: action.url, branch: action.branch }; break;
+        case 'restore_preview':
+          url = projectPath(projectId!, '/restore-preview'); body = { oid: action.oid }; break;
+        case 'restore':
+          url = projectPath(projectId!, '/restore'); body = { previewId: action.previewId }; break;
+        case 'resolve':
+          url = projectPath(projectId!, '/conflicts/resolve');
+          body = { operationId: action.operationId, resolutions: action.resolutions, basis: action.basis };
+          break;
+        case 'retry':
+          url = `/api/project-git-operations/${encodeURIComponent(action.operationId)}/retry`;
+          body = { operationId: action.operationId };
+          break;
+      }
+      const operationId = await mutate(
+        url,
+        method,
+        body,
+        action.kind === 'open' ? undefined : expectedProjectRevision,
+        executeOptions,
+      );
+      for (;;) {
+        const operation = await client.operation(operationId, executeOptions.signal);
+        if (operation.status !== 'queued' && operation.status !== 'running') return operation;
+        await waitForPoll(sleep, pollIntervalMs, executeOptions.signal);
+      }
+    },
+    async history(projectId, cursor, path, signal) {
+      const query = new URLSearchParams();
+      if (cursor) query.set('cursor', cursor);
+      if (path) query.set('path', path);
+      const suffix = query.size ? `?${query.toString()}` : '';
+      return parse(ProjectGitHistoryPageSchema, await get(projectPath(projectId, `/history${suffix}`), signal));
+    },
+    async commit(projectId, oid, signal) {
+      return parse(ProjectGitCommitSchema, await get(projectPath(projectId, `/commits/${encodeURIComponent(oid)}`), signal));
+    },
+    async file(projectId, oid, path, signal) {
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+      return parse(ProjectGitFileResponseSchema, await get(projectPath(projectId, `/commits/${encodeURIComponent(oid)}/files/${encodedPath}`), signal));
+    },
+    async conversations(projectId, oid, signal) {
+      const value = await get(projectPath(projectId, `/commits/${encodeURIComponent(oid)}/conversations`), signal);
+      if (value === null) return null;
+      return parsePortableSnapshot(value);
+    },
+    async conflicts(projectId, signal) {
+      return parse(ProjectGitConflictsResponseSchema, await get(projectPath(projectId, '/conflicts'), signal));
+    },
+  };
+  return client;
+}
+
+export interface ProjectGitHubOptions {
+  subscribeEvents?: (
+    projectId: string,
+    listener: (event: ProjectEvent) => void,
+    options?: { onReady?: () => void },
+  ) => () => void;
+}
+
+export interface ProjectGitHub {
+  subscribe(projectId: string, listener: (snapshot: ProjectGitStateSnapshot) => void): () => void;
+  refresh(projectId: string): Promise<void>;
+  store(projectId: string): ProjectGitStateStore;
+}
+
+interface HubEntry {
+  listeners: Set<(snapshot: ProjectGitStateSnapshot) => void>;
+  store: ProjectGitStateStore;
+  stopEvents: (() => void) | null;
+  inFlight: Promise<void> | null;
+  readController: AbortController | null;
+}
+
+export function createProjectGitHub(
+  client: Pick<ProjectGitClient, 'state'>,
+  options: ProjectGitHubOptions = {},
+): ProjectGitHub {
+  const entries = new Map<string, HubEntry>();
+
+  const getEntry = (projectId: string): HubEntry => {
+    const existing = entries.get(projectId);
+    if (existing) return existing;
+    const store = createProjectGitStateStore(null, {
+      onRevisionAdvance: () => invalidateProjectBrowserEpoch(projectId),
+    });
+    const entry: HubEntry = {
+      listeners: new Set(),
+      store,
+      stopEvents: null,
+      inFlight: null,
+      readController: null,
+    };
+    store.subscribe(() => {
+      for (const listener of entry.listeners) listener(store.snapshot());
+    });
+    registerProjectMutationStore(projectId, store);
+    entries.set(projectId, entry);
+    return entry;
+  };
+
+  const refresh = async (projectId: string): Promise<void> => {
+    const entry = getEntry(projectId);
+    if (entry.inFlight) return entry.inFlight;
+    const token = entry.store.beginRead();
+    const controller = new AbortController();
+    entry.readController = controller;
+    const pending = client.state(projectId, controller.signal)
+      .then(state => {
+        if (!controller.signal.aborted) entry.store.acceptRead(token, state);
+      })
+      .catch(error => {
+        if (controller.signal.aborted) throw error;
+        const failure = error instanceof Error ? error : new Error(String(error));
+        entry.store.failRead(token, failure);
+        throw failure;
+      })
+      .finally(() => {
+        if (entry.inFlight === pending) entry.inFlight = null;
+        if (entry.readController === controller) entry.readController = null;
+      });
+    entry.inFlight = pending;
+    return pending;
+  };
+
+  return {
+    refresh,
+    store: projectId => getEntry(projectId).store,
+    subscribe(projectId, listener) {
+      const entry = getEntry(projectId);
+      entry.listeners.add(listener);
+      listener(entry.store.snapshot());
+      if (entry.listeners.size === 1) {
+        void refresh(projectId).catch(() => {});
+        const subscribeEvents = options.subscribeEvents ?? subscribeProjectEvents;
+        if (subscribeEvents) {
+          entry.stopEvents = subscribeEvents(projectId, event => {
+            if (event.type === 'project-git-state') entry.store.accept(event.state, 'event');
+          }, {
+            onReady: () => {
+              const pending = entry.inFlight;
+              if (!pending) {
+                void refresh(projectId).catch(() => {});
+                return;
+              }
+              // The ready handshake closes the initial GET/SSE race. If that
+              // GET is still running, a shared follow-up read must happen
+              // after it settles rather than merely joining the older read.
+              void pending.catch(() => {}).then(() => {
+                if (entry.listeners.size > 0) return refresh(projectId);
+              }).catch(() => {});
+            },
+          });
+        }
+      }
+      return () => {
+        entry.listeners.delete(listener);
+        if (entry.listeners.size === 0) {
+          entry.stopEvents?.();
+          entry.stopEvents = null;
+          entry.readController?.abort();
+          entry.readController = null;
+          entry.inFlight = null;
+        }
+      };
+    },
+  };
+}
+
+const defaultProjectGitClient = createProjectGitClient();
+const defaultProjectGitHub = createProjectGitHub(defaultProjectGitClient);
+const EMPTY_PROJECT_GIT_SNAPSHOT: ProjectGitStateSnapshot = {
+  state: null,
+  loading: false,
+  error: null,
+  writeLocked: false,
+  generation: 0,
+};
+
+export function useProjectGit(projectId: string | null | undefined) {
+  const subscribe = useCallback((listener: () => void) => {
+    if (!projectId) return () => {};
+    return defaultProjectGitHub.subscribe(projectId, listener);
+  }, [projectId]);
+  const getSnapshot = useCallback(() => projectId
+    ? defaultProjectGitHub.store(projectId).snapshot()
+    : EMPTY_PROJECT_GIT_SNAPSHOT, [projectId]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  return useMemo(() => ({
+    ...snapshot,
+    refresh: () => projectId ? defaultProjectGitHub.refresh(projectId) : Promise.resolve(),
+    capture: () => projectId ? defaultProjectGitHub.store(projectId).capture() : undefined,
+    isCurrent: (context: import('../state/project-git').ProjectMutationContext) => projectId
+      ? defaultProjectGitHub.store(projectId).isCurrent(context)
+      : false,
+    completeReconciliation: (generation: number) => projectId
+      ? defaultProjectGitHub.store(projectId).completeReconciliation(
+          { generation },
+        )
+      : false,
+    execute: (action: ProjectGitAction, options?: Partial<ProjectGitExecuteOptions>) => {
+      const context = projectId ? defaultProjectGitHub.store(projectId).capture() : undefined;
+      const idempotencyKey = options?.idempotencyKey
+        ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`);
+      return defaultProjectGitClient.execute(
+        action.kind === 'open' ? null : projectId ?? null,
+        action,
+        context?.expectedProjectRevision,
+        {
+          idempotencyKey,
+          signal: context?.signal && options?.signal
+            ? AbortSignal.any([context.signal, options.signal])
+            : context?.signal ?? options?.signal,
+        },
+      );
+    },
+  }), [projectId, snapshot]);
+}
