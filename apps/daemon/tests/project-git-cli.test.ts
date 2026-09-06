@@ -707,11 +707,26 @@ describe('od git process boundary', () => {
             nested: {
               password: 'plain-password-value',
               PASSWD: 'plain-passwd-value',
+              pass_word: 'plain-pass-underscore-word-value',
+              'pass-word': 'plain-pass-hyphen-word-value',
+              'pass.word': 'plain-pass-dot-word-value',
+              passWord: 'plain-pass-camel-word-value',
+              pass_wd: 'plain-pass-underscore-wd-value',
+              passWd: 'plain-pass-camel-wd-value',
               accessToken: 'plain-access-token-value',
               'api-key': 'plain-api-key-value',
               secret: { deeply: 'plain-secret-object' },
               credential: ['plain-credential-array'],
               authorization: 'plain-authorization-value',
+              array: [{
+                pass_word: ['plain-array-password-value'],
+                monkey: 'banana',
+                operationId: 'nested-operation-1',
+                requestId: 'nested-request-1',
+                taskId: 'nested-task-1',
+                status: 'waiting',
+                nextStep: 'inspect logs',
+              }],
             },
             'tool-private-token': 'credential key',
           },
@@ -737,11 +752,26 @@ describe('od git process boundary', () => {
         nested: {
           password: '[redacted]',
           PASSWD: '[redacted]',
+          pass_word: '[redacted]',
+          'pass-word': '[redacted]',
+          'pass.word': '[redacted]',
+          passWord: '[redacted]',
+          pass_wd: '[redacted]',
+          passWd: '[redacted]',
           accessToken: '[redacted]',
           'api-key': '[redacted]',
           secret: '[redacted]',
           credential: '[redacted]',
           authorization: '[redacted]',
+          array: [{
+            pass_word: '[redacted]',
+            monkey: 'banana',
+            operationId: 'nested-operation-1',
+            requestId: 'nested-request-1',
+            taskId: 'nested-task-1',
+            status: 'waiting',
+            nextStep: 'inspect logs',
+          }],
         },
       },
       retryable: true,
@@ -752,6 +782,10 @@ describe('od git process boundary', () => {
       'user:pass', 'query-secret', 'YmFkOmNyZWRlbnRpYWw=', 'assigned-secret',
       'bearer-secret', 'detail-secret', 'tool-private-token',
       'plain-password-value', 'plain-passwd-value', 'plain-access-token-value',
+      'plain-pass-underscore-word-value', 'plain-pass-hyphen-word-value',
+      'plain-pass-dot-word-value', 'plain-pass-camel-word-value',
+      'plain-pass-underscore-wd-value', 'plain-pass-camel-wd-value',
+      'plain-array-password-value',
       'plain-api-key-value', 'plain-secret-object', 'plain-credential-array',
       'plain-authorization-value',
     ]) {
@@ -769,9 +803,15 @@ describe('od git process boundary', () => {
     expect(humanResult.stderr).toContain('op-1');
     expect(humanResult.stderr).toContain('detail-request-1');
     expect(humanResult.stderr).toContain('detail-task-1');
+    expect(humanResult.stderr).toContain('banana');
+    expect(humanResult.stderr).toContain('nested-operation-1');
+    expect(humanResult.stderr).toContain('nested-request-1');
+    expect(humanResult.stderr).toContain('nested-task-1');
+    expect(humanResult.stderr).toContain('waiting');
+    expect(humanResult.stderr).toContain('inspect logs');
     expect(() => JSON.parse(humanResult.stderr)).toThrow();
     expect(humanResult.stderr).not.toMatch(
-      /query-secret|assigned-secret|bearer-secret|detail-secret|tool-private-token|plain-[a-z-]+-value|plain-secret-object|plain-credential-array/u,
+      /query-secret|assigned-secret|bearer-secret|detail-secret|tool-private-token|plain-[a-z-]+-value|plain-secret-object|plain-credential-array|plain-array-password-value/u,
     );
   });
 

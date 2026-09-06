@@ -391,7 +391,9 @@ function isSensitiveDetailKey(key: string): boolean {
     .split(/[^a-z0-9]+/u)
     .filter(Boolean);
   const normalized = words.join('');
-  return normalized === 'accesstoken'
+  return normalized === 'password'
+    || normalized === 'passwd'
+    || normalized === 'accesstoken'
     || normalized === 'apikey'
     || words.some(word => SENSITIVE_DETAIL_KEY_WORDS.has(word));
 }
