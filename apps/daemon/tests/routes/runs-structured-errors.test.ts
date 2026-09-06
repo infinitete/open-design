@@ -3,12 +3,55 @@ import type http from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 
 import { sendApiError } from '../../src/http/api-errors.js';
+import { GitDomainError } from '../../src/services/project-git/errors.js';
 import {
   registerRunCreateRoute,
   sendStructuredRunCreateFailure,
 } from '../../src/routes/runs.js';
 
 describe('Run creation structured failures', () => {
+  it('preserves the standard project Git domain envelope from pre-run admission', async () => {
+    const app = express();
+    app.use(express.json());
+    registerRunCreateRoute(
+      app,
+      async () => {
+        throw new GitDomainError(
+          'PROJECT_STATE_CHANGED',
+          409,
+          'Reload the project before editing.',
+        );
+      },
+      sendApiError as Parameters<typeof registerRunCreateRoute>[2],
+    );
+    const server = await new Promise<http.Server>((resolve) => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('missing test server address');
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: 'PROJECT_STATE_CHANGED',
+          message: 'Reload the project before editing.',
+        },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      }));
+    }
+  });
+
   it('returns sanitized JSON when preparation throws at the HTTP boundary', async () => {
     const app = express();
     app.use(express.json());

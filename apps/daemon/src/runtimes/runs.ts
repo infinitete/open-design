@@ -520,6 +520,12 @@ function durableRunState(run) {
     schemaVersion: RUN_STATE_SCHEMA_VERSION,
     id: run.id,
     projectId: run.projectId,
+    ...(Number.isSafeInteger(run.expectedProjectRevision)
+      ? { expectedProjectRevision: run.expectedProjectRevision }
+      : {}),
+    ...(Number.isSafeInteger(run.projectGitBindingGeneration)
+      ? { projectGitBindingGeneration: run.projectGitBindingGeneration }
+      : {}),
     conversationId: run.conversationId,
     assistantMessageId: run.assistantMessageId,
     clientRequestId: run.clientRequestId,
@@ -679,6 +685,10 @@ export function createChatRunService({
   // durable but before the terminal SSE event is published, so local outbox
   // writes share the exact terminal timestamp without delaying on delivery.
   onTerminal = null,
+  // Optional synchronous settled hook. It runs after terminal persistence,
+  // the run-owned finalizer, and the final persistence pass. Resource permits
+  // therefore cover every local terminal write without delaying on network I/O.
+  onSettled = null,
 }) {
   const runs = new Map();
   const runIdsByClientRequestId = new Map();
@@ -690,6 +700,15 @@ export function createChatRunService({
       onTerminal(run, status, terminalAt);
     } catch (error) {
       console.warn('[runs] terminal local finalizer failed', error);
+    }
+  };
+
+  const settleTerminalLocally = (run) => {
+    if (!onSettled) return;
+    try {
+      onSettled(run);
+    } catch (error) {
+      console.warn('[runs] terminal settled hook failed', error);
     }
   };
 
@@ -781,6 +800,14 @@ export function createChatRunService({
     const run = {
       ...state,
       projectId: typeof state.projectId === 'string' ? state.projectId : null,
+      expectedProjectRevision:
+        Number.isSafeInteger(state.expectedProjectRevision) && state.expectedProjectRevision >= 0
+          ? state.expectedProjectRevision
+          : undefined,
+      projectGitBindingGeneration:
+        Number.isSafeInteger(state.projectGitBindingGeneration) && state.projectGitBindingGeneration >= 1
+          ? state.projectGitBindingGeneration
+          : undefined,
       conversationId: typeof state.conversationId === 'string' ? state.conversationId : null,
       assistantMessageId:
         typeof state.assistantMessageId === 'string' ? state.assistantMessageId : null,
@@ -818,6 +845,10 @@ export function createChatRunService({
     const run = {
       id,
       projectId: typeof meta.projectId === 'string' && meta.projectId ? meta.projectId : null,
+      expectedProjectRevision:
+        Number.isSafeInteger(meta.expectedProjectRevision) && meta.expectedProjectRevision >= 0
+          ? meta.expectedProjectRevision
+          : undefined,
       conversationId: typeof meta.conversationId === 'string' && meta.conversationId ? meta.conversationId : null,
       assistantMessageId: typeof meta.assistantMessageId === 'string' && meta.assistantMessageId ? meta.assistantMessageId : null,
       clientRequestId: typeof meta.clientRequestId === 'string' && meta.clientRequestId ? meta.clientRequestId : null,
@@ -1342,15 +1373,19 @@ export function createChatRunService({
     // terminal path — including a startup throw that never reached the child
     // lifecycle cleanup — so a failed run can never leave its capability token
     // live for the token TTL. Best-effort + one-shot.
-    if (typeof run.onFinalize === 'function') {
-      const finalize = run.onFinalize;
-      run.onFinalize = null;
-      try { finalize(); } catch { /* best-effort */ }
+    try {
+      if (typeof run.onFinalize === 'function') {
+        const finalize = run.onFinalize;
+        run.onFinalize = null;
+        try { finalize(); } catch { /* best-effort */ }
+      }
+    } finally {
+      // Terminal finalizers can add artifact metadata after the authoritative
+      // terminal timestamp snapshot. Persist once more before publishing `end`
+      // so restart hydration sees the same artifact result as live clients.
+      persistState(run);
+      settleTerminalLocally(run);
     }
-    // Terminal finalizers can add artifact metadata after the authoritative
-    // terminal timestamp snapshot. Persist once more before publishing `end`
-    // so restart hydration sees the same artifact result as live clients.
-    persistState(run);
     emit(run, 'end', {
       code,
       signal,

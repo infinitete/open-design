@@ -12,9 +12,11 @@ import { migrateProjectGit } from '../../../src/storage/project-git-migrations.j
 import { createProjectGitStore } from '../../../src/storage/project-git.js';
 import { getProjectGate } from '../../../src/services/project-git/gate.js';
 import * as gitProcess from '../../../src/services/project-git/git-process.js';
-import { prepareCheckpoint, publishCheckpoint, journalCheckpoint, readCheckpointPublication, computeCheckpointContentDigest } from '../../../src/services/project-git/checkpoint.js';
+import { prepareCheckpoint, publishCheckpoint, journalCheckpoint, readCheckpointPublication, computeCheckpointContentDigest, isPrivateProjectGitPath } from '../../../src/services/project-git/checkpoint.js';
 import type { CheckpointCoordination } from '../../../src/services/project-git/checkpoint.js';
 import { parsePortableEntries, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
+import { projectGitPaths } from '../../../src/services/project-git/paths.js';
+import { materializeOdNextDeviceFrames } from '../../../src/strategies/od-next/device-frames.js';
 
 // Keep actual filesystem behavior; the returned namespace permits focused directory-fsync fault injection.
 vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
@@ -321,6 +323,130 @@ describe('consistent project checkpoints', () => {
     const error = await prepareCheckpoint(f.input).catch(error => error);
     expect(error).toMatchObject({ code: 'VALIDATION_FAILED', details: { paths: [path] } });
     expect(JSON.stringify(error)).not.toContain('private-value-do-not-log');
+  });
+
+  it.each([
+    '.mcp.json',
+    'nested/.mcp.json',
+    '.pi/session.json',
+    'nested/.pi/transcript.json',
+    '.transcript.jsonl',
+    'nested/.transcript.jsonl',
+    '.transcript.jsonl.tmp.123.abcdef12',
+    '.transcript.lock',
+  ])('classifies %s as private configuration', path => {
+    expect(isPrivateProjectGitPath(path)).toBe(true);
+  });
+
+  it('excludes exact-root untracked transcript/finalize remnants without broadly ignoring tracked collisions', () => {
+    expect(projectGitPaths([], [
+      '.transcript.jsonl',
+      '.transcript.jsonl.tmp.123.abcdef12',
+      '.transcript.lock',
+      '.finalize.lock',
+      'DESIGN.md.tmp.123.abcdef12',
+      'nested/.finalize.lock',
+      'other.tmp.123.abcdef12',
+    ])).toEqual(['nested/.finalize.lock', 'other.tmp.123.abcdef12']);
+    expect(projectGitPaths(['.finalize.lock', 'DESIGN.md.tmp.123.abcdef12'], [])).toEqual([
+      '.finalize.lock',
+      'DESIGN.md.tmp.123.abcdef12',
+    ]);
+  });
+
+  it('excludes an exact untracked root .mcp.json runtime file without reading or checkpointing it', async () => {
+    const f = await fixture();
+    await writeFile(join(f.a, '.mcp.json'), 'FIXTURE_OAUTH_TOKEN');
+    await writeFile(join(f.a, 'index.html'), 'safe change');
+
+    const candidate = await prepareCheckpoint(f.input);
+
+    expect(candidate.sourceDigests).not.toHaveProperty('.mcp.json');
+    expect(candidate.sourceDigests).toHaveProperty('index.html');
+    expect(await readFile(join(f.a, '.mcp.json'), 'utf8')).toBe('FIXTURE_OAUTH_TOKEN');
+    expect(JSON.stringify(candidate)).not.toContain('FIXTURE_OAUTH_TOKEN');
+  });
+
+  it('rejects a tracked root .mcp.json even when the runtime exclusion applies to untracked files', async () => {
+    const f = await fixture(true, async f => {
+      await writeFile(join(f.a, '.mcp.json'), 'FIXTURE_TRACKED_OAUTH_TOKEN');
+      await f.git(f.a, 'add', '.mcp.json');
+      await f.git(f.a, 'commit', '-m', 'tracked private runtime config');
+    });
+
+    const error = await prepareCheckpoint(f.input).catch(error => error);
+    expect(error).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { paths: ['.mcp.json'] },
+    });
+    expect(JSON.stringify(error)).not.toContain('FIXTURE_TRACKED_OAUTH_TOKEN');
+  });
+
+  it('excludes untracked skill caches and Pi transcripts but preserves unproven frame content', async () => {
+    const f = await fixture();
+    await writeEntries(f.a, new Map([
+      ['.od-skills/cache/skill.json', Buffer.from('generated skill cache')],
+      ['.od-frames/cache/frame.json', Buffer.from('generated frame cache')],
+      ['.pi/session/transcript.json', Buffer.from('FIXTURE_PI_TRANSCRIPT')],
+      ['index.html', Buffer.from('safe change')],
+    ]));
+
+    const candidate = await prepareCheckpoint(f.input);
+
+    expect(candidate.sourceDigests).toHaveProperty('index.html');
+    expect(candidate.sourceDigests).not.toHaveProperty('.od-skills/cache/skill.json');
+    expect(candidate.sourceDigests).toHaveProperty('.od-frames/cache/frame.json');
+    expect(candidate.sourceDigests).not.toHaveProperty('.pi/session/transcript.json');
+    expect(JSON.stringify(candidate)).not.toContain('FIXTURE_PI_TRANSCRIPT');
+  });
+
+  it('excludes only digest-matching daemon-owned frame files and preserves user or edited frame content', async () => {
+    const f = await fixture();
+    await materializeOdNextDeviceFrames({
+      cwd: f.a,
+      resources: [{
+        path: './assets/task-profiles/prototype/device-frames/iphone.html',
+        text: '<main>daemon frame</main>',
+      }],
+    });
+    await writeFile(join(f.a, '.od-frames', 'user.html'), 'user frame');
+
+    const owned = await prepareCheckpoint(f.input);
+    expect(owned.sourceDigests).not.toHaveProperty('.od-frames/.od-next-device-frames.json');
+    expect(owned.sourceDigests).not.toHaveProperty('.od-frames/iphone.html');
+    expect(owned.sourceDigests).toHaveProperty('.od-frames/user.html');
+
+    await writeFile(join(f.a, '.od-frames', 'iphone.html'), 'user edited frame');
+    const edited = await prepareCheckpoint(f.input);
+    expect(edited.sourceDigests).toHaveProperty('.od-frames/iphone.html');
+    expect(edited.sourceDigests).toHaveProperty('.od-frames/user.html');
+  });
+
+  it.each(['.od-skills/cache/skill.json', '.od-frames/cache/frame.json'])('keeps tracked daemon cache content %s in checkpoint candidates', async path => {
+    const f = await fixture(true, async f => {
+      await mkdir(dirname(join(f.a, path)), { recursive: true });
+      await writeFile(join(f.a, path), 'tracked cache');
+      await f.git(f.a, 'add', '--', path);
+      await f.git(f.a, 'commit', '-m', 'tracked cache fixture');
+    });
+
+    const candidate = await prepareCheckpoint(f.input);
+
+    expect(candidate.sourceDigests).toHaveProperty(path);
+  });
+
+  it('rejects a tracked Pi transcript by path before reading its bytes', async () => {
+    const path = '.pi/session/transcript.json';
+    const f = await fixture(true, async f => {
+      await mkdir(dirname(join(f.a, path)), { recursive: true });
+      await writeFile(join(f.a, path), 'FIXTURE_TRACKED_PI_TRANSCRIPT');
+      await f.git(f.a, 'add', '--', path);
+      await f.git(f.a, 'commit', '-m', 'tracked Pi transcript fixture');
+    });
+
+    const error = await prepareCheckpoint(f.input).catch(error => error);
+    expect(error).toMatchObject({ code: 'VALIDATION_FAILED', details: { paths: [path] } });
+    expect(JSON.stringify(error)).not.toContain('FIXTURE_TRACKED_PI_TRANSCRIPT');
   });
 
   it('refuses a tracked private path even when now ignored and leaves history alone', async () => {

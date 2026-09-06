@@ -21,6 +21,8 @@ import type { BoundedJsonObject, LiveArtifactRefreshErrorRecord, LiveArtifactRef
 export interface RefreshLiveArtifactOptions {
   projectsRoot: string;
   projectId: string;
+  /** Trusted metadata loaded from the persisted project record. */
+  projectMetadata?: unknown;
   artifactId: string;
   now?: Date;
   onStarted?: (event: { refreshId: string; artifact: LiveArtifactStoreRecord['artifact'] }) => void | Promise<void>;
@@ -78,10 +80,11 @@ function hasRefreshPermission(source: LiveArtifactSource): boolean {
 async function executeRefreshSource(options: {
   projectsRoot: string;
   projectId: string;
+  projectMetadata?: unknown;
   source: LiveArtifactSource;
   signal: AbortSignal;
 }): Promise<BoundedJsonObject> {
-  const { projectsRoot, projectId, source, signal } = options;
+  const { projectsRoot, projectId, projectMetadata, source, signal } = options;
   if (source.type === 'connector_tool') {
     const connector = source.connector;
     if (connector === undefined) throw new Error('connector refresh source requires connector metadata');
@@ -102,7 +105,7 @@ async function executeRefreshSource(options: {
   if (source.type !== 'daemon_tool' && source.type !== 'local_file') {
     throw new Error(`refresh source ${source.type} is not supported yet`);
   }
-  return executeLocalDaemonRefreshSource({ projectsRoot, projectId, source, signal });
+  return executeLocalDaemonRefreshSource({ projectsRoot, projectId, projectMetadata, source, signal });
 }
 
 export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): Promise<RefreshLiveArtifactResult> {
@@ -122,6 +125,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
       await appendLiveArtifactRefreshLogEntry({
         projectsRoot: options.projectsRoot,
         projectId: options.projectId,
+        projectMetadata: options.projectMetadata,
         artifactId: options.artifactId,
         refreshId,
         sequence: sequence++,
@@ -140,6 +144,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
     const running = await markLiveArtifactRefreshRunning({
       projectsRoot: options.projectsRoot,
       projectId: options.projectId,
+      projectMetadata: options.projectMetadata,
       artifactId: options.artifactId,
       refreshId,
       now: refreshStartedAt,
@@ -185,6 +190,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
                 async (signal) => executeRefreshSource({
                   projectsRoot: options.projectsRoot,
                   projectId: options.projectId,
+                  projectMetadata: options.projectMetadata,
                   source: documentSource,
                   signal,
                 }),
@@ -213,6 +219,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
       const committed = await commitLiveArtifactRefreshCandidate({
         projectsRoot: options.projectsRoot,
         projectId: options.projectId,
+        projectMetadata: options.projectMetadata,
         artifactId: options.artifactId,
         refreshId,
         dataJson: candidate.dataJson,
@@ -238,6 +245,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
       await markLiveArtifactRefreshFailed({
         projectsRoot: options.projectsRoot,
         projectId: options.projectId,
+        projectMetadata: options.projectMetadata,
         artifactId: options.artifactId,
         refreshId,
         now: refreshFinishedAt,

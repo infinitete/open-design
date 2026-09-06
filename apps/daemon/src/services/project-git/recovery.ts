@@ -14,7 +14,7 @@ import { computeCheckpointContentDigest, readCheckpointPublication } from './che
 import { parsePortableEntries, portableImportMarker } from './portable.js';
 import { importPortableRecords, readPortableRecords } from './portable-db.js';
 import { ensureMaterializationProtection, readRestoreMessage } from './materialize.js';
-import { projectGitPaths } from './paths.js';
+import { projectGitPathsAtRoot } from './paths.js';
 import type { MaterializeEffect, MaterializePhase } from './materialize.js';
 
 export interface RecoveryProject {
@@ -485,7 +485,7 @@ export async function replayOperation(context: RecoveryContext, operationId: str
       // but do not claim a clean terminal baseline while they are Git-visible.
       const raw = (await runGit({ cwd: context.root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout;
       const text = raw.toString('utf8'); if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw recoveryRequired();
-      const visible = projectGitPaths([], text.split('\0').filter(Boolean));
+      const visible = await projectGitPathsAtRoot(context.root, [], text.split('\0').filter(Boolean));
       validateTreeEntries(visible.map(path => ({ path, mode: '100644' })));
       remainingDirty = visible.length > 0;
       await checkFiles(true);

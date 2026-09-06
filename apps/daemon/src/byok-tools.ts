@@ -13,7 +13,7 @@
 // since the BYOK chat session already authenticates with the same API key.
 
 import path from 'node:path';
-import { writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { writeFile, readFile, readdir, stat, mkdir } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { assertAndFetchExternalAsset } from './connectionTest.js';
 import { resolveProviderConfig } from './media/config.js';
@@ -410,6 +410,9 @@ export interface BYOKToolContext {
    *  FileViewer / DesignFilesPanel discover them automatically and
    *  the file travels with the project on export, archive, rename. */
   projectsRoot: string;
+  /** Trusted persisted project root. Imported-folder projects must set this
+   * so media never falls back to a same-id shadow below projectsRoot. */
+  projectDir?: string;
   /** Active project id from the chat surface. Required — the BYOK
    *  chat always runs inside a project, so the tool dispatch refuses
    *  to fire without one rather than dump bytes into a global cache.
@@ -459,6 +462,14 @@ export interface BYOKToolContext {
   requestInit?: Pick<RequestInit, 'dispatcher' | 'signal'>;
 }
 
+async function projectStorageDir(ctx: BYOKToolContext): Promise<string> {
+  if (ctx.projectDir) {
+    await mkdir(ctx.projectDir, { recursive: true });
+    return ctx.projectDir;
+  }
+  return ensureProject(ctx.projectsRoot, ctx.projectId);
+}
+
 export interface ImageToolResult {
   ok: boolean;
   /** Daemon-served URL on success. */
@@ -487,7 +498,7 @@ export async function executeGenerateSpeech(
 
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,
@@ -621,7 +632,7 @@ export async function executeGenerateImage(
   // reused at writeFile time below.
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,
@@ -808,7 +819,7 @@ export async function executeGenerateVideo(
 
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,
@@ -1021,7 +1032,7 @@ export async function executeAIHubMixGenerateImage(
 
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,
@@ -1150,7 +1161,7 @@ export async function executeAIHubMixGenerateSpeech(
 
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,
@@ -1451,7 +1462,7 @@ export async function executeAIHubMixGenerateVideo(
 
   let dir: string;
   try {
-    dir = await ensureProject(ctx.projectsRoot, ctx.projectId);
+    dir = await projectStorageDir(ctx);
   } catch (err) {
     return {
       ok: false,

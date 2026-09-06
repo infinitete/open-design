@@ -30,6 +30,7 @@ import {
 } from '../src/db.js';
 import {
   exportProjectTranscript,
+  renderProjectTranscript,
   TranscriptExportLockedError,
 } from '../src/transcript-export.js';
 
@@ -135,6 +136,21 @@ function seedMessage(
 }
 
 describe('exportProjectTranscript', () => {
+  it('renders the exact JSONL snapshot in memory without creating project files', () => {
+    const { db, projectsRoot } = setup({ skipMkdir: true });
+    seedConversation(db, { id: 'c1', createdAt: 100, title: 'Pure snapshot' });
+    seedMessage(db, 'c1', { id: 'm1', role: 'user', content: 'hello' });
+
+    const result = renderProjectTranscript(db, PROJECT_ID, { now: FIXED_NOW });
+
+    expect(result.jsonl.endsWith('\n')).toBe(true);
+    expect(result.bytesWritten).toBe(Buffer.byteLength(result.jsonl));
+    expect(result.conversationCount).toBe(1);
+    expect(result.messageCount).toBe(1);
+    expect(JSON.parse(result.jsonl.split('\n')[0]!)).toMatchObject({ kind: 'header', projectId: PROJECT_ID });
+    expect(fs.existsSync(path.join(projectsRoot, PROJECT_ID))).toBe(false);
+  });
+
   it('writes a header-only file when the project has no conversations', () => {
     const { db, projectsRoot } = setup();
     const result = exportProjectTranscript(db, projectsRoot, PROJECT_ID, { now: FIXED_NOW });

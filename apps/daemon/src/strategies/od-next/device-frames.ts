@@ -1,10 +1,8 @@
-import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
   OD_NEXT_DEVICE_FRAME_ROOT,
-  OD_NEXT_MANAGED_RESOURCE_FILES,
   OD_NEXT_STRATEGY_ID,
   detectOdNextLayoutPrimitives,
   hasOdNextDeviceShell,
@@ -16,6 +14,16 @@ import {
 
 import { resolvePluginFolder } from '../../plugins/registry.js';
 import { loadBundledStrategyPromptAssetsV2 } from '../../plugins/strategy-package.js';
+import {
+  OD_NEXT_DEVICE_FRAME_MANIFEST,
+  OD_NEXT_DEVICE_FRAME_MANIFEST_SCHEMA,
+  OD_NEXT_MANAGED_SHELL_FILES as MANAGED_SHELL_FILES,
+  odNextDeviceFrameDigest as digest,
+  readOdNextDeviceFrameOwnership as readOwnership,
+  type OdNextDeviceFrameManifestV1,
+} from '../../od-next-device-frame-ownership.js';
+
+export { OD_NEXT_DEVICE_FRAME_MANIFEST } from '../../od-next-device-frame-ownership.js';
 
 export interface OdNextTaskResource {
   path: string;
@@ -49,31 +57,6 @@ export class InvalidOdNextDeviceFrameRootError extends Error {
  * and 64-hex digests. A manifest naming anything else is not a manifest of
  * ours, and must not be allowed to nominate that name for deletion.
  */
-export const OD_NEXT_DEVICE_FRAME_MANIFEST = '.od-next-device-frames.json' as const;
-const OD_NEXT_DEVICE_FRAME_MANIFEST_SCHEMA = 'open-design.od-next-device-frames/v1' as const;
-
-/**
- * Every filename this materializer can ever stage, retire, or record. The
- * manifest lives in a directory the project controls, so this set — not the
- * manifest's own key list — is what bounds the files it may touch.
- */
-const MANAGED_SHELL_FILES: ReadonlySet<string> = new Set(OD_NEXT_MANAGED_RESOURCE_FILES);
-
-interface OdNextDeviceFrameManifestV1 {
-  schema: typeof OD_NEXT_DEVICE_FRAME_MANIFEST_SCHEMA;
-  files: Record<string, string>;
-}
-
-/**
- * What the control file name currently holds. `absent` and `ours` are the two
- * states in which this materializer may write; `foreign` means the name is
- * taken by something we cannot prove we wrote, which makes every byte under the
- * root unaccounted for.
- */
-type OdNextDeviceFrameOwnership =
-  | { kind: 'absent' }
-  | { kind: 'ours'; files: Record<string, string> }
-  | { kind: 'foreign' };
 
 export interface OdNextDeviceFrameStagingResult {
   /** Project-relative paths of the shells now staged and daemon-owned. */
@@ -113,57 +96,6 @@ export async function loadOdNextTaskResourcesForSnapshot(input: {
     .map((resource) => ({ path: resource.path, text: resource.text }));
 }
 
-function digest(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
-}
-
-/**
- * Classify the control file. Only a plain file holding exactly what this
- * materializer writes — our schema, keys drawn from {@link MANAGED_SHELL_FILES},
- * 64-hex digests — counts as `ours`. Everything else is `foreign`: unreadable
- * files, malformed JSON, a foreign schema, and same-schema content naming a
- * file we would never stage. "We could not understand it" is not evidence that
- * we wrote it, and neither is "it looks close enough".
- */
-async function readOwnership(root: string): Promise<OdNextDeviceFrameOwnership> {
-  const target = path.join(root, OD_NEXT_DEVICE_FRAME_MANIFEST);
-  const stat = await lstat(target).catch(() => null);
-  if (!stat) return { kind: 'absent' };
-  if (stat.isSymbolicLink() || !stat.isFile()) return { kind: 'foreign' };
-  let raw: string;
-  try {
-    raw = await readFile(target, 'utf8');
-  } catch {
-    return { kind: 'foreign' };
-  }
-  let parsed: Partial<OdNextDeviceFrameManifestV1> | null;
-  try {
-    parsed = JSON.parse(raw) as Partial<OdNextDeviceFrameManifestV1> | null;
-  } catch {
-    return { kind: 'foreign' };
-  }
-  if (
-    parsed?.schema !== OD_NEXT_DEVICE_FRAME_MANIFEST_SCHEMA ||
-    typeof parsed.files !== 'object' ||
-    !parsed.files ||
-    Array.isArray(parsed.files)
-  ) {
-    return { kind: 'foreign' };
-  }
-  const files: Record<string, string> = {};
-  for (const [name, sha] of Object.entries(parsed.files)) {
-    // A key we would never have written, or a digest we would never have
-    // produced, means this file came from somewhere else. Refuse the whole
-    // record rather than salvaging the entries that happen to look right:
-    // salvaging is what would let a crafted entry nominate an unrelated
-    // project file for retirement.
-    if (!MANAGED_SHELL_FILES.has(name) || typeof sha !== 'string' || !/^[a-f0-9]{64}$/.test(sha)) {
-      return { kind: 'foreign' };
-    }
-    files[name] = sha;
-  }
-  return { kind: 'ours', files };
-}
 
 /**
  * Stage the device shells into `<cwd>/.od-frames/` so the rule card's

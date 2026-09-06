@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Express, Response } from 'express';
 import type Database from 'better-sqlite3';
 
 import { applyDiffReviewDecisionToCwd, getSnapshot, isDiffReviewSurfaceId, listIterationsForRun } from '../plugins/index.js';
@@ -12,6 +12,8 @@ import {
   revokeProjectSurface,
 } from '../genui/index.js';
 import { resolveProjectDir } from '../projects.js';
+import type { ProjectGitCoordination } from '../services/project-git/mutation-adapter.js';
+import { coordinateAuthorizedProjectMutation } from './project-git-coordination.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -26,6 +28,10 @@ export interface RegisterGenuiRoutesDeps {
   paths: {
     PROJECTS_DIR: string;
   };
+  http: {
+    sendApiError(res: Response, status: number, code: string, message: string): unknown;
+  };
+  projectGitCoordination: ProjectGitCoordination;
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -40,10 +46,10 @@ export function registerGenuiRoutes(app: Express, deps: RegisterGenuiRoutesDeps)
     const run = design.runs.get(req.params.runId);
     if (!run) {
       res.status(404).json({ error: 'run not found' });
-      return false;
+      return null;
     }
-    if (!run.projectId) return true;
-    return deps.authorizeProjectRequest(req, res, run.projectId, options);
+    if (run.projectId && !await deps.authorizeProjectRequest(req, res, run.projectId, options)) return null;
+    return run;
   };
 
   app.get('/api/runs/:runId/genui', async (req, res) => {
@@ -73,39 +79,40 @@ export function registerGenuiRoutes(app: Express, deps: RegisterGenuiRoutesDeps)
 
   app.post('/api/runs/:runId/genui/:surfaceId/respond', async (req, res) => {
     try {
-      if (!await authorizeRun(
+      const authorizedRun = await authorizeRun(
         req,
         res,
         { mode: 'write', capability: 'writeFiles' },
-      )) return;
-      const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const value = 'value' in body ? body.value : null;
-      const respondedBy =
-        body.respondedBy === 'agent' || body.respondedBy === 'auto'
-          ? body.respondedBy
-          : 'user';
-      const stmt = db.prepare(
-        `SELECT id FROM genui_surfaces
-          WHERE run_id = ? AND surface_id = ? AND status = 'pending'
-          ORDER BY requested_at DESC LIMIT 1`,
       );
-      const row = stmt.get(req.params.runId, req.params.surfaceId) as { id?: string } | undefined;
-      if (!row?.id) {
-        return res.status(404).json({ error: 'no pending surface for runId/surfaceId' });
-      }
-      const updated = respondSurfaceRow(db, {
-        runId: req.params.runId,
-        rowId: row.id,
-        value,
-        respondedBy,
-      });
+      if (!authorizedRun) return;
+      const respond = async () => {
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const value = 'value' in body ? body.value : null;
+        const respondedBy =
+          body.respondedBy === 'agent' || body.respondedBy === 'auto'
+            ? body.respondedBy
+            : 'user';
+        const stmt = db.prepare(
+          `SELECT id FROM genui_surfaces
+            WHERE run_id = ? AND surface_id = ? AND status = 'pending'
+            ORDER BY requested_at DESC LIMIT 1`,
+        );
+        const row = stmt.get(req.params.runId, req.params.surfaceId) as { id?: string } | undefined;
+        if (!row?.id) {
+          return res.status(404).json({ error: 'no pending surface for runId/surfaceId' });
+        }
+        const updated = respondSurfaceRow(db, {
+          runId: req.params.runId,
+          rowId: row.id,
+          value,
+          respondedBy,
+        });
 
-      let diffReviewBridge: { ok: boolean; error?: string } | undefined;
-      if (isDiffReviewSurfaceId(req.params.surfaceId)) {
-        try {
-          const run = design.runs.get(req.params.runId);
-          const projectId = run?.projectId ?? null;
-          if (projectId) {
+        let diffReviewBridge: { ok: boolean; error?: string } | undefined;
+        if (isDiffReviewSurfaceId(req.params.surfaceId)) {
+          try {
+            const projectId = authorizedRun.projectId ?? null;
+            if (projectId) {
             const project = getProject(db, projectId);
             const metadata = project?.metadata && typeof project.metadata === 'string'
               ? JSON.parse(project.metadata)
@@ -117,18 +124,34 @@ export function registerGenuiRoutes(app: Express, deps: RegisterGenuiRoutesDeps)
               reviewer: respondedBy === 'agent' || respondedBy === 'auto' ? 'agent' : 'user',
             });
             diffReviewBridge = bridgeResult.ok ? { ok: true } : { ok: false, error: bridgeResult.error };
-          } else {
-            diffReviewBridge = { ok: false, error: 'run is not linked to a project' };
+            } else {
+              diffReviewBridge = { ok: false, error: 'run is not linked to a project' };
+            }
+          } catch (err) {
+            diffReviewBridge = { ok: false, error: (err as Error).message };
+            console.warn('[plugins] diff-review bridge failed:', err);
           }
-        } catch (err) {
-          diffReviewBridge = { ok: false, error: (err as Error).message };
-          console.warn('[plugins] diff-review bridge failed:', err);
         }
-      }
 
-      const responsePayload: Record<string, unknown> = { ok: true, surface: updated };
-      if (diffReviewBridge) responsePayload.diffReviewBridge = diffReviewBridge;
-      res.json(responsePayload);
+        const responsePayload: Record<string, unknown> = { ok: true, surface: updated };
+        if (diffReviewBridge) responsePayload.diffReviewBridge = diffReviewBridge;
+        return res.json(responsePayload);
+      };
+      if (!isDiffReviewSurfaceId(req.params.surfaceId) || !authorizedRun.projectId) return await respond();
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: authorizedRun.projectId,
+        coordination: deps.projectGitCoordination,
+        sendApiError: deps.http.sendApiError,
+        authorize: async () => true,
+        source: 'genui.diff-review.respond',
+        trustedMutationContext: deps.projectGitCoordination.runtime.mutationContext(
+          req.params.runId,
+          authorizedRun.projectId,
+        ),
+        work: respond,
+      });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

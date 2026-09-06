@@ -40,7 +40,7 @@ import {
   resolveProjectDir,
   validateProjectPath,
 } from '../projects.js';
-import { exportProjectTranscript } from '../transcript-export.js';
+import { renderProjectTranscript } from '../transcript-export.js';
 import { googleGenerateContentUrl } from '../integrations/google-models.js';
 
 // Re-export the request/response types so existing daemon-internal
@@ -312,9 +312,8 @@ export async function finalizeDesignPackage(
     // Phase 3: export transcript via the PR #493 primitive. Returns the
     // disk path; we read the body and run it through the truncation
     // policy so a 4 MB transcript does not blow Anthropic's context.
-    const transcriptResult = exportProjectTranscript(db, projectsRoot, projectId, { now });
-    const transcriptJsonl = fs.readFileSync(transcriptResult.path, 'utf8');
-    const truncatedJsonl = truncateTranscriptForPrompt(transcriptJsonl);
+    const transcriptResult = renderProjectTranscript(db, projectId, { now });
+    const truncatedJsonl = truncateTranscriptForPrompt(transcriptResult.jsonl);
 
     // Phase 4: design system. Project may not have one selected; readDesignSystem
     // returns null on missing DESIGN.md so the prompt's design-system section

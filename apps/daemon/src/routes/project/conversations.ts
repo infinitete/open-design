@@ -1,8 +1,11 @@
 import type { Express } from 'express';
 import { type ChatSessionMode } from '@open-design/contracts';
 import { readAnalyticsContext } from '../../analytics.js';
-import { backfillBrandExtractionTranscriptForProject } from '../../brands/index.js';
 import type { RouteDeps } from '../../server-context.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectRead,
+} from '../project-git-coordination.js';
 
 // Collab types removed - define locally
 type BoundWorkspaceResourceMutationGate = any;
@@ -14,12 +17,11 @@ import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 import {
   compactAdjacentMessageAgentEvents,
-  countMessages,
   deleteConversationAndRepairTeamCommentAnchor,
   isProjectCommentAnchorConversationId,
 } from '../../db.js';
 
-export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents'> {
+export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'projectGitCoordination'> {
   /**
    * Threaded straight through to `registerProjectCommentRoutes` — a comment
    * has no workspace binding of its own, so it borrows its PARENT PROJECT's
@@ -62,9 +64,6 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     upsertMessage,
   } = ctx.conversations;
   const { randomId } = ctx.ids;
-  const { BRANDS_DIR, PROJECTS_DIR } = ctx.paths;
-  const { readAppConfig } = ctx.appConfig;
-  const { getAgentDef } = ctx.agents;
   // Production registration always injects the shared project authority gate.
   // The fallback preserves narrow unit fixtures whose in-memory projects have
   // no Workspace binding and do not construct the full server authority graph.
@@ -75,6 +74,36 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     const conversation = getConversation(db, conversationId);
     return conversation?.projectId === projectId ? conversation : null;
   };
+  const currentRead = (req: any, res: any, work: () => Promise<unknown>) =>
+    coordinateAuthorizedProjectRead({
+      req,
+      res,
+      projectId: req.params.id,
+      coordination: ctx.projectGitCoordination,
+      sendApiError,
+      authorize: () => authorizeProjectRequest(req, res, req.params.id, { mode: 'read' }),
+      work,
+    });
+  const portableMutation = (
+    req: any,
+    res: any,
+    source: string,
+    work: () => Promise<unknown>,
+  ) => coordinateAuthorizedProjectMutation({
+    req,
+    res,
+    projectId: req.params.id,
+    source,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: () => authorizeProjectRequest(
+      req,
+      res,
+      req.params.id,
+      { mode: 'write', capability: 'writeFiles' },
+    ),
+    work,
+  });
 
   // ---- Conversations --------------------------------------------------------
 
@@ -82,20 +111,16 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     if (!getProject(db, req.params.id)) {
       return res.status(404).json({ error: 'project not found' });
     }
-    if (!await authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
-    res.json({ conversations: listConversations(db, req.params.id) });
+    return currentRead(req, res, async () => {
+      res.json({ conversations: listConversations(db, req.params.id) });
+    });
   });
 
   app.post('/api/projects/:id/conversations', async (req, res) => {
     if (!getProject(db, req.params.id)) {
       return res.status(404).json({ error: 'project not found' });
     }
-    if (!await authorizeProjectRequest(
-      req,
-      res,
-      req.params.id,
-      { mode: 'write', capability: 'writeFiles' },
-    )) return;
+    return portableMutation(req, res, 'conversation.create', async () => {
     const { title, seedFromConversationId, forkAfterMessageId } = req.body || {};
     const now = Date.now();
     const hasExplicitSessionMode = Boolean(
@@ -218,15 +243,11 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       }
     }
     res.json({ conversation: conv });
+    });
   });
 
   app.patch('/api/projects/:id/conversations/:cid', async (req, res) => {
-    if (!await authorizeProjectRequest(
-      req,
-      res,
-      req.params.id,
-      { mode: 'write', capability: 'writeFiles' },
-    )) return;
+    return portableMutation(req, res, 'conversation.update', async () => {
     const conv = getRoutableConversation(req.params.id, req.params.cid);
     if (!conv) {
       return res.status(404).json({ error: 'not found' });
@@ -240,15 +261,11 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     }
     const updated = updateConversation(db, req.params.cid, req.body || {});
     res.json({ conversation: updated });
+    });
   });
 
   app.delete('/api/projects/:id/conversations/:cid', async (req, res) => {
-    if (!await authorizeProjectRequest(
-      req,
-      res,
-      req.params.id,
-      { mode: 'write', capability: 'writeFiles' },
-    )) return;
+    return portableMutation(req, res, 'conversation.delete', async () => {
     const conv = getRoutableConversation(req.params.id, req.params.cid);
     if (!conv) {
       return res.status(404).json({ error: 'not found' });
@@ -258,40 +275,16 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     await cancelRunsOwnedBy(design.runs, { conversationId: req.params.cid });
     deleteConversationAndRepairTeamCommentAnchor(db, req.params.id, req.params.cid);
     res.json({ ok: true });
+    });
   });
 
   // ---- Messages -------------------------------------------------------------
 
   app.get('/api/projects/:id/conversations/:cid/messages', async (req, res) => {
-    if (!await authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
+    return currentRead(req, res, async () => {
     const conv = getRoutableConversation(req.params.id, req.params.cid);
     if (!conv) {
       return res.status(404).json({ error: 'conversation not found' });
-    }
-    const project = getProject(db, req.params.id);
-    // COUNT(*) rather than listMessages(...).length: the backfill only needs to
-    // know whether the conversation is empty, and loading every message to
-    // answer that parses each one's JSON columns — including event logs that
-    // grow with tool output — before throwing the result away.
-    if (project && countMessages(db, req.params.cid) === 0) {
-      const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR).catch(() => ({}));
-      const agentId = typeof config.agentId === 'string' && config.agentId ? config.agentId : null;
-      await backfillBrandExtractionTranscriptForProject({
-        db,
-        conversationId: req.params.cid,
-        randomId,
-        brandsRoot: BRANDS_DIR,
-        projectsRoot: PROJECTS_DIR,
-        project,
-        ...(agentId ? {
-          transcriptAgent: {
-            agentId,
-            agentName: getAgentDef(agentId)?.name ?? agentId,
-          },
-        } : {}),
-      }).catch((err) => {
-        console.warn(`[brand] failed to backfill programmatic extraction transcript for ${req.params.id}`, err);
-      });
     }
     // A Full Plan turn spans several physical Runs and the daemon-issued
     // continuation carries no user prompt, so the client needs each message's
@@ -315,6 +308,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
           ...(turn.delivered ? { strategyTaskDelivered: true } : {}),
         };
       }),
+    });
     });
   });
 
@@ -559,12 +553,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
 
   app.put('/api/projects/:id/conversations/:cid/messages/:mid', async (req, res) => {
     try {
-      if (!await authorizeProjectRequest(
-        req,
-        res,
-        req.params.id,
-        { mode: 'write', capability: 'writeFiles' },
-      )) return;
+      return await portableMutation(req, res, 'message.upsert', async () => {
       const conv = getRoutableConversation(req.params.id, req.params.cid);
       if (!conv) {
         return res.status(404).json({ error: 'conversation not found' });
@@ -606,6 +595,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
         conversationId: req.params.cid,
       });
       res.json({ message: saved });
+      });
     } catch (err) {
       console.error('[PUT message error]', err);
       res.status(500).json({ error: String(err) });

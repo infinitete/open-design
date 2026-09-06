@@ -58,7 +58,7 @@ it('rejects abbreviations, revisions, noncommits and unreachable commits', async
   }
 });
 
-it.each(['.env', 'state.sqlite', 'config.yaml'])('rejects private versioned %s before exposing bytes', async path => {
+it.each(['.env', 'state.sqlite', 'config.yaml', '.pi/session/transcript.json', '.transcript.jsonl'])('rejects private versioned %s before exposing bytes', async path => {
   const f = await fixture(); const oid = await fixtureCommit(f.a, join(f.root, 'h.index'), new Map([[path, Buffer.from('private')]]), []);
   await f.git(f.a, 'update-ref', 'refs/heads/main', oid);
   await expect(readCommit(f.a, oid)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });

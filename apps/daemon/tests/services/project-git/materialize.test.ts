@@ -267,7 +267,7 @@ it.each(['file', 'index'] as const)('repairs a missing %s rename directory flush
   await expect(f.gate.read(async () => 'converged', 10)).resolves.toBe('converged');
 });
 
-it.each(['.env', 'state.sqlite'])('rejects private candidate %s before materialization effects with path-only diagnostics', async path => {
+it.each(['.env', 'state.sqlite', '.mcp.json', '.pi/session/transcript.json', '.transcript.jsonl'])('rejects private candidate %s before materialization effects with path-only diagnostics', async path => {
   const f = await fixture(); const target = new Map(f.target); target.set(path, Buffer.from('inert fixture bytes'));
   const candidateOid = await fixtureCommit(f.a, join(f.root, 'private.index'), target, [f.head]);
   const originalIndex = await readFile(join(f.a, '.git/index'));

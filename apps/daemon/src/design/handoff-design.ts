@@ -4,12 +4,8 @@
 // user can continue the work without replaying the prior chat.
 //
 // Unlike `finalize-design.ts`, handoff is read-only at the route level:
-//   - no `.handoff.lock` of its own (handoff adds no exclusive resource
-//     for callers to contend on); concurrent handoff requests do still
-//     contend on the per-project `.transcript.lock` acquired transitively
-//     via `exportProjectTranscript`, so the route handler maps
-//     `TranscriptExportLockedError` to `409 CONFLICT` for the caller
-//     (mirrors finalize's own lockfile handling),
+//   - no project lockfile: the route snapshots SQLite under the shared
+//     project read gate before beginning the upstream call,
 //   - no on-disk write of the synthesised body (the caller seeds the
 //     composer with it — disk storage is the next conversation's
 //     responsibility),
@@ -26,7 +22,6 @@ import type {
   HandoffRequest,
   HandoffResponse,
 } from '@open-design/contracts/api/handoff';
-import fs from 'node:fs';
 import { getProject } from '../db.js';
 import {
   callAnthropicWithRetry,
@@ -36,7 +31,7 @@ import {
   truncateTranscriptForPrompt,
   type AnthropicCallParams,
 } from './finalize-design.js';
-import { exportProjectTranscript } from '../transcript-export.js';
+import { renderProjectTranscript, type TranscriptRenderResult } from '../transcript-export.js';
 
 // Re-export the request/response types so the route handler and other
 // daemon-internal consumers reference the canonical contracts shape via
@@ -79,6 +74,8 @@ export interface HandoffOptions {
    * without depending on fake timers.
    */
   timeoutMs?: number;
+  /** Immutable transcript captured by the authorized route under its project read gate. */
+  transcript?: TranscriptRenderResult;
 }
 
 export const HANDOFF_SYSTEM_PROMPT = `You are summarizing an in-flight multi-turn design session so a fresh
@@ -169,7 +166,8 @@ export async function synthesizeHandoffPrompt(
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-  const transcriptResult = exportProjectTranscript(db, projectsRoot, projectId, {
+  void projectsRoot;
+  const transcriptResult = options.transcript ?? renderProjectTranscript(db, projectId, {
     now,
     conversationId: options.conversationId,
   });
@@ -181,8 +179,7 @@ export async function synthesizeHandoffPrompt(
       `conversation ${options.conversationId} has no messages to hand off`,
     );
   }
-  const transcriptJsonl = fs.readFileSync(transcriptResult.path, 'utf8');
-  const truncatedJsonl = truncateTranscriptForPrompt(transcriptJsonl);
+  const truncatedJsonl = truncateTranscriptForPrompt(transcriptResult.jsonl);
 
   const { systemPrompt, userPrompt } = buildHandoffPrompt({
     projectId,

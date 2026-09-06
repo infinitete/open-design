@@ -39,6 +39,8 @@ import { googleStreamGenerateContentUrl } from '../integrations/google-models.js
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
 import { authorizeReasoningEgress, sendReasoningEgressDenial } from '../reasoning-egress.js';
 import { InvalidAppConfigValueError } from '../app-config.js';
+import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
+import { GitDomainError } from '../services/project-git/errors.js';
 import {
   agentNetworkPolicyForAgent,
   resolveAgentNetworkTestPolicy,
@@ -65,7 +67,7 @@ const FEEDBACK_REASON_ALLOWLIST: ReadonlySet<string> = new Set([
   'other',
 ]);
 
-export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle' | 'paths' | 'telemetry' | 'appConfig'> {
+export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle' | 'paths' | 'telemetry' | 'appConfig' | 'projectStore' | 'projectFiles' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -1640,6 +1642,34 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     });
     if (reasoningDenial) return sendReasoningEgressDenial(res, reasoningDenial);
 
+    const project = ctx.projectStore.getProject(db, projectId);
+    if (!project) {
+      return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+    }
+    const projectDir = ctx.projectFiles.resolveProjectDir(
+      ctx.paths.PROJECTS_DIR,
+      projectId,
+      project.metadata,
+    );
+    let mutationSession;
+    try {
+      const expectedProjectRevision = expectedProjectRevisionFromTransport({
+        body: proxyBody.expectedProjectRevision,
+        header: req.get('X-OD-Project-Revision'),
+      });
+      mutationSession = await ctx.projectGitCoordination.runtime.admitSession(
+        projectId,
+        expectedProjectRevision,
+      );
+    } catch (error) {
+      if (error instanceof GitDomainError) {
+        return sendApiError(res, error.status, error.code, error.message);
+      }
+      throw error;
+    }
+
+    try {
+
     // AIHubMix routes by model name to the native protocol wire (claude →
     // Anthropic /v1/messages, gemini/imagen → Gemini generateContent). That
     // divert happens further down — AFTER executeOneTool and the per-protocol
@@ -1685,6 +1715,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const toolCtx: BYOKToolContext = {
       projectRoot: ctx.paths.PROJECT_ROOT,
       projectsRoot: ctx.paths.PROJECTS_DIR,
+      projectDir,
       projectId,
       upstreamApiKey: apiKey,
       upstreamBaseUrl: effectiveBaseUrl,
@@ -1862,11 +1893,21 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         return { ok: false, error: 'tool arguments were not valid JSON', kind: toolKind };
       }
       if (fnName === 'generate_image') {
-        const result = await opts.runImage(args, toolCtx);
+        const result = await ctx.projectGitCoordination.withProjectMutation({
+          projectId,
+          expectedProjectRevision: mutationSession.expectedProjectRevision,
+          source: 'byok-generate-image',
+          ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
+        }, () => opts.runImage(args, toolCtx));
         return { ...result, kind: 'image' };
       }
       if (fnName === 'generate_speech') {
-        const result = await opts.runSpeech(args, toolCtx);
+        const result = await ctx.projectGitCoordination.withProjectMutation({
+          projectId,
+          expectedProjectRevision: mutationSession.expectedProjectRevision,
+          source: 'byok-generate-speech',
+          ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
+        }, () => opts.runSpeech(args, toolCtx));
         return { ...result, kind: 'speech' };
       }
       // generate_video — longer (up to 5 min), async-with-polling. Only some
@@ -1875,7 +1916,12 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       if (!opts.runVideo) {
         return { ok: false, error: 'video generation is not supported for this provider', kind: 'video' };
       }
-      const result = await opts.runVideo(args, toolCtx);
+      const result = await ctx.projectGitCoordination.withProjectMutation({
+        projectId,
+        expectedProjectRevision: mutationSession.expectedProjectRevision,
+        source: 'byok-generate-video',
+        ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
+      }, () => opts.runVideo!(args, toolCtx));
       return { ...result, kind: 'video' };
     };
 
@@ -2340,6 +2386,9 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       sse.end();
     } finally {
       await proxyDispatcher?.close();
+    }
+    } finally {
+      mutationSession.release();
     }
    });
   };

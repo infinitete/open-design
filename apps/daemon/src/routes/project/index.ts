@@ -112,6 +112,16 @@ import {
 import { auditDesignSystemPackage } from '../../tools-connectors-cli.js';
 import { parseOrchestratorWorkspace } from '../../workspace-contract.js';
 import { registerProjectConversationRoutes } from './conversations.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectRead,
+} from '../project-git-coordination.js';
+import { GitDomainError } from '../../services/project-git/errors.js';
+import {
+  expectedProjectRevisionFromTransport,
+  type ProjectGitCoordination,
+} from '../../services/project-git/mutation-adapter.js';
+import type { ProjectMutationSession } from '../../services/project-git/runtime-adapter.js';
 import { workspaceProjectGroupCountProperties } from './analytics.js';
 import type { ProjectCommentWorkspaceContextResolution } from './comments.js';
 
@@ -124,6 +134,81 @@ type ResourceHubPrincipal = any;
 function refuseTeamShareScope(..._args: any[]): any { return null; }
 type TeamShareScopeRefusal = any;
 type WorkspaceTypeRegistry = any;
+
+export function parseBatchDeleteExpectedProjectRevisions(input: {
+  selectedProjectIds: readonly string[];
+  finalProjectIds: readonly string[];
+  body?: unknown;
+  header?: unknown;
+}): Map<string, number> {
+  const invalid = (): never => {
+    throw new GitDomainError('BAD_REQUEST', 400, 'Invalid project revision.');
+  };
+  const selected = new Set(input.selectedProjectIds);
+  const revisions = new Map<string, number>();
+  if (input.body !== undefined) {
+    if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) invalid();
+    for (const [projectId, value] of Object.entries(input.body as Record<string, unknown>)) {
+      if (!selected.has(projectId) || !Number.isSafeInteger(value) || (value as number) < 0) invalid();
+      revisions.set(projectId, value as number);
+    }
+  }
+  const hasHeader = input.header !== undefined && input.header !== null && input.header !== '';
+  if (hasHeader && input.finalProjectIds.length !== 1) invalid();
+  for (const projectId of input.finalProjectIds) {
+    const expected = expectedProjectRevisionFromTransport({
+      body: revisions.get(projectId),
+      ...(hasHeader ? { header: input.header } : {}),
+    });
+    if (expected === undefined) revisions.delete(projectId);
+    else revisions.set(projectId, expected);
+  }
+  return new Map(input.finalProjectIds.flatMap(projectId => {
+    const revision = revisions.get(projectId);
+    return revision === undefined ? [] : [[projectId, revision] as const];
+  }));
+}
+
+export async function coordinateProjectBatchDelete<T>(input: {
+  finalProjectIds: readonly string[];
+  expectedProjectRevisions: ReadonlyMap<string, number>;
+  coordination: ProjectGitCoordination;
+  cancelProjectRuns(projectId: string): Promise<void>;
+  deleteProjects(): Promise<T>;
+}): Promise<T> {
+  const sessions: ProjectMutationSession[] = [];
+  try {
+    for (const projectId of [...input.finalProjectIds].sort()) {
+      sessions.push(await input.coordination.runtime.admitSession(
+        projectId,
+        input.expectedProjectRevisions.get(projectId),
+      ));
+    }
+    for (const session of sessions) await input.cancelProjectRuns(session.projectId);
+    for (const session of sessions) {
+      await input.coordination.withProjectMutation({
+        projectId: session.projectId,
+        expectedProjectRevision: session.expectedProjectRevision,
+        source: 'project.batch-delete',
+        ...(session.permit ? { permit: session.permit } : {}),
+      }, async () => undefined);
+    }
+    return await input.deleteProjects();
+  } finally {
+    for (const session of sessions.reverse()) session.release();
+  }
+}
+
+export function projectBatchDeleteErrorResponse(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} {
+  return error instanceof GitDomainError
+    ? { status: error.status, code: error.code, message: error.message }
+    : { status: 400, code: 'BAD_REQUEST', message: String(error) };
+}
+
 function headerValue(req: any, name: string): string | undefined {
   const val = req.headers[name];
   return typeof val === 'string' ? val : undefined;
@@ -271,7 +356,7 @@ function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync'> {
+export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination'> {
   pluginScope?: {
     loadRegistry: (options: {
       workspaceId?: string | null;
@@ -3656,25 +3741,45 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return sendApiError(res, 403, 'PROJECT_BATCH_CONTAINS_FORBIDDEN_ITEMS', 'batch contains forbidden projects');
       }
       const finalProjectIds = projectIds.filter((id: string) => countWorkspaceProjectRefs(db, id) <= 1);
+      const expectedProjectRevisions = parseBatchDeleteExpectedProjectRevisions({
+        selectedProjectIds: projectIds,
+        finalProjectIds,
+        body: req.body?.expectedProjectRevisions,
+        header: req.get('X-OD-Project-Revision'),
+      });
       const deleteMany = db.transaction((ids: string[], finalIds: string[]) => {
         for (const id of ids) deleteWorkspaceProject(db, ctx.workspaceId, id);
         for (const id of finalIds) {
           if (countWorkspaceProjectRefs(db, id) === 0) dbDeleteProject(db, id);
         }
       });
-      const stagedDelete = finalProjectIds.length > 0
-        ? await stageProjectDirsForDelete(PROJECTS_DIR, finalProjectIds, randomId())
-        : null;
-      try {
-        deleteMany(projectIds, finalProjectIds);
-      } catch (error) {
-        await stagedDelete?.rollback();
-        throw error;
+      const deleteProjects = async () => {
+        const stagedDelete = finalProjectIds.length > 0
+          ? await stageProjectDirsForDelete(PROJECTS_DIR, finalProjectIds, randomId())
+          : null;
+        try {
+          deleteMany(projectIds, finalProjectIds);
+        } catch (error) {
+          await stagedDelete?.rollback();
+          throw error;
+        }
+        await stagedDelete?.commit();
+      };
+      if (finalProjectIds.length > 0) {
+        await coordinateProjectBatchDelete({
+          finalProjectIds,
+          expectedProjectRevisions,
+          coordination: ctx.projectGitCoordination,
+          cancelProjectRuns: projectId => cancelRunsOwnedBy(design.runs, { projectId }),
+          deleteProjects,
+        });
+      } else {
+        await deleteProjects();
       }
-      await stagedDelete?.commit();
       res.json({ ok: true, deletedProjectIds: projectIds });
     } catch (err: any) {
-      sendApiError(res, 400, 'BAD_REQUEST', String(err));
+      const failure = projectBatchDeleteErrorResponse(err);
+      return sendApiError(res, failure.status, failure.code, failure.message);
     }
   });
 
@@ -4304,7 +4409,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       project.id,
       'rename',
     )) return;
-
     const request = req.body as Partial<RestoreProjectAutomaticScenarioRequest> | null;
     if (!request || !Object.prototype.hasOwnProperty.call(request, 'expectedCurrentSnapshotId')) {
       return sendApiError(
@@ -4365,31 +4469,42 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return res.json(body);
       }
 
-      const restored = db.transaction(() => {
-        if (currentSnapshotId) {
-          restoreProjectSnapshotLink(db, project.id, currentSnapshotId, null);
+      return coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: project.id,
+        source: 'scenario.restore-automatic',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
+          const restored = db.transaction(() => {
+            if (currentSnapshotId) {
+              restoreProjectSnapshotLink(db, project.id, currentSnapshotId, null);
+            }
+            const metadata: ProjectMetadata = {
+              ...(project.metadata ?? { kind: 'prototype' }),
+              strategyBinding,
+            };
+            delete metadata.scenarioBinding;
+            return updateProject(db, project.id, { metadata });
+          })();
+          if (!restored) {
+            return sendApiError(
+              res,
+              409,
+              'DEFAULT_SCENARIO_RESTORE_FAILED',
+              'automatic strategy restoration failed',
+            );
+          }
+          const body: RestoreProjectAutomaticScenarioResponse = {
+            project: restored,
+            strategyBinding,
+            changed: true,
+          };
+          return res.json(body);
         }
-        const metadata: ProjectMetadata = {
-          ...(project.metadata ?? { kind: 'prototype' }),
-          strategyBinding,
-        };
-        delete metadata.scenarioBinding;
-        return updateProject(db, project.id, { metadata });
-      })();
-      if (!restored) {
-        return sendApiError(
-          res,
-          409,
-          'DEFAULT_SCENARIO_RESTORE_FAILED',
-          'automatic strategy restoration failed',
-        );
-      }
-      const body: RestoreProjectAutomaticScenarioResponse = {
-        project: restored,
-        strategyBinding,
-        changed: true,
-      };
-      return res.json(body);
+      });
     }
 
     const defaultPluginId = defaultScenarioPluginIdForProjectMetadata(project.metadata);
@@ -4437,58 +4552,69 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       return sendApiError(res, 503, 'PLUGIN_REGISTRY_UNAVAILABLE', 'plugin registry unavailable');
     }
     const conversationId = getFirstProjectConversation(db, project.id)?.id ?? null;
-    const restore = db.transaction(():
-      | { ok: true; resolved: ResolveSnapshotOk; project: NonNullable<ReturnType<typeof getProject>> }
-      | { ok: false; failure: ResolveSnapshotError | null } => {
-      const resolved = resolvePluginSnapshot({
-        db,
-        body: { pluginId: defaultPluginId },
-        projectId: project.id,
-        conversationId,
-        registry,
-        connectorProbe: buildConnectorProbe(connectorService),
-        projectBinding: {
-          provenance: 'automatic_default',
-          taskProfile,
-        },
-      });
-      if (!resolved || !resolved.ok) {
-        return { ok: false, failure: resolved && !resolved.ok ? resolved : null };
-      }
-      const updated = getProject(db, project.id);
-      if (!updated?.metadata?.scenarioBinding) {
-        throw new Error('automatic scenario binding was not persisted');
-      }
-      return { ok: true, resolved, project: updated };
-    });
-    try {
-      const outcome = restore();
-      if (!outcome.ok) {
-        if (outcome.failure) {
-          return res.status(outcome.failure.status).json(outcome.failure.body);
+    return coordinateAuthorizedProjectMutation({
+      req,
+      res,
+      projectId: project.id,
+      source: 'scenario.restore-automatic',
+      coordination: ctx.projectGitCoordination,
+      sendApiError,
+      authorize: async () => true,
+      work: async () => {
+        const restore = db.transaction(():
+          | { ok: true; resolved: ResolveSnapshotOk; project: NonNullable<ReturnType<typeof getProject>> }
+          | { ok: false; failure: ResolveSnapshotError | null } => {
+          const resolved = resolvePluginSnapshot({
+            db,
+            body: { pluginId: defaultPluginId },
+            projectId: project.id,
+            conversationId,
+            registry,
+            connectorProbe: buildConnectorProbe(connectorService),
+            projectBinding: {
+              provenance: 'automatic_default',
+              taskProfile,
+            },
+          });
+          if (!resolved || !resolved.ok) {
+            return { ok: false, failure: resolved && !resolved.ok ? resolved : null };
+          }
+          const updated = getProject(db, project.id);
+          if (!updated?.metadata?.scenarioBinding) {
+            throw new Error('automatic scenario binding was not persisted');
+          }
+          return { ok: true, resolved, project: updated };
+        });
+        try {
+          const outcome = restore();
+          if (!outcome.ok) {
+            if (outcome.failure) {
+              return res.status(outcome.failure.status).json(outcome.failure.body);
+            }
+            return sendApiError(
+              res,
+              409,
+              'DEFAULT_SCENARIO_RESTORE_FAILED',
+              'automatic scenario restoration failed',
+            );
+          }
+          const body: RestoreProjectAutomaticScenarioResponse = {
+            project: outcome.project,
+            scenarioBinding: outcome.project.metadata!.scenarioBinding!,
+            changed: outcome.resolved.snapshotId !== currentSnapshotId,
+          };
+          return res.json(body);
+        } catch (error) {
+          console.warn('[projects] automatic scenario restore failed', error);
+          return sendApiError(
+            res,
+            409,
+            'DEFAULT_SCENARIO_RESTORE_FAILED',
+            'automatic scenario restoration failed; the existing project pin was preserved',
+          );
         }
-        return sendApiError(
-          res,
-          409,
-          'DEFAULT_SCENARIO_RESTORE_FAILED',
-          'automatic scenario restoration failed',
-        );
-      }
-      const body: RestoreProjectAutomaticScenarioResponse = {
-        project: outcome.project,
-        scenarioBinding: outcome.project.metadata!.scenarioBinding!,
-        changed: outcome.resolved.snapshotId !== currentSnapshotId,
-      };
-      return res.json(body);
-    } catch (error) {
-      console.warn('[projects] automatic scenario restore failed', error);
-      return sendApiError(
-        res,
-        409,
-        'DEFAULT_SCENARIO_RESTORE_FAILED',
-        'automatic scenario restoration failed; the existing project pin was preserved',
-      );
-    }
+      },
+    });
   });
 
   app.post('/api/projects/:id/duplicate', async (req, res) => {
@@ -4517,6 +4643,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         sourceProject.id,
         'duplicate',
       )) return;
+      return await coordinateAuthorizedProjectRead({
+        req,
+        res,
+        projectId: sourceProject.id,
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
       if (isDesignSystemLikeProject(sourceProject)) {
         return sendApiError(
           res,
@@ -4602,6 +4736,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         await removeProjectDir(PROJECTS_DIR, targetProjectId).catch(() => {});
         throw err;
       }
+        },
+      });
     } catch (err: any) {
       if (err instanceof CreatedProjectWorkspaceResolutionError) {
         return sendApiError(
@@ -4638,6 +4774,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         sourceProject.id,
         'duplicate',
       )) return;
+      return await coordinateAuthorizedProjectRead({
+        req,
+        res,
+        projectId: sourceProject.id,
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
       if (isDesignSystemLikeProject(sourceProject)) {
         return sendApiError(
           res,
@@ -4778,6 +4922,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         }
         throw err;
       }
+        },
+      });
     } catch (err: any) {
       if (err instanceof CreatedProjectWorkspaceResolutionError) {
         return sendApiError(
@@ -4797,7 +4943,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     const locations = await configuredProjectLocations();
     if (!project || !projectVisibleForLocations(project, locations))
       return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
-    if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+    return coordinateAuthorizedProjectRead({
+      req,
+      res,
+      projectId: project.id,
+      coordination: ctx.projectGitCoordination,
+      sendApiError,
+      authorize: () => authorizeProjectRequest(req, res, project.id, { mode: 'read' }),
+      work: async () => {
     // When a caller is about to *reference* this project (add it as read-only
     // context for another run), materialize its managed folder first so the
     // reference resolves to a real directory. See ensureReferencedProjectDir.
@@ -4827,6 +4980,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       resolvedDir,
     };
     res.json(body);
+      },
+    });
   });
 
   app.get('/api/projects/:id/workspace-scope', async (req, res) => {
@@ -4864,7 +5019,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   app.patch('/api/projects/:id', async (req, res) => {
     try {
-      const patch = req.body || {};
+      const { expectedProjectRevision: _expectedProjectRevision, ...patch } = req.body || {};
       let patchProject = getProject(db, req.params.id);
       if (
         !patchProject
@@ -5203,6 +5358,15 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             : metadataWithoutScopes;
         }
       }
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: patchProject.id,
+        source: 'project.update',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
       if (typeof patch.name === 'string' && patch.name.trim().length > 0) {
         // Design-system workspace projects mirror their design system's
         // title: the workspace ensure re-stamps the project name from the
@@ -5244,6 +5408,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       /** @type {import('@open-design/contracts').ProjectResponse} */
       const body = { project };
       res.json(body);
+        },
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -5265,6 +5431,15 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         project.id,
         'delete',
       )) return;
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: project.id,
+        source: 'project.delete',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
       // spec 04 §11: a team-visible project must be unshared from the hub
       // BEFORE it disappears locally — mirrors the 'personal' branch of
       // /move's `requestTeamVisibility`, the one other place this daemon
@@ -5305,6 +5480,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       /** @type {import('@open-design/contracts').OkResponse} */
       const body = { ok: true };
       res.json(body);
+        },
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -5572,7 +5749,7 @@ export function registerProjectArtifactRoutes(app: Express, ctx: RegisterProject
 
 }
 
-export interface RegisterProjectFileRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'uploads' | 'node' | 'projectStore' | 'projectFiles' | 'documents' | 'artifacts' | 'projectPreviewScopes'> {
+export interface RegisterProjectFileRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'uploads' | 'node' | 'projectStore' | 'projectFiles' | 'documents' | 'artifacts' | 'projectPreviewScopes' | 'projectGitCoordination'> {
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
   authorizeProjectRequest?: AuthorizeProjectRequest;
   /** Startup-hydrated O(1) quarantine lookup for stale Team mirrors. */
@@ -5614,6 +5791,38 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     ctx.verifyWorkspaceRequestAuthority,
     ctx.isProjectUnmaterializedPlaceholder,
   );
+  const currentRead = (
+    req: Request,
+    res: Response,
+    projectId: string,
+    work: () => Promise<unknown>,
+    retainUntilResponse = false,
+  ) => coordinateAuthorizedProjectRead({
+    req,
+    res,
+    projectId,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: async () => true,
+    retainUntilResponse,
+    work,
+  });
+  const portableMutation = (
+    req: Request,
+    res: Response,
+    projectId: string,
+    source: string,
+    work: () => Promise<unknown>,
+  ) => coordinateAuthorizedProjectMutation({
+    req,
+    res,
+    projectId,
+    source,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: async () => true,
+    work,
+  });
   const { listFiles, listProjectFolders, createProjectFolder, deleteProjectFolder, searchProjectFiles, readProjectFile, resolveProjectDir, resolveProjectFilePath, parseByteRange, renameProjectFile, deleteProjectFile, writeProjectFile, sanitizeName, sanitizePath, ensureProject } = ctx.projectFiles;
   const { buildDocumentPreview } = ctx.documents;
   const { validateArtifactManifestInput } = ctx.artifacts;
@@ -6300,6 +6509,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+      return await currentRead(req, res, project.id, async () => {
       if (project?.metadata?.teamMirrorRevokedAt) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
@@ -6317,6 +6527,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
       const body = { files };
       res.json(body);
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -6329,6 +6540,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await authorizeProjectRequest(req, res, searchProject.id, { mode: 'read' })) return;
+      return await currentRead(req, res, searchProject.id, async () => {
       const query = String(req.query.q ?? '');
       if (!query) {
         sendApiError(res, 400, 'BAD_REQUEST', 'q query parameter is required');
@@ -6342,6 +6554,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         metadata: searchProject?.metadata,
       });
       res.json({ query, matches });
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -6359,6 +6572,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return;
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+      return await currentRead(req, res, project.id, async () => {
       const allowedProps = new Set([
         'color',
         'backgroundColor',
@@ -6404,6 +6618,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         query,
       });
       res.json(body);
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
     }
@@ -6416,12 +6631,14 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+      return await currentRead(req, res, project.id, async () => {
       const folders = await listProjectFolders(PROJECTS_DIR, req.params.id, {
         metadata: project.metadata,
       });
       /** @type {import('@open-design/contracts').ProjectFoldersResponse} */
       const body = { folders };
       res.json(body);
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -6447,6 +6664,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, project.id, 'folder.create', async () => {
       const folder = await createProjectFolder(
         PROJECTS_DIR,
         req.params.id,
@@ -6456,6 +6674,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').ProjectFolderResponse} */
       const body = { folder };
       res.json(body);
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
     }
@@ -6481,6 +6700,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, project.id, 'folder.delete', async () => {
       await deleteProjectFolder(
         PROJECTS_DIR,
         req.params.id,
@@ -6490,6 +6710,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').DeleteProjectFolderResponse} */
       const body = { ok: true };
       res.json(body);
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
     }
@@ -6503,10 +6724,12 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return;
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+      return await currentRead(req, res, project.id, async () => {
       const projectRoot = resolveProjectDir(PROJECTS_DIR, project.id, project.metadata);
       const audit = await auditDesignSystemPackage(projectRoot);
       res.setHeader('Cache-Control', 'no-store');
       res.json({ audit });
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -6520,6 +6743,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return;
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+      return await currentRead(req, res, project.id, async () => {
       const requestedPath = previewFilePathForProject(project, req.query.file);
       const meta = await resolveProjectFilePath(
         PROJECTS_DIR,
@@ -6553,6 +6777,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       };
       res.setHeader('Cache-Control', 'no-store');
       res.json(body);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6641,6 +6866,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         projectId,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, projectId, async () => {
       const meta = await resolveProjectFilePath(
         PROJECTS_DIR,
         projectId,
@@ -6667,6 +6893,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       };
       res.setHeader('Cache-Control', 'no-store');
       res.json(body);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6676,7 +6903,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         String(err),
       );
     } finally {
-      await handle?.close().catch(() => undefined);
+      await (handle as import('fs/promises').FileHandle | null)?.close().catch(() => undefined);
     }
   });
 
@@ -6716,6 +6943,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         projectId,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, projectId, async () => {
       if (req.headers.origin === 'null') {
         res.header('Access-Control-Allow-Origin', '*');
       }
@@ -6735,6 +6963,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           readProjectFile,
         }),
       );
+      }, true);
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6775,6 +7004,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         projectId,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, projectId, async () => {
       if (project?.metadata?.teamMirrorRevokedAt) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
@@ -6860,6 +7090,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         },
         true, // revalidate: emit ETag/Last-Modified so covers/preview/export reuse cached assets
       );
+      }, true);
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6900,6 +7131,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         projectId,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, projectId, async () => {
       const meta = await resolveProjectFilePath(
         PROJECTS_DIR,
         projectId,
@@ -6927,6 +7159,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           return applyUrlPreviewBridgesToHtml(transformed, file.mime, req.query.odPreviewBridge);
         },
       );
+      }, true);
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6958,11 +7191,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, project.id, 'file.delete', async () => {
       await deleteProjectFile(PROJECTS_DIR, projectId, rawSplat, project?.metadata);
       await markProjectFileVersionStoreDeleted(PROJECTS_DIR, projectId, rawSplat, project?.metadata);
       /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
       const body = { ok: true };
       res.json(body);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -6986,6 +7221,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, project.id, async () => {
       const file = await readProjectFile(
         PROJECTS_DIR,
         req.params.id,
@@ -6994,6 +7230,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       );
       const preview = await buildDocumentPreview(file);
       res.json(preview);
+      });
     } catch (err: any) {
       const status =
         err && err.statusCode
@@ -7202,6 +7439,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, project.id, 'file.restore-version', async () => {
       const restored = await readProjectFileVersion(
         PROJECTS_DIR,
         project.id,
@@ -7247,6 +7485,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').RestoreProjectFileVersionResponse} */
       const body = { file, version, ...(versionWarning ? { versionWarning } : {}) };
       res.json(body);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -7308,6 +7547,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
+      return await currentRead(req, res, project.id, async () => {
       if (project?.metadata?.teamMirrorRevokedAt) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
@@ -7318,6 +7558,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project?.metadata,
       );
       res.type(file.mime).send(file.buffer);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -7357,12 +7598,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           getWorkspaceProject,
           getWorkspaceProjectByProjectId,
           db,
-          req.params.id,
-          'writeFiles',
-        )) {
-          cleanupRejectedUpload();
-          return;
-        }
+        req.params.id,
+        'writeFiles',
+      )) {
+        cleanupRejectedUpload();
+        return;
+      }
+        return await portableMutation(req, res, req.params.id, 'file.write', async () => {
         await ensureProject(PROJECTS_DIR, req.params.id, uploadProject?.metadata);
         if (req.file) {
           try {
@@ -7551,6 +7793,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           ...(versionCapture?.versionWarning ? { versionWarning: versionCapture.versionWarning } : {}),
         };
         res.json(body);
+        });
       } catch (err: any) {
         const message = String(err?.message || err);
         if (/^invalid (source|versionSource);/u.test(message)) {
@@ -7606,6 +7849,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, project.id, 'file.rename', async () => {
       const result = await renameProjectFile(
         PROJECTS_DIR,
         req.params.id,
@@ -7623,6 +7867,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').RenameProjectFileResponse} */
       const body = result;
       res.json(body);
+      });
     } catch (err: any) {
       if (err?.code === 'EEXIST') {
         return sendApiError(res, 409, 'CONFLICT', String(err?.message || err));
@@ -7652,11 +7897,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         delProject.id,
         'writeFiles',
       )) return;
+      return await portableMutation(req, res, delProject.id, 'file.delete', async () => {
       await deleteProjectFile(PROJECTS_DIR, req.params.id, req.params.name, delProject?.metadata);
       await markProjectFileVersionStoreDeleted(PROJECTS_DIR, req.params.id, req.params.name, delProject?.metadata);
       /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
       const body = { ok: true };
       res.json(body);
+      });
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -7670,7 +7917,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
 
 }
 
-export interface RegisterProjectUploadRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'paths' | 'projectStore' | 'projectFiles'> {
+export interface RegisterProjectUploadRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'paths' | 'projectStore' | 'projectFiles' | 'projectGitCoordination'> {
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
   authorizeProjectRequest?: AuthorizeProjectRequest;
   /** Durable first-open placeholder stamp lookup. */
@@ -7683,7 +7930,7 @@ export function registerProjectUploadRoutes(app: Express, ctx: RegisterProjectUp
   const { handleProjectUpload } = ctx.uploads;
   const { PROJECTS_DIR } = ctx.paths;
   const { getProject, getWorkspaceProject, getWorkspaceProjectByProjectId } = ctx.projectStore;
-  const { readProjectFile } = ctx.projectFiles;
+  const { readProjectFile, resolveProjectDir, sanitizeName, sanitizePath, writeProjectFile } = ctx.projectFiles;
   const { fs } = ctx.node;
   const authorizeProjectRequest =
     ctx.authorizeProjectRequest ??
@@ -7703,6 +7950,20 @@ export function registerProjectUploadRoutes(app: Express, ctx: RegisterProjectUp
     undefined,
     authorizeProjectRequest,
   );
+  const uniqueProjectUploadName = (uploadDir: string, safeName: string, reserved: Set<string>) => {
+    const parsed = path.parse(safeName);
+    const base = parsed.name || parsed.base || 'file';
+    const ext = parsed.ext || '';
+    for (let index = 0; index < 10_000; index += 1) {
+      const candidate = index === 0 ? safeName : `${base}-${index}${ext}`;
+      if (reserved.has(candidate) || fs.existsSync(path.join(uploadDir, candidate))) continue;
+      reserved.add(candidate);
+      return candidate;
+    }
+    const fallback = `${base}-${Date.now().toString(36)}${ext}`;
+    reserved.add(fallback);
+    return fallback;
+  };
 
   app.post(
     '/api/projects/:id/upload',
@@ -7728,41 +7989,64 @@ export function registerProjectUploadRoutes(app: Express, ctx: RegisterProjectUp
           cleanupRejectedUpload();
           return;
         }
-        // Subfolder the upload targeted (sanitized, forward-slash, '' for root),
-        // stashed by the multer destination resolver. Prepend it so callers
-        // get the file's true project-relative path, not just its basename.
-        const relDir = typeof (req as any)._uploadRelDir === 'string' ? (req as any)._uploadRelDir : '';
         const project = getProject(db, req.params.id);
-        const out = [];
-        for (const f of incoming) {
-          try {
-            const stat = await fs.promises.stat(f.path);
-            const rel = relDir ? `${relDir}/${f.filename}` : f.filename;
-            out.push({
-              name: rel,
-              path: rel,
-              size: stat.size,
-              mtime: stat.mtimeMs,
-              originalName: f.originalname,
-            });
-            if (project && /\.html?$/i.test(rel)) {
-              const savedFile = await readProjectFile(PROJECTS_DIR, req.params.id, rel, project.metadata);
-              await ensureCurrentProjectFileVersion(
-                PROJECTS_DIR,
-                project.id,
-                savedFile.name,
-                savedFile.buffer.toString('utf8'),
-                { source: 'manual', promptSource: 'manual' },
-                project.metadata,
-              );
+        return await coordinateAuthorizedProjectMutation({
+          req,
+          res,
+          projectId: req.params.id,
+          source: 'file.upload',
+          coordination: ctx.projectGitCoordination,
+          sendApiError,
+          authorize: async () => true,
+          work: async () => {
+            const rawDir = typeof req.body?.dir === 'string' ? req.body.dir.trim() : '';
+            const relDir = rawDir ? sanitizePath(rawDir) : '';
+            const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project?.metadata);
+            const uploadDir = relDir
+              ? path.join(projectRoot, ...relDir.split('/'))
+              : projectRoot;
+            const reserved = new Set<string>();
+            const out = [];
+            for (const f of incoming) {
+              try {
+                const staged = await fs.promises.readFile(f.path);
+                const name = uniqueProjectUploadName(uploadDir, sanitizeName(f.originalname), reserved);
+                const rel = relDir ? `${relDir}/${name}` : name;
+                const saved = await writeProjectFile(
+                  PROJECTS_DIR,
+                  req.params.id,
+                  rel,
+                  staged,
+                  { overwrite: false },
+                  project?.metadata,
+                );
+                out.push({
+                  name: saved.name,
+                  path: saved.name,
+                  size: saved.size,
+                  mtime: saved.mtime,
+                  originalName: f.originalname,
+                });
+                if (project && /\.html?$/i.test(saved.name)) {
+                  const savedFile = await readProjectFile(PROJECTS_DIR, req.params.id, saved.name, project.metadata);
+                  await ensureCurrentProjectFileVersion(
+                    PROJECTS_DIR,
+                    project.id,
+                    savedFile.name,
+                    savedFile.buffer.toString('utf8'),
+                    { source: 'manual', promptSource: 'manual' },
+                    project.metadata,
+                  );
+                }
+              } finally {
+                fs.promises.unlink(f.path).catch(() => {});
+              }
             }
-          } catch {
-            // skip files that vanished mid-flight
-          }
-        }
-        /** @type {import('@open-design/contracts').UploadProjectFilesResponse} */
-        const body = { files: out };
-        res.json(body);
+            /** @type {import('@open-design/contracts').UploadProjectFilesResponse} */
+            const body = { files: out };
+            res.json(body);
+          },
+        });
       } catch (err: any) {
         sendApiError(res, 500, 'INTERNAL_ERROR', 'upload failed');
       }

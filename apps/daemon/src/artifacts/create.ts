@@ -8,6 +8,7 @@ export interface CreateProjectArtifactInput {
   content: string;
   encoding?: 'utf8' | 'base64' | string;
   artifactManifest?: unknown;
+  expectedProjectRevision?: unknown;
 }
 
 export interface CreateProjectArtifactOptions {
@@ -48,6 +49,9 @@ export function buildCreateArtifactRequestBody(input: CreateProjectArtifactInput
     encoding: input.encoding === 'base64' ? 'base64' : 'utf8',
     artifact: true,
     overwrite: false,
+    ...(input.expectedProjectRevision === undefined
+      ? {}
+      : { expectedProjectRevision: input.expectedProjectRevision }),
     ...(input.artifactManifest === undefined ? {} : { artifactManifest: input.artifactManifest }),
   };
 }

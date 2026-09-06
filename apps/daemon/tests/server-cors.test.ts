@@ -1,6 +1,7 @@
 import http from 'node:http';
 import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { requireLocalDaemonRequest } from '../src/http/local-daemon-request.js';
 
 // Replicate only the CORS middleware pattern from the raw file route so we can
 // test the header logic without spinning up the full daemon (database, fs, etc.).
@@ -11,7 +12,7 @@ function makeTestApp() {
     if (req.headers.origin === 'null') {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET');
-      res.header('Access-Control-Allow-Headers', 'Content-Type');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, X-OD-Project-Revision');
     }
     res.sendStatus(204);
   });
@@ -80,6 +81,7 @@ describe('raw file endpoint CORS', () => {
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
     expect(res.headers.get('access-control-allow-methods')).toBe('GET');
+    expect(res.headers.get('access-control-allow-headers')).toContain('X-OD-Project-Revision');
   });
 
   it('rejects OPTIONS preflight from a real cross-origin site', async () => {
@@ -89,5 +91,31 @@ describe('raw file endpoint CORS', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+describe('local daemon mutation revision CORS', () => {
+  it('allows the project revision request header', () => {
+    const headers = new Map<string, string>();
+    let nextCalled = false;
+    requireLocalDaemonRequest(
+      {
+        socket: { remoteAddress: '127.0.0.1' },
+        get(name: string) {
+          if (name === 'host') return '127.0.0.1:4173';
+          if (name === 'origin') return 'http://127.0.0.1:4173';
+          return undefined;
+        },
+      } as any,
+      {
+        setHeader(name: string, value: string) {
+          headers.set(name.toLowerCase(), value);
+        },
+      } as any,
+      () => { nextCalled = true; },
+    );
+
+    expect(nextCalled).toBe(true);
+    expect(headers.get('access-control-allow-headers')).toContain('X-OD-Project-Revision');
   });
 });

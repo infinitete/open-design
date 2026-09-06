@@ -114,6 +114,11 @@ function buildDeps(input: {
       validateProjectSkillId: vi.fn(async (id: string) => ({ ok: true, id })),
     },
     collabSync: functionProxy(),
+    projectGitCoordination: {
+      withProjectMutation: async (_input: unknown, work: () => Promise<unknown>) => work(),
+      withProjectRead: async (_projectId: string, work: () => Promise<unknown>) => work(),
+      runtime: functionProxy(),
+    },
     authorizeProjectRequest: vi.fn(async () => true),
     fetchProjectCreationWorkspaceDirectory: vi.fn(async () => ({ ok: false, items: [] })),
     pluginScope: {

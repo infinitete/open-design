@@ -42,6 +42,7 @@ import {
   upsertMessage,
 } from '../src/db.js';
 import { createChatRunService } from '../src/runtimes/runs.js';
+import { createUnavailableProjectGitCoordination } from '../src/services/project-git/mutation-adapter.js';
 import {
   registerProjectRoutes,
   type RegisterProjectRoutesDeps,
@@ -90,6 +91,7 @@ async function mountConversationApp(
     appConfig: { readAppConfig: async () => ({}) },
     agents: { getAgentDef: () => null },
     design: { runs },
+    projectGitCoordination: createUnavailableProjectGitCoordination({ getBinding: () => null }),
   } as unknown as RegisterProjectConversationRoutesDeps);
 
   const server = app.listen(0, '127.0.0.1');
@@ -195,6 +197,7 @@ async function mountProjectApp(
       validateProjectDesignSystemId: noop,
       validateProjectSkillId: noop,
     },
+    projectGitCoordination: createUnavailableProjectGitCoordination({ getBinding: () => null }),
   } as unknown as RegisterProjectRoutesDeps);
 
   const server = app.listen(0, '127.0.0.1');

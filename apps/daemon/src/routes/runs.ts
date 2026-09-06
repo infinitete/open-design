@@ -75,6 +75,7 @@ import {
 } from '../langfuse-trace.js';
 import { parseMediaExecutionPolicyInput } from '../media/policy.js';
 import { isManagedProjectCwd } from '../mcp-config.js';
+import { GitDomainError } from '../services/project-git/errors.js';
 import {
   normalizeExternalPluginRunAnalyticsHints,
   OPEN_DESIGN_PLUGIN_ID,
@@ -82,10 +83,11 @@ import {
   validatePluginWorkflowId,
 } from '../mcp-observability.js';
 import {
-  createInternalRunCreationService,
   type InternalRunCreateInput,
   type InternalRunCreationService,
+  type PreRunProjectAdmission,
 } from '../services/internal-run-service.js';
+import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
 import {
   projectStrategyTask,
   projectStrategyTaskByRunId,
@@ -201,7 +203,6 @@ import {
   normalizeCommentAttachments,
   UPLOAD_DIR,
 } from '../runtimes/chat-prompt-inputs.js';
-import { createRunAnalyticsLifecycle } from '../services/run-analytics-lifecycle.js';
 import {
   runTouchedArtifactPaths,
   toJsonRecord,
@@ -640,11 +641,6 @@ export interface RegisterRunRoutesDeps {
         isRunActive?: (runId: string) => boolean;
       },
     ) => { ok: boolean; reason?: 'active' | 'scope' };
-    reconcileAssistantMessageOnRunEnd: (
-      db: SqliteDb,
-      runs: ChatRunService,
-      run: ChatRun,
-    ) => void;
   };
   /**
    * Process-owned physical Run seam. The composition root supplies one shared
@@ -652,7 +648,7 @@ export interface RegisterRunRoutesDeps {
    * path. Route-only fixtures may omit it and receive an equivalent local
    * instance around their injected run registry.
    */
-  internalRuns?: InternalRunCreationService<RunCreateMeta, ChatRun>;
+  internalRuns: InternalRunCreationService<RunCreateMeta, ChatRun>;
   /**
    * Workspace-identity gate for POST /api/runs and POST /api/chat — this
    * file's two "create a run" entry points. Until this fix both had ZERO
@@ -902,6 +898,9 @@ export function registerRunCreateRoute(
       return await handleRunCreate(req, res);
     } catch (error) {
       if (res.headersSent) throw error;
+      if (error instanceof GitDomainError) {
+        return sendApiError(res, error.status, error.code, error.message);
+      }
       return sendStructuredRunCreateFailure(res, sendApiError, error);
     }
   });
@@ -933,20 +932,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
   } = ctx.telemetry;
   const {
     pinAssistantMessageOnRunCreate,
-    reconcileAssistantMessageOnRunEnd,
   } = ctx.messages;
-  const internalRuns = ctx.internalRuns ?? createInternalRunCreationService({
-    runs: design.runs,
-    claimAssistantMessage: (run, options) =>
-      pinAssistantMessageOnRunCreate(db, run, options),
-    analyticsLifecycle: createRunAnalyticsLifecycle({
-      db,
-      design,
-      paths: { PROJECTS_DIR, RUNTIME_DATA_DIR },
-      agents: { detectAgents },
-      telemetry: ctx.telemetry,
-    }),
-  });
+  const internalRuns = ctx.internalRuns;
   const strategyTaskForRun = (run: ChatRun): StrategyTaskExecutionRecord | null => {
     const task = getStrategyTaskExecutionByRunId(db, run.id);
     if (!task && run.odNextTaskInputSnapshot) {
@@ -1414,6 +1401,14 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
+    try {
+      requestBody.expectedProjectRevision = expectedProjectRevisionFromTransport({
+        body: requestBody.expectedProjectRevision,
+        header: req.get('X-OD-Project-Revision'),
+      });
+    } catch {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Invalid project revision.');
+    }
     const requestAnalyticsContext = readAnalyticsContext(req);
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
@@ -1524,12 +1519,39 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         authorizedBoundMutation,
       )
     ) return;
+    let preRunProjectAdmission: PreRunProjectAdmission | undefined;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      try {
+        preRunProjectAdmission = await internalRuns.preAdmitProjectRun(
+          requestBody.projectId,
+          typeof requestBody.expectedProjectRevision === 'number'
+            ? requestBody.expectedProjectRevision
+            : undefined,
+        );
+      } catch (error) {
+        if (error instanceof GitDomainError) {
+          return sendApiError(res, error.status, error.code, error.message);
+        }
+        throw error;
+      }
+      const releasePreRunAdmission = () => {
+        if (preRunProjectAdmission) {
+          internalRuns.releaseProjectRunAdmission(preRunProjectAdmission);
+        }
+      };
+      res.once('finish', releasePreRunAdmission);
+      res.once('close', releasePreRunAdmission);
+    }
+    const coordinatePreRunMutation = <T>(source: string, work: () => Promise<T>): Promise<T> =>
+      preRunProjectAdmission
+        ? internalRuns.withProjectMutation(preRunProjectAdmission, source, work)
+        : work();
     let resolvedSnapshot: SuccessfulRunSnapshotResolution | null = null;
     let strategyRolloutDecision: OdNextRolloutDecision | null = null;
     let rolloutCapabilitySnapshot: ReturnType<
       typeof resolveBundledOdNextRuntimeCapability
     >['snapshot'] = null;
-    let resolveAutomaticOrdinaryFallback: (() => ResolveSnapshotResult) | null = null;
+    let resolveAutomaticOrdinaryFallback: (() => Promise<ResolveSnapshotResult>) | null = null;
     let automaticOrdinaryFallbackPluginId: string | null = null;
     let automaticSnapshotPreparationError: Error | null = null;
     let idempotentStrategyRetry = null;
@@ -1906,7 +1928,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           && (selectedExamplePlugin || getInstalledPlugin(db, automaticOrdinaryFallbackPluginId))
           ? { ...requestBody, pluginId: automaticOrdinaryFallbackPluginId }
           : requestBody;
-        resolveAutomaticOrdinaryFallback = () => resolvePluginSnapshot({
+        resolveAutomaticOrdinaryFallback = () => coordinatePreRunMutation(
+          'run.snapshot-fallback',
+          async () => resolvePluginSnapshot({
           db,
           body: fallbackBody,
           projectId: requestBody.projectId as string,
@@ -1929,12 +1953,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
                 },
               }
             : {}),
-        });
+          }),
+        );
       }
-      const resolved = resolvePluginSnapshot({
+      const resolved = await coordinatePreRunMutation(
+        'run.snapshot-resolution',
+        async () => resolvePluginSnapshot({
         db,
         body: runResolveBody,
-        projectId: requestBody.projectId,
+        projectId: requestBody.projectId as string,
         conversationId: snapshotConversationId,
         registry: registryView,
         connectorProbe: buildConnectorProbe(connectorService),
@@ -1966,7 +1993,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
               },
             }
           : {}),
-      });
+        }),
+      );
       if (resolved && !resolved.ok) {
         if (!explicitExecutablePlugin) {
           console.warn(
@@ -2385,7 +2413,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       ) return false;
       const provisionalSnapshot = resolvedSnapshot;
       if (provisionalSnapshot?.created === true) {
-        if (!removeProvisionalAutomaticSnapshot(db, provisionalSnapshot)) {
+        const removed = await coordinatePreRunMutation(
+          'run.snapshot-fallback-cleanup',
+          async () => removeProvisionalAutomaticSnapshot(db, provisionalSnapshot),
+        );
+        if (!removed) {
           throw new Error(
             'Automatic strategy snapshot became referenced before Run claim; refusing fallback cleanup.',
           );
@@ -2402,7 +2434,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         )
       ) return false;
 
-      const fallbackResolved = resolveAutomaticOrdinaryFallback();
+      const fallbackResolved = await resolveAutomaticOrdinaryFallback();
       if (fallbackResolved && !fallbackResolved.ok) {
         console.warn(
           `[od-next-rollout] ordinary fallback snapshot unavailable for project ${String(meta.projectId)}: ${fallbackResolved.body.error.code}`,
@@ -2602,8 +2634,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     let preparedRun;
     try {
-      preparedRun = internalRuns.prepare({
+      preparedRun = await internalRuns.prepare({
         meta,
+        ...(preRunProjectAdmission ? { projectAdmission: preRunProjectAdmission } : {}),
         ...((runUserSeed || clarificationTask || strategyRolloutDecision?.effectiveMode === 'active')
           ? {
               beforeClaimCommit: (candidate) => {
@@ -2689,12 +2722,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         'run-claim',
       );
       createdTaskInputSnapshot = null;
+      if (error instanceof GitDomainError) {
+        return sendApiError(res, error.status, error.code, error.message);
+      }
       if (error instanceof AutomaticOdNextPreparationError) {
         preparedPromptBundleText = null;
         frozenSkillPackage = undefined;
         if (!await fallbackAutomaticBeforeStart(error.preparationCause)) return;
-        preparedRun = internalRuns.prepare({
+        preparedRun = await internalRuns.prepare({
           meta,
+          ...(preRunProjectAdmission ? { projectAdmission: preRunProjectAdmission } : {}),
           ...(runUserSeed ? { beforeClaimCommit: () => seedRunUserMessage() } : {}),
         });
       } else {
@@ -2724,7 +2761,10 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (
         resolvedSnapshot?.created === true
         && resolvedSnapshot.snapshot.pluginId === 'od-next-strategy'
-        && !removeProvisionalAutomaticSnapshot(db, resolvedSnapshot)
+        && !await coordinatePreRunMutation(
+          'run.snapshot-nonready-cleanup',
+          async () => removeProvisionalAutomaticSnapshot(db, resolvedSnapshot!),
+        )
       ) {
         console.warn(
           `[od-next-rollout] retained referenced strategy snapshot ${resolvedSnapshot.snapshotId} after non-ready Run preparation`,
@@ -2746,7 +2786,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         excludeRunId: preparedRun.run.id,
       });
       if (blockingRun) {
-        design.runs.drop(preparedRun.run);
+        internalRuns.discard(preparedRun.run);
         return sendApiError(
           res,
           409,
@@ -2861,6 +2901,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           : 'OD_NEXT_TASK_STATE_INVALID',
         error.message,
       );
+      internalRuns.discard(run);
       return res.status(202).json({
         runId: run.id,
         conversationId: run.conversationId ?? null,
@@ -2902,7 +2943,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         db,
       });
     }
-    reconcileAssistantMessageOnRunEnd(db, design.runs, run);
     if (run.projectId && run.conversationId) {
       try {
         const project = toProjectRecord(getProject(db, run.projectId));
@@ -3031,6 +3071,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     try {
       task = getStrategyTaskExecutionByRunId(db, runId);
     } catch (error) {
+      if (error instanceof GitDomainError) {
+        return sendApiError(res, error.status, error.code, error.message);
+      }
       if (error instanceof InvalidStrategyTaskRecordError) {
         return sendApiError(res, 409, 'OD_NEXT_TASK_STATE_INVALID', error.message);
       }
@@ -3310,6 +3353,14 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
+    try {
+      requestBody.expectedProjectRevision = expectedProjectRevisionFromTransport({
+        body: requestBody.expectedProjectRevision,
+        header: req.get('X-OD-Project-Revision'),
+      });
+    } catch {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Invalid project revision.');
+    }
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', mediaExecution.message);
@@ -3503,7 +3554,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     );
     let preparedRun;
     try {
-      preparedRun = internalRuns.prepare({
+      preparedRun = await internalRuns.prepare({
         meta,
         ...(clarificationContinuation && !clarificationContinuation.retry
           ? {
@@ -3547,7 +3598,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         excludeRunId: preparedRun.run.id,
       });
       if (blockingRun) {
-        design.runs.drop(preparedRun.run);
+        internalRuns.discard(preparedRun.run);
         return sendApiError(
           res,
           409,
@@ -3628,6 +3679,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
             : 'OD_NEXT_TASK_STATE_INVALID',
           error.message,
         );
+        internalRuns.discard(run);
         design.runs.stream(run, req, res);
         return;
       }
@@ -3635,7 +3687,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     if (strategyTask) run.strategyTask = strategyTask;
     design.runs.stream(run, req, res);
-    reconcileAssistantMessageOnRunEnd(db, design.runs, run);
     const executionMeta: RunCreateMeta = {
       ...meta,
       ...(requestBody.byokProvider !== undefined

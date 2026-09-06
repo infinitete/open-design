@@ -1,11 +1,15 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectRead,
+} from './project-git-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizeProjectRequest = any;
 type AuthorizeProjectToolRequest = any;
 
-export interface RegisterLiveArtifactRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'auth' | 'liveArtifacts' | 'projectStore'> {
+export interface RegisterLiveArtifactRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'auth' | 'liveArtifacts' | 'projectStore' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
   authorizeProjectToolRequest: AuthorizeProjectToolRequest;
 }
@@ -15,8 +19,13 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
   const { sendApiError, sendLiveArtifactRouteError, requireLocalDaemonRequest } = ctx.http;
   const { PROJECTS_DIR } = ctx.paths;
   const { authorizeToolRequest, requestProjectOverride, requestRunOverride } = ctx.auth;
-  const { createLiveArtifact, listLiveArtifacts, updateLiveArtifact, refreshLiveArtifact, emitLiveArtifactEvent, emitLiveArtifactRefreshEvent, readLiveArtifactCode, setLiveArtifactCodeHeaders, ensureLiveArtifactPreview, setLiveArtifactPreviewHeaders, getLiveArtifact, listLiveArtifactRefreshLogEntries, deleteLiveArtifact } = ctx.liveArtifacts;
+  const { createLiveArtifact, listLiveArtifacts, updateLiveArtifact, refreshLiveArtifact, emitLiveArtifactEvent, emitLiveArtifactRefreshEvent, readLiveArtifactCode, setLiveArtifactCodeHeaders, readLiveArtifactPreview, setLiveArtifactPreviewHeaders, getLiveArtifact, listLiveArtifactRefreshLogEntries, deleteLiveArtifact } = ctx.liveArtifacts;
   const { getProject, updateProject } = ctx.projectStore;
+  const projectLocation = (projectId: string) => ({
+    projectsRoot: PROJECTS_DIR,
+    projectId,
+    projectMetadata: getProject(db, projectId)?.metadata,
+  });
   const authorizeProject = async (
     req: any,
     res: any,
@@ -28,6 +37,41 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
   ) => {
     return ctx.authorizeProjectRequest(req, res, projectId, options);
   };
+  const currentRead = (
+    req: any,
+    res: any,
+    projectId: string,
+    work: () => Promise<unknown>,
+  ) => coordinateAuthorizedProjectRead({
+    req,
+    res,
+    projectId,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: async () => true,
+    retainUntilResponse: true,
+    work,
+  });
+  const portableMutation = (
+    req: any,
+    res: any,
+    projectId: string,
+    source: string,
+    work: () => Promise<unknown>,
+    runId?: string,
+  ) => coordinateAuthorizedProjectMutation({
+    req,
+    res,
+    projectId,
+    source,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: async () => true,
+    ...(runId
+      ? { trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(runId, projectId) }
+      : {}),
+    work,
+  });
   app.get('/api/live-artifacts', async (req, res) => {
     try {
       const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
@@ -36,11 +80,12 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       }
       if (!await authorizeProject(req, res, projectId, { mode: 'read' })) return;
 
-      const artifacts = await listLiveArtifacts({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
+      return await currentRead(req, res, projectId, async () => {
+        const artifacts = await listLiveArtifacts({
+          ...projectLocation(projectId),
+        });
+        res.json({ artifacts });
       });
-      res.json({ artifacts });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -63,28 +108,28 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'read', allowNavigationQuery: true },
       )) return;
 
-      const variant = typeof req.query.variant === 'string' ? req.query.variant : 'rendered';
-      if (variant === 'template' || variant === 'rendered-source') {
-        const html = await readLiveArtifactCode({
-          projectsRoot: PROJECTS_DIR,
-          projectId,
-          artifactId: req.params.artifactId,
-          variant: variant === 'template' ? 'template' : 'rendered',
-        });
-        setLiveArtifactCodeHeaders(res);
-        return res.status(200).send(html);
-      }
-      if (variant !== 'rendered') {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'variant must be rendered, template, or rendered-source');
-      }
+      return await currentRead(req, res, projectId, async () => {
+        const variant = typeof req.query.variant === 'string' ? req.query.variant : 'rendered';
+        if (variant === 'template' || variant === 'rendered-source') {
+          const html = await readLiveArtifactCode({
+            ...projectLocation(projectId),
+            artifactId: req.params.artifactId,
+            variant: variant === 'template' ? 'template' : 'rendered',
+          });
+          setLiveArtifactCodeHeaders(res);
+          return res.status(200).send(html);
+        }
+        if (variant !== 'rendered') {
+          return sendApiError(res, 400, 'BAD_REQUEST', 'variant must be rendered, template, or rendered-source');
+        }
 
-      const record = await ensureLiveArtifactPreview({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
+        const record = await readLiveArtifactPreview({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+        });
+        setLiveArtifactPreviewHeaders(res);
+        return res.status(200).send(record.html);
       });
-      setLiveArtifactPreviewHeaders(res);
-      res.status(200).send(record.html);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -98,12 +143,13 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       }
       if (!await authorizeProject(req, res, projectId, { mode: 'read' })) return;
 
-      const record = await getLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
+      return await currentRead(req, res, projectId, async () => {
+        const record = await getLiveArtifact({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+        });
+        res.json({ artifact: record.artifact });
       });
-      res.json({ artifact: record.artifact });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -117,12 +163,13 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       }
       if (!await authorizeProject(req, res, projectId, { mode: 'read' })) return;
 
-      const refreshes = await listLiveArtifactRefreshLogEntries({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
+      return await currentRead(req, res, projectId, async () => {
+        const refreshes = await listLiveArtifactRefreshLogEntries({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+        });
+        res.json({ refreshes });
       });
-      res.json({ refreshes });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -149,16 +196,17 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      const record = await createLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
-        input: input ?? {},
-        templateHtml,
-        provenanceJson,
-        createdByRunId: toolGrant.runId,
-      });
-      emitLiveArtifactEvent(toolGrant, 'created', record.artifact);
-      res.json({ artifact: record.artifact });
+      return await portableMutation(req, res, toolGrant.projectId, 'live-artifact.tool-create', async () => {
+        const record = await createLiveArtifact({
+          ...projectLocation(toolGrant.projectId),
+          input: input ?? {},
+          templateHtml,
+          provenanceJson,
+          createdByRunId: toolGrant.runId,
+        });
+        emitLiveArtifactEvent(toolGrant, 'created', record.artifact);
+        res.json({ artifact: record.artifact });
+      }, toolGrant.runId);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -180,11 +228,12 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'read' },
       )) return;
 
-      const artifacts = await listLiveArtifacts({
-        projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
+      return await currentRead(req, res, toolGrant.projectId, async () => {
+        const artifacts = await listLiveArtifacts({
+          ...projectLocation(toolGrant.projectId),
+        });
+        res.json({ artifacts });
       });
-      res.json({ artifacts });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -209,16 +258,17 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      const record = await updateLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
-        artifactId,
-        input: input ?? {},
-        templateHtml,
-        provenanceJson,
-      });
-      emitLiveArtifactEvent(toolGrant, 'updated', record.artifact);
-      res.json({ artifact: record.artifact });
+      return await portableMutation(req, res, toolGrant.projectId, 'live-artifact.tool-update', async () => {
+        const record = await updateLiveArtifact({
+          ...projectLocation(toolGrant.projectId),
+          artifactId,
+          input: input ?? {},
+          templateHtml,
+          provenanceJson,
+        });
+        emitLiveArtifactEvent(toolGrant, 'updated', record.artifact);
+        res.json({ artifact: record.artifact });
+      }, toolGrant.runId);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -243,32 +293,33 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      let result;
-      try {
-        result = await refreshLiveArtifact({
-          projectsRoot: PROJECTS_DIR,
-          projectId: toolGrant.projectId,
-          artifactId,
-          onStarted: ({ refreshId }: any) => {
-            emitLiveArtifactRefreshEvent(toolGrant, { phase: 'started', artifactId, refreshId });
-          },
-        });
-      } catch (refreshErr) {
+      return await portableMutation(req, res, toolGrant.projectId, 'live-artifact.tool-refresh', async () => {
+        let result;
+        try {
+          result = await refreshLiveArtifact({
+            ...projectLocation(toolGrant.projectId),
+            artifactId,
+            onStarted: ({ refreshId }: any) => {
+              emitLiveArtifactRefreshEvent(toolGrant, { phase: 'started', artifactId, refreshId });
+            },
+          });
+        } catch (refreshErr) {
+          emitLiveArtifactRefreshEvent(toolGrant, {
+            phase: 'failed',
+            artifactId,
+            error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          });
+          throw refreshErr;
+        }
         emitLiveArtifactRefreshEvent(toolGrant, {
-          phase: 'failed',
+          phase: 'succeeded',
           artifactId,
-          error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          refreshId: result.refresh.id,
+          title: result.artifact.title,
+          refreshedSourceCount: result.refresh.refreshedSourceCount,
         });
-        throw refreshErr;
-      }
-      emitLiveArtifactRefreshEvent(toolGrant, {
-        phase: 'succeeded',
-        artifactId,
-        refreshId: result.refresh.id,
-        title: result.artifact.title,
-        refreshedSourceCount: result.refresh.refreshedSourceCount,
-      });
-      res.json(result);
+        res.json(result);
+      }, toolGrant.runId);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -287,14 +338,15 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      const record = await updateLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
-        input: req.body ?? {},
+      return await portableMutation(req, res, projectId, 'live-artifact.update', async () => {
+        const record = await updateLiveArtifact({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+          input: req.body ?? {},
+        });
+        emitLiveArtifactEvent({ projectId }, 'updated', record.artifact);
+        res.json({ artifact: record.artifact });
       });
-      emitLiveArtifactEvent({ projectId }, 'updated', record.artifact);
-      res.json({ artifact: record.artifact });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -313,19 +365,19 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      const existing = await getLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
+      return await portableMutation(req, res, projectId, 'live-artifact.delete', async () => {
+        const existing = await getLiveArtifact({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+        });
+        await deleteLiveArtifact({
+          ...projectLocation(projectId),
+          artifactId: req.params.artifactId,
+        });
+        updateProject(db, projectId, {});
+        emitLiveArtifactEvent({ projectId }, 'deleted', existing.artifact);
+        res.json({ ok: true });
       });
-      await deleteLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId,
-        artifactId: req.params.artifactId,
-      });
-      updateProject(db, projectId, {});
-      emitLiveArtifactEvent({ projectId }, 'deleted', existing.artifact);
-      res.json({ ok: true });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -348,32 +400,33 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      let result;
-      try {
-        result = await refreshLiveArtifact({
-          projectsRoot: PROJECTS_DIR,
-          projectId,
-          artifactId: req.params.artifactId,
-          onStarted: ({ refreshId }: any) => {
-            emitLiveArtifactRefreshEvent({ projectId }, { phase: 'started', artifactId: req.params.artifactId, refreshId });
-          },
-        });
-      } catch (refreshErr) {
+      return await portableMutation(req, res, projectId, 'live-artifact.refresh', async () => {
+        let result;
+        try {
+          result = await refreshLiveArtifact({
+            ...projectLocation(projectId),
+            artifactId: req.params.artifactId,
+            onStarted: ({ refreshId }: any) => {
+              emitLiveArtifactRefreshEvent({ projectId }, { phase: 'started', artifactId: req.params.artifactId, refreshId });
+            },
+          });
+        } catch (refreshErr) {
+          emitLiveArtifactRefreshEvent({ projectId }, {
+            phase: 'failed',
+            artifactId: req.params.artifactId,
+            error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          });
+          throw refreshErr;
+        }
         emitLiveArtifactRefreshEvent({ projectId }, {
-          phase: 'failed',
+          phase: 'succeeded',
           artifactId: req.params.artifactId,
-          error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          refreshId: result.refresh.id,
+          title: result.artifact.title,
+          refreshedSourceCount: result.refresh.refreshedSourceCount,
         });
-        throw refreshErr;
-      }
-      emitLiveArtifactRefreshEvent({ projectId }, {
-        phase: 'succeeded',
-        artifactId: req.params.artifactId,
-        refreshId: result.refresh.id,
-        title: result.artifact.title,
-        refreshedSourceCount: result.refresh.refreshedSourceCount,
+        res.json(result);
       });
-      res.json(result);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }

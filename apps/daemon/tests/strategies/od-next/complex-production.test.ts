@@ -684,22 +684,21 @@ describe('OD Next complex production enforcement', () => {
     }
   });
 
-  it('claims complex Production atomically and completes from persisted state after daemon restart', () => {
+  it('claims complex Production atomically and completes from persisted state after daemon restart', async () => {
     const capability = capabilitySnapshot();
     const plan = planContract(snapshot, capability);
-    const planning = prepareAutomaticStrategyContinuation({
+    const planning = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, TASK_ID)!,
       parsed: parsedPlanning(plan),
       executionPreflight: executionPassed,
       complexRuntimeEvidence: { capabilitySnapshot: capability },
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: PRODUCTION_RUN_ID, status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: (stage, instruction, taskRunIndex) => ({ stage, instruction, taskRunIndex }),
       updatedAt: 120,
@@ -714,7 +713,7 @@ describe('OD Next complex production enforcement', () => {
     db = openDatabase(tempDir, { dataDir: tempDir });
     const restored = getStrategyTaskExecution(db, TASK_ID)!;
     expect(restored.runs.map((item) => item.inputStage)).toEqual(['request', 'production']);
-    const completed = prepareAutomaticStrategyContinuation({
+    const completed = await prepareAutomaticStrategyContinuation({
       db,
       task: restored,
       parsed: parsedCompletion(),
@@ -725,8 +724,7 @@ describe('OD Next complex production enforcement', () => {
         taskRunObservationId: ROOT_OBSERVATION_ID,
       },
       service: {
-        prepare() { throw new Error('Completion must not allocate another Run.'); },
-        start(run) { return run; },
+        async prepare() { throw new Error('Completion must not allocate another Run.'); },
       },
       createMeta: () => ({}),
       updatedAt: 130,
@@ -740,22 +738,21 @@ describe('OD Next complex production enforcement', () => {
     });
   });
 
-  it('blocks failed Child evidence and keeps cancellation terminal without repair or another Run', () => {
+  it('blocks failed Child evidence and keeps cancellation terminal without repair or another Run', async () => {
     const capability = capabilitySnapshot();
     const plan = planContract(snapshot, capability);
-    const planning = prepareAutomaticStrategyContinuation({
+    const planning = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, TASK_ID)!,
       parsed: parsedPlanning(plan),
       executionPreflight: executionPassed,
       complexRuntimeEvidence: { capabilitySnapshot: capability },
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: PRODUCTION_RUN_ID, status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: () => ({}),
       updatedAt: 120,
@@ -773,22 +770,21 @@ describe('OD Next complex production enforcement', () => {
     expect(canceled.runs).toHaveLength(2);
   });
 
-  it('blocks a successful parent Run when one required Child failed', () => {
+  it('blocks a successful parent Run when one required Child failed', async () => {
     const capability = capabilitySnapshot();
     const plan = planContract(snapshot, capability);
-    const planning = prepareAutomaticStrategyContinuation({
+    const planning = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, TASK_ID)!,
       parsed: parsedPlanning(plan),
       executionPreflight: executionPassed,
       complexRuntimeEvidence: { capabilitySnapshot: capability },
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: PRODUCTION_RUN_ID, status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: () => ({}),
       updatedAt: 120,
@@ -804,7 +800,7 @@ describe('OD Next complex production enforcement', () => {
           })
         : item
     ));
-    const terminal = prepareAutomaticStrategyContinuation({
+    const terminal = await prepareAutomaticStrategyContinuation({
       db,
       task: planning.result.task,
       parsed: parsedCompletion(),
@@ -815,8 +811,7 @@ describe('OD Next complex production enforcement', () => {
         taskRunObservationId: ROOT_OBSERVATION_ID,
       },
       service: {
-        prepare() { throw new Error('Blocked completion must not allocate another Run.'); },
-        start(run) { return run; },
+        async prepare() { throw new Error('Blocked completion must not allocate another Run.'); },
       },
       createMeta: () => ({}),
       updatedAt: 130,
@@ -836,23 +831,22 @@ describe('OD Next complex production enforcement', () => {
     expect(terminal.result.task.runs).toHaveLength(2);
   });
 
-  it('blocks a complex Plan before Run allocation when the verified snapshot drifts', () => {
+  it('blocks a complex Plan before Run allocation when the verified snapshot drifts', async () => {
     const capability = capabilitySnapshot();
     const plan = planContract(snapshot, capability);
     const drifted = capabilitySnapshot({ runtimeAdapterVersion: 'synthetic-adapter/2' });
     let prepareCalls = 0;
-    const result = prepareAutomaticStrategyContinuation({
+    const result = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, TASK_ID)!,
       parsed: parsedPlanning(plan),
       executionPreflight: executionPassed,
       complexRuntimeEvidence: { capabilitySnapshot: drifted },
       service: {
-        prepare() {
+        async prepare() {
           prepareCalls += 1;
           throw new Error('must not allocate');
         },
-        start(run) { return run; },
       },
       createMeta: () => ({}),
       updatedAt: 120,

@@ -12,6 +12,9 @@ import type {
 } from '../design-systems/index.js';
 import type { DesignTokenContractRebuildPreparation } from '../design-systems/token-contract-rebuild.js';
 import { workspaceTeamDesignSystemBindingResourceId } from '../design-systems/workspace-team-binding.js';
+import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
+import { GitDomainError } from '../services/project-git/errors.js';
+import { sendApiError } from '../http/api-errors.js';
 
 // Collab team-resource-materialization removed - stub
 function teamResourceWorkspaceRoot(..._args: any[]): any { return null; }
@@ -99,6 +102,10 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
         exactTeam?: boolean;
+        projectMutation?: {
+          source: string;
+          expectedProjectRevision?: number;
+        };
       },
     ) => Promise<DesignSystemWorkspaceProject | null>;
     listAllDesignSystems: (options?: {
@@ -812,18 +819,31 @@ export function registerDesignSystemRoutes(
       const workspaceId = headerValue(req, 'x-od-workspace-id') ?? null;
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id') ?? null;
       const storage = resolveDesignSystemStorage(req, req.params.id);
+      const expectedProjectRevision = expectedProjectRevisionFromTransport({
+        body: req.body?.expectedProjectRevision,
+        header: req.get('X-OD-Project-Revision'),
+      });
       const workspace = await ensureUserDesignSystemWorkspaceProject(
         db,
         req.params.id,
-        workspaceId || workspaceMemberId
-          ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
-          : undefined,
+        {
+          ...(workspaceId || workspaceMemberId
+            ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
+            : {}),
+          projectMutation: {
+            source: 'design-system-workspace-route',
+            ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
+          },
+        },
       );
       if (!workspace) {
         return res.status(404).json({ error: 'editable design system not found' });
       }
       res.status(201).json(workspace);
     } catch (err) {
+      if (err instanceof GitDomainError) {
+        return sendApiError(res, err.status, err.code, err.message);
+      }
       res.status(400).json({ error: String(err) });
     }
   });

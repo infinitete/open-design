@@ -243,6 +243,71 @@ describe('project Git durable store', () => {
     expect(() => store.assertRevision('unmanaged', undefined)).not.toThrow();
   });
 
+  it('atomically receipts each run terminal once and rejects tuple substitution', () => {
+    let store = createProjectGitStore(db);
+    const b = store.saveBinding(binding());
+    expect(store.recordRunTerminal({
+      runId: 'run-1',
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'failed',
+    })).toBe(true);
+    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: true });
+    expect(store.recordRunTerminal({
+      runId: 'run-1',
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'failed',
+    })).toBe(false);
+    expect(store.getBinding('p1')?.contentRevision).toBe(1);
+    expect(() => store.recordRunTerminal({
+      runId: 'run-1',
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'canceled',
+    })).toThrowError(expect.objectContaining({ code: 'RECOVERY_REQUIRED' }));
+
+    expect(() => store.recordRunTerminal({
+      runId: 'run-2',
+      projectId: 'p1',
+      bindingGeneration: b.generation + 1,
+      projectRevision: b.projectRevision,
+      terminal: 'succeeded',
+    })).toThrowError(expect.objectContaining({ code: 'PROJECT_STATE_CHANGED' }));
+    expect(db.prepare('SELECT count(*) AS count FROM project_git_run_terminals').get())
+      .toEqual({ count: 1 });
+    expect(store.recordRunTerminal({
+      runId: 'run-2',
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'succeeded',
+    })).toBe(true);
+
+    db.close();
+    db = new Database(file);
+    migrateProjectGit(db);
+    store = createProjectGitStore(db);
+    expect(store.recordRunTerminal({
+      runId: 'run-2',
+      projectId: 'p1',
+      bindingGeneration: b.generation,
+      projectRevision: b.projectRevision,
+      terminal: 'succeeded',
+    })).toBe(false);
+    expect(store.recordRunTerminal({
+      runId: 'unmanaged-run',
+      projectId: 'unmanaged',
+      bindingGeneration: 0,
+      projectRevision: 0,
+      terminal: 'failed',
+    })).toBe(false);
+    expect(store.getBinding('p1')?.contentRevision).toBe(2);
+  });
+
   it('keeps generation tombstones across local invalidation and rejects stale targets after rebind', () => {
     const store = createProjectGitStore(db);
     const b = store.saveBinding(binding());

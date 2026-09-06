@@ -47,6 +47,7 @@ import {
 import { reconcileLibrary, type ReconcileLibraryResult } from '../library-sync.js';
 import { fetchExternalBrandAsset } from '../brands/safe-fetch.js';
 import { ensureProjectSubdir } from '../projects.js';
+import { coordinateAuthorizedProjectMutation } from './project-git-coordination.js';
 
 function authorizeCreatedProjectWorkspace(..._args: any[]): any { return { ok: true, context: null }; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
@@ -62,7 +63,7 @@ import {
 
 export interface RegisterLibraryRoutesDeps
   extends RouteDeps<
-    'db' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'auth'
+    'db' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'auth' | 'projectGitCoordination'
   > {
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
   enforceWorkspaceProjectMutation?: BoundWorkspaceResourceMutationGate;
@@ -92,7 +93,10 @@ function applyExtensionCors(req: Request, res: Response): void {
   if (origin && (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://'))) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-OD-Project-Revision',
+    );
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   }
 }
@@ -610,11 +614,22 @@ export function registerLibraryRoutes(app: Express, ctx: RegisterLibraryRoutesDe
     if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'projectId is required');
     if (!await enforceProjectWrite(req, res, projectId)) return;
     try {
-      const includeElement = req.body?.includeElement === true;
-      const result = await applyAssetToProject(asset, projectId, 'manual-upload', req.body?.dir, includeElement);
-      res.json({
-        relPath: result.relPath,
-        ...(result.elementRelPath ? { elementRelPath: result.elementRelPath } : {}),
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId,
+        source: 'library.apply',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
+          const includeElement = req.body?.includeElement === true;
+          const result = await applyAssetToProject(asset, projectId, 'manual-upload', req.body?.dir, includeElement);
+          res.json({
+            relPath: result.relPath,
+            ...(result.elementRelPath ? { elementRelPath: result.elementRelPath } : {}),
+          });
+        },
       });
     } catch (err) {
       return sendApiError(res, 500, 'APPLY_FAILED', err instanceof Error ? err.message : String(err));
@@ -721,11 +736,26 @@ export function registerLibraryRoutes(app: Express, ctx: RegisterLibraryRoutesDe
     if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'projectId is required');
     if (!await enforceProjectWrite(req, res, projectId)) return;
     try {
-      const includeElement = req.body?.includeElement === true;
-      const result = await applyAssetToProject(asset, projectId, 'agent-task', req.body?.dir, includeElement);
-      res.json({
-        relPath: result.relPath,
-        ...(result.elementRelPath ? { elementRelPath: result.elementRelPath } : {}),
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId,
+        source: 'library.tool-apply',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
+          grant.runId,
+          projectId,
+        ),
+        work: async () => {
+          const includeElement = req.body?.includeElement === true;
+          const result = await applyAssetToProject(asset, projectId, 'agent-task', req.body?.dir, includeElement);
+          res.json({
+            relPath: result.relPath,
+            ...(result.elementRelPath ? { elementRelPath: result.elementRelPath } : {}),
+          });
+        },
       });
     } catch (err) {
       return sendApiError(res, 500, 'APPLY_FAILED', err instanceof Error ? err.message : String(err));

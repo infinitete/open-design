@@ -935,7 +935,7 @@ describe('OD Next planning coordinator', () => {
     })).toThrow();
   });
 
-  it('prepares the production prompt and task CAS through the internal Run claim callback', () => {
+  it('prepares the production prompt and task CAS through the internal Run claim callback', async () => {
     prepareStrategyRequest(db, {
       taskExecutionId: 'task-1', preference: 'full_plan', directEdit: directEligible,
       intake: intakePassed, updatedAt: 110,
@@ -952,17 +952,16 @@ describe('OD Next planning coordinator', () => {
       updatedAt: 120,
     });
     let capturedMeta: Record<string, unknown> | null = null;
-    const result = prepareAutomaticSimpleProductionRun({
+    const result = await prepareAutomaticSimpleProductionRun({
       db,
       task: planned.task,
       service: {
-        prepare(input) {
+        async prepare(input) {
           capturedMeta = input.meta;
           const run = { id: 'run-production', status: 'queued' };
           input.beforeClaimCommit?.(run);
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: (instruction, taskRunIndex) => ({ instruction, taskRunIndex }),
       updatedAt: 130,
@@ -975,7 +974,7 @@ describe('OD Next planning coordinator', () => {
     expect(result.projection.nextRunId).toBe('run-production');
   });
 
-  it('accepts the parsed server result and claims simple Production in one transaction', () => {
+  it('accepts the parsed server result and claims simple Production in one transaction', async () => {
     prepareStrategyRequest(db, {
       taskExecutionId: 'task-1', preference: 'full_plan', directEdit: directEligible,
       intake: intakePassed, updatedAt: 110,
@@ -987,19 +986,18 @@ describe('OD Next planning coordinator', () => {
       })),
     ].join('\n')).finish();
     let capturedMeta: Record<string, unknown> | null = null;
-    const transition = prepareAutomaticStrategyContinuation({
+    const transition = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, 'task-1')!,
       parsed,
       executionPreflight: executionPassed,
       service: {
-        prepare(input) {
+        async prepare(input) {
           capturedMeta = input.meta;
           const run = { id: 'run-production-live', status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: (stage, instruction, taskRunIndex) => ({
         stage, instruction, taskRunIndex,
@@ -1025,7 +1023,7 @@ describe('OD Next planning coordinator', () => {
     });
   });
 
-  it('blocks an unknown production route instead of trusting the Plan string', () => {
+  it('blocks an unknown production route instead of trusting the Plan string', async () => {
     prepareStrategyRequest(db, {
       taskExecutionId: 'task-1', preference: 'full_plan', directEdit: directEligible,
       intake: intakePassed, updatedAt: 110,
@@ -1038,7 +1036,7 @@ describe('OD Next planning coordinator', () => {
         outcome: 'plan_ready', executionMode: 'simple',
       })),
     ].join('\n')).finish();
-    const transition = prepareAutomaticStrategyContinuation({
+    const transition = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, 'task-1')!,
       parsed,
@@ -1047,12 +1045,11 @@ describe('OD Next planning coordinator', () => {
         productionRoutes: [{ id: 'unregistered-host-route', available: false }],
       },
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: 'must-rollback', status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: () => ({}),
       updatedAt: 120,
@@ -1067,7 +1064,7 @@ describe('OD Next planning coordinator', () => {
     });
   });
 
-  it('blocks plan continuation when daemon-owned execution facts are absent', () => {
+  it('blocks plan continuation when daemon-owned execution facts are absent', async () => {
     prepareStrategyRequest(db, {
       taskExecutionId: 'task-1', preference: 'full_plan', directEdit: directEligible,
       intake: intakePassed, updatedAt: 110,
@@ -1078,17 +1075,16 @@ describe('OD Next planning coordinator', () => {
         outcome: 'plan_ready', executionMode: 'simple',
       })),
     ].join('\n')).finish();
-    const transition = prepareAutomaticStrategyContinuation({
+    const transition = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, 'task-1')!,
       parsed,
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: 'must-not-start', status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: () => ({}),
       updatedAt: 120,
@@ -1103,7 +1099,7 @@ describe('OD Next planning coordinator', () => {
     });
   });
 
-  it('claims a serialization-only repair Run before simple Production', () => {
+  it('claims a serialization-only repair Run before simple Production', async () => {
     prepareStrategyRequest(db, {
       taskExecutionId: 'task-1', preference: 'full_plan', directEdit: directEligible,
       intake: intakePassed, updatedAt: 110,
@@ -1115,18 +1111,17 @@ describe('OD Next planning coordinator', () => {
         outcome: 'plan_ready', executionMode: 'simple',
       })),
     ].join('\n')).finish();
-    const transition = prepareAutomaticStrategyContinuation({
+    const transition = await prepareAutomaticStrategyContinuation({
       db,
       task: getStrategyTaskExecution(db, 'task-1')!,
       parsed,
       executionPreflight: executionPassed,
       service: {
-        prepare(input) {
+        async prepare(input) {
           const run = { id: 'run-contract-repair-live', status: 'queued' };
           db.transaction(() => input.beforeClaimCommit?.(run)).immediate();
           return { kind: 'ready', run, creationKind: 'created', resumed: false };
         },
-        start(run) { return run; },
       },
       createMeta: (stage, instruction) => ({ stage, instruction }),
       updatedAt: 120,

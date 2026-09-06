@@ -10,6 +10,10 @@ import { readFile, rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { isBlocked as isBlockedSystemDir } from './linked-dirs.js';
 import type { RouteDeps } from './server-context.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectRead,
+} from './routes/project-git-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizedProjectToolRequest = any;
@@ -47,7 +51,7 @@ import { authorizeReasoningEgress, sendReasoningEgressDenial } from './reasoning
 import { sandboxImportedProjectRootUnavailableReason } from './sandbox-mode.js';
 import { parseOrchestratorWorkspace } from './workspace-contract.js';
 
-export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation'> {
+export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation' | 'projectGitCoordination'> {
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
   enforceWorkspaceProjectMutation?: BoundWorkspaceResourceMutationGate;
 }
@@ -323,17 +327,27 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
           : {}),
         ...(trustedPickerImport ? { fromTrustedPicker: true as const } : {}),
       };
-      const updated = updateProject(db, projectId, { metadata: nextMeta });
-      if (!updated) {
-        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
-      }
-      // Folder imports should land on Design Files so users can choose from
-      // the imported folder's artifacts. Persist an empty saved tab state so
-      // ProjectView does not auto-open the detected primary file on hydration.
-      setTabs(db, projectId, [], null);
-      /** @type {import('@open-design/contracts').ReplaceProjectWorkingDirResponse} */
-      const body = { project: updated, baseDir: normalizedPath, entryFile };
-      res.json(body);
+      return await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId,
+        source: 'project.working-dir',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: async () => {
+          const updated = updateProject(db, projectId, { metadata: nextMeta });
+          if (!updated) {
+            return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+          }
+          // Tab state is local, but it is committed inside the same legacy DB
+          // transaction boundary as the portable working-root metadata.
+          setTabs(db, projectId, [], null);
+          /** @type {import('@open-design/contracts').ReplaceProjectWorkingDirResponse} */
+          const body = { project: updated, baseDir: normalizedPath, entryFile };
+          res.json(body);
+        },
+      });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
     }
@@ -560,7 +574,7 @@ type ScreenshotExportRequest = {
   readonly body: ScreenshotExportBody | null | undefined;
 };
 
-export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'node' | 'ids' | 'projectStore' | 'exports' | 'projectFiles' | 'validation' | 'auth' | 'projectPreviewScopes'> {
+export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'node' | 'ids' | 'projectStore' | 'exports' | 'projectFiles' | 'validation' | 'auth' | 'projectPreviewScopes' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
   authorizeProjectToolRequest: AuthorizeProjectToolRequest;
   isApiTokenAuthorization: (authorization: string | undefined) => boolean;
@@ -597,6 +611,21 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
     res.once('close', () => stream.destroy());
     stream.pipe(res);
   };
+  const withAuthorizedProjectRead = async <T>(
+    req: any,
+    res: any,
+    work: () => Promise<T>,
+    retainUntilResponse = false,
+  ): Promise<T | undefined> => coordinateAuthorizedProjectRead({
+    req,
+    res,
+    projectId: req.params.id,
+    coordination: ctx.projectGitCoordination,
+    sendApiError,
+    authorize: async () => true,
+    work,
+    ...(retainUntilResponse ? { retainUntilResponse: true } : {}),
+  });
   async function authorizeExportRead(
     req: any,
     res: any,
@@ -1256,27 +1285,29 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
     try {
       const root = typeof req.query?.root === 'string' ? req.query.root : '';
       if (!await authorizeExportRead(req, res, { allowNavigationQuery: true })) return;
-      const project = getProject(db, req.params.id);
-      const { stream, baseName } = await createProjectArchiveStream(
-        PROJECTS_DIR,
-        req.params.id,
-        root,
-        project?.metadata,
-      );
-      const fallbackName = project?.name || req.params.id;
-      const fileSlug = sanitizeArchiveFilename(baseName || fallbackName) || 'project';
-      const filename = `${fileSlug}.zip`;
-      // RFC 5987 dance: legacy `filename=` carries an ASCII fallback, while
-      // `filename*=UTF-8''…` lets modern browsers pick up project names
-      // with non-ASCII characters (accents, CJK, etc.) without mojibake.
-      const asciiFallback =
-        filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'project.zip';
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      );
-      pipeArchiveDownload(res, stream);
+      await withAuthorizedProjectRead(req, res, async () => {
+        const project = getProject(db, req.params.id);
+        const { stream, baseName } = await createProjectArchiveStream(
+          PROJECTS_DIR,
+          req.params.id,
+          root,
+          project?.metadata,
+        );
+        const fallbackName = project?.name || req.params.id;
+        const fileSlug = sanitizeArchiveFilename(baseName || fallbackName) || 'project';
+        const filename = `${fileSlug}.zip`;
+        // RFC 5987 dance: legacy `filename=` carries an ASCII fallback, while
+        // `filename*=UTF-8''…` lets modern browsers pick up project names
+        // with non-ASCII characters (accents, CJK, etc.) without mojibake.
+        const asciiFallback =
+          filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'project.zip';
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        );
+        pipeArchiveDownload(res, stream);
+      }, true);
     } catch (err: any) {
       const code = err && err.code;
       const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400;
@@ -1299,23 +1330,25 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         return;
       }
       if (!await authorizeExportRead(req, res)) return;
-      const project = getProject(db, req.params.id);
-      const { stream } = await createBatchArchiveStream(
-        PROJECTS_DIR,
-        req.params.id,
-        files,
-        project?.metadata,
-      );
-      const fileSlug = sanitizeArchiveFilename(project?.name || req.params.id) || 'project';
-      const filename = `${fileSlug}.zip`;
-      const asciiFallback =
-        filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'project.zip';
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      );
-      pipeArchiveDownload(res, stream);
+      await withAuthorizedProjectRead(req, res, async () => {
+        const project = getProject(db, req.params.id);
+        const { stream } = await createBatchArchiveStream(
+          PROJECTS_DIR,
+          req.params.id,
+          files,
+          project?.metadata,
+        );
+        const fileSlug = sanitizeArchiveFilename(project?.name || req.params.id) || 'project';
+        const filename = `${fileSlug}.zip`;
+        const asciiFallback =
+          filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'project.zip';
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        );
+        pipeArchiveDownload(res, stream);
+      }, true);
     } catch (err: any) {
       const code = err && err.code;
       const status = code === 'ENOENT' ? 404 : 400;
@@ -1338,16 +1371,18 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await ctx.authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
-      const files = await listFiles(PROJECTS_DIR, req.params.id, {
-        metadata: project.metadata,
+      await withAuthorizedProjectRead(req, res, async () => {
+        const files = await listFiles(PROJECTS_DIR, req.params.id, {
+          metadata: project.metadata,
+        });
+        /** @type {import('@open-design/contracts').ProjectExportManifestResponse} */
+        const body = buildProjectExportManifestResponse({
+          project,
+          projectId: req.params.id,
+          files,
+        });
+        res.json(body);
       });
-      /** @type {import('@open-design/contracts').ProjectExportManifestResponse} */
-      const body = buildProjectExportManifestResponse({
-        project,
-        projectId: req.params.id,
-        files,
-      });
-      res.json(body);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
     }
@@ -1372,21 +1407,23 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await ctx.authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
-      const metadata = project?.metadata ?? null;
-      const versionId = normalizeExportVersionId(req.body?.versionId);
-      const sourceHtml = await readExportVersionSource(req.params.id, fileName, versionId, metadata);
-      const input = await buildDesktopPdfExportInput({
-        daemonUrl: daemonUrlRef.current,
-        deck: deck === true,
-        fileName,
-        metadata,
-        projectId: req.params.id,
-        projectsRoot: PROJECTS_DIR,
-        ...(sourceHtml !== undefined ? { sourceHtml } : {}),
-        title: typeof title === 'string' ? title : undefined,
+      await withAuthorizedProjectRead(req, res, async () => {
+        const metadata = project?.metadata ?? null;
+        const versionId = normalizeExportVersionId(req.body?.versionId);
+        const sourceHtml = await readExportVersionSource(req.params.id, fileName, versionId, metadata);
+        const input = await buildDesktopPdfExportInput({
+          daemonUrl: daemonUrlRef.current,
+          deck: deck === true,
+          fileName,
+          metadata,
+          projectId: req.params.id,
+          projectsRoot: PROJECTS_DIR,
+          ...(sourceHtml !== undefined ? { sourceHtml } : {}),
+          title: typeof title === 'string' ? title : undefined,
+        });
+        const result = await desktopPdfExporter(input);
+        res.json(result);
       });
-      const result = await desktopPdfExporter(input);
-      res.json(result);
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
@@ -1407,7 +1444,9 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       toolEndpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
     });
     if (!authority) return;
-    await handleScreenshotExport(res, 'pptx', req.params.id, { authority, body: req.body });
+    await withAuthorizedProjectRead(req, res, () => (
+      handleScreenshotExport(res, 'pptx', req.params.id, { authority, body: req.body })
+    ));
   });
 
   // Programmatic screenshot-based (raster) PDF: one pixel-perfect page per slide.
@@ -1419,7 +1458,9 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       toolEndpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
     });
     if (!authority) return;
-    await handleScreenshotExport(res, 'pdf', req.params.id, { authority, body: req.body });
+    await withAuthorizedProjectRead(req, res, () => (
+      handleScreenshotExport(res, 'pdf', req.params.id, { authority, body: req.body })
+    ));
   });
 
   // Programmatic image export: a single pixel-perfect PNG. For a deck it renders
@@ -1432,7 +1473,9 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       toolEndpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
     });
     if (!authority) return;
-    await handleScreenshotExport(res, 'image', req.params.id, { authority, body: req.body });
+    await withAuthorizedProjectRead(req, res, () => (
+      handleScreenshotExport(res, 'image', req.params.id, { authority, body: req.body })
+    ));
   });
 
   // A true one-file HTML export: every required same-project dependency is
@@ -1444,7 +1487,9 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       toolEndpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
     });
     if (!authority) return;
-    await handleStandaloneHtmlExport(res, req.params.id, req.body);
+    await withAuthorizedProjectRead(req, res, () => (
+      handleStandaloneHtmlExport(res, req.params.id, req.body)
+    ));
   });
 
   // Generic programmatic export (HTML / PDF / image / PPTX) for callers using
@@ -1465,27 +1510,30 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       toolEndpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
     });
     if (!authority) return;
-    if (format === 'html') {
-      return handleStandaloneHtmlExport(res, req.params.id, {
-        fileName,
-        ...(typeof title === 'string' ? { title } : {}),
-        ...(typeof versionId === 'string' ? { versionId } : {}),
+    await withAuthorizedProjectRead(req, res, async () => {
+      if (format === 'html') {
+        await handleStandaloneHtmlExport(res, req.params.id, {
+          fileName,
+          ...(typeof title === 'string' ? { title } : {}),
+          ...(typeof versionId === 'string' ? { versionId } : {}),
+        });
+        return;
+      }
+      await handleScreenshotExport(res, format, req.params.id, {
+        authority,
+        body: {
+          fileName,
+          // pptx is deck-only (handleScreenshotExport forces it); pdf/image honor the
+          // caller's deck flag when one is supplied. Omitted stays omitted so the
+          // renderer can auto-detect deck artifacts.
+          ...(typeof deck === 'boolean' ? { deck } : {}),
+          ...(typeof imageFormat === 'string' ? { imageFormat } : {}),
+          ...(width != null ? { width } : {}),
+          ...(height != null ? { height } : {}),
+          ...(typeof title === 'string' ? { title } : {}),
+          ...(typeof versionId === 'string' ? { versionId } : {}),
+        },
       });
-    }
-    await handleScreenshotExport(res, format, req.params.id, {
-      authority,
-      body: {
-        fileName,
-        // pptx is deck-only (handleScreenshotExport forces it); pdf/image honor the
-        // caller's deck flag when one is supplied. Omitted stays omitted so the
-        // renderer can auto-detect deck artifacts.
-        ...(typeof deck === 'boolean' ? { deck } : {}),
-        ...(typeof imageFormat === 'string' ? { imageFormat } : {}),
-        ...(width != null ? { width } : {}),
-        ...(height != null ? { height } : {}),
-        ...(typeof title === 'string' ? { title } : {}),
-        ...(typeof versionId === 'string' ? { versionId } : {}),
-      },
     });
   });
 
@@ -1533,6 +1581,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       }
 
       if (!await authorizeExportRead(req, res, { allowNavigationQuery: true })) return;
+      await withAuthorizedProjectRead(req, res, async () => {
       const project = getProject(db, req.params.id);
       const splatParam = (req.params as { splat?: string | string[] }).splat;
       const relPath = Array.isArray(splatParam) ? splatParam.join('/') : String(splatParam ?? '');
@@ -1688,6 +1737,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       // hit /api/, or escalate to daemon-origin privileges.
       res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
       res.type('text/html').send(rendered);
+      });
     } catch (err: any) {
       // PR #1312 round-3 (lefarcen P2): the inliner's cap-enforcement
       // throws InlineAssetsLimitError when the owner HTML, candidate
@@ -1922,7 +1972,7 @@ function roleForExportManifestFile(
   return 'other';
 }
 
-export interface RegisterFinalizeRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'projectStore' | 'validation' | 'finalize'> {
+export interface RegisterFinalizeRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'projectStore' | 'validation' | 'finalize' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -2017,35 +2067,46 @@ export function registerFinalizeRoutes(app: Express, ctx: RegisterFinalizeRoutes
         { mode: 'write', capability: 'writeFiles' },
       )) return;
 
-      const finalizeAbort = new AbortController();
-      const abortFromRequest = (): void => {
-        if (!finalizeAbort.signal.aborted) finalizeAbort.abort();
-      };
-      res.on('close', abortFromRequest);
+      await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: project.id,
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        source: 'finalize-design-package',
+        authorize: async () => true,
+        work: async () => {
+          const finalizeAbort = new AbortController();
+          const abortFromRequest = (): void => {
+            if (!finalizeAbort.signal.aborted) finalizeAbort.abort();
+          };
+          res.on('close', abortFromRequest);
 
-      let result;
-      try {
-        result = await finalizeDesignPackage(
-          db,
-          PROJECTS_DIR,
-          DESIGN_SYSTEMS_DIR,
-          req.params.id,
-          {
-            protocol,
-            apiKey,
-            baseUrl: effectiveBaseUrl,
-            model,
-            maxTokens,
-            ...(typeof apiVersion === 'string' && apiVersion.trim()
-              ? { apiVersion: apiVersion.trim() }
-              : {}),
-            signal: finalizeAbort.signal,
-          },
-        );
-      } finally {
-        res.off('close', abortFromRequest);
-      }
-      res.json(result);
+          let result;
+          try {
+            result = await finalizeDesignPackage(
+              db,
+              PROJECTS_DIR,
+              DESIGN_SYSTEMS_DIR,
+              req.params.id,
+              {
+                protocol,
+                apiKey,
+                baseUrl: effectiveBaseUrl,
+                model,
+                maxTokens,
+                ...(typeof apiVersion === 'string' && apiVersion.trim()
+                  ? { apiVersion: apiVersion.trim() }
+                  : {}),
+                signal: finalizeAbort.signal,
+              },
+            );
+          } finally {
+            res.off('close', abortFromRequest);
+          }
+          res.json(result);
+        },
+      });
     } catch (err: any) {
       // Concurrent finalize - the lockfile was already held by another
       // call. Caller can retry after a short wait; not a client error.

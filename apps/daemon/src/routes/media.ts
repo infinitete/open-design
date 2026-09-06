@@ -13,6 +13,10 @@ import { findMediaModel } from '../media/models.js';
 import type { MediaTaskError } from '../media/tasks.js';
 import type { ImageGenerationRequestSummary } from '../media/image-generation-retry.js';
 import type { RouteDeps } from '../server-context.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectMutationStart,
+} from './project-git-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizeProjectRequest = any;
@@ -50,7 +54,7 @@ function mediaProviderId(model: string): string | undefined {
 const AIHUBMIX_CATALOG_TTL_MS = 5 * 60 * 1000;
 const aihubmixCatalogCache = new Map<string, { at: number; models: Array<{ id: string; label: string }> }>();
 
-export interface RegisterMediaRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'ids' | 'auth' | 'media' | 'appConfig' | 'orbit' | 'nativeDialogs' | 'projectStore' | 'projectFiles' | 'conversations' | 'research'> {
+export interface RegisterMediaRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'ids' | 'auth' | 'media' | 'appConfig' | 'orbit' | 'nativeDialogs' | 'projectStore' | 'projectFiles' | 'conversations' | 'research' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
   authorizeProjectToolRequest: AuthorizeProjectToolRequest;
 }
@@ -218,8 +222,25 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       return sendApiError(res, 403, denial.code, denial.message);
     }
 
-    let task: ReturnType<typeof createMediaTask> | null = null;
-    try {
+    const accepted = await coordinateAuthorizedProjectMutationStart({
+      req,
+      res,
+      projectId,
+      source: 'media.generate',
+      coordination: ctx.projectGitCoordination,
+      sendApiError,
+      authorize: async () => true,
+      ...(options.grant
+        ? {
+            trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
+              options.grant.runId,
+              projectId,
+            ),
+          }
+        : {}),
+      start: async () => {
+      let task: ReturnType<typeof createMediaTask> | null = null;
+      try {
       const taskId = randomUUID();
       const analyticsContext = await mediaAnalyticsContext(req, options.grant);
       let providerRequestSummary:
@@ -263,7 +284,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       // answers the narrower collaboration question and excludes it.
       const workspaceId =
         getWorkspaceProjectByProjectId(db, projectId)?.workspaceId?.trim() || undefined;
-      generateMedia({
+      const settled = generateMedia({
         projectRoot: PROJECT_ROOT,
         projectsRoot: PROJECTS_DIR,
         projectId,
@@ -356,33 +377,44 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         })
         .finally(() => proxyDispatcher.close());
 
-      return res.status(202).json({
-        taskId,
-        status: task.status,
-        startedAt: task.startedAt,
-      });
-    } catch (err: any) {
-      if (task) {
-        task.status = 'failed';
-        task.error = mediaTaskErrorFromFailure(err);
-        task.endedAt = Date.now();
-        persistMediaTask(task);
-        notifyTaskWaiters(task);
-        console.error(formatMediaTaskDiagnostic({
-          event: 'failed',
-          taskId: task.id,
-          runId: options.grant?.runId,
-          projectId,
-          surface,
-          model,
-          providerId: mediaProviderId(model),
-          status: task.error.status,
-          code: task.error.code,
-          elapsedMs: task.endedAt - task.startedAt,
-          error: task.error.message,
-        }));
+        return {
+          accepted: {
+            taskId,
+            status: task.status,
+            startedAt: task.startedAt,
+          },
+          settled,
+        };
+      } catch (err: any) {
+        if (task) {
+          task.status = 'failed';
+          task.error = mediaTaskErrorFromFailure(err);
+          task.endedAt = Date.now();
+          persistMediaTask(task);
+          notifyTaskWaiters(task);
+          console.error(formatMediaTaskDiagnostic({
+            event: 'failed',
+            taskId: task.id,
+            runId: options.grant?.runId,
+            projectId,
+            surface,
+            model,
+            providerId: mediaProviderId(model),
+            status: task.error.status,
+            code: task.error.code,
+            elapsedMs: task.endedAt - task.startedAt,
+            error: task.error.message,
+          }));
+        }
+        throw err;
       }
-      throw err;
+      },
+      onSettledError: err => {
+        console.warn('[media] coordinated generation settlement failed', err);
+      },
+    });
+    if (accepted) {
+      return res.status(202).json(accepted);
     }
   };
 
@@ -800,7 +832,16 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         project.id,
         { mode: 'write', capability: 'writeFiles' },
       )) return;
-      await handleHyperFramesScaffold(req, res, project.id);
+      await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: project.id,
+        source: 'media.hyperframes-scaffold',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        work: () => handleHyperFramesScaffold(req, res, project.id),
+      });
     } catch (err: any) {
       const status = typeof err?.status === 'number' ? err.status : 400;
       const code = err?.code;
@@ -821,7 +862,20 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         grant.projectId,
         { mode: 'write', capability: 'writeFiles' },
       )) return;
-      await handleHyperFramesScaffold(req, res, grant.projectId);
+      await coordinateAuthorizedProjectMutation({
+        req,
+        res,
+        projectId: grant.projectId,
+        source: 'media.hyperframes-tool-scaffold',
+        coordination: ctx.projectGitCoordination,
+        sendApiError,
+        authorize: async () => true,
+        trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
+          grant.runId,
+          grant.projectId,
+        ),
+        work: () => handleHyperFramesScaffold(req, res, grant.projectId),
+      });
     } catch (err: any) {
       const status = typeof err?.status === 'number' ? err.status : 400;
       const code = err?.code;

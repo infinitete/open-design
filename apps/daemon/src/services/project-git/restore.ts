@@ -14,7 +14,7 @@ import { materializeProject, type MaterializeEffect, type MaterializePhase } fro
 import { canonicalJson, exportPortableProject, parsePortableEntries } from './portable.js';
 import { discoverRepository, validateTreeEntries } from './repository.js';
 import { durableDirectory, safeFile, sha256, within } from './recovery.js';
-import { isNativeProjectHistoryPath, nativeHistoryRoot, projectGitPaths } from './paths.js';
+import { isNativeProjectHistoryPath, nativeHistoryRoot, projectGitPathsAtRoot } from './paths.js';
 
 export interface RestoreRequestContext { actorId: string; idempotencyKey: string; expectedProjectRevision?: number }
 export interface ProjectGitRestoreServiceInput {
@@ -70,7 +70,7 @@ export function createProjectGitRestoreService(input: ProjectGitRestoreServiceIn
       if (!Buffer.from(text).equals(raw) || (raw.length && !text.endsWith('\0'))) throw invalid();
       return text.split('\0').filter(Boolean);
     }));
-    const paths = projectGitPaths(listed[0]!, listed[1]!);
+    const paths = await projectGitPathsAtRoot(project.root, listed[0]!, listed[1]!);
     validateTreeEntries(paths.map(path => ({ path, mode: '100644' })));
     const index = await safeFile(repository.gitDir, 'index');
     return { paths, indexDigest: index.bytes ? sha256(index.bytes) : null };

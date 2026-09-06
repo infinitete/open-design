@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { loadNodePty } from './services/node-pty.js';
+import type { ProjectMutationSession } from './services/project-git/runtime-adapter.js';
 
 export {
   ensureSpawnHelperExecutable,
@@ -49,6 +50,7 @@ export interface CreateTerminalMeta {
   cols?: number;
   rows?: number;
   shell?: string | null;
+  projectMutationSession?: ProjectMutationSession | null;
 }
 
 export function createTerminalService({
@@ -75,6 +77,7 @@ export function createTerminalService({
   // long-lived daemon doesn't leak terminated sessions.
   ttlMs = 30 * 60 * 1000,
   shutdownGraceMs = 3_000,
+  loadPty = loadNodePty,
 } = {}) {
   const sessions = new Map<string, any>();
 
@@ -174,10 +177,12 @@ export function createTerminalService({
     for (const sse of session.clients) sse.end();
     session.clients.clear();
     scheduleCleanup(session);
+    session.projectMutationSession?.release();
+    session.resolveExit();
   };
 
   const create = async (meta: CreateTerminalMeta) => {
-    const pty = await loadNodePty();
+    const pty = await loadPty();
     const now = Date.now();
     const id = randomUUID();
     const cols = clampDimension(meta.cols, DEFAULT_COLS);
@@ -190,6 +195,8 @@ export function createTerminalService({
       cwd: meta.cwd,
       env: { ...process.env } as Record<string, string>,
     });
+    let resolveExit!: () => void;
+    const exit = new Promise<void>(resolve => { resolveExit = resolve; });
     const session = {
       id,
       projectId: typeof meta.projectId === 'string' && meta.projectId ? meta.projectId : null,
@@ -210,6 +217,9 @@ export function createTerminalService({
       bufferedBytes: 0,
       pendingData: '',
       flushTimer: null as ReturnType<typeof setTimeout> | null,
+      projectMutationSession: meta.projectMutationSession ?? null,
+      exit,
+      resolveExit,
     };
     sessions.set(id, session);
     child.onData((chunk: string) => {
@@ -299,23 +309,33 @@ export function createTerminalService({
       session.pty.kill(signal);
       return true;
     } catch {
-      // If the kill throws, force the terminal state so clients unblock.
-      finish(session, null, signal);
+      // A failed signal does not prove the child exited. Keep the project
+      // mutation session admitted until node-pty reports the real exit.
       return false;
     }
   };
+
+  const waitForExit = (session: any): Promise<void> => session.exit;
 
   const shutdownActive = async ({ graceMs = shutdownGraceMs }: { graceMs?: number } = {}) => {
     const active = Array.from(sessions.values()).filter(
       (session) => !TERMINAL_SESSION_TERMINAL_STATUSES.has(session.status),
     );
     for (const session of active) {
-      try { session.pty.kill('SIGTERM'); } catch { /* best-effort */ }
-      finish(session, null, 'SIGTERM');
+      try { session.pty.kill('SIGTERM'); } catch { /* Retry with SIGKILL after grace. */ }
     }
-    // Give children a grace window to actually exit before the daemon goes.
-    if (active.length > 0 && graceMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(graceMs, 1000)).unref?.());
+    if (active.length > 0) {
+      const allExited = Promise.all(active.map(session => waitForExit(session)));
+      if (graceMs > 0) {
+        await Promise.race([
+          allExited,
+          new Promise<void>(resolve => setTimeout(resolve, Math.min(graceMs, 1000)).unref?.()),
+        ]);
+      }
+      for (const session of active) if (!TERMINAL_SESSION_TERMINAL_STATUSES.has(session.status)) {
+        session.pty.kill('SIGKILL');
+      }
+      await allExited;
     }
   };
 
@@ -327,6 +347,7 @@ export function createTerminalService({
     write,
     resize,
     kill,
+    waitForExit,
     shutdownActive,
     statusBody,
     isTerminal(status: string) {

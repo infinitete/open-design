@@ -223,6 +223,14 @@ export interface ProjectGitStore {
   saveBinding(binding: ProjectGitBindingRecord): ProjectGitBindingRecord;
   assertRevision(projectId: string, expected: number | undefined): void;
   bumpContent(projectId: string, expected: ProjectGitBasis): number;
+  /** Atomically receipts one physical run terminal and marks its managed project dirty once. */
+  recordRunTerminal(input: {
+    runId: string;
+    projectId: string;
+    bindingGeneration: number;
+    projectRevision: number;
+    terminal: string;
+  }): boolean;
   bumpProject(projectId: string, expected: ProjectGitBasis): number;
   markExported(projectId: string, expected: Pick<ProjectGitBasis, 'bindingGeneration' | 'projectRevision'>, contentRevision: number): void;
   /** Trusted caller proves idle descendant HEAD and unchanged portable tree under the registered gate. */
@@ -687,6 +695,32 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
       requireBasis(id, expected);
       db.prepare("UPDATE project_git_bindings SET content_revision = content_revision + 1, record_json = json_set(record_json, '$.dirty', json('true')) WHERE project_id = ?").run(id);
       return getBinding(id)!.contentRevision;
+    }),
+    recordRunTerminal: input => transaction(() => {
+      const existing = db.prepare(`SELECT project_id AS projectId, binding_generation AS bindingGeneration,
+        project_revision AS projectRevision, terminal FROM project_git_run_terminals WHERE run_id = ?`)
+        .get(input.runId) as Omit<typeof input, 'runId'> | undefined;
+      if (existing) {
+        if (!isDeepStrictEqual(existing, {
+          projectId: input.projectId,
+          bindingGeneration: input.bindingGeneration,
+          projectRevision: input.projectRevision,
+          terminal: input.terminal,
+        })) throw recoveryRequired();
+        return false;
+      }
+      const binding = getBinding(input.projectId);
+      if (!binding) return false;
+      if (!input.runId || !['succeeded', 'failed', 'canceled'].includes(input.terminal)
+        || binding.generation !== input.bindingGeneration
+        || binding.projectRevision !== input.projectRevision) throw changed();
+      db.prepare(`INSERT INTO project_git_run_terminals
+        (run_id, project_id, binding_generation, project_revision, terminal, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(input.runId, input.projectId, input.bindingGeneration, input.projectRevision, input.terminal, Date.now());
+      db.prepare("UPDATE project_git_bindings SET content_revision = content_revision + 1, record_json = json_set(record_json, '$.dirty', json('true')) WHERE project_id = ?")
+        .run(input.projectId);
+      return true;
     }),
     bumpProject: (id, expected) => transaction(() => {
       requireBasis(id, expected);

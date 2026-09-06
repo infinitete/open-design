@@ -312,18 +312,14 @@ describe('POST /api/projects/:id/handoff — HTTP layer', () => {
     expect(body.error.code).toBe('UPSTREAM_UNAVAILABLE');
   });
 
-  it('409 CONFLICT when .transcript.lock is already held (concurrent handoff or overlapping transcript consumer)', async () => {
-    // The transcript-export primitive (apps/daemon/src/transcript-export.ts:131-163)
-    // acquires <projectDir>/.transcript.lock via fs.openSync('wx') and throws
-    // TranscriptExportLockedError on EEXIST. A second concurrent handoff
-    // request — or a handoff that races /finalize/anthropic — should not
-    // fall through to the generic 500 INTERNAL_ERROR path. Pre-acquire the
-    // lockfile on disk to simulate the contention without spawning a second
-    // request (which would be race-flaky), then assert the route returns
-    // 409 CONFLICT with the shared ApiErrorCode value.
+  it('ignores a legacy .transcript.lock because handoff snapshots the transcript in memory', async () => {
     const dataDir = process.env.OD_DATA_DIR;
     if (!dataDir) throw new Error('OD_DATA_DIR is required for daemon route tests');
     const lockPath = path.join(dataDir, 'projects', PROJECT_ID, '.transcript.lock');
+    mockAnthropicResponse(200, JSON.stringify({
+      content: [{ type: 'text', text: '## Context\nresume this work\n' }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
 
     let lockFd: number | null = null;
     try {
@@ -334,9 +330,9 @@ describe('POST /api/projects/:id/handoff — HTTP layer', () => {
         apiKey: 'sk-test',
         model: 'claude-opus-4-7',
       });
-      expect(res.status).toBe(409);
-      const body = await res.json();
-      expect(body.error.code).toBe('CONFLICT');
+      expect(res.status).toBe(200);
+      expect((await res.json()).prompt).toBe('## Context\nresume this work\n');
+      expect(fs.existsSync(path.join(dataDir, 'projects', PROJECT_ID, '.transcript.jsonl'))).toBe(false);
     } finally {
       if (lockFd !== null) {
         try { fs.closeSync(lockFd); } catch { /* ignore */ }

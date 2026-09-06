@@ -37,6 +37,8 @@ import {
   updateUserDesignSystem,
 } from '../../src/design-systems/index.js';
 import { createDesignSystemServerServices } from '../../src/design-systems/server-services.js';
+import { GitDomainError } from '../../src/services/project-git/errors.js';
+import type { ProjectMutationInput } from '../../src/services/project-git/mutation-adapter.js';
 import {
   closeDatabase,
   getProject,
@@ -161,6 +163,10 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
   let projectsDir = '';
   let db: ReturnType<typeof openDatabase>;
   let services: ReturnType<typeof createDesignSystemServerServices>;
+  let coordinateProjectMutation: (
+    input: ProjectMutationInput,
+    work: () => Promise<any>,
+  ) => Promise<any>;
 
   beforeEach(async () => {
     workRoot = await mkdtemp(path.join(tmpdir(), 'od-ds-workspace-sync-'));
@@ -169,6 +175,7 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
     await mkdir(userDesignSystemsDir, { recursive: true });
     await mkdir(projectsDir, { recursive: true });
     db = openDatabase(workRoot, { dataDir: workRoot });
+    coordinateProjectMutation = async (_input, work) => work();
     services = createDesignSystemServerServices({
       roots: { SKILL_ROOTS: [], DESIGN_TEMPLATE_ROOTS: [], ALL_SKILL_LIKE_ROOTS: [] },
       paths: {
@@ -211,6 +218,7 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
         resolveProjectDir,
         isSafeId,
       },
+      coordinateProjectMutation: (input, work) => coordinateProjectMutation(input, work),
     });
   });
 
@@ -252,6 +260,52 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
       await readFile(path.join(userDesignSystemsDir, dirId, 'metadata.json'), 'utf8'),
     ) as { artifactMode?: string };
     expect(meta.artifactMode).toBe('agent-managed');
+  });
+
+  it('coordinates unmanaged workspace creation with the caller revision transport', async () => {
+    const created = await createUserDesignSystem(userDesignSystemsDir, {
+      title: 'Coordinated Brand',
+      body: '# Coordinated Brand\n\nBrand body copy.',
+    });
+    const calls: ProjectMutationInput[] = [];
+    coordinateProjectMutation = async (input, work) => {
+      calls.push(input);
+      return work();
+    };
+
+    const result = await services.ensureUserDesignSystemWorkspaceProject(db, created.id, {
+      projectMutation: {
+        source: 'http-workspace',
+        expectedProjectRevision: 7,
+      },
+    });
+
+    expect(result?.project.id).toBe('ds-coordinated-brand');
+    expect(calls).toEqual([{ projectId: 'ds-coordinated-brand', source: 'http-workspace', expectedProjectRevision: 7 }]);
+  });
+
+  it('fails a managed cross-project run sync before any project row or file write', async () => {
+    const created = await createUserDesignSystem(userDesignSystemsDir, {
+      title: 'Cross Project Brand',
+      body: '# Cross Project Brand\n\nBrand body copy.',
+    });
+    const writes: string[] = [];
+    coordinateProjectMutation = async (input, _work) => {
+      writes.push(`admit:${input.projectId}:${String(input.expectedProjectRevision)}`);
+      throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Reload the project before editing.');
+    };
+
+    await expect(services.ensureUserDesignSystemWorkspaceProject(db, created.id, {
+      projectMutation: {
+        source: 'run-prompt',
+        originProjectId: 'another-project',
+        expectedProjectRevision: 9,
+        permit: {} as any,
+      },
+    })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+
+    expect(writes).toEqual(['admit:ds-cross-project-brand:undefined']);
+    expect(getProject(db, 'ds-cross-project-brand')).toBeNull();
   });
 
   it('prepares the canonical share directory from workspace assets before publishing', async () => {

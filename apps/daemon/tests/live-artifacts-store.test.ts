@@ -22,8 +22,11 @@ import {
   LiveArtifactRefreshLockError,
   LiveArtifactStaleRefreshError,
   markLiveArtifactRefreshCommitted,
+  readLiveArtifactPreview,
   regenerateLiveArtifactPreview,
   releaseLiveArtifactRefreshLock,
+  probeStaleLiveArtifactRefreshesForProject,
+  recoverStaleLiveArtifactRefreshesForProject,
   recoverStaleLiveArtifactRefreshes,
   updateLiveArtifact,
   validateLiveArtifactStorageId,
@@ -38,6 +41,7 @@ import {
   withLiveArtifactRefreshRun,
   withLiveArtifactRefreshSourceTimeout,
 } from '../src/live-artifacts/refresh.js';
+import { refreshLiveArtifact } from '../src/live-artifacts/refresh-service.js';
 
 const tempRoots: string[] = [];
 
@@ -142,6 +146,78 @@ describe('live artifact store layout', () => {
     expect(paths.artifactDir).toBe(
       path.join(projectsRoot, 'project-1', '.live-artifacts', 'artifact-1'),
     );
+  });
+
+  it('creates, reads, and refreshes imported-folder artifacts at the persisted external root without a shadow project', async () => {
+    const projectsRoot = await makeProjectsRoot();
+    const externalRoot = await mkdtemp(path.join(tmpdir(), 'od-imported-live-artifact-'));
+    tempRoots.push(externalRoot);
+    const projectMetadata = { baseDir: externalRoot };
+    await writeFile(path.join(externalRoot, 'metrics.json'), JSON.stringify({ revenue: 99 }));
+    const input: any = validCreateInput();
+    input.document.sourceJson = {
+      type: 'daemon_tool',
+      toolName: 'project_files.read_json',
+      input: { path: 'metrics.json' },
+      outputMapping: { dataPaths: [{ from: 'json.revenue', to: 'revenue' }], transform: 'identity' },
+      refreshPermission: 'manual_refresh_granted_for_read_only',
+    };
+
+    const created = await createLiveArtifact({ projectsRoot, projectId: 'imported', projectMetadata, input });
+    const refreshed = await refreshLiveArtifact({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      artifactId: created.artifact.id,
+    });
+    const read = await getLiveArtifact({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      artifactId: created.artifact.id,
+    });
+
+    expect(created.paths.projectDir).toBe(externalRoot);
+    expect(refreshed.artifact.document?.dataJson).toMatchObject({ revenue: 99 });
+    expect(read.paths.projectDir).toBe(externalRoot);
+    await expect(stat(path.join(externalRoot, '.live-artifacts', created.artifact.id, 'artifact.json'))).resolves.toMatchObject({});
+    await expect(stat(path.join(projectsRoot, 'imported'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('probes and recovers stale imported-folder refresh locks at the exact external root', async () => {
+    const projectsRoot = await makeProjectsRoot();
+    const externalRoot = await mkdtemp(path.join(tmpdir(), 'od-imported-live-recovery-'));
+    tempRoots.push(externalRoot);
+    const projectMetadata = { baseDir: externalRoot };
+    const created = await createLiveArtifact({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      input: validCreateInput(),
+    });
+    await acquireLiveArtifactRefreshLock({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      artifactId: created.artifact.id,
+      now: new Date('2026-04-30T10:00:00.000Z'),
+    });
+
+    await expect(probeStaleLiveArtifactRefreshesForProject({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      now: new Date('2026-04-30T10:03:00.000Z'),
+    })).resolves.toEqual([{ projectId: 'imported', artifactId: created.artifact.id }]);
+    await expect(recoverStaleLiveArtifactRefreshesForProject({
+      projectsRoot,
+      projectId: 'imported',
+      projectMetadata,
+      now: new Date('2026-04-30T10:03:00.000Z'),
+    })).resolves.toEqual([expect.objectContaining({ projectId: 'imported', artifactId: created.artifact.id, status: 'recovered' })]);
+
+    await expect(stat(created.paths.refreshLockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(path.join(projectsRoot, 'imported'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects artifact ids that could escape the storage root', async () => {
@@ -1172,13 +1248,16 @@ describe('live artifact store layout', () => {
     });
   });
 
-  it('executes git.summary as a read-only local refresh source', async () => {
+  it('executes git.summary at the persisted imported project root', async () => {
     const projectsRoot = await makeProjectsRoot();
-    await writeProjectFile(projectsRoot, 'project-1', 'index.html', '<h1>Draft</h1>');
+    const externalRoot = await mkdtemp(path.join(tmpdir(), 'od-imported-git-summary-'));
+    tempRoots.push(externalRoot);
+    await writeFile(path.join(externalRoot, 'index.html'), '<h1>Draft</h1>');
 
     const summary = await executeLocalDaemonRefreshSource({
       projectsRoot,
-      projectId: 'project-1',
+      projectId: 'imported',
+      projectMetadata: { baseDir: externalRoot },
       source: {
         type: 'daemon_tool',
         toolName: 'git.summary',
@@ -1194,6 +1273,7 @@ describe('live artifact store layout', () => {
       recentCommits: [],
       diffStat: [],
     });
+    await expect(stat(path.join(projectsRoot, 'imported'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('applies declarative refresh output mappings and transforms', () => {
@@ -1292,6 +1372,26 @@ describe('live artifact store layout', () => {
 
     expect(preview.html).toBe('<h1>Launch &lt;Metrics&gt;</h1>');
     expect(await readFile(created.paths.generatedPreviewHtmlPath, 'utf8')).toBe(preview.html);
+  });
+
+  it('renders a missing preview for a read without writing derived project bytes', async () => {
+    const projectsRoot = await makeProjectsRoot();
+    const created = await createLiveArtifact({
+      projectsRoot,
+      projectId: 'project-1',
+      input: validCreateInput(),
+      templateHtml: '<h1>{{data.title}}</h1>',
+    });
+    await rm(created.paths.generatedPreviewHtmlPath, { force: true });
+
+    const preview = await readLiveArtifactPreview({
+      projectsRoot,
+      projectId: 'project-1',
+      artifactId: created.artifact.id,
+    });
+
+    expect(preview.html).toBe('<h1>Launch &lt;Metrics&gt;</h1>');
+    await expect(stat(created.paths.generatedPreviewHtmlPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('updates mutable live artifact presentation fields without changing daemon-owned fields', async () => {

@@ -1,12 +1,13 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
+import { GitDomainError } from '../services/project-git/errors.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
 
 export interface RegisterHandoffRoutesDeps
   extends RouteDeps<
-    'db' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'validation' | 'handoff'
+    'db' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'validation' | 'handoff' | 'projectGitCoordination'
   > {
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
@@ -23,9 +24,7 @@ export interface RegisterHandoffRoutesDeps
  * The validation block and BYOK upstream call mirror
  * `import-export-routes.ts::registerFinalizeRoutes`. Error mapping is
  * largely shared but diverges deliberately: handoff maps
- * `TranscriptExportLockedError` to 409 CONFLICT (the transcript-export
- * lock is acquired transitively, not a handoff lockfile of its own),
- * maps `EmptyTranscriptError` to 400 EMPTY_TRANSCRIPT (an empty
+ * `EmptyTranscriptError` to 400 EMPTY_TRANSCRIPT (an empty
  * conversation is caller input, not a server fault), and maps an
  * upstream 400 to the caller's 400 BAD_REQUEST rather than 502.
  */
@@ -39,9 +38,9 @@ export function registerHandoffRoutes(app: Express, ctx: RegisterHandoffRoutesDe
   const {
     synthesizeHandoffPrompt,
     FinalizeUpstreamError,
-    TranscriptExportLockedError,
     EmptyTranscriptError,
     redactSecrets,
+    renderProjectTranscript,
   } = ctx.handoff;
 
   app.post('/api/projects/:id/handoff', async (req, res) => {
@@ -110,6 +109,10 @@ export function registerHandoffRoutes(app: Express, ctx: RegisterHandoffRoutesDe
         );
       }
 
+      const transcript = await ctx.projectGitCoordination.withProjectRead(project.id, async () => (
+        renderProjectTranscript(db, project.id, { conversationId })
+      ));
+
       const handoffAbort = new AbortController();
       const abortFromRequest = (): void => {
         if (!handoffAbort.signal.aborted) handoffAbort.abort();
@@ -125,23 +128,16 @@ export function registerHandoffRoutes(app: Express, ctx: RegisterHandoffRoutesDe
           model,
           maxTokens,
           signal: handoffAbort.signal,
+          transcript,
         });
       } finally {
         res.off('close', abortFromRequest);
       }
       res.json(result);
     } catch (err: any) {
-      // Concurrent handoff (or a handoff that overlaps a finalize / other
-      // transcript-export consumer) loses the race on `.transcript.lock`
-      // and surfaces as `TranscriptExportLockedError` from
-      // `exportProjectTranscript`. Map it to the same `409 CONFLICT` code
-      // finalize uses for its own lockfile contention
-      // (`import-export-routes.ts:603-605`) so callers see an intentional
-      // retryable response instead of an opaque 500.
-      if (err instanceof TranscriptExportLockedError) {
-        return sendApiError(res, 409, 'CONFLICT', err.message);
+      if (err instanceof GitDomainError) {
+        return sendApiError(res, err.status, err.code, err.message);
       }
-
       // The selected conversation has no messages — fail fast as caller
       // input rather than spending BYOK tokens on an empty synthesis.
       if (err instanceof EmptyTranscriptError) {

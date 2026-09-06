@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,6 +15,8 @@ import {
   observeOdNextDeviceShell,
   observeOdNextLayoutPrimitives,
 } from '../../../src/strategies/od-next/device-frames.js';
+import { ownedOdNextDeviceFramePaths } from '../../../src/od-next-device-frame-ownership.js';
+import { projectGitPathsAtRoot } from '../../../src/services/project-git/paths.js';
 
 const BUNDLED_PLUGINS_DIR = path.resolve(import.meta.dirname, '../../../../../plugins/_official');
 
@@ -213,6 +215,58 @@ describe('materializeOdNextDeviceFrames', () => {
     await expect(materializeOdNextDeviceFrames({ cwd, resources: SHELLS }))
       .rejects.toThrow(InvalidOdNextDeviceFrameRootError);
     expect(await readdir(outside)).toEqual([]);
+  });
+});
+
+describe('device frame ownership inventory', () => {
+  it('owns only a valid manifest and unchanged ordinary allowlisted files', async () => {
+    const cwd = await projectDir();
+    await materializeOdNextDeviceFrames({ cwd, resources: SHELLS });
+
+    expect([...await ownedOdNextDeviceFramePaths(cwd)].sort()).toEqual([
+      `.od-frames/${OD_NEXT_DEVICE_FRAME_MANIFEST}`,
+      '.od-frames/android.html',
+      '.od-frames/iphone.html',
+      '.od-frames/neutral.html',
+    ]);
+
+    await writeFile(path.join(cwd, '.od-frames', 'iphone.html'), 'edited by user');
+    const outside = path.join(cwd, 'outside.html');
+    await writeFile(outside, 'outside');
+    await unlink(path.join(cwd, '.od-frames', 'android.html'));
+    await symlink(outside, path.join(cwd, '.od-frames', 'android.html'));
+    await chmod(path.join(cwd, '.od-frames', 'neutral.html'), 0o000);
+    try {
+      expect([...await ownedOdNextDeviceFramePaths(cwd)]).toEqual([
+        `.od-frames/${OD_NEXT_DEVICE_FRAME_MANIFEST}`,
+      ]);
+    } finally {
+      await chmod(path.join(cwd, '.od-frames', 'neutral.html'), 0o644);
+    }
+  });
+
+  it('does not own pre-existing same-name files or files claimed by a foreign manifest', async () => {
+    const cwd = await projectDir();
+    await mkdir(path.join(cwd, '.od-frames'), { recursive: true });
+    await writeFile(path.join(cwd, '.od-frames', 'iphone.html'), 'pre-existing allowlisted name');
+    expect([...await ownedOdNextDeviceFramePaths(cwd)]).toEqual([]);
+
+    await writeFile(path.join(cwd, '.od-frames', OD_NEXT_DEVICE_FRAME_MANIFEST), JSON.stringify({
+      schema: 'open-design.od-next-device-frames/v1',
+      files: { 'foreign.html': createHash('sha256').update('foreign').digest('hex') },
+    }));
+    expect([...await ownedOdNextDeviceFramePaths(cwd)]).toEqual([]);
+  });
+
+  it('preserves tracked manifest and frame paths even when their bytes prove daemon ownership', async () => {
+    const cwd = await projectDir();
+    await materializeOdNextDeviceFrames({ cwd, resources: [SHELLS[0]!] });
+    const tracked = [
+      `.od-frames/${OD_NEXT_DEVICE_FRAME_MANIFEST}`,
+      '.od-frames/iphone.html',
+    ];
+
+    expect(await projectGitPathsAtRoot(cwd, tracked, [])).toEqual(tracked);
   });
 });
 

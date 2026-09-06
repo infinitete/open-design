@@ -33,6 +33,13 @@ type AuthorizeProjectRequest = any;
 import type { PluginShareAction } from '../../services/plugin-share-tasks.js';
 import { workspaceTeamPluginBindingResourceId } from '../../plugins/registry.js';
 import { localPluginRegistryScope } from '../../plugins/local-source.js';
+import type { ProjectGitCoordination } from '../../services/project-git/mutation-adapter.js';
+import {
+  coordinateAuthorizedProjectMutation,
+  coordinateAuthorizedProjectMutationStart,
+  coordinateAuthorizedProjectRead,
+  coordinateAuthorizedProjectReadStart,
+} from '../project-git-coordination.js';
 import {
   classifyPluginInstallError,
   type PluginInstallErrorCode,
@@ -133,6 +140,17 @@ interface PluginShareTaskLike {
   waiters: Set<() => void>;
 }
 
+interface PluginShareTaskStart {
+  accepted: unknown;
+  settled: Promise<unknown>;
+}
+
+async function normalizedPluginShareStart(
+  start: () => Promise<PluginShareTaskStart | null>,
+): Promise<PluginShareTaskStart> {
+  return await start() ?? { accepted: undefined, settled: Promise.resolve() };
+}
+
 interface PluginRouteHelpers {
   PLUGIN_PREVIEWS_DIR: string;
   pluginUpload: {
@@ -187,12 +205,13 @@ interface PluginRouteHelpers {
   sendApiError(res: Response, status: number, code: string, message: string): unknown;
   isLocalSameOrigin(req: Request, port: number | null | undefined): boolean;
   handleCandidateDraft(req: Request, res: Response): Promise<unknown>;
-  handleCandidateShareTask(req: Request, res: Response): Promise<unknown>;
-  handleProjectShareTask(req: Request, res: Response): Promise<unknown>;
+  handleCandidateShareTask(req: Request, res: Response): Promise<PluginShareTaskStart | null>;
+  handleProjectShareTask(req: Request, res: Response): Promise<PluginShareTaskStart | null>;
 }
 
 export interface RegisterPluginRoutesDeps {
   db: SqliteDbLike;
+  projectGitCoordination: ProjectGitCoordination;
   authorizeProjectRequest: AuthorizeProjectRequest;
   /** Team-resource copy red-line (D3). When present, a frozen team plugin cannot
    *  be duplicated into a personal project. Omit to skip the guard (no-op). */
@@ -967,11 +986,28 @@ export function registerProjectPluginRoutes(app: Express, deps: RegisterPluginRo
     );
   app.post('/api/projects/:id/plugins/install-folder', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleProjectInstallFolder(req, res);
+    return coordinateAuthorizedProjectRead({
+      req,
+      res,
+      projectId: req.params.id,
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      work: () => helpers.handleProjectInstallFolder(req, res),
+    });
   });
   app.post('/api/projects/:id/plugins/publish-github', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleProjectPluginCli(req, res, 'publish-github');
+    return coordinateAuthorizedProjectMutation({
+      req,
+      res,
+      projectId: req.params.id,
+      source: 'plugin-publish-github',
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      work: () => helpers.handleProjectPluginCli(req, res, 'publish-github'),
+    });
   });
   app.get('/api/projects/:id/plugin-candidates', async (req, res) => {
     try {
@@ -993,34 +1029,126 @@ export function registerProjectPluginRoutes(app: Express, deps: RegisterPluginRo
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    const candidate = plugins.dismissSkillPluginCandidate(
-      db,
-      req.params.id,
-      req.params.candidateId,
-    );
-    if (!candidate) {
+    const existingCandidate = plugins.listSkillPluginCandidates(db, req.params.id, true)
+      .find((candidate) => candidate.id === req.params.candidateId);
+    if (!existingCandidate) {
       return helpers.sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found');
     }
-    if (candidate.assistantMessageId) {
-      db.prepare(`DELETE FROM messages WHERE id = ?`).run(candidate.assistantMessageId);
-    }
-    res.json({ ok: true, candidate });
+    return coordinateAuthorizedProjectMutation({
+      req,
+      res,
+      projectId: req.params.id,
+      source: 'plugin-candidate-dismiss',
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      work: async () => {
+        const candidate = plugins.dismissSkillPluginCandidate(
+          db,
+          req.params.id,
+          req.params.candidateId,
+        );
+        if (!candidate) {
+          return helpers.sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found');
+        }
+        if (candidate.assistantMessageId) {
+          db.prepare(`DELETE FROM messages WHERE id = ?`).run(candidate.assistantMessageId);
+        }
+        res.json({ ok: true, candidate });
+      },
+    });
   });
   app.post('/api/projects/:id/plugin-candidates/:candidateId/draft', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleCandidateDraft(req, res);
+    const existingCandidate = plugins.listSkillPluginCandidates(db, req.params.id, true)
+      .find((candidate) => candidate.id === req.params.candidateId);
+    if (!existingCandidate) {
+      return helpers.sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found');
+    }
+    return coordinateAuthorizedProjectMutation({
+      req,
+      res,
+      projectId: req.params.id,
+      source: 'plugin-candidate-draft',
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      work: () => helpers.handleCandidateDraft(req, res),
+    });
   });
   app.post('/api/projects/:id/plugin-candidates/:candidateId/share-tasks', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleCandidateShareTask(req, res);
+    const action = req.body?.action;
+    if (action !== 'publish-github' && action !== 'contribute-open-design') {
+      return helpers.sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required');
+    }
+    const existingCandidate = plugins.listSkillPluginCandidates(db, req.params.id, true)
+      .find((candidate) => candidate.id === req.params.candidateId);
+    if (!existingCandidate) {
+      return helpers.sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found');
+    }
+    return coordinateAuthorizedProjectMutationStart({
+      req,
+      res,
+      projectId: req.params.id,
+      source: 'plugin-candidate-share-draft',
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      start: () => normalizedPluginShareStart(
+        () => helpers.handleCandidateShareTask(req, res),
+      ),
+      onSettledError: error => {
+        console.warn('[plugins] candidate share task settlement failed', error);
+      },
+    });
   });
   app.post('/api/projects/:id/plugins/contribute-open-design', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleProjectPluginCli(req, res, 'contribute-open-design');
+    return coordinateAuthorizedProjectRead({
+      req,
+      res,
+      projectId: req.params.id,
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      work: () => helpers.handleProjectPluginCli(req, res, 'contribute-open-design'),
+    });
   });
   app.post('/api/projects/:id/plugins/share-tasks', async (req, res) => {
     if (!await authorizeWrite(req, res, req.params.id)) return;
-    return helpers.handleProjectShareTask(req, res);
+    const action = req.body?.action;
+    if (action === 'publish-github') {
+      return coordinateAuthorizedProjectMutationStart({
+        req,
+        res,
+        projectId: req.params.id,
+        source: 'plugin-share-task-publish',
+        coordination: deps.projectGitCoordination,
+        sendApiError: helpers.sendApiError,
+        authorize: async () => true,
+        start: () => normalizedPluginShareStart(
+          () => helpers.handleProjectShareTask(req, res),
+        ),
+        onSettledError: error => {
+          console.warn('[plugins] publish share task settlement failed', error);
+        },
+      });
+    }
+    return coordinateAuthorizedProjectReadStart({
+      req,
+      res,
+      projectId: req.params.id,
+      coordination: deps.projectGitCoordination,
+      sendApiError: helpers.sendApiError,
+      authorize: async () => true,
+      start: () => normalizedPluginShareStart(
+        () => helpers.handleProjectShareTask(req, res),
+      ),
+      onSettledError: error => {
+        console.warn('[plugins] contribute share task settlement failed', error);
+      },
+    });
   });
   app.post('/api/plugins/share-tasks/:id/wait', async (req, res) => {
     if (!helpers.isLocalSameOrigin(req, helpers.resolvedPortRef.current)) return res.status(403).json({ error: 'cross-origin request rejected' });

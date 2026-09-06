@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { PLUGIN_SHARE_ACTION_PLUGIN_IDS } from '@open-design/contracts';
-import { upsertMessage } from '../db.js';
+import { appendMessageStatusEvent, upsertMessage } from '../db.js';
 import { emittedRenderableQuestionForm } from '../question-form-detect.js';
 import { execGhBuffered } from '../services/login-shell.js';
 import {
@@ -11,6 +11,7 @@ import {
   insertSkillPluginCandidate,
   listSkillPluginCandidates,
 } from './index.js';
+import type { ProjectGitMutationAdapter } from '../services/project-git/mutation-adapter.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -40,6 +41,9 @@ export interface RunLike {
   agentId?: string | null;
   pluginId?: string | null;
   appliedPluginSnapshotId?: string | null;
+  expectedProjectRevision?: number;
+  recordTerminalErrorInAssistantMessage?: boolean;
+  error?: string | null;
 }
 
 export interface RunWaiter {
@@ -258,24 +262,31 @@ export async function ensureGhReady(): Promise<
   return { ok: true, log: [version.stdout, auth.stderr || auth.stdout].filter(Boolean) };
 }
 
-export function reconcileAssistantMessageOnRunEnd(
+/** Synchronous local terminal write; callers keep the run's mutation permit until it returns. */
+export function reconcileAssistantMessageOnRunTerminal(
   db: Database.Database,
-  runs: RunWaiter,
   run: RunLike,
+  status: string,
+  terminalAt: number,
 ): void {
   if (!run.assistantMessageId) return;
-  void runs
-    .wait(run)
-    .then((finalStatus) => {
-      db.prepare(
-        `UPDATE messages
-            SET run_status = ?, ended_at = COALESCE(ended_at, ?)
-          WHERE id = ? AND run_status IN ('queued', 'running')`,
-      ).run(finalStatus.status, Date.now(), run.assistantMessageId);
-    })
-    .catch((err: Error) => {
-      console.warn('[runs] message reconciliation failed', err);
+  const changed = db.prepare(
+    `UPDATE messages
+        SET run_status = ?, ended_at = COALESCE(ended_at, ?)
+      WHERE id = ? AND run_id = ? AND run_status IN ('queued', 'running')`,
+  ).run(status, terminalAt, run.assistantMessageId, run.id).changes;
+  if (
+    changed > 0
+    && status === 'failed'
+    && run.recordTerminalErrorInAssistantMessage === true
+    && typeof run.error === 'string'
+    && run.error.trim()
+  ) {
+    appendMessageStatusEvent(db, run.assistantMessageId, {
+      label: 'error',
+      detail: run.error.trim(),
     });
+  }
 }
 
 export function isPluginAuthoringRun(
@@ -336,6 +347,7 @@ export function detectSkillPluginCandidateOnRunSuccess(
   run: RunLike,
   input: SkillPluginCandidateInput | null | undefined,
   projectRoot: string,
+  coordination: Pick<ProjectGitMutationAdapter, 'withProjectMutation'>,
 ): void {
   if (!run.projectId || !run.conversationId) return;
   const projectId = run.projectId;
@@ -344,22 +356,30 @@ export function detectSkillPluginCandidateOnRunSuccess(
     .wait(run)
     .then(async (finalStatus) => {
       if (finalStatus.status !== 'succeeded') return;
-      const pausedForQuestion = assistantMessageEmittedQuestionForm(db, run.assistantMessageId);
-      const message = input?.message ?? input?.currentPrompt;
-      const detected = await detectSkillPluginCandidate({
+      await coordination.withProjectMutation({
         projectId,
-        runId: run.id,
-        conversationId,
-        assistantMessageId: null,
-        ...(message !== undefined ? { message } : {}),
-        ...(input?.attachments !== undefined ? { attachments: input.attachments } : {}),
-        projectRoot,
+        source: 'plugin-candidate-detection',
+        ...(run.expectedProjectRevision === undefined
+          ? {}
+          : { expectedProjectRevision: run.expectedProjectRevision }),
+      }, async () => {
+        const pausedForQuestion = assistantMessageEmittedQuestionForm(db, run.assistantMessageId);
+        const message = input?.message ?? input?.currentPrompt;
+        const detected = await detectSkillPluginCandidate({
+          projectId,
+          runId: run.id,
+          conversationId,
+          assistantMessageId: null,
+          ...(message !== undefined ? { message } : {}),
+          ...(input?.attachments !== undefined ? { attachments: input.attachments } : {}),
+          projectRoot,
+        });
+        const candidate = detected ? insertSkillPluginCandidate(db, detected) as SkillPluginCandidateLike : null;
+        if (pausedForQuestion) return;
+        const candidateToShow = candidate ?? deferredSkillPluginCandidateForRun(db, run);
+        if (!candidateToShow || candidateToShow.status === 'dismissed') return;
+        upsertSkillPluginCandidateAssistantMessage(db, run, candidateToShow);
       });
-      const candidate = detected ? insertSkillPluginCandidate(db, detected) as SkillPluginCandidateLike : null;
-      if (pausedForQuestion) return;
-      const candidateToShow = candidate ?? deferredSkillPluginCandidateForRun(db, run);
-      if (!candidateToShow || candidateToShow.status === 'dismissed') return;
-      upsertSkillPluginCandidateAssistantMessage(db, run, candidateToShow);
     })
     .catch((err: Error) => {
       console.warn('[plugins] skill candidate detection failed', err);

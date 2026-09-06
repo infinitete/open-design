@@ -13,6 +13,8 @@ import {
 } from '../db.js';
 import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
 import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
+import type { ProjectGitMutationAdapter, ProjectMutationInput } from '../services/project-git/mutation-adapter.js';
+import type { MutationPermit } from '../services/project-git/gate.js';
 
 type JsonRecord = Record<string, unknown>;
 type SkillEntry = { id: string; dir?: string } & JsonRecord;
@@ -72,6 +74,12 @@ type DesignSystemWorkspaceOptions = {
   workspaceMemberId?: string | null;
   /** A verified Team binding forbids same-id Personal fallback. */
   exactTeam?: boolean;
+  projectMutation?: {
+    source: string;
+    expectedProjectRevision?: number;
+    originProjectId?: string;
+    permit?: MutationPermit;
+  };
 };
 
 export type DesignSystemAssetSyncOutcome =
@@ -150,6 +158,7 @@ export function createDesignSystemServerServices({
   skills,
   designSystems,
   projects,
+  coordinateProjectMutation,
   bindProjectToWorkspace,
 }: {
   // Only consulted by `listAllSkills` below for its optional workspace scope
@@ -212,6 +221,7 @@ export function createDesignSystemServerServices({
     resolveProjectDir: (projectsDir: string, projectId: string, metadata?: JsonRecord) => string;
     isSafeId: (id: string) => boolean;
   };
+  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
   /**
    * Give the `ds-*` project that backs a design system's editing workspace a
    * `workspace_projects` home, the same as any other created project.
@@ -736,66 +746,79 @@ export function createDesignSystemServerServices({
     if (!resolved) return null;
     const { summary, projectId, sourceRoot } = resolved;
 
-    const now = Date.now();
-    const metadata = {
-      kind: 'other',
-      importedFrom: 'design-system',
-      entryFile: 'DESIGN.md',
-      sourceFileName: id,
+    const mutation = options.projectMutation;
+    const sameOriginProject = mutation?.originProjectId === undefined
+      || mutation.originProjectId === projectId;
+    const coordinationInput: ProjectMutationInput = {
+      projectId,
+      source: mutation?.source ?? 'design-system-workspace-sync',
+      ...(sameOriginProject && mutation?.expectedProjectRevision !== undefined
+        ? { expectedProjectRevision: mutation.expectedProjectRevision }
+        : {}),
+      ...(sameOriginProject && mutation?.permit ? { permit: mutation.permit } : {}),
     };
-    const existing = projects.getProject(dbHandle, projectId);
-    const projectName = summary.title ?? id;
-    const project = existing
-      ? projects.updateProject(dbHandle, projectId, {
-          name: projectName,
-          designSystemId: id,
-          metadata: { ...(existing.metadata ?? {}), ...metadata },
-          updatedAt: now,
-        })
-      : projects.insertProject(dbHandle, {
-          id: projectId,
-          name: projectName,
-          skillId: null,
-          designSystemId: id,
-          pendingPrompt: null,
-          metadata,
-          createdAt: now,
-          updatedAt: now,
-        });
-    if (!project) return null;
-    if (!existing) bindProjectToWorkspace?.(projectId, now, summary);
+    return coordinateProjectMutation(coordinationInput, async () => {
+      const now = Date.now();
+      const metadata = {
+        kind: 'other',
+        importedFrom: 'design-system',
+        entryFile: 'DESIGN.md',
+        sourceFileName: id,
+      };
+      const existing = projects.getProject(dbHandle, projectId);
+      const projectName = summary.title ?? id;
+      const project = existing
+        ? projects.updateProject(dbHandle, projectId, {
+            name: projectName,
+            designSystemId: id,
+            metadata: { ...(existing.metadata ?? {}), ...metadata },
+            updatedAt: now,
+          })
+        : projects.insertProject(dbHandle, {
+            id: projectId,
+            name: projectName,
+            skillId: null,
+            designSystemId: id,
+            pendingPrompt: null,
+            metadata,
+            createdAt: now,
+            updatedAt: now,
+          });
+      if (!project) return null;
+      if (!existing) bindProjectToWorkspace?.(projectId, now, summary);
 
-    const files = await designSystems.listUserDesignSystemFiles(sourceRoot, id);
-    if (!files) return null;
-    for (const file of files) {
-      if (file.kind === 'folder') continue;
-      const detail = await designSystems.readUserDesignSystemFileBytes(sourceRoot, id, file.path);
-      if (!detail) continue;
-      if (existing) {
-        try {
-          const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, file.path, project.metadata);
-          if (!isReplaceableDesignSystemWorkspaceFile(file.path, existingFile)) continue;
-        } catch (err: unknown) {
-          if (!isNodeErrorCode(err, 'ENOENT')) throw err;
+      const files = await designSystems.listUserDesignSystemFiles(sourceRoot, id);
+      if (!files) return null;
+      for (const file of files) {
+        if (file.kind === 'folder') continue;
+        const detail = await designSystems.readUserDesignSystemFileBytes(sourceRoot, id, file.path);
+        if (!detail) continue;
+        if (existing) {
+          try {
+            const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, file.path, project.metadata);
+            if (!isReplaceableDesignSystemWorkspaceFile(file.path, existingFile)) continue;
+          } catch (err: unknown) {
+            if (!isNodeErrorCode(err, 'ENOENT')) throw err;
+          }
         }
+        await projects.writeProjectFile(
+          paths.PROJECTS_DIR,
+          projectId,
+          file.path,
+          detail.bytes,
+          {},
+          project.metadata,
+        );
       }
-      await projects.writeProjectFile(
+      await removeLegacyDesignSystemWorkspaceArtifacts(project);
+      await designSystems.linkUserDesignSystemProject(sourceRoot, id, project.id);
+      const projectFiles = await projects.listFiles(
         paths.PROJECTS_DIR,
         projectId,
-        file.path,
-        detail.bytes,
-        {},
-        project.metadata,
+        project.metadata ? { metadata: project.metadata } : {},
       );
-    }
-    await removeLegacyDesignSystemWorkspaceArtifacts(project);
-    await designSystems.linkUserDesignSystemProject(sourceRoot, id, project.id);
-    const projectFiles = await projects.listFiles(
-      paths.PROJECTS_DIR,
-      projectId,
-      project.metadata ? { metadata: project.metadata } : {},
-    );
-    return { project, files: projectFiles };
+      return { project, files: projectFiles };
+    });
   }
 
   function isReplaceableDesignSystemWorkspaceFile(filePath: string, file: { buffer?: Buffer } | null | undefined) {

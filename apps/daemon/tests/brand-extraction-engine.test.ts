@@ -45,6 +45,8 @@ import {
   type ImagerySlot,
 } from '../src/brands/imagery-fallback.js';
 import { isChallengePage, type PrefetchResult } from '../src/brands/prefetch.js';
+import { createProjectGate } from '../src/services/project-git/gate.js';
+import { createProjectGitMutationAdapter } from '../src/services/project-git/mutation-adapter.js';
 
 // Real repo skills root so the bundled brand-kit template resolves.
 const SKILLS_ROOT = path.resolve(
@@ -64,13 +66,25 @@ const NO_IMAGERY_FALLBACK = async () => ({ changed: false });
 // tests offline except for cases that explicitly stub a harvester behavior.
 const NO_SEED_FALLBACK = async () => ({ changed: false });
 
+const PASSTHROUGH_PROJECT_MUTATION = async <T>(
+  _input: { projectId: string; expectedProjectRevision?: number; source: string },
+  work: () => Promise<T>,
+): Promise<T> => work();
+
 function startOfflineBrandExtraction(
-  opts: Parameters<typeof startBrandExtraction>[0],
+  opts: Omit<Parameters<typeof startBrandExtraction>[0], 'coordinateProjectMutation'> & {
+    coordinateProjectMutation?: Parameters<typeof startBrandExtraction>[0]['coordinateProjectMutation'];
+  },
 ): ReturnType<typeof startBrandExtraction> {
+  const {
+    coordinateProjectMutation = PASSTHROUGH_PROJECT_MUTATION,
+    ...startOptions
+  } = opts;
   return startBrandExtraction({
     seedFallback: NO_SEED_FALLBACK,
     imageryFallback: NO_IMAGERY_FALLBACK,
-    ...opts,
+    ...startOptions,
+    coordinateProjectMutation,
   });
 }
 
@@ -488,6 +502,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       logoFallback: NO_LOGO_FALLBACK,
     })).rejects.toThrow();
 
@@ -510,6 +525,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       logoFallback: NO_LOGO_FALLBACK,
       randomId: () => {
         throw new Error('conversation id failed');
@@ -541,6 +557,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       logoFallback: NO_LOGO_FALLBACK,
       deleteUserDesignSystem: deleteDraftDesignSystem,
       bindCreatedProject,
@@ -849,6 +866,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       logoFallback: NO_LOGO_FALLBACK,
       imageryFallback: NO_IMAGERY_FALLBACK,
       prefetch: async (url) => programmaticPrefetchResult(url),
@@ -943,6 +961,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       logoFallback: NO_LOGO_FALLBACK,
       imageryFallback: NO_IMAGERY_FALLBACK,
       prefetch: async (url) => retryMaterial(url),
@@ -1006,6 +1025,7 @@ describe('agent-driven brand extraction engine', () => {
       userDesignSystemsRoot,
       skillsRoot: SKILLS_ROOT,
       db,
+      coordinateProjectMutation: PASSTHROUGH_PROJECT_MUTATION,
       randomId: () => ids[idIndex++] ?? `retry-extra-${idIndex}`,
       logoFallback: NO_LOGO_FALLBACK,
       imageryFallback: NO_IMAGERY_FALLBACK,
@@ -2076,6 +2096,66 @@ describe('agent-driven brand extraction engine', () => {
     const project = getProject(db, result.projectId);
     expect(project?.pendingPrompt ?? '').toContain('DESIGN SYSTEM ENRICHMENT');
     expect(project?.designSystemId).toBe(detail?.meta.designSystemId);
+  });
+
+  it('coordinates brand startup and holds a separate background mutation through fallback settlement', async () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    let backgroundExtraction: Promise<unknown> | null = null;
+    const phases: string[] = [];
+    const gate = createProjectGate();
+    const adapter = createProjectGitMutationAdapter({
+      recoveryReady: Promise.resolve(),
+      store: { getBinding: () => null, bumpContent: () => 0 },
+      gateFor: () => gate,
+      notify: () => {},
+    });
+    const coordinateProjectMutation = vi.fn(async <T>(
+      input: { projectId: string; expectedProjectRevision?: number; source: string },
+      work: () => Promise<T>,
+    ): Promise<T> => adapter.withProjectMutation(input, async () => {
+        phases.push(`enter:${input.source}:${input.expectedProjectRevision ?? 'missing'}`);
+        try {
+          return await work();
+        } finally {
+          const project = getProject(db, input.projectId);
+          const terminalMessage = project
+            ? listMessages(db, listConversations(db, input.projectId)[0]?.id ?? '')
+              .find((message) => message.role === 'assistant')
+            : null;
+          phases.push(`exit:${input.source}:${terminalMessage?.runStatus ?? 'none'}`);
+        }
+      }));
+
+    const result = await startOfflineBrandExtraction({
+      url: 'acme.com',
+      brandsRoot,
+      projectsRoot,
+      skillsRoot: SKILLS_ROOT,
+      db,
+      userDesignSystemsRoot,
+      prefetch: async () => null,
+      logoFallback: NO_LOGO_FALLBACK,
+      imageryFallback: NO_IMAGERY_FALLBACK,
+      coordinateProjectMutation,
+      onBackgroundExtraction: (settled) => {
+        backgroundExtraction = settled;
+      },
+    } as Parameters<typeof startBrandExtraction>[0]);
+
+    expect(phases).toEqual([
+      'enter:brand.startup:missing',
+      'exit:brand.startup:running',
+      'enter:brand.background:missing',
+    ]);
+    if (!backgroundExtraction) throw new Error('expected background extraction promise');
+    await backgroundExtraction;
+    expect(readBrandDetail(brandsRoot, result.id)?.meta.status).toBe('failed');
+    expect(phases).toEqual([
+      'enter:brand.startup:missing',
+      'exit:brand.startup:running',
+      'enter:brand.background:missing',
+      'exit:brand.background:failed',
+    ]);
   });
 
   it('startBrandExtraction registers directly from a pasted DESIGN.md without a website', async () => {

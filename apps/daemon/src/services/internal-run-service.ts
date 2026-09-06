@@ -8,6 +8,7 @@
  * calling the daemon through HTTP.
  */
 import type { RunAnalyticsFacts } from './run-analytics-lifecycle.js';
+import type { ProjectRunAdmission as ProjectRunAdmissionHandle } from './project-git/runtime-adapter.js';
 
 /**
  * `RunAnalyticsFacts` is a REQUIRED argument of `start` on purpose. Analytics
@@ -20,6 +21,7 @@ import type { RunAnalyticsFacts } from './run-analytics-lifecycle.js';
  */
 export interface InternalRunCreateInput extends Record<string, unknown> {
   projectId?: string;
+  expectedProjectRevision?: number;
   conversationId?: string;
   userMessageId?: string;
   assistantMessageId?: string;
@@ -43,6 +45,9 @@ export interface InternalRunCreateInput extends Record<string, unknown> {
 export interface InternalPhysicalRun {
   id: string;
   status: string;
+  projectId?: string | null;
+  expectedProjectRevision?: number;
+  projectGitBindingGeneration?: number;
 }
 
 export interface InternalRunAnalyticsLifecycle<TRun> {
@@ -60,6 +65,8 @@ export interface InternalRunRegistry<
   prepareRestart(run: TRun): TRun | null;
   get(id: string): TRun | null;
   drop(run: TRun): void;
+  fail(run: TRun, errorCode: string, errorMessage: string): void;
+  persistState(run: TRun): void;
   start(run: TRun, starter: () => Promise<unknown>): TRun;
   isTerminal(status: TRun['status']): boolean;
 }
@@ -77,6 +84,7 @@ export type AssistantRunClaimResult = {
 
 export interface PrepareInternalRunInput<TMeta extends InternalRunCreateInput, TRun> {
   meta: TMeta;
+  projectAdmission?: PreRunProjectAdmission;
   /**
    * Runs inside the assistant-message claim transaction. The newly allocated
    * physical Run is supplied so a logical coordinator can CAS-claim that exact
@@ -96,11 +104,32 @@ export type PreparedInternalRunResult<TRun> =
   | { kind: 'resume_not_allowed'; run: TRun }
   | { kind: 'assistant_claim_conflict'; run: TRun; reason?: 'active' | 'scope' };
 
+const preRunProjectAdmissionBrand: unique symbol = Symbol('pre-run-project-admission');
+
+/** Opaque capability held before snapshot/pre-claim project mutations. */
+export interface PreRunProjectAdmission {
+  readonly projectId: string;
+  readonly expectedProjectRevision: number | undefined;
+  readonly [preRunProjectAdmissionBrand]: true;
+}
+
 export interface InternalRunCreationService<
   TMeta extends InternalRunCreateInput,
   TRun extends InternalPhysicalRun,
 > {
-  prepare(input: PrepareInternalRunInput<TMeta, TRun>): PreparedInternalRunResult<TRun>;
+  preAdmitProjectRun(
+    projectId: string,
+    expectedProjectRevision?: number,
+  ): Promise<PreRunProjectAdmission>;
+  withProjectMutation<T>(
+    admission: PreRunProjectAdmission,
+    source: string,
+    work: () => Promise<T>,
+  ): Promise<T>;
+  releaseProjectRunAdmission(admission: PreRunProjectAdmission): void;
+  prepare(input: PrepareInternalRunInput<TMeta, TRun>): Promise<PreparedInternalRunResult<TRun>>;
+  /** Release admission and remove a ready physical Run that will not be started. */
+  discard(run: TRun): void;
   start(
     run: TRun,
     analytics: RunAnalyticsFacts,
@@ -124,15 +153,86 @@ export function createInternalRunCreationService<
    * that wants silence injects a no-op lifecycle and says so.
    */
   analyticsLifecycle: InternalRunAnalyticsLifecycle<TRun>;
+  beginProjectRunAdmission: (
+    projectId: string,
+    expectedProjectRevision: number | undefined,
+  ) => Promise<ProjectRunAdmissionHandle>;
+  attachProjectRun: (
+    runId: string,
+    projectId: string,
+    admission: ProjectRunAdmissionHandle,
+  ) => { bindingGeneration: number; projectRevision: number } | null;
+  detachProjectRun(runId: string, admission: ProjectRunAdmissionHandle): void;
+  coordinateProjectMutation<T>(
+    admission: ProjectRunAdmissionHandle,
+    source: string,
+    work: () => Promise<T>,
+  ): Promise<T>;
+  releaseProjectRun(runId: string): void;
 }): InternalRunCreationService<TMeta, TRun> {
+  const preRunAdmissions = new WeakMap<
+    PreRunProjectAdmission,
+    {
+      handle: ProjectRunAdmissionHandle;
+      attachedRunId: string | null;
+      released: boolean;
+      transferred: boolean;
+    }
+  >();
+  const preparedRuns = new Map<TRun, { admitted: boolean }>();
   const isRunActive = (runId: string): boolean => {
     const existing = deps.runs.get(runId);
     return Boolean(existing && !deps.runs.isTerminal(existing.status));
   };
 
-  const prepare = (
+  const preAdmitProjectRun = async (
+    projectId: string,
+    expectedProjectRevision?: number,
+  ): Promise<PreRunProjectAdmission> => {
+    const handle = await deps.beginProjectRunAdmission(projectId, expectedProjectRevision);
+    const admission = Object.freeze({
+      projectId,
+      expectedProjectRevision,
+      [preRunProjectAdmissionBrand]: true as const,
+    });
+    preRunAdmissions.set(admission, {
+      handle,
+      attachedRunId: null,
+      released: false,
+      transferred: false,
+    });
+    return admission;
+  };
+
+  const admissionState = (admission: PreRunProjectAdmission) => {
+    const state = preRunAdmissions.get(admission);
+    if (!state) throw new Error('Pre-run project admission is not owned by this service.');
+    if (state.released) throw new Error('Pre-run project admission is already released.');
+    return state;
+  };
+
+  const releaseProjectRunAdmission = (admission: PreRunProjectAdmission): void => {
+    const state = preRunAdmissions.get(admission);
+    if (!state || state.released || state.transferred) return;
+    state.released = true;
+    if (state.attachedRunId) deps.releaseProjectRun(state.attachedRunId);
+    else state.handle.release();
+  };
+
+  const releaseAttachedAdmission = (
+    admission: PreRunProjectAdmission,
+    runId: string,
+  ): void => {
+    const state = preRunAdmissions.get(admission);
+    if (!state || state.released) return;
+    state.released = true;
+    state.transferred = false;
+    deps.releaseProjectRun(runId);
+  };
+
+  const prepare = async (
     input: PrepareInternalRunInput<TMeta, TRun>,
-  ): PreparedInternalRunResult<TRun> => {
+  ): Promise<PreparedInternalRunResult<TRun>> => {
     const creation = deps.runs.createOrReuse(input.meta);
     if (creation.kind === 'conflict') {
       return { kind: 'idempotency_conflict', run: creation.run };
@@ -140,28 +240,78 @@ export function createInternalRunCreationService<
 
     const run = creation.run;
     if (creation.kind === 'reused') {
-      if (!input.resume?.requested) return { kind: 'reused', run };
-      if (!input.resume.canResume(run)) return { kind: 'resume_not_allowed', run };
-
-      const claim = deps.claimAssistantMessage(run, {
-        status: 'queued',
-        isRunActive,
-      });
-      if (!claim.ok) {
-        return {
-          kind: 'assistant_claim_conflict',
-          run,
-          ...(claim.reason ? { reason: claim.reason } : {}),
-        };
+      if (!input.resume?.requested) {
+        return { kind: 'reused', run };
       }
-      if (!deps.runs.prepareRestart(run)) {
+      if (!input.resume.canResume(run)) {
         return { kind: 'resume_not_allowed', run };
       }
-      return { kind: 'ready', run, creationKind: 'reused', resumed: true };
     }
 
+    let admitted = false;
+    const suppliedAdmission = input.projectAdmission !== undefined;
+    let projectAdmission = input.projectAdmission;
+    const releaseAdmission = (): void => {
+      if (!admitted) return;
+      admitted = false;
+      if (suppliedAdmission && projectAdmission) {
+        const state = admissionState(projectAdmission);
+        deps.detachProjectRun(run.id, state.handle);
+        state.attachedRunId = null;
+        return;
+      }
+      if (projectAdmission) releaseAttachedAdmission(projectAdmission, run.id);
+    };
     let claim: AssistantRunClaimResult;
     try {
+      if (typeof input.meta.projectId === 'string' && input.meta.projectId) {
+        projectAdmission ??= await preAdmitProjectRun(
+          input.meta.projectId,
+          input.meta.expectedProjectRevision,
+        );
+        if (
+          projectAdmission.projectId !== input.meta.projectId
+          || projectAdmission.expectedProjectRevision !== input.meta.expectedProjectRevision
+        ) {
+          releaseProjectRunAdmission(projectAdmission);
+          throw new Error('Pre-run project admission does not match the run project epoch.');
+        }
+        const state = admissionState(projectAdmission);
+        const epoch = deps.attachProjectRun(run.id, input.meta.projectId, state.handle);
+        state.attachedRunId = run.id;
+        admitted = true;
+        if (epoch) {
+          run.projectGitBindingGeneration = epoch.bindingGeneration;
+          run.expectedProjectRevision = epoch.projectRevision;
+          deps.runs.persistState(run);
+        }
+      } else if (projectAdmission) {
+        releaseProjectRunAdmission(projectAdmission);
+        throw new Error('A project admission cannot be attached to a projectless run.');
+      }
+
+      if (creation.kind === 'reused') {
+        const resumeClaim = deps.claimAssistantMessage(run, {
+          status: 'queued',
+          isRunActive,
+        });
+        if (!resumeClaim.ok) {
+          releaseAdmission();
+          return {
+            kind: 'assistant_claim_conflict',
+            run,
+            ...(resumeClaim.reason ? { reason: resumeClaim.reason } : {}),
+          };
+        }
+        if (!deps.runs.prepareRestart(run)) {
+          releaseAdmission();
+          return { kind: 'resume_not_allowed', run };
+        }
+        preparedRuns.set(run, { admitted });
+        if (projectAdmission) admissionState(projectAdmission).transferred = true;
+        return { kind: 'ready', run, creationKind: 'reused', resumed: true };
+      }
+
       claim = deps.claimAssistantMessage(run, {
         ...(input.beforeClaimCommit
           ? { beforeClaimCommit: () => input.beforeClaimCommit?.(run) }
@@ -171,10 +321,12 @@ export function createInternalRunCreationService<
     } catch (error) {
       // The registry create is optimistic. A failed ownership transaction must
       // not leave a physical Run that can be listed, streamed, or reconciled.
-      deps.runs.drop(run);
+      releaseAdmission();
+      if (creation.kind === 'created') deps.runs.drop(run);
       throw error;
     }
     if (!claim.ok) {
+      releaseAdmission();
       deps.runs.drop(run);
       return {
         kind: 'assistant_claim_conflict',
@@ -182,17 +334,54 @@ export function createInternalRunCreationService<
         ...(claim.reason ? { reason: claim.reason } : {}),
       };
     }
+    preparedRuns.set(run, { admitted });
+    if (projectAdmission) admissionState(projectAdmission).transferred = true;
     return { kind: 'ready', run, creationKind: 'created', resumed: false };
   };
 
   return {
+    preAdmitProjectRun,
+    withProjectMutation(admission, source, work) {
+      const state = admissionState(admission);
+      if (state.transferred) {
+        throw new Error('Pre-run project admission has already transferred to a Run.');
+      }
+      return deps.coordinateProjectMutation(state.handle, source, work);
+    },
+    releaseProjectRunAdmission,
     prepare,
+    discard(run) {
+      const prepared = preparedRuns.get(run);
+      if (!prepared) return;
+      preparedRuns.delete(run);
+      if (prepared.admitted) deps.releaseProjectRun(run.id);
+      deps.runs.drop(run);
+    },
     start(run, analytics, starter) {
+      const prepared = preparedRuns.get(run);
+      if (!prepared) {
+        throw new Error(`Run ${run.id} must be prepared before start`);
+      }
+      preparedRuns.delete(run);
       // Before the child is spawned: `run_created` describes a Run that has
       // been accepted, and the terminal half must already be attached when the
       // Run settles — including a Run that fails on its first tick.
-      deps.analyticsLifecycle.install({ ...analytics, run });
-      return deps.runs.start(run, () => starter(run));
+      try {
+        deps.analyticsLifecycle.install({ ...analytics, run });
+        return deps.runs.start(run, () => starter(run));
+      } catch (error) {
+        try {
+          deps.runs.fail(
+            run,
+            'RUN_START_FAILED',
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch {
+          if (prepared.admitted) deps.releaseProjectRun(run.id);
+          deps.runs.drop(run);
+        }
+        throw error;
+      }
     },
   };
 }

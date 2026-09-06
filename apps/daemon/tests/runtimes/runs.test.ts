@@ -1084,6 +1084,63 @@ describe('chat run service shutdown', () => {
     });
   });
 
+  it('settles a run permit only after terminal persistence and a failing finalizer converge', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-settled-test-'));
+    try {
+      const observed: string[] = [];
+      const runs = createChatRunService({
+        createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
+        createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
+        runsLogDir: tmpDir as unknown as null,
+        ttlMs: 60_000,
+        onTerminal: ((run: any) => observed.push(`terminal:${run.status}`)) as unknown as null,
+        onSettled: ((run: any) => {
+          const state = JSON.parse(fs.readFileSync(run.statePath, 'utf8'));
+          observed.push(`settled:${state.status}:${state.artifactCount}`);
+        }) as unknown as null,
+      });
+      const run = runs.create() as any;
+      run.onFinalize = () => {
+        observed.push('finalize');
+        run.artifactCount = 3;
+        throw new Error('finalizer failed');
+      };
+
+      runs.finish(run, 'failed', 1, null);
+      runs.finish(run, 'canceled', null, 'SIGTERM');
+
+      expect(observed).toEqual(['terminal:failed', 'finalize', 'settled:failed:3']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists the admitted project epoch so queued work cannot refetch after restart', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-epoch-test-'));
+    try {
+      const first = createChatRunService({
+        createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
+        createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
+        runsLogDir: tmpDir as unknown as null,
+      });
+      const created = first.create({ projectId: 'project', expectedProjectRevision: 7 }) as any;
+      created.projectGitBindingGeneration = 3;
+      first.persistState(created);
+
+      const second = createChatRunService({
+        createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
+        createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
+        runsLogDir: tmpDir as unknown as null,
+      });
+      expect(second.get(created.id) as any).toMatchObject({
+        expectedProjectRevision: 7,
+        projectGitBindingGeneration: 3,
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('escalates to SIGKILL when a child ignores the shutdown SIGTERM grace window', async () => {
     const runs = createRuns();
     const child = new FakeChildProcess({ closeOn: 'SIGKILL' });

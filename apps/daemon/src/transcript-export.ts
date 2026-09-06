@@ -151,11 +151,133 @@ export interface TranscriptExportResult {
   bytesWritten: number;
 }
 
+export interface TranscriptRenderResult {
+  jsonl: string;
+  conversationCount: number;
+  messageCount: number;
+  bytesWritten: number;
+}
+
 export class TranscriptExportLockedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'TranscriptExportLockedError';
   }
+}
+
+/** Pure immutable DB snapshot used by project-Git coordinated consumers. */
+export function renderProjectTranscript(
+  db: Db,
+  projectId: string,
+  options: TranscriptExportOptions = {},
+): TranscriptRenderResult {
+  const now = options.now ?? (() => new Date());
+  const { conversationId } = options;
+  const conversations = db
+    .prepare(
+      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
+         FROM conversations
+        WHERE project_id = ?${conversationId ? ' AND id = ?' : ''}
+        ORDER BY created_at ASC`,
+    )
+    .all(...(conversationId ? [projectId, conversationId] : [projectId])) as ConversationRow[];
+  const messageStmt = db.prepare(
+    `SELECT id, role, content, position,
+            events_json AS eventsJson,
+            created_at AS createdAt,
+            attachments_json AS attachmentsJson,
+            comment_attachments_json AS commentAttachmentsJson
+       FROM messages
+      WHERE conversation_id = ?
+      ORDER BY position ASC`,
+  );
+  interface BuiltMessage {
+    kind: 'message';
+    conversationId: string;
+    id: string;
+    role: 'user' | 'assistant';
+    position: number;
+    createdAt: number;
+    blocks: Block[];
+    attachments?: AttachmentRef[];
+    commentAttachments?: CommentAttachmentRef[];
+  }
+  const bodyParts: { conv: ConversationRow; messages: BuiltMessage[] }[] = [];
+  let messageCount = 0;
+  let attachmentCount = 0;
+  let commentAttachmentCount = 0;
+  for (const conv of conversations) {
+    const rows = messageStmt.all(conv.id) as MessageRow[];
+    const materializedMessages = new Map(
+      listMessages(db, conv.id).map(message => [String(message.id), message]),
+    );
+    const messages: BuiltMessage[] = rows.map(row => {
+      const parsed = parseEvents(row.eventsJson);
+      if (parsed.reason === 'malformed' || parsed.reason === 'not_array') {
+        console.warn(
+          `[transcript-export] message ${row.id} (project ${projectId}): `
+          + `events_json is non-null but ${parsed.reason}; falling back to content.`,
+        );
+      }
+      const materialized = materializedMessages.get(row.id);
+      const materializedEvents = Array.isArray(materialized?.events)
+        ? materialized.events as PersistedAgentEvent[]
+        : parsed.events;
+      const materializedContent = typeof materialized?.content === 'string'
+        ? materialized.content
+        : row.content;
+      const blocks = coalesceBlocks(materializedEvents);
+      if (blocks.length === 0 && typeof materializedContent === 'string' && materializedContent.length > 0) {
+        blocks.push({ type: 'text', text: materializedContent });
+      }
+      const attachments = parseAttachments(row.attachmentsJson);
+      const commentAttachments = parseCommentAttachments(row.commentAttachmentsJson);
+      attachmentCount += attachments.length;
+      commentAttachmentCount += commentAttachments.length;
+      const built: BuiltMessage = {
+        kind: 'message',
+        conversationId: conv.id,
+        id: row.id,
+        role: row.role,
+        position: Number(row.position),
+        createdAt: Number(row.createdAt),
+        blocks,
+      };
+      if (attachments.length > 0) built.attachments = attachments;
+      if (commentAttachments.length > 0) built.commentAttachments = commentAttachments;
+      return built;
+    });
+    messageCount += messages.length;
+    bodyParts.push({ conv, messages });
+  }
+  const lines: string[] = [JSON.stringify({
+    kind: 'header',
+    schemaVersion: SCHEMA_VERSION,
+    projectId,
+    exportedAt: now().toISOString(),
+    conversationCount: conversations.length,
+    messageCount,
+    attachmentCount,
+    commentAttachmentCount,
+    attachmentsInlined: false,
+  })];
+  for (const { conv, messages } of bodyParts) {
+    lines.push(JSON.stringify({
+      kind: 'conversation',
+      id: conv.id,
+      title: conv.title ?? null,
+      createdAt: Number(conv.createdAt),
+      updatedAt: Number(conv.updatedAt),
+    }));
+    for (const message of messages) lines.push(JSON.stringify(message));
+  }
+  const jsonl = `${lines.join('\n')}\n`;
+  return {
+    jsonl,
+    conversationCount: conversations.length,
+    messageCount,
+    bytesWritten: Buffer.byteLength(jsonl),
+  };
 }
 
 export function exportProjectTranscript(
@@ -176,8 +298,6 @@ export function exportProjectTranscript(
     `${TRANSCRIPT_FILENAME}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`,
   );
   const lockPath = path.join(dir, LOCK_FILENAME);
-  const now = options.now ?? (() => new Date());
-
   let lockFd: number | null = null;
   try {
     lockFd = fs.openSync(lockPath, 'wx');
@@ -191,142 +311,8 @@ export function exportProjectTranscript(
   }
 
   try {
-    // Conversations ordered chronologically (oldest first) — easiest for an
-    // LLM to follow as a single sequence. db.listConversations sorts by
-    // updated_at DESC for the sidebar; we re-sort here. When
-    // `options.conversationId` is set the export is narrowed to that one
-    // conversation (the resume/handoff flow); otherwise every conversation
-    // in the project is exported.
-    const { conversationId } = options;
-    const conversations = db
-      .prepare(
-        `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
-           FROM conversations
-          WHERE project_id = ?${conversationId ? ' AND id = ?' : ''}
-          ORDER BY created_at ASC`,
-      )
-      .all(...(conversationId ? [projectId, conversationId] : [projectId])) as ConversationRow[];
-
-    const messageStmt = db.prepare(
-      `SELECT id, role, content, position,
-              events_json AS eventsJson,
-              created_at AS createdAt,
-              attachments_json AS attachmentsJson,
-              comment_attachments_json AS commentAttachmentsJson
-         FROM messages
-        WHERE conversation_id = ?
-        ORDER BY position ASC`,
-    );
-
-    // Build the body in two passes: first build messages so the header has
-    // the right totals, then emit header → for each conversation { marker →
-    // messages }.
-    interface BuiltMessage {
-      kind: 'message';
-      conversationId: string;
-      id: string;
-      role: 'user' | 'assistant';
-      position: number;
-      createdAt: number;
-      blocks: Block[];
-      attachments?: AttachmentRef[];
-      commentAttachments?: CommentAttachmentRef[];
-    }
-
-    const bodyParts: { conv: ConversationRow; messages: BuiltMessage[] }[] = [];
-    let messageCount = 0;
-    let attachmentCount = 0;
-    let commentAttachmentCount = 0;
-
-    for (const conv of conversations) {
-      const rows = messageStmt.all(conv.id) as MessageRow[];
-      // Raw message columns are only a terminal snapshot now. During an
-      // active run, durable deltas live in message_event_batches; reuse the
-      // canonical read path so an on-demand export matches the transcript the
-      // chat UI can already reconstruct without forcing an early fold.
-      const materializedMessages = new Map(
-        listMessages(db, conv.id).map((message) => [String(message.id), message]),
-      );
-      const messages: BuiltMessage[] = rows.map((row) => {
-        const parsed = parseEvents(row.eventsJson);
-        if (parsed.reason === 'malformed' || parsed.reason === 'not_array') {
-          // Surface a data-quality signal on stderr so corrupted rows are
-          // visible in daemon logs. Best-effort fallback to content still
-          // fires; the export must remain a one-shot best-effort dump
-          // rather than aborting on a single bad row.
-          console.warn(
-            `[transcript-export] message ${row.id} (project ${projectId}): ` +
-              `events_json is non-null but ${parsed.reason}; falling back to content.`,
-          );
-        }
-        const materialized = materializedMessages.get(row.id);
-        const materializedEvents = Array.isArray(materialized?.events)
-          ? materialized.events as PersistedAgentEvent[]
-          : parsed.events;
-        const materializedContent = typeof materialized?.content === 'string'
-          ? materialized.content
-          : row.content;
-        const blocks = coalesceBlocks(materializedEvents);
-        if (
-          blocks.length === 0 &&
-          typeof materializedContent === 'string' &&
-          materializedContent.length > 0
-        ) {
-          blocks.push({ type: 'text', text: materializedContent });
-        }
-
-        const attachments = parseAttachments(row.attachmentsJson);
-        const commentAttachments = parseCommentAttachments(row.commentAttachmentsJson);
-        attachmentCount += attachments.length;
-        commentAttachmentCount += commentAttachments.length;
-
-        const built: BuiltMessage = {
-          kind: 'message',
-          conversationId: conv.id,
-          id: row.id,
-          role: row.role,
-          position: Number(row.position),
-          createdAt: Number(row.createdAt),
-          blocks,
-        };
-        if (attachments.length > 0) built.attachments = attachments;
-        if (commentAttachments.length > 0) built.commentAttachments = commentAttachments;
-        return built;
-      });
-      messageCount += messages.length;
-      bodyParts.push({ conv, messages });
-    }
-
-    const lines: string[] = [
-      JSON.stringify({
-        kind: 'header',
-        schemaVersion: SCHEMA_VERSION,
-        projectId,
-        exportedAt: now().toISOString(),
-        conversationCount: conversations.length,
-        messageCount,
-        attachmentCount,
-        commentAttachmentCount,
-        // Explicit signal: attachment metadata is referenced by path; the
-        // bytes themselves remain on disk under the project directory and
-        // are not inlined into the transcript.
-        attachmentsInlined: false,
-      }),
-    ];
-    for (const { conv, messages } of bodyParts) {
-      lines.push(
-        JSON.stringify({
-          kind: 'conversation',
-          id: conv.id,
-          title: conv.title ?? null,
-          createdAt: Number(conv.createdAt),
-          updatedAt: Number(conv.updatedAt),
-        }),
-      );
-      for (const m of messages) lines.push(JSON.stringify(m));
-    }
-
-    const encoded = Buffer.from(lines.join('\n') + '\n', 'utf8');
+    const rendered = renderProjectTranscript(db, projectId, options);
+    const encoded = Buffer.from(rendered.jsonl, 'utf8');
 
     // Atomic write: writeFileSync with the 'wx' flag loops internally until
     // the entire buffer is written or it throws. We then reopen the file
@@ -352,9 +338,9 @@ export function exportProjectTranscript(
 
     return {
       path: finalPath,
-      conversationCount: conversations.length,
-      messageCount,
-      bytesWritten: encoded.length,
+      conversationCount: rendered.conversationCount,
+      messageCount: rendered.messageCount,
+      bytesWritten: rendered.bytesWritten,
     };
   } finally {
     if (lockFd !== null) {

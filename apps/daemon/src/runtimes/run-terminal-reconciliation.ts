@@ -29,6 +29,7 @@ import {
   type RunTelemetryDeliveryResult,
   type RunTelemetryDeliveryStateV1,
 } from '../observability/delivery-state.js';
+import type { RecoveredProjectTerminals } from '../services/project-git/runtime-adapter.js';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
 const RECONCILED_STATUS_MESSAGE = 'Run terminal state reconciled after daemon restart.';
@@ -44,6 +45,8 @@ interface DurableRunState extends RestartRecoverableDurableRunState {
   schemaVersion: 1;
   id: string;
   projectId: string | null;
+  expectedProjectRevision?: number;
+  projectGitBindingGeneration?: number;
   conversationId: string | null;
   assistantMessageId: string | null;
   agentId: string | null;
@@ -103,6 +106,15 @@ interface ReconciliationOptions {
   };
   runsLogDir: string;
   finalizeTerminalLocally?: (run: DurableRunState, status: string, terminalAt: number) => void;
+  reconcileTerminalsWithLocalRepair?: (
+    group: RecoveredProjectTerminals,
+    repair: () => Promise<void>,
+  ) => Promise<void>;
+  currentProjectEpoch?: (projectId: string) => {
+    bindingGeneration: number;
+    projectRevision: number;
+  } | null;
+  onLocalReady?: (result: RunTerminalReconciliationResult) => void;
 }
 
 export interface RunTerminalReconciliationResult {
@@ -112,6 +124,32 @@ export interface RunTerminalReconciliationResult {
   strategyTasksReconciled: number;
   analyticsReplayed: number;
   langfuseReplayed: number;
+}
+
+export function beginDurableRunTerminalReconciliation(
+  options: Omit<ReconciliationOptions, 'onLocalReady'>,
+): {
+  localReady: Promise<RunTerminalReconciliationResult>;
+  delivery: Promise<RunTerminalReconciliationResult>;
+} {
+  let localSettled = false;
+  let resolveLocal!: (result: RunTerminalReconciliationResult) => void;
+  let rejectLocal!: (error: unknown) => void;
+  const localReady = new Promise<RunTerminalReconciliationResult>((resolve, reject) => {
+    resolveLocal = resolve;
+    rejectLocal = reject;
+  });
+  const delivery = reconcileDurableRunTerminals({
+    ...options,
+    onLocalReady(result) {
+      localSettled = true;
+      resolveLocal(result);
+    },
+  });
+  void delivery.catch(error => {
+    if (!localSettled) rejectLocal(error);
+  });
+  return { localReady, delivery };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -232,6 +270,152 @@ function reconcileMessages(
   return rows.length;
 }
 
+function reconcileMessageForTerminal(
+  db: Database.Database,
+  state: DurableRunState,
+  now: number,
+): number {
+  if (!state.assistantMessageId) return 0;
+  const changed = db.prepare(
+    `UPDATE messages
+        SET run_status = ?, ended_at = COALESCE(ended_at, ?)
+      WHERE id = ? AND run_id = ? AND run_status IN ('queued', 'running')`,
+  ).run(state.status, state.terminalAt ?? state.updatedAt ?? now, state.assistantMessageId, state.id).changes;
+  if (!changed) return 0;
+  const isDaemonRestart = state.terminalRecoveryReason === 'daemon_restart'
+    || state.errorCode === RESTART_ERROR_CODE;
+  appendMessageStatusEvent(db, state.assistantMessageId, state.status === 'failed'
+    ? {
+        label: 'error',
+        detail: isDaemonRestart ? RESTART_ERROR_MESSAGE : state.error ?? RECONCILED_STATUS_MESSAGE,
+      }
+    : { label: state.status, detail: RECONCILED_STATUS_MESSAGE });
+  return 1;
+}
+
+function activeMessageRows(db: Database.Database): Array<{
+  id: string;
+  runId: string | null;
+  projectId: string | null;
+}> {
+  try {
+    return db.prepare(
+      `SELECT m.id, m.run_id AS runId, c.project_id AS projectId
+         FROM messages m
+         LEFT JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.run_status IN ('queued', 'running')`,
+    ).all() as Array<{ id: string; runId: string | null; projectId: string | null }>;
+  } catch {
+    return [];
+  }
+}
+
+async function reconcileProjectTerminalLocals(
+  options: ReconciliationOptions,
+  states: Array<{ state: DurableRunState }>,
+  result: RunTerminalReconciliationResult,
+  now: number,
+): Promise<void> {
+  const reconcile = options.reconcileTerminalsWithLocalRepair;
+  if (!reconcile || !options.currentProjectEpoch) {
+    const statesByRunId = new Map(states.map(entry => [entry.state.id, entry.state]));
+    result.messagesReconciled = reconcileMessages(options.db, statesByRunId, now);
+    for (const { state } of states) {
+      if (state.status !== 'failed' && state.status !== 'canceled') continue;
+      if (reconcileStrategyTaskRunTerminalIsolated(options.db, {
+        runId: state.id,
+        status: state.status,
+        updatedAt: state.updatedAt,
+      })) result.strategyTasksReconciled += 1;
+    }
+    for (const { state } of states) {
+      if (!TERMINAL_STATUSES.has(state.status)) continue;
+      try { options.finalizeTerminalLocally?.(state, state.status, state.terminalAt ?? state.updatedAt); }
+      catch (error) { console.warn('[runs] terminal local finalizer failed during restart reconciliation', error); }
+    }
+    return;
+  }
+
+  const terminalStates = states.map(entry => entry.state).filter(state => TERMINAL_STATUSES.has(state.status));
+  const durableRunIds = new Set(terminalStates.map(state => state.id));
+  const groups = new Map<string, { group: RecoveredProjectTerminals; states: DurableRunState[] }>();
+  for (const state of terminalStates) {
+    if (!state.projectId) continue;
+    const bindingGeneration = Number.isSafeInteger(state.projectGitBindingGeneration)
+      ? state.projectGitBindingGeneration! : 0;
+    const projectRevision = Number.isSafeInteger(state.expectedProjectRevision)
+      ? state.expectedProjectRevision! : 0;
+    const key = JSON.stringify([state.projectId, bindingGeneration, projectRevision]);
+    const current = groups.get(key) ?? {
+      group: { projectId: state.projectId, bindingGeneration, projectRevision, terminals: [] },
+      states: [],
+    };
+    current.states.push(state);
+    current.group = {
+      ...current.group,
+      terminals: [...current.group.terminals, { runId: state.id, terminal: state.status }],
+    };
+    groups.set(key, current);
+  }
+  for (const { group, states: groupedStates } of groups.values()) {
+    try {
+      await reconcile(group, async () => {
+        for (const state of groupedStates) {
+          result.messagesReconciled += reconcileMessageForTerminal(options.db, state, now);
+          if ((state.status === 'failed' || state.status === 'canceled')
+            && reconcileStrategyTaskRunTerminalIsolated(options.db, {
+              runId: state.id,
+              status: state.status,
+              updatedAt: state.updatedAt,
+            })) result.strategyTasksReconciled += 1;
+        }
+      });
+    } catch (error) {
+      console.warn('[runs] project terminal local reconciliation deferred', group.projectId, error);
+    }
+  }
+
+  const orphanGroups = new Map<string, {
+    group: RecoveredProjectTerminals;
+    rows: ReturnType<typeof activeMessageRows>;
+  }>();
+  for (const row of activeMessageRows(options.db)) {
+    if (!row.projectId || (row.runId && durableRunIds.has(row.runId))) continue;
+    const epoch = options.currentProjectEpoch(row.projectId);
+    const bindingGeneration = epoch?.bindingGeneration ?? 0;
+    const projectRevision = epoch?.projectRevision ?? 0;
+    const key = JSON.stringify([row.projectId, bindingGeneration, projectRevision]);
+    const current = orphanGroups.get(key) ?? {
+      group: { projectId: row.projectId, bindingGeneration, projectRevision, terminals: [] },
+      rows: [],
+    };
+    const runId = row.runId || `orphan-message:${row.id}`;
+    current.rows.push(row);
+    current.group = {
+      ...current.group,
+      terminals: [...current.group.terminals, { runId, terminal: 'failed' }],
+    };
+    orphanGroups.set(key, current);
+  }
+  for (const { group, rows } of orphanGroups.values()) {
+    try {
+      await reconcile(group, async () => {
+        for (const row of rows) {
+          const changed = options.db.prepare(
+            `UPDATE messages SET run_status = 'failed', ended_at = COALESCE(ended_at, ?)
+              WHERE id = ? AND run_status IN ('queued', 'running')`,
+          ).run(now, row.id).changes;
+          if (!changed) continue;
+          appendMessageStatusEvent(options.db, row.id, { label: 'error', detail: RECONCILED_STATUS_MESSAGE });
+          result.messagesReconciled += 1;
+        }
+      });
+    } catch (error) {
+      console.warn('[runs] orphan message terminal reconciliation deferred', group.projectId, error);
+    }
+  }
+}
+
 /**
  * Reconcile one Run's strategy-task terminal, absorbing any failure to read
  * that single record.
@@ -303,36 +487,9 @@ export async function reconcileDurableRunTerminals(
     result.interrupted += 1;
   }
 
-  // Repair both newly interrupted Runs and terminal state snapshots that may
-  // have survived a crash before their local terminal outbox write.
-  for (const { state } of states) {
-    if (state.status !== 'failed' && state.status !== 'canceled') continue;
-    try {
-      options.finalizeTerminalLocally?.(
-        state,
-        state.status,
-        state.terminalAt ?? state.updatedAt,
-      );
-    } catch (error) {
-      console.warn(
-        '[runs] terminal local finalizer failed during restart reconciliation',
-        error,
-      );
-    }
-  }
-
-  const statesByRunId = new Map(states.map((entry) => [entry.state.id, entry.state]));
-  result.messagesReconciled = reconcileMessages(options.db, statesByRunId, now);
-  for (const { state } of states) {
-    if (state.status !== 'failed' && state.status !== 'canceled') continue;
-    if (reconcileStrategyTaskRunTerminalIsolated(options.db, {
-      runId: state.id,
-      status: state.status,
-      updatedAt: state.updatedAt,
-    })) {
-      result.strategyTasksReconciled += 1;
-    }
-  }
+  // Local portable repairs and their terminal receipts converge before the
+  // daemon admits requests. Network delivery remains below this boundary.
+  await reconcileProjectTerminalLocals(options, states, result, now);
 
   // Seed every mapped Run fact before asking the rollout service to choose a
   // representation for any Task. Directory order must not let an unmarked
@@ -350,6 +507,7 @@ export async function reconcileDurableRunTerminals(
       console.warn('[telemetry] task fact seeding failed during startup recovery');
     }
   }
+  options.onLocalReady?.({ ...result });
 
   for (const entry of states) {
     const { state } = entry;

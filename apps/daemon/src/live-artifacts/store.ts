@@ -3,7 +3,7 @@ import type { Dirent } from 'node:fs';
 import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { ensureProject, projectDir } from '../projects.js';
+import { ensureProject, resolveProjectDir } from '../projects.js';
 import { DEFAULT_LIVE_ARTIFACT_TOTAL_TIMEOUT_MS } from './refresh.js';
 import { renderHtmlTemplateV1 } from './render.js';
 import type { BoundedJsonObject, LiveArtifact, LiveArtifactCreateInput, LiveArtifactProvenance, LiveArtifactRefreshErrorRecord, LiveArtifactRefreshLogEntry, LiveArtifactRefreshSourceMetadata, LiveArtifactRefreshStepStatus, LiveArtifactUpdateInput, LiveArtifactValidationIssue } from './schema.js';
@@ -79,9 +79,14 @@ export interface GenerateLiveArtifactIdOptions {
   randomSuffix?: string;
 }
 
-export interface CreateLiveArtifactOptions {
+export interface LiveArtifactProjectLocation {
   projectsRoot: string;
   projectId: string;
+  /** Trusted metadata loaded from the persisted project record, never request input. */
+  projectMetadata?: unknown;
+}
+
+export interface CreateLiveArtifactOptions extends LiveArtifactProjectLocation {
   input: unknown;
   templateHtml?: string;
   provenanceJson?: LiveArtifactProvenance;
@@ -89,20 +94,13 @@ export interface CreateLiveArtifactOptions {
   now?: Date;
 }
 
-export interface ListLiveArtifactsOptions {
-  projectsRoot: string;
-  projectId: string;
-}
+export interface ListLiveArtifactsOptions extends LiveArtifactProjectLocation {}
 
-export interface GetLiveArtifactOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface GetLiveArtifactOptions extends LiveArtifactProjectLocation {
   artifactId: string;
 }
 
-export interface UpdateLiveArtifactOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface UpdateLiveArtifactOptions extends LiveArtifactProjectLocation {
   artifactId: string;
   input: unknown;
   templateHtml?: string;
@@ -110,28 +108,20 @@ export interface UpdateLiveArtifactOptions {
   now?: Date;
 }
 
-export interface DeleteLiveArtifactOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface DeleteLiveArtifactOptions extends LiveArtifactProjectLocation {
   artifactId: string;
 }
 
-export interface RegenerateLiveArtifactPreviewOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface RegenerateLiveArtifactPreviewOptions extends LiveArtifactProjectLocation {
   artifactId: string;
 }
 
-export interface AcquireLiveArtifactRefreshLockOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface AcquireLiveArtifactRefreshLockOptions extends LiveArtifactProjectLocation {
   artifactId: string;
   now?: Date;
 }
 
-export interface AppendLiveArtifactRefreshLogEntryOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface AppendLiveArtifactRefreshLogEntryOptions extends LiveArtifactProjectLocation {
   artifactId: string;
   refreshId: string;
   sequence: number;
@@ -146,15 +136,11 @@ export interface AppendLiveArtifactRefreshLogEntryOptions {
   now?: Date;
 }
 
-export interface ListLiveArtifactRefreshLogEntriesOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface ListLiveArtifactRefreshLogEntriesOptions extends LiveArtifactProjectLocation {
   artifactId: string;
 }
 
-export interface MarkLiveArtifactRefreshCommittedOptions {
-  projectsRoot: string;
-  projectId: string;
+export interface MarkLiveArtifactRefreshCommittedOptions extends LiveArtifactProjectLocation {
   artifactId: string;
   refreshId: string;
 }
@@ -177,6 +163,16 @@ export interface RecoverStaleLiveArtifactRefreshesOptions {
   projectsRoot: string;
   now?: Date;
   staleAfterMs?: number;
+}
+
+export interface RecoverStaleLiveArtifactRefreshesForProjectOptions extends LiveArtifactProjectLocation {
+  now?: Date;
+  staleAfterMs?: number;
+}
+
+export interface LiveArtifactRefreshRecoveryCandidate {
+  projectId: string;
+  artifactId: string;
 }
 
 export interface LiveArtifactRefreshRecoveryResult {
@@ -296,8 +292,8 @@ export function validateLiveArtifactStorageId(artifactId: string): string {
   return artifactId;
 }
 
-export function liveArtifactsRootDir(projectsRoot: string, projectId: string): string {
-  const projectDirPath = path.resolve(projectDir(projectsRoot, projectId));
+export function liveArtifactsRootDir(projectsRoot: string, projectId: string, projectMetadata?: unknown): string {
+  const projectDirPath = path.resolve(resolveProjectDir(projectsRoot, projectId, projectMetadata));
   return resolveInside(projectDirPath, LIVE_ARTIFACTS_DIR_NAME, 'live artifact path escapes project dir');
 }
 
@@ -305,10 +301,11 @@ export function liveArtifactStorePaths(
   projectsRoot: string,
   projectId: string,
   artifactId: string,
+  projectMetadata?: unknown,
 ): LiveArtifactStorePaths {
   const safeArtifactId = validateLiveArtifactStorageId(artifactId);
-  const projectDirPath = path.resolve(projectDir(projectsRoot, projectId));
-  const rootDir = liveArtifactsRootDir(projectsRoot, projectId);
+  const projectDirPath = path.resolve(resolveProjectDir(projectsRoot, projectId, projectMetadata));
+  const rootDir = liveArtifactsRootDir(projectsRoot, projectId, projectMetadata);
   const artifactDir = resolveInside(rootDir, safeArtifactId, 'live artifact path escapes storage root');
   if (!isPathInside(projectDirPath, artifactDir)) throw new Error('live artifact path escapes project dir');
 
@@ -332,9 +329,10 @@ export async function ensureLiveArtifactStoreLayout(
   projectsRoot: string,
   projectId: string,
   artifactId: string,
+  projectMetadata?: unknown,
 ): Promise<LiveArtifactStorePaths> {
-  await ensureProject(projectsRoot, projectId);
-  const paths = liveArtifactStorePaths(projectsRoot, projectId, artifactId);
+  await ensureProject(projectsRoot, projectId, projectMetadata);
+  const paths = liveArtifactStorePaths(projectsRoot, projectId, artifactId, projectMetadata);
   await mkdir(paths.snapshotsDir, { recursive: true });
   await writeFile(paths.refreshesJsonlPath, '', { flag: 'a' });
   return paths;
@@ -589,9 +587,10 @@ async function assertLiveArtifactRefreshLockScope(
   projectsRoot: string,
   projectId: string,
   artifactId: string,
+  projectMetadata?: unknown,
 ): Promise<LiveArtifactStorePaths> {
   const safeArtifactId = validateLiveArtifactStorageId(artifactId);
-  const paths = liveArtifactStorePaths(projectsRoot, projectId, safeArtifactId);
+  const paths = liveArtifactStorePaths(projectsRoot, projectId, safeArtifactId, projectMetadata);
   const artifact = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(artifact, projectId, safeArtifactId);
   return paths;
@@ -699,12 +698,12 @@ export async function createLiveArtifact(options: CreateLiveArtifactOptions): Pr
   const persisted = validatePersistedLiveArtifact(artifactBase);
   if (!persisted.ok) throw new LiveArtifactStoreValidationError(persisted.error, persisted.issues);
 
-  await ensureProject(options.projectsRoot, options.projectId);
-  const finalPaths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  await ensureProject(options.projectsRoot, options.projectId, options.projectMetadata);
+  const finalPaths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   await mkdir(finalPaths.rootDir, { recursive: true });
 
   const tempArtifactId = validateLiveArtifactStorageId(`tmp-${randomBytes(12).toString('hex')}`);
-  const tempPaths = liveArtifactStorePaths(options.projectsRoot, options.projectId, tempArtifactId);
+  const tempPaths = liveArtifactStorePaths(options.projectsRoot, options.projectId, tempArtifactId, options.projectMetadata);
   const templateHtml = options.templateHtml ?? defaultTemplateHtml(input.title);
   const provenanceJson = options.provenanceJson ?? defaultProvenance(nowIso);
 
@@ -722,7 +721,7 @@ export async function createLiveArtifact(options: CreateLiveArtifactOptions): Pr
 }
 
 export async function listLiveArtifacts(options: ListLiveArtifactsOptions): Promise<LiveArtifactSummary[]> {
-  const rootDir = liveArtifactsRootDir(options.projectsRoot, options.projectId);
+  const rootDir = liveArtifactsRootDir(options.projectsRoot, options.projectId, options.projectMetadata);
   let entries: Dirent[];
   try {
     entries = await readdir(rootDir, { withFileTypes: true });
@@ -736,7 +735,7 @@ export async function listLiveArtifacts(options: ListLiveArtifactsOptions): Prom
     if (!entry.isDirectory() || entry.name.startsWith('tmp-')) continue;
 
     const artifactId = validateLiveArtifactStorageId(entry.name);
-    const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+    const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
     const artifact = await readPersistedLiveArtifact(paths);
     assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
 
@@ -753,7 +752,7 @@ export async function listLiveArtifacts(options: ListLiveArtifactsOptions): Prom
 
 export async function getLiveArtifact(options: GetLiveArtifactOptions): Promise<LiveArtifactStoreRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const artifact = await readLiveArtifactWithDataJsonCache(paths);
   assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
   return { artifact, paths };
@@ -763,7 +762,7 @@ export async function appendLiveArtifactRefreshLogEntry(
   options: AppendLiveArtifactRefreshLogEntryOptions,
 ): Promise<LiveArtifactRefreshLogEntry> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
 
@@ -779,7 +778,7 @@ export async function acquireLiveArtifactRefreshLock(
   options: AcquireLiveArtifactRefreshLockOptions,
 ): Promise<LiveArtifactRefreshLock> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId);
+  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const state = await readLiveArtifactRefreshState(paths, options.projectId, artifactId);
   const refreshOrdinal = state.nextRefreshOrdinal;
   const refreshId = formatRefreshId(refreshOrdinal);
@@ -823,7 +822,7 @@ export async function markLiveArtifactRefreshCommitted(
   options: MarkLiveArtifactRefreshCommittedOptions,
 ): Promise<LiveArtifactRefreshState> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId);
+  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const refreshOrdinal = parseRefreshOrdinal(options.refreshId);
   const state = await readLiveArtifactRefreshState(paths, options.projectId, artifactId);
   if (refreshOrdinal >= state.nextRefreshOrdinal) {
@@ -853,7 +852,7 @@ export async function markLiveArtifactRefreshRunning(
   options: MarkLiveArtifactRefreshRunningOptions,
 ): Promise<LiveArtifactStoreRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId);
+  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
   const nowIso = (options.now ?? new Date()).toISOString();
@@ -926,7 +925,7 @@ export async function commitLiveArtifactRefreshCandidate(
   options: CommitLiveArtifactRefreshCandidateOptions,
 ): Promise<LiveArtifactStoreRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId);
+  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readLiveArtifactWithDataJsonCache(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
 
@@ -980,7 +979,7 @@ export async function markLiveArtifactRefreshFailed(
   options: MarkLiveArtifactRefreshFailedOptions,
 ): Promise<LiveArtifactStoreRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId);
+  const paths = await assertLiveArtifactRefreshLockScope(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
   const nowIso = (options.now ?? new Date()).toISOString();
@@ -1032,7 +1031,7 @@ export async function listLiveArtifactRefreshLogEntries(
   options: ListLiveArtifactRefreshLogEntriesOptions,
 ): Promise<LiveArtifactRefreshLogEntry[]> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
 
@@ -1073,8 +1072,9 @@ async function recoverLiveArtifactRefreshLock(
   artifactId: string,
   now: Date,
   staleAfterMs: number,
+  projectMetadata?: unknown,
 ): Promise<LiveArtifactRefreshRecoveryResult> {
-  const paths = liveArtifactStorePaths(projectsRoot, projectId, artifactId);
+  const paths = liveArtifactStorePaths(projectsRoot, projectId, artifactId, projectMetadata);
   const lockMetadata = await readLiveArtifactRefreshLockMetadata(paths);
 
   if (lockMetadata.projectId !== projectId || lockMetadata.artifactId !== artifactId) {
@@ -1089,11 +1089,12 @@ async function recoverLiveArtifactRefreshLock(
 
   const artifact = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(artifact, projectId, artifactId);
-  const entries = await listLiveArtifactRefreshLogEntries({ projectsRoot, projectId, artifactId });
+  const entries = await listLiveArtifactRefreshLogEntries({ projectsRoot, projectId, projectMetadata, artifactId });
   const finishedAt = now.toISOString();
   await appendLiveArtifactRefreshLogEntry({
     projectsRoot,
     projectId,
+    projectMetadata,
     artifactId,
     refreshId: lockMetadata.refreshId,
     sequence: nextRefreshRecoverySequence(entries, lockMetadata.refreshId),
@@ -1120,14 +1121,92 @@ async function recoverLiveArtifactRefreshLock(
   return { projectId, artifactId, refreshId: lockMetadata.refreshId, status: 'recovered' };
 }
 
-export async function recoverStaleLiveArtifactRefreshes(
-  options: RecoverStaleLiveArtifactRefreshesOptions,
-): Promise<LiveArtifactRefreshRecoveryResult[]> {
+function recoveryTiming(options: { now?: Date; staleAfterMs?: number }): { now: Date; staleAfterMs: number } {
   const now = options.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_LIVE_ARTIFACT_TOTAL_TIMEOUT_MS;
   if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1) {
     throw new RangeError('staleAfterMs must be a positive safe integer');
   }
+  return { now, staleAfterMs };
+}
+
+async function liveArtifactRecoveryArtifactIds(options: LiveArtifactProjectLocation): Promise<string[]> {
+  let artifactEntries: Dirent[];
+  try {
+    artifactEntries = await readdir(liveArtifactsRootDir(options.projectsRoot, options.projectId, options.projectMetadata), { withFileTypes: true });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const artifactIds: string[] = [];
+  for (const artifactEntry of artifactEntries) {
+    if (!artifactEntry.isDirectory() || artifactEntry.name.startsWith('tmp-')) continue;
+    try { artifactIds.push(validateLiveArtifactStorageId(artifactEntry.name)); } catch { /* Ignore unrelated entries. */ }
+  }
+  return artifactIds;
+}
+
+/** Read-only startup probe. A second probe and full validation occur under the mutation gate. */
+export async function probeStaleLiveArtifactRefreshesForProject(
+  options: RecoverStaleLiveArtifactRefreshesForProjectOptions,
+): Promise<LiveArtifactRefreshRecoveryCandidate[]> {
+  const { now, staleAfterMs } = recoveryTiming(options);
+  const candidates: LiveArtifactRefreshRecoveryCandidate[] = [];
+  for (const artifactId of await liveArtifactRecoveryArtifactIds(options)) {
+    const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
+    let metadata: LiveArtifactRefreshLockMetadata;
+    try { metadata = await readLiveArtifactRefreshLockMetadata(paths); }
+    catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (metadata.projectId !== options.projectId || metadata.artifactId !== artifactId) continue;
+    if (now.getTime() - Date.parse(metadata.acquiredAt) >= staleAfterMs) {
+      candidates.push({ projectId: options.projectId, artifactId });
+    }
+  }
+  return candidates;
+}
+
+/** Revalidates and completes recovery for one persisted project at its exact trusted root. */
+export async function recoverStaleLiveArtifactRefreshesForProject(
+  options: RecoverStaleLiveArtifactRefreshesForProjectOptions,
+): Promise<LiveArtifactRefreshRecoveryResult[]> {
+  const { now, staleAfterMs } = recoveryTiming(options);
+  const results: LiveArtifactRefreshRecoveryResult[] = [];
+  for (const artifactId of await liveArtifactRecoveryArtifactIds(options)) {
+    const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
+    try { await stat(paths.refreshLockPath); }
+    catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
+      throw error;
+    }
+    try {
+      results.push(await recoverLiveArtifactRefreshLock(
+        options.projectsRoot,
+        options.projectId,
+        artifactId,
+        now,
+        staleAfterMs,
+        options.projectMetadata,
+      ));
+    } catch (error) {
+      results.push({
+        projectId: options.projectId,
+        artifactId,
+        refreshId: '',
+        status: 'skipped',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return results;
+}
+
+export async function recoverStaleLiveArtifactRefreshes(
+  options: RecoverStaleLiveArtifactRefreshesOptions,
+): Promise<LiveArtifactRefreshRecoveryResult[]> {
+  const { now, staleAfterMs } = recoveryTiming(options);
 
   let projectEntries: Dirent[];
   try {
@@ -1141,42 +1220,15 @@ export async function recoverStaleLiveArtifactRefreshes(
   for (const projectEntry of projectEntries) {
     if (!projectEntry.isDirectory()) continue;
     const projectId = projectEntry.name;
-    let artifactEntries: Dirent[];
     try {
-      artifactEntries = await readdir(liveArtifactsRootDir(options.projectsRoot, projectId), { withFileTypes: true });
+      results.push(...await recoverStaleLiveArtifactRefreshesForProject({
+        projectsRoot: options.projectsRoot,
+        projectId,
+        now,
+        staleAfterMs,
+      }));
     } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
       results.push({ projectId, artifactId: '', refreshId: '', status: 'skipped', reason: error instanceof Error ? error.message : String(error) });
-      continue;
-    }
-
-    for (const artifactEntry of artifactEntries) {
-      if (!artifactEntry.isDirectory() || artifactEntry.name.startsWith('tmp-')) continue;
-      let artifactId: string;
-      try {
-        artifactId = validateLiveArtifactStorageId(artifactEntry.name);
-      } catch {
-        continue;
-      }
-      const paths = liveArtifactStorePaths(options.projectsRoot, projectId, artifactId);
-      try {
-        await stat(paths.refreshLockPath);
-      } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
-        throw error;
-      }
-
-      try {
-        results.push(await recoverLiveArtifactRefreshLock(options.projectsRoot, projectId, artifactId, now, staleAfterMs));
-      } catch (error) {
-        results.push({
-          projectId,
-          artifactId,
-          refreshId: '',
-          status: 'skipped',
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
     }
   }
 
@@ -1185,7 +1237,7 @@ export async function recoverStaleLiveArtifactRefreshes(
 
 export async function regenerateLiveArtifactPreview(options: RegenerateLiveArtifactPreviewOptions): Promise<LiveArtifactPreviewRenderRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const artifact = await readLiveArtifactWithDataJsonCache(paths);
   assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
 
@@ -1197,7 +1249,7 @@ export async function regenerateLiveArtifactPreview(options: RegenerateLiveArtif
 
 export async function ensureLiveArtifactPreview(options: RegenerateLiveArtifactPreviewOptions): Promise<LiveArtifactPreviewRenderRecord> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const artifact = await readLiveArtifactWithDataJsonCache(paths);
   assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
 
@@ -1221,15 +1273,40 @@ export async function ensureLiveArtifactPreview(options: RegenerateLiveArtifactP
   return { artifact, paths, html };
 }
 
+/** Read-only preview projection for routes admitted under the shared read gate. */
+export async function readLiveArtifactPreview(options: RegenerateLiveArtifactPreviewOptions): Promise<LiveArtifactPreviewRenderRecord> {
+  const artifactId = validateLiveArtifactStorageId(options.artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
+  const artifact = await readLiveArtifactWithDataJsonCache(paths);
+  assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
+
+  try {
+    const dependencyStats = await Promise.all([
+      stat(paths.artifactJsonPath),
+      stat(paths.templateHtmlPath),
+      ...(artifact.document?.format === 'html_template_v1' ? [stat(paths.dataJsonPath)] : []),
+    ]);
+    const previewStat = await stat(paths.generatedPreviewHtmlPath);
+    const newestDependencyMtime = Math.max(...dependencyStats.map((dependencyStat) => dependencyStat.mtimeMs));
+    if (previewStat.mtimeMs > newestDependencyMtime) {
+      return { artifact, paths, html: await readFile(paths.generatedPreviewHtmlPath, 'utf8') };
+    }
+  } catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+
+  return { artifact, paths, html: await renderLiveArtifactPreviewFromFiles(paths, artifact) };
+}
+
 export type LiveArtifactCodeVariant = 'template' | 'rendered';
 
 export async function readLiveArtifactCode(options: RegenerateLiveArtifactPreviewOptions & { variant: LiveArtifactCodeVariant }): Promise<string> {
   if (options.variant === 'rendered') {
-    return (await ensureLiveArtifactPreview(options)).html;
+    return (await readLiveArtifactPreview(options)).html;
   }
 
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const artifact = await readLiveArtifactWithDataJsonCache(paths);
   assertArtifactMatchesStorage(artifact, options.projectId, artifactId);
   return readFile(paths.templateHtmlPath, 'utf8');
@@ -1241,7 +1318,7 @@ export async function updateLiveArtifact(options: UpdateLiveArtifactOptions): Pr
   if (!result.ok) throw new LiveArtifactStoreValidationError(result.error, result.issues);
 
   const input: LiveArtifactUpdateInput = result.value;
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
 
@@ -1273,7 +1350,7 @@ export async function updateLiveArtifact(options: UpdateLiveArtifactOptions): Pr
 
 export async function deleteLiveArtifact(options: DeleteLiveArtifactOptions): Promise<void> {
   const artifactId = validateLiveArtifactStorageId(options.artifactId);
-  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId);
+  const paths = liveArtifactStorePaths(options.projectsRoot, options.projectId, artifactId, options.projectMetadata);
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
   await rm(paths.artifactDir, { recursive: true, force: true });

@@ -1,10 +1,11 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
+import { GitDomainError } from '../services/project-git/errors.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
 
-export interface RegisterDeployRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'ids' | 'deploy' | 'projectStore'> {
+export interface RegisterDeployRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'ids' | 'deploy' | 'projectStore' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -142,12 +143,17 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
       )) return;
 
       const prior = getDeployment(db, req.params.id, fileName, providerId);
-      const files = await buildDeployFileSet(
-        PROJECTS_DIR,
-        req.params.id,
-        fileName,
-        { metadata: deployProject?.metadata, includeProjectFiles: true },
-      );
+      const files = await ctx.projectGitCoordination.withProjectRead(req.params.id, async () => (
+        (await buildDeployFileSet(
+          PROJECTS_DIR,
+          req.params.id,
+          fileName,
+          { metadata: deployProject?.metadata, includeProjectFiles: true },
+        )).map((file: { data: Buffer | Uint8Array | string }) => Object.freeze({
+          ...file,
+          data: Buffer.from(file.data),
+        }))
+      ));
       const project = getProject(db, req.params.id);
       const cloudflarePagesProjectName =
         providerId === CLOUDFLARE_PAGES_PROVIDER_ID
@@ -194,6 +200,9 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
       });
       res.json(publicDeployment(body));
     } catch (err: any) {
+      if (err instanceof GitDomainError) {
+        return sendApiError(res, err.status, err.code, err.message);
+      }
       const status = err instanceof DeployError ? err.status : 400;
       const init =
         err instanceof DeployError && err.details
@@ -226,14 +235,19 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
       const preflightProject = getProject(db, req.params.id);
       if (!await ctx.authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
       /** @type {import('@open-design/contracts').DeployPreflightResponse} */
-      const body = await prepareDeployPreflight(
-        PROJECTS_DIR,
-        req.params.id,
-        fileName,
-        { metadata: preflightProject?.metadata, providerId, includeProjectFiles: true },
-      );
+      const body = await ctx.projectGitCoordination.withProjectRead(req.params.id, async () => (
+        prepareDeployPreflight(
+          PROJECTS_DIR,
+          req.params.id,
+          fileName,
+          { metadata: preflightProject?.metadata, providerId, includeProjectFiles: true },
+        )
+      ));
       res.json(body);
     } catch (err: any) {
+      if (err instanceof GitDomainError) {
+        return sendApiError(res, err.status, err.code, err.message);
+      }
       // DeployError is a known/expected outcome (validation, missing file).
       // Anything else points at a bug or an unexpected runtime state, so
       // surface it in the daemon log without leaking internals to the

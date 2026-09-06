@@ -10,7 +10,7 @@ import { GitDomainError } from './errors.js';
 import { assertGitIdentity, runGit } from './git-process.js';
 import { discoverRepository, validateBranch } from './repository.js';
 import { canonicalJson, parsePortableEntries } from './portable.js';
-import { projectGitPaths } from './paths.js';
+import { projectGitPathsAtRoot } from './paths.js';
 import { registrationCheckpointLane, prepareCheckpointRegistrationCompletion, finishCheckpointRegistration,
   type CheckpointRegistrationCapability } from './registration.js';
 
@@ -151,7 +151,7 @@ function decodePaths(bytes: Buffer): string[] {
 }
 
 export function isPrivateProjectGitPath(path: string): boolean {
-  return path.split('/').some(part => /^(?:\.env(?:\..*)?|\.ssh|\.aws|\.gnupg|\.codex|\.claude|credentials(?:\..*)?|tokens?(?:\..*)?|secrets?(?:\..*)?|auth\.json|config\.ya?ml|app-config\.json|media-config\.json|mcp-.*\.json|id_rsa|id_ed25519)$/iu.test(part))
+  return path.split('/').some(part => /^(?:\.env(?:\..*)?|\.ssh|\.aws|\.gnupg|\.codex|\.claude|\.pi|\.mcp\.json|\.transcript\.jsonl(?:\.tmp\.\d+\.[a-f0-9]+)?|\.transcript\.lock|credentials(?:\..*)?|tokens?(?:\..*)?|secrets?(?:\..*)?|auth\.json|config\.ya?ml|app-config\.json|media-config\.json|mcp-.*\.json|id_rsa|id_ed25519)$/iu.test(part))
     || /\.(?:sqlite(?:3)?|db)(?:-(?:wal|shm|journal))?$/iu.test(path) || /\.(?:pem|key|p12|pfx)$/iu.test(path);
 }
 
@@ -176,7 +176,7 @@ async function inspect(root: string, head: string | null, ownedLock?: string) {
   if (head === null ? staged.length > 0
     : (await runGit({ cwd: root, args: ['diff-index', '--cached', '--raw', '-z', head] })).stdout.length > 0) throw busy();
   const untracked = decodePaths((await runGit({ cwd: root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout);
-  const paths = projectGitPaths([...tracked], untracked);
+  const paths = await projectGitPathsAtRoot(root, [...tracked], untracked);
   for (const path of paths) safePath(path);
   const privatePaths = paths.filter(isPrivateProjectGitPath);
   if (privatePaths.length) throw new GitDomainError('VALIDATION_FAILED', 400,

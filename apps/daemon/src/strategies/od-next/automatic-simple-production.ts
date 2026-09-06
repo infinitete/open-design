@@ -210,20 +210,20 @@ export function beginAutomaticComplexProduction(db: SqliteDb, input: {
  * the caller first publishes the source Run's terminal state, then invokes the
  * shared service's start method so subscribers never observe an inverted chain.
  */
-export function prepareAutomaticSimpleProductionRun<
+export async function prepareAutomaticSimpleProductionRun<
   TMeta extends InternalRunCreateInput,
   TRun extends InternalPhysicalRun,
 >(input: {
   db: SqliteDb;
-  service: InternalRunCreationService<TMeta, TRun>;
+  service: Pick<InternalRunCreationService<TMeta, TRun>, 'prepare'>;
   task: StrategyTaskExecutionRecord;
   createMeta: (instruction: string, taskRunIndex: number) => TMeta;
   updatedAt?: number;
-}): {
+}): Promise<{
   prepared: PreparedInternalRunResult<TRun>;
   task: StrategyTaskExecutionRecord;
   projection: StrategyTaskProjectionV2;
-} {
+}> {
   const { task } = input;
   if (!task.planContractHash) {
     throw new OdNextAutomaticProductionError(
@@ -239,7 +239,7 @@ export function prepareAutomaticSimpleProductionRun<
     planContractHash: task.planContractHash,
   });
   let claimed: StrategyTaskExecutionRecord | null = null;
-  const prepared = input.service.prepare({
+  const prepared = await input.service.prepare({
     meta: input.createMeta(instruction, task.runs.length),
     beforeClaimCommit: (run) => {
       claimed = beginAutomaticSimpleProduction(input.db, {
@@ -278,12 +278,12 @@ export interface PreparedAutomaticStrategyContinuation<TRun> {
  * coordinator transition. A caller starts `prepared.run` only after publishing
  * the source Run terminal event.
  */
-export function prepareAutomaticStrategyContinuation<
+export async function prepareAutomaticStrategyContinuation<
   TMeta extends InternalRunCreateInput,
   TRun extends InternalPhysicalRun,
 >(input: {
   db: SqliteDb;
-  service: InternalRunCreationService<TMeta, TRun>;
+  service: Pick<InternalRunCreationService<TMeta, TRun>, 'prepare'>;
   task: StrategyTaskExecutionRecord;
   parsed: ReturnType<OdNextMachineProtocolStream['finish']>;
   createMeta: (
@@ -299,7 +299,7 @@ export function prepareAutomaticStrategyContinuation<
   };
   complexRuntimeEvidence?: OdNextComplexRuntimeEvidence;
   updatedAt?: number;
-}): PreparedAutomaticStrategyContinuation<TRun> {
+}): Promise<PreparedAutomaticStrategyContinuation<TRun>> {
   const complexPlanningReasonCodes = (() => {
     const plan = input.parsed.planContract ?? input.parsed.repairPlanContract;
     if (
@@ -421,7 +421,7 @@ export function prepareAutomaticStrategyContinuation<
         });
   let result: OdNextCoordinatorResult | null = null;
   try {
-    const prepared = input.service.prepare({
+    const prepared = await input.service.prepare({
       meta: input.createMeta(stage, instruction, input.task.runs.length),
       beforeClaimCommit: (nextRun) => {
         const accepted = finalize(

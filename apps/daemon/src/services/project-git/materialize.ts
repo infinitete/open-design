@@ -15,7 +15,7 @@ import { assertOperationBasis, durableDirectory, durableWrite, finishRecovery, g
   readRecoveryCheckpoint, recoveryBarrier, recoveryRequired, replayOperation, safeFile, sha256, syncDirectory, within, assertInitialImportRegistration } from './recovery.js';
 import type { MaterializationEvidence, MaterializationPath, RecoveryContext } from './recovery.js';
 import { assertHistoryCommit } from './history.js';
-import { nativeHistoryRoot, projectGitPaths } from './paths.js';
+import { nativeHistoryRoot, projectGitPathsAtRoot } from './paths.js';
 
 export type MaterializePhase = 'prepared' | 'protected' | 'files_applied' | 'records_applied' | 'ref_published' | 'index_published' | 'complete';
 export type MaterializeEffect = 'file_applied' | 'before_records_commit' | 'after_records_commit' | 'before_ref_update'
@@ -74,7 +74,8 @@ async function sourcePaths(root: string): Promise<string[]> {
     const text = stdout.toString('utf8'); if (!Buffer.from(text).equals(stdout) || (stdout.length && !text.endsWith('\0'))) throw recoveryRequired();
     return stdout.length ? text.slice(0, -1).split('\0') : [];
   });
-  const unique = projectGitPaths(paths[0]!, paths[1]!); validateTreeEntries(unique.map(path => ({ path, mode: '100644' }))); return unique;
+  const unique = await projectGitPathsAtRoot(root, paths[0]!, paths[1]!);
+  validateTreeEntries(unique.map(path => ({ path, mode: '100644' }))); return unique;
 }
 async function capture(root: string, paths: string[]) {
   const sourceDigests: Record<string, string> = Object.create(null); const sourceModes: Record<string, string> = Object.create(null);

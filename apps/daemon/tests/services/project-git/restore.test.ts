@@ -8,6 +8,7 @@ import { materializeProject, readRestoreMessage } from '../../../src/services/pr
 import { createProjectGitRestoreService } from '../../../src/services/project-git/restore.js';
 import { recoverProjectOperations } from '../../../src/services/project-git/recovery.js';
 import { createProjectFileVersion, readLegacyProjectFile } from '../../../src/project-file-versions.js';
+import { materializeOdNextDeviceFrames } from '../../../src/strategies/od-next/device-frames.js';
 
 const fixtures: Awaited<ReturnType<typeof createCrashFixture>>[] = [];
 afterEach(async () => { for (const f of fixtures.splice(0)) { if (f.db.open) f.db.close(); await f.close(); } });
@@ -67,6 +68,24 @@ it.each([false, true])('full restore deletes protected current-only files and re
   expect(await readFile(join(f.a, 'ignored-local.txt'), 'utf8')).toBe('ignored');
   expect(await f.git(f.a, 'status', '--porcelain')).toBe('');
   expect(f.store.getBinding('project')!.dirty).toBe(false);
+});
+
+it('protects user frame content while excluding only manifest-proven daemon-owned frames from restore inventory', async () => {
+  const f = await fixture();
+  await materializeOdNextDeviceFrames({
+    cwd: f.a,
+    resources: [{
+      path: './assets/task-profiles/prototype/device-frames/iphone.html',
+      text: '<main>daemon frame</main>',
+    }],
+  });
+  await writeFile(join(f.a, '.od-frames', 'user.html'), 'user frame');
+
+  const preview = await f.service.previewRestore('project', f.head, request());
+
+  expect(preview.changes.deletedPaths).toContain('.od-frames/user.html');
+  expect(preview.changes.deletedPaths).not.toContain('.od-frames/iphone.html');
+  expect(preview.changes.deletedPaths).not.toContain('.od-frames/.od-next-device-frames.json');
 });
 
 it('Git single-file restores same bytes with historical executable mode and reports modification', async () => {

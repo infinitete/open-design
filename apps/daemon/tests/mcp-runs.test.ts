@@ -115,6 +115,25 @@ describe('public MCP discovery + generation tools', () => {
     });
   });
 
+  it('binds MCP-backed starts to the caller captured project epoch', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/projects')) {
+        return new Response(JSON.stringify({ projects: [{ id: 'project-1', name: 'Demo' }] }), { status: 200 });
+      }
+      if (url.endsWith('/api/mcp/install-info')) {
+        return new Response(JSON.stringify({ webBaseUrl: null }), { status: 200 });
+      }
+      expect(JSON.parse(String(init?.body))).toMatchObject({ expectedProjectRevision: 11 });
+      return new Response(JSON.stringify({ runId: 'run-epoch' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', withDirectory(fetchMock));
+
+    const result = await handleMcpToolCall('http://127.0.0.1:17456', 'start_run', {
+      project: 'Demo', prompt: 'iterate', expectedProjectRevision: 11,
+    });
+    expect(result.isError).not.toBe(true);
+  });
+
   it('start_run uses the active project when project is omitted', async () => {
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url.endsWith('/api/active')) {

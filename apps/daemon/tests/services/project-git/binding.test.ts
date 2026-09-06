@@ -564,10 +564,12 @@ it.each(['local', 'remote'])('rejects %s edits after the binding preview before 
   expect(await f.git(root, 'show-ref')).toBe(refs); expect(store.getBinding('existing')!.generation).toBe(1);
 });
 
-it.each(['private', 'lfs', 'submodule', 'unknown-schema', 'missing-resource'])('retains only failed operation evidence for unsafe %s imports', async fault => {
+it.each(['private', 'mcp-private', 'pi-private', 'lfs', 'submodule', 'unknown-schema', 'missing-resource'])('retains only failed operation evidence for unsafe %s imports', async fault => {
   const { f, db, store, service } = await serviceFixture();
   const entries = serializePortableMetadata(portableSnapshot('Before')); entries.set('index.html', Buffer.from('safe'));
   if (fault === 'private') entries.set('.env', Buffer.from('FIXTURE_PRIVATE_VALUE'));
+  if (fault === 'mcp-private') entries.set('.mcp.json', Buffer.from('FIXTURE_PRIVATE_VALUE'));
+  if (fault === 'pi-private') entries.set('.pi/session/transcript.json', Buffer.from('FIXTURE_PRIVATE_VALUE'));
   if (fault === 'lfs') entries.set('asset.bin', Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${'1'.repeat(64)}\nsize 42\n`));
   if (fault === 'unknown-schema') entries.set('.open-design/manifest.json', Buffer.from('{"schemaVersion":2,"repositoryProjectId":"repository","resources":[]}'));
   if (fault === 'missing-resource') entries.set('.open-design/manifest.json', Buffer.from(JSON.stringify({ schemaVersion: 1, repositoryProjectId: 'repository',
@@ -586,7 +588,7 @@ it.each(['private', 'lfs', 'submodule', 'unknown-schema', 'missing-resource'])('
   expect(listProjects(db)).toEqual([]); expect(store.listBindings()).toEqual([]);
   const op = store.findOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'unsafe' })!;
   expect(op.status).toBe('failed');
-  if (fault === 'private' || fault === 'submodule') expect(blobReads).toBe(0);
+  if (fault === 'private' || fault === 'mcp-private' || fault === 'pi-private' || fault === 'submodule') expect(blobReads).toBe(0);
   if (['lfs', 'submodule', 'missing-resource'].includes(fault)) {
     expect(op.result?.dependencies).toContainEqual(expect.objectContaining({ kind: fault === 'missing-resource' ? 'resource' : fault, requiredForContent: true }));
   }

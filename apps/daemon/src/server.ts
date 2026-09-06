@@ -440,6 +440,7 @@ import { renderDesignSystemPreview } from './design-systems/preview.js';
 import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
+import { createUnavailableProjectGitCoordination } from './services/project-git/mutation-adapter.js';
 import {
   createRunAnalyticsLifecycle,
   inheritedRunLineageHints,
@@ -510,7 +511,10 @@ import {
   describeRunTelemetrySink,
   readRunTelemetrySinkConfig,
 } from './langfuse-trace.js';
-import { reconcileDurableRunTerminals } from './runtimes/run-terminal-reconciliation.js';
+import { beginDurableRunTerminalReconciliation } from './runtimes/run-terminal-reconciliation.js';
+import { reconcileRunHtmlArtifactManifests } from './runtimes/run-html-artifact-reconciliation.js';
+import { completeActiveRunProjectTerminal } from './runtimes/run-project-terminal.js';
+import { recoverLegacyBrandTranscriptsAtStartup } from './runtimes/legacy-brand-transcript-recovery.js';
 import { createTaskObservationRolloutService } from './observability/task-observation-rollout.js';
 import { strategyTaskRunObservationId } from './observability/task-observation-aggregation.js';
 import { collectCodexChildEvidence } from './runtimes/codex-child-evidence.js';
@@ -609,6 +613,7 @@ import {
   agentNetworkPolicyForAgent,
   type StoredAgentNetworkPolicy,
 } from './storage/agent-network-config.js';
+import { createProjectGitStore } from './storage/project-git.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -653,7 +658,6 @@ import {
 import { validateArtifactManifestInput } from './artifacts/manifest.js';
 import { ArtifactPublicationBlockedError } from './artifacts/publication-guard.js';
 import {
-  appendMessageStatusEvent,
   confirmPreviewCommentPinSeq,
   deleteConversation,
   deletePreviewComment,
@@ -751,14 +755,15 @@ import {
   createLiveArtifact,
   deleteLiveArtifact,
   ensureLiveArtifactPreview,
+  readLiveArtifactPreview,
   getLiveArtifact,
   listLiveArtifacts,
   listLiveArtifactRefreshLogEntries,
   readLiveArtifactCode,
-  recoverStaleLiveArtifactRefreshes,
   updateLiveArtifact,
 } from './live-artifacts/store.js';
 import { refreshLiveArtifact } from './live-artifacts/refresh-service.js';
+import { recoverLiveArtifactsAtStartup } from './live-artifacts/startup-recovery.js';
 import {
   sendLiveArtifactRouteError,
   setLiveArtifactCodeHeaders,
@@ -782,10 +787,11 @@ import { registerDesignSystemToolRoutes } from './routes/design-system-tool.js';
 import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/deploy.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes, createEnforceWorkspaceProjectMutation } from './routes/project/index.js';
+import { coordinateAuthorizedProjectMutation } from './routes/project-git-coordination.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js';
-import { TranscriptExportLockedError } from './transcript-export.js';
+import { renderProjectTranscript, TranscriptExportLockedError } from './transcript-export.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
@@ -949,7 +955,7 @@ import {
   hasGeneratedPluginArtifacts,
   isPluginAuthoringRun,
   normalizePluginShareAction,
-  reconcileAssistantMessageOnRunEnd,
+  reconcileAssistantMessageOnRunTerminal,
   renderPluginBriefTemplate,
   renderPluginSharePrompt,
 } from './plugins/share-helpers.js';
@@ -2405,60 +2411,15 @@ const pluginShareTaskStore = createPluginShareTaskStore({
   OD_BIN,
 });
 
-// Project-scoped multi-file upload. Lands files directly in the project
-// folder (flat — same shape FileWorkspace expects), so the composer's
-// pasted/dropped/picked images become referenceable filenames the agent
-// can Read or @-mention without any cross-folder gymnastics.
-// Bridge between the multer upload-storage destination (built at module
-// init) and the per-process project DB (instantiated inside startServer).
-// startServer() sets this so the upload destination can route attachments
-// into the right project root, including folder-imported projects whose
-// files live under metadata.baseDir.
-let projectMetadataLookup: ((id: string) => Record<string, unknown> | null) | null = null;
-
+// Project uploads stage outside the project. The authorized route copies them
+// into the resolved project root while holding its mutation permit.
 const projectUpload = multer({
   storage: multer.diskStorage({
-    destination: async (req, _file, cb) => {
-      try {
-        // Route uploads into the project's actual root: for folder-imported
-        // projects (metadata.baseDir set) attachments need to land alongside
-        // the user's files so the agent can read them via the same path
-        // it sees. projectMetadataLookup is populated at startServer() boot
-        // and keyed by project id; null fallback gives the standard
-        // .od/projects/<id>/ behavior for non-imported projects.
-        const meta = projectMetadataLookup?.(req.params.id) ?? null;
-        // Optional `dir` form field (sent BEFORE the file parts by the web
-        // client) routes uploads into a subfolder, so files dropped/picked
-        // while viewing a folder land there instead of the project root. The
-        // sanitized relative dir is stashed on the request so the route can
-        // report each file's true project-relative path.
-        const subdir = typeof req.body?.dir === 'string' ? req.body.dir : '';
-        const { absDir, relDir } = await ensureProjectSubdir(
-          PROJECTS_DIR,
-          req.params.id,
-          subdir,
-          meta,
-        );
-        (req as any)._uploadRelDir = relDir;
-        (req as any)._uploadAbsDir = absDir;
-        cb(null, absDir);
-      } catch (err) {
-        cb(err, '');
-      }
-    },
-    filename: (req, file, cb) => {
-      // multer@1 hands us latin1-decoded multipart filenames; restore the
-      // original UTF-8 so the response (and the on-disk name) preserves
-      // non-ASCII characters instead of mangling them. Then run the shared
-      // sanitiser and only add a suffix when that sanitized source name
-      // would collide with an existing or same-batch upload.
+    destination: UPLOAD_DIR,
+    filename: (_req, file, cb) => {
       file.originalname = decodeMultipartFilename(file.originalname);
       const safe = sanitizeName(file.originalname);
-      const uploadDir = typeof (req as any)._uploadAbsDir === 'string' ? (req as any)._uploadAbsDir : '';
-      const reserved = (req as any)._uploadReservedNames instanceof Set
-        ? (req as any)._uploadReservedNames
-        : ((req as any)._uploadReservedNames = new Set());
-      cb(null, uniqueUploadFileName(uploadDir, safe, reserved));
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
     },
   }),
   limits: { fileSize: 200 * 1024 * 1024 },  // 200MB — covers the largest design assets we expect (PPTX/PDF/raw images)
@@ -2799,6 +2760,8 @@ export async function startServer({
       resolveProjectDir,
       isSafeId,
     },
+    coordinateProjectMutation: (input, work) =>
+      projectGitCoordination.withProjectMutation(input, work),
     bindProjectToWorkspace: (projectId, createdAt, designSystem) => {
       const workspaceId = designSystem.workspaceId?.trim();
       if (!workspaceId) return;
@@ -2953,6 +2916,22 @@ export async function startServer({
     next();
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
+  const projectGitStore = createProjectGitStore(db);
+  const projectGitCoordination = createUnavailableProjectGitCoordination(projectGitStore);
+  const projectGitRunPermits = new Map();
+  type SkillCandidateHookArgs = Parameters<typeof detectSkillPluginCandidateOnRunSuccess>;
+  const detectSkillPluginCandidateAfterRun = (
+    ...args: [
+      SkillCandidateHookArgs[0],
+      SkillCandidateHookArgs[1],
+      SkillCandidateHookArgs[2],
+      SkillCandidateHookArgs[3],
+      SkillCandidateHookArgs[4],
+    ]
+  ) => detectSkillPluginCandidateOnRunSuccess(
+    ...args,
+    projectGitCoordination,
+  );
   const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
   if (commentAnchorRepair.created > 0) {
     console.warn(
@@ -2983,11 +2962,6 @@ export async function startServer({
     requestProjectOverride,
     requestRunOverride,
   } = createToolRequestAuth(toolTokenRegistry);
-  // Wire the upload-destination bridge to this db so multer can route
-  // file uploads into baseDir-rooted projects' actual folders.
-  projectMetadataLookup = (id) => {
-    try { return getProject(db, id)?.metadata ?? null; } catch { return null; }
-  };
   configureConnectorCredentialStore(new FileConnectorCredentialStore(RUNTIME_DATA_DIR));
   configureComposioConfigStore(RUNTIME_DATA_DIR);
   composioConnectorProvider.configureCatalogCache(RUNTIME_DATA_DIR);
@@ -3168,9 +3142,54 @@ export async function startServer({
     })
     .catch(() => detectAgents({}, {}).catch(() => {}));
 
-  await recoverStaleLiveArtifactRefreshes({ projectsRoot: PROJECTS_DIR }).catch((error) => {
-    console.warn('[od] Failed to recover stale live artifact refreshes:', error);
+  await recoverLiveArtifactsAtStartup({
+    projectsRoot: PROJECTS_DIR,
+    projects: listProjects(db).map(project => {
+      const binding = projectGitStore.getBinding(project.id);
+      return {
+        id: project.id,
+        ...(project.metadata === undefined ? {} : { projectMetadata: project.metadata }),
+        ...(binding === null ? {} : { expectedProjectRevision: binding.projectRevision }),
+      };
+    }),
+    recoveryReady: projectGitCoordination.recoveryReady,
+    coordination: projectGitCoordination,
+    onError: (projectId, error) => {
+      console.warn(`[od] Failed to recover stale live artifact refreshes for project ${projectId}:`, error);
+    },
   });
+
+  const startupConfig = await readAppConfig(RUNTIME_DATA_DIR).catch(() => ({}));
+  const startupAgentId = typeof startupConfig.agentId === 'string' && startupConfig.agentId
+    ? startupConfig.agentId
+    : null;
+  const legacyBrandTranscriptRecovery = await recoverLegacyBrandTranscriptsAtStartup({
+    db,
+    brandsRoot: BRANDS_DIR,
+    projectsRoot: PROJECTS_DIR,
+    recoveryReady: projectGitCoordination.recoveryReady,
+    bindingFor: projectId => {
+      const binding = projectGitStore.getBinding(projectId);
+      return binding ? {
+        generation: binding.generation,
+        projectRevision: binding.projectRevision,
+      } : null;
+    },
+    coordination: projectGitCoordination.startup,
+    randomId,
+    ...(startupAgentId ? {
+      transcriptAgent: {
+        agentId: startupAgentId,
+        agentName: getAgentDef(startupAgentId)?.name ?? startupAgentId,
+      },
+    } : {}),
+    onError: (projectId, error) => {
+      console.warn(`[brand] failed to recover legacy transcript for ${projectId}`, error);
+    },
+  });
+  if (legacyBrandTranscriptRecovery.repaired > 0) {
+    console.warn('[brand] recovered legacy extraction transcripts', legacyBrandTranscriptRecovery);
+  }
 
   if (fs.existsSync(staticDir)) {
     app.use(express.static(staticDir));
@@ -4243,6 +4262,30 @@ export async function startServer({
           // that failure, and never attempt any live Skill reconstruction.
         }
       },
+      onTerminal: (run, status, terminalAt) => {
+        const projectId = typeof run.projectId === 'string' && run.projectId
+          ? run.projectId
+          : null;
+        completeActiveRunProjectTerminal({
+          reconcileMessage: () => reconcileAssistantMessageOnRunTerminal(
+            db,
+            run,
+            status,
+            terminalAt,
+          ),
+          recordReceipt: () => {
+            if (projectId) projectGitCoordination.runtime.onTerminal(run.id, projectId, status);
+          },
+        });
+      },
+      onSettled: (run) => {
+        projectGitCoordination.runtime.onSettled(run.id);
+        const admission = projectGitRunPermits.get(run.id);
+        if (admission) {
+          projectGitRunPermits.delete(run.id);
+          admission.release();
+        }
+      },
     }),
     analytics: analyticsService,
     getAppVersion: () => telemetry.getCachedAppVersion()?.version ?? '0.0.0',
@@ -4281,7 +4324,7 @@ export async function startServer({
   // fresh daemon boot, repair stale message rows and replay any PostHog or
   // Langfuse terminal work whose checkpoint was not committed. Network work
   // stays off the startup critical path.
-  void reconcileDurableRunTerminals({
+  const runTerminalReconciliation = beginDurableRunTerminalReconciliation({
     analytics: analyticsService,
     appVersion: telemetry.getCachedAppVersion()?.version ?? '0.0.0',
     appVersionInfo: telemetry.getCachedAppVersion(),
@@ -4296,10 +4339,25 @@ export async function startServer({
       taskObservationRollout.seedRepresentationFromRunFact(runId, fact),
     beginTaskObservationForRun: (runId) => taskObservationRollout.beginFinalizeForRun(runId),
     runsLogDir: path.join(RUNTIME_DATA_DIR, 'runs'),
-  }).then(async (reconciled) => {
+    reconcileTerminalsWithLocalRepair: (group, repair) =>
+      projectGitCoordination.runtime.reconcileTerminalsWithLocalRepair(group, repair),
+    currentProjectEpoch: (projectId) => {
+      const binding = projectGitStore.getBinding(projectId);
+      return binding ? {
+        bindingGeneration: binding.generation,
+        projectRevision: binding.projectRevision,
+      } : null;
+    },
+  });
+  try {
+    const reconciled = await runTerminalReconciliation.localReady;
     if (reconciled.interrupted > 0 || reconciled.messagesReconciled > 0) {
       console.warn('[runs] reconciled interrupted run terminals', reconciled);
     }
+  } catch (error) {
+    console.warn('[runs] terminal local reconciliation failed', error);
+  }
+  void runTerminalReconciliation.delivery.then(async () => {
     const taskObservationsRecovered = await taskObservationRollout.reconcileCrashWindows();
     if (taskObservationsRecovered > 0) {
       console.warn('[telemetry] reconciled task observation crash windows', {
@@ -4307,7 +4365,7 @@ export async function startServer({
       });
     }
   }).catch((error) => {
-    console.warn('[runs] terminal reconciliation failed', error);
+    console.warn('[runs] terminal delivery reconciliation failed', error);
   });
 
   // Interactive Terminal sessions (node-pty). In-memory, process-local, and
@@ -4391,6 +4449,22 @@ export async function startServer({
     claimAssistantMessage: (run, options) =>
       pinAssistantMessageOnRunCreate(db, run, options),
     analyticsLifecycle: runAnalyticsLifecycle,
+    beginProjectRunAdmission: (projectId, expectedProjectRevision) =>
+      projectGitCoordination.runtime.admit(projectId, expectedProjectRevision),
+    attachProjectRun: (runId, projectId, admission) =>
+      projectGitCoordination.runtime.attach(runId, projectId, admission),
+    detachProjectRun: (runId, admission) =>
+      projectGitCoordination.runtime.detach(runId, admission),
+    coordinateProjectMutation: (admission, source, work) =>
+      projectGitCoordination.withProjectMutation({
+        projectId: admission.projectId,
+        expectedProjectRevision: admission.projectRevision,
+        source,
+        ...(admission.permit ? { permit: admission.permit } : {}),
+      }, work),
+    releaseProjectRun: (runId) => {
+      projectGitCoordination.runtime.onSettled(runId);
+    },
   });
   const reportFeedback = telemetry.reportFeedback;
 
@@ -4752,6 +4826,7 @@ export async function startServer({
     readLiveArtifactCode,
     setLiveArtifactCodeHeaders,
     ensureLiveArtifactPreview,
+    readLiveArtifactPreview,
     setLiveArtifactPreviewHeaders,
     getLiveArtifact,
     listLiveArtifactRefreshLogEntries,
@@ -4777,6 +4852,7 @@ export async function startServer({
     TranscriptExportLockedError,
     EmptyTranscriptError,
     redactSecrets,
+    renderProjectTranscript,
   };
   const validationDeps = { isSafeId, validateExternalApiBaseUrl, validateBaseUrl, validateProjectDesignSystemId, validateProjectSkillId };
   const agentDeps = {
@@ -4823,6 +4899,7 @@ export async function startServer({
   // OD Library — global asset registry (clipper ingest, grid, pairing, apply).
   registerLibraryRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     paths: pathDeps,
     projectStore: projectStoreDeps,
@@ -4848,6 +4925,15 @@ export async function startServer({
           project.id,
           'writeFiles',
         )) return;
+        return await coordinateAuthorizedProjectMutation({
+          req,
+          res,
+          projectId: project.id,
+          source: 'figma.import',
+          coordination: projectGitCoordination,
+          sendApiError,
+          authorize: async () => true,
+          work: async () => {
 
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const figmaUrl = typeof body.figmaUrl === 'string' ? body.figmaUrl.trim() : '';
@@ -4872,6 +4958,8 @@ export async function startServer({
           notes,
         });
         return res.json(result);
+          },
+        });
       } catch (caught) {
         return sendApiError(
           res,
@@ -4885,6 +4973,7 @@ export async function startServer({
   registerSocialShareRoutes(app, { http: httpDeps });
   registerProjectRoutes(app, {
     db,
+    projectGitCoordination,
     design,
     http: httpDeps,
     paths: pathDeps,
@@ -5101,6 +5190,7 @@ export async function startServer({
     projectStore: projectStoreDeps,
     projectFiles: projectFileDeps,
     terminals: terminalService,
+    projectGitCoordination,
     authorizeProjectRequest,
   });
   registerBrowserSessionRoutes(app, {
@@ -5112,6 +5202,7 @@ export async function startServer({
   });
   registerImportRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     uploads: uploadDeps,
     node: nodeDeps,
@@ -5269,6 +5360,7 @@ export async function startServer({
     generationJobs: designSystemGenerationJobs,
   });
   registerBrandRoutes(app, {
+    projectGitCoordination,
     resolveCreatedProjectHome,
     brandsRoot: BRANDS_DIR,
     userDesignSystemsRoot: USER_DESIGN_SYSTEMS_DIR,
@@ -5335,6 +5427,7 @@ export async function startServer({
     auth: authDeps,
     liveArtifacts: liveArtifactDeps,
     projectStore: projectStoreDeps,
+    projectGitCoordination,
     authorizeProjectRequest,
     authorizeProjectToolRequest,
   });
@@ -5356,10 +5449,12 @@ export async function startServer({
     ids: idDeps,
     deploy: deployDeps,
     projectStore: projectStoreDeps,
+    projectGitCoordination,
     authorizeProjectRequest,
   });
   registerFinalizeRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     paths: pathDeps,
     projectStore: projectStoreDeps,
@@ -5375,6 +5470,7 @@ export async function startServer({
     conversations: conversationDeps,
     validation: validationDeps,
     handoff: handoffDeps,
+    projectGitCoordination,
     authorizeProjectRequest,
   });
   registerDeploymentCheckRoutes(app, {
@@ -5387,6 +5483,7 @@ export async function startServer({
   app.use('/frames', express.static(FRAMES_DIR));
   registerProjectExportRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     paths: pathDeps,
     node: nodeDeps,
@@ -5403,6 +5500,7 @@ export async function startServer({
   });
   registerProjectFileRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     paths: pathDeps,
     uploads: uploadDeps,
@@ -5432,6 +5530,7 @@ export async function startServer({
     orbit: orbitDeps,
     nativeDialogs: nativeDialogDeps,
     projectStore: projectStoreDeps,
+    projectGitCoordination,
     projectFiles: projectFileDeps,
     conversations: conversationDeps,
     research: researchDeps,
@@ -5627,16 +5726,13 @@ export async function startServer({
       try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const body = req.body && typeof req.body === 'object' ? req.body : {}; const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const subcommand = action === 'publish-github' ? 'publish-repo' : 'open-design-pr'; const timeout = action === 'publish-github' ? 240_000 : 300_000; const result = await execCommandViaLoginShell(OD_NODE_BIN, [OD_BIN, 'plugin', subcommand, folder, '--json'], { timeout }); const payload = result.stdout ? JSON.parse(result.stdout) : null; if (!result.ok || !payload?.ok) return res.status(500).json({ ok: false, code: payload?.error?.label || (action === 'publish-github' ? 'publish-repo-failed' : 'open-design-pr-failed'), message: payload?.error?.stderr || payload?.error?.stdout || (action === 'publish-github' ? 'GitHub repo publish failed.' : 'OpenDesign PR creation failed.'), log: payload?.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [result.stderr || result.stdout || `${subcommand} failed`] }); res.json({ ok: true, message: action === 'publish-github' ? (payload.repoUrl ? `Published plugin to ${payload.repoUrl}.` : 'Published plugin to GitHub.') : (payload.prUrl ? `Opened OpenDesign PR flow at ${payload.prUrl}.` : 'Opened OpenDesign PR flow.'), ...(payload.repoUrl ? { url: payload.repoUrl } : {}), ...(payload.prUrl ? { url: payload.prUrl } : {}), log: payload.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [] }); } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err), log: [] }); }
     },
     handleCandidateDraft: async (req, res) => {
-      if (!isLocalSameOrigin(req, resolvedPort)) return res.status(403).json({ error: 'cross-origin request rejected' });
       try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const result = await generateSkillPluginDraft(db, projectRoot, req.params.id, req.params.candidateId); if (!result) return sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found'); res.status(result.ok ? 200 : 422).json(result); } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); }
     },
     handleCandidateShareTask: async (req, res) => {
-      if (!isLocalSameOrigin(req, resolvedPort)) return res.status(403).json({ error: 'cross-origin request rejected' });
-      try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const body = req.body && typeof req.body === 'object' ? req.body : {}; const action = body.action === 'publish-github' || body.action === 'contribute-open-design' ? body.action : null; if (!action) return sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required'); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const draft = await generateSkillPluginDraft(db, projectRoot, req.params.id, req.params.candidateId); if (!draft) return sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found'); if (!draft.validation.ok) return res.status(422).json({ ok: false, code: 'plugin-draft-invalid', message: 'Generated plugin draft is invalid.', draft }); const task = pluginShareTaskStore.createAndStart(req.params.id, { action, path: draft.draftPath }, draft.folder); res.status(202).json({ taskId: task.id, action, path: draft.draftPath, status: task.status, startedAt: task.startedAt, draft }); } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); }
+      try { const project = getProject(db, req.params.id); if (!project) { sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); return null; } const body = req.body && typeof req.body === 'object' ? req.body : {}; const action = body.action === 'publish-github' || body.action === 'contribute-open-design' ? body.action : null; if (!action) { sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required'); return null; } const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const draft = await generateSkillPluginDraft(db, projectRoot, req.params.id, req.params.candidateId); if (!draft) { sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found'); return null; } if (!draft.validation.ok) { res.status(422).json({ ok: false, code: 'plugin-draft-invalid', message: 'Generated plugin draft is invalid.', draft }); return null; } const { task, settled } = pluginShareTaskStore.createAndStart(req.params.id, { action, path: draft.draftPath }, draft.folder); res.status(202).json({ taskId: task.id, action, path: draft.draftPath, status: task.status, startedAt: task.startedAt, draft }); return { accepted: undefined, settled }; } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); return null; }
     },
     handleProjectShareTask: async (req, res) => {
-      if (!isLocalSameOrigin(req, resolvedPort)) return res.status(403).json({ error: 'cross-origin request rejected' });
-      try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const body = req.body && typeof req.body === 'object' ? req.body : {}; const action: PluginShareAction | null = body.action === 'publish-github' || body.action === 'contribute-open-design' ? body.action : null; if (!action) return sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required'); const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const task = pluginShareTaskStore.createAndStart(req.params.id, { action, path: relativePath }, folder); res.status(202).json({ taskId: task.id, action, path: relativePath, status: task.status, startedAt: task.startedAt }); } catch (err) { const code = err && err.code; const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400; sendApiError(res, status, status === 404 ? 'PLUGIN_FOLDER_NOT_FOUND' : 'BAD_REQUEST', String(err?.message || err)); }
+      try { const project = getProject(db, req.params.id); if (!project) { sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); return null; } const body = req.body && typeof req.body === 'object' ? req.body : {}; const action: PluginShareAction | null = body.action === 'publish-github' || body.action === 'contribute-open-design' ? body.action : null; if (!action) { sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required'); return null; } const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const { task, settled } = pluginShareTaskStore.createAndStart(req.params.id, { action, path: relativePath }, folder); res.status(202).json({ taskId: task.id, action, path: relativePath, status: task.status, startedAt: task.startedAt }); return { accepted: undefined, settled }; } catch (err) { const code = err && err.code; const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400; sendApiError(res, status, status === 404 ? 'PLUGIN_FOLDER_NOT_FOUND' : 'BAD_REQUEST', String(err?.message || err)); return null; }
     },
   };
 
@@ -5836,6 +5932,7 @@ export async function startServer({
 
   registerPluginRoutes(app, {
     db,
+    projectGitCoordination,
     authorizeProjectRequest,
     teamResources: collab.teamResources,
     paths: { PROJECTS_DIR, PLUGIN_REGISTRY_ROOTS, PLUGIN_LOCKFILE_PATH },
@@ -5899,12 +5996,15 @@ export async function startServer({
   registerGenuiRoutes(app, {
     db,
     design,
+    http: httpDeps,
+    projectGitCoordination,
     paths: { PROJECTS_DIR },
     authorizeProjectRequest,
   });
 
   registerProjectPluginRoutes(app, {
     db,
+    projectGitCoordination,
     authorizeProjectRequest,
     paths: { PROJECTS_DIR, PLUGIN_REGISTRY_ROOTS, PLUGIN_LOCKFILE_PATH },
     ids: idDeps,
@@ -5934,6 +6034,7 @@ export async function startServer({
   });
   registerProjectUploadRoutes(app, {
     db,
+    projectGitCoordination,
     http: httpDeps,
     uploads: uploadDeps,
     node: nodeDeps,
@@ -5948,6 +6049,7 @@ export async function startServer({
   });
 
   const composeDaemonSystemPrompt = async ({
+    runId,
     agentId,
     projectId,
     skillId,
@@ -6384,7 +6486,21 @@ export async function startServer({
           && designSystemVisibleToRun(system),
       );
       if (summary?.source === 'user' && summary.teamSynced !== true) {
-        await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId);
+        const runAdmission = typeof runId === 'string'
+          ? projectGitRunPermits.get(runId)
+          : undefined;
+        await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId, {
+          projectMutation: {
+            source: 'run-prompt-design-system-sync',
+            ...(typeof projectId === 'string' && projectId ? { originProjectId: projectId } : {}),
+            ...(runAdmission
+              ? {
+                  expectedProjectRevision: runAdmission.projectRevision,
+                  ...(runAdmission.permit ? { permit: runAdmission.permit } : {}),
+                }
+              : {}),
+          },
+        });
         systems = await listAllDesignSystems(designSystemListOptions);
         summary = systems.find(
           (system) =>
@@ -7524,6 +7640,7 @@ export async function startServer({
           odNextStableContextPrompt: '',
         }
       : await composeDaemonSystemPrompt({
+        runId: run.id,
         agentId,
         projectId,
         skillId,
@@ -11629,33 +11746,29 @@ export async function startServer({
       // create_artifact, or the run terminated between HTML write and
       // sidecar write). Only files modified after the run started are
       // touched — pre-existing HTML in imported-folder projects must not
-      // receive spurious manifests. Best-effort; must not block finalisation.
+      // receive spurious manifests. Best-effort per file, but the local work
+      // settles before terminal publication and the project-Git receipt.
       // See issue #2893.
       if (run.projectId) {
-        (async () => {
-          try {
-            const project = getProject(db, run.projectId);
-            const files = await listFiles(PROJECTS_DIR, run.projectId, {
-              metadata: project?.metadata,
-            });
-            const dir = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
-            for (const f of files) {
-              const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
-              if (ext !== '.html' && ext !== '.htm') continue;
-              try {
-                const filePath = path.join(dir, f.name);
-                const st = await fs.promises.stat(filePath);
-                if (!isRunTouchedProjectFile(st.mtimeMs, runStartTimeMs)) continue;
-                await reconcileHtmlArtifactManifest(
-                  PROJECTS_DIR,
-                  run.projectId,
-                  f.name,
-                  project?.metadata,
-                );
-              } catch { /* per-file best-effort */ }
-            }
-          } catch { /* project-level best-effort */ }
-        })();
+        try {
+          const project = getProject(db, run.projectId);
+          const files = await listFiles(PROJECTS_DIR, run.projectId, {
+            metadata: project?.metadata,
+          });
+          const dir = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
+          await reconcileRunHtmlArtifactManifests({
+            files,
+            runStartTimeMs,
+            stat: name => fs.promises.stat(path.join(dir, name)),
+            isRunTouchedProjectFile,
+            reconcile: name => reconcileHtmlArtifactManifest(
+              PROJECTS_DIR,
+              run.projectId,
+              name,
+              project?.metadata,
+            ),
+          });
+        } catch { /* Project-level reconciliation is best-effort. */ }
       }
       // Flush buffered plain-text stdout (antigravity) that was not
       // suppressed by the auth-prompt guard above. Send each chunk in
@@ -12001,7 +12114,7 @@ export async function startServer({
           if (run.cancelRequested || design.runs.isTerminal(run.status)) return;
           let transition;
           try {
-            transition = prepareAutomaticStrategyContinuation({
+            transition = await prepareAutomaticStrategyContinuation({
               db,
               service: internalRunCreation,
               task: strategyTaskAtStart,
@@ -12120,7 +12233,6 @@ export async function startServer({
             ? continuationTask.runs.length - 1
             : null,
         });
-        reconcileAssistantMessageOnRunEnd(db, design.runs, continuation.run);
         internalRunCreation.start(
           continuation.run,
           {
@@ -12250,67 +12362,70 @@ export async function startServer({
       ? null
       : appConfig.designSystemId ?? null;
 
-    insertProject(db, {
-      id: projectId,
-      name: projectName,
-      skillId: 'live-artifact',
-      designSystemId: orbitDesignSystemId,
-      pendingPrompt: null,
-      metadata: { kind: 'orbit', trigger },
-      createdAt: now,
-      updatedAt: now,
-    });
-    bindProjectToPersistedAutomationWorkspace(
-      (input) => ensureWorkspaceProject(db, input),
-      normalizedWorkspaceScope,
-      projectId,
-      now,
-    );
-    insertConversation(db, {
-      id: conversationId,
-      projectId,
-      title: projectName,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    const run = design.runs.create({
-      projectId,
-      conversationId,
-      assistantMessageId,
-      clientRequestId: `orbit-${trigger}-${randomUUID()}`,
-      agentId,
-      mediaExecution: defaultMediaExecutionPolicy(),
-    });
-    upsertMessage(db, conversationId, {
-      id: `orbit-user-${run.id}`,
-      role: 'user',
-      content: prompt,
-    });
-    upsertMessage(db, conversationId, {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      agentId,
-      agentName: getAgentDef(agentId)?.name ?? agentId,
-      runId: run.id,
-      runStatus: 'queued',
-      startedAt: now,
-    });
-
-    if (template?.dir) {
-      const cwd = await ensureProject(PROJECTS_DIR, projectId);
-      const result = await stageActiveSkill(
-        cwd,
-        skillCwdAliasSegment(template.dir),
-        template.dir,
-        (msg) => console.warn(msg),
-      );
-      if (!result.staged) {
-        console.warn(
-          `[od] orbit template skill-stage skipped: ${result.reason ?? 'unknown reason'}; falling back to prompt-embedded instructions`,
+    const preparedOrbitRun = await internalRunCreation.prepare({
+      meta: {
+        projectId,
+        conversationId,
+        assistantMessageId,
+        clientRequestId: `orbit-${trigger}-${randomUUID()}`,
+        agentId,
+        mediaExecution: defaultMediaExecutionPolicy(),
+      },
+      beforeClaimCommit: (candidate) => {
+        insertProject(db, {
+          id: projectId,
+          name: projectName,
+          skillId: 'live-artifact',
+          designSystemId: orbitDesignSystemId,
+          pendingPrompt: null,
+          metadata: { kind: 'orbit', trigger },
+          createdAt: now,
+          updatedAt: now,
+        });
+        bindProjectToPersistedAutomationWorkspace(
+          (input) => ensureWorkspaceProject(db, input),
+          normalizedWorkspaceScope,
+          projectId,
+          now,
         );
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: projectName,
+          createdAt: now,
+          updatedAt: now,
+        });
+        upsertMessage(db, conversationId, {
+          id: `orbit-user-${candidate.id}`,
+          role: 'user',
+          content: prompt,
+        });
+      },
+    });
+    if (preparedOrbitRun.kind !== 'ready') {
+      throw new Error(`Orbit Run could not be prepared (${preparedOrbitRun.kind}).`);
+    }
+    const run = preparedOrbitRun.run;
+
+    try {
+      if (template?.dir) {
+        const cwd = await ensureProject(PROJECTS_DIR, projectId);
+        const result = await stageActiveSkill(
+          cwd,
+          skillCwdAliasSegment(template.dir),
+          template.dir,
+          (msg) => console.warn(msg),
+        );
+        if (!result.staged) {
+          console.warn(
+            `[od] orbit template skill-stage skipped: ${result.reason ?? 'unknown reason'}; falling back to prompt-embedded instructions`,
+          );
+        }
       }
+    } catch (error) {
+      design.runs.finish(run, 'failed');
+      internalRunCreation.discard(run);
+      throw error;
     }
 
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
@@ -12348,10 +12463,11 @@ export async function startServer({
 
     const completion = (async () => {
       const finalStatus = await design.runs.wait(run);
-      db.prepare(
-        `UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`,
-      ).run(finalStatus.status, Date.now(), assistantMessageId);
-      const artifacts = await listLiveArtifacts({ projectsRoot: PROJECTS_DIR, projectId });
+      const artifacts = await projectGitCoordination.withProjectRead(projectId, async () => listLiveArtifacts({
+        projectsRoot: PROJECTS_DIR,
+        projectId,
+        projectMetadata: getProject(db, projectId)?.metadata,
+      }));
       const artifact = artifacts.find((candidate) => candidate.createdByRunId === run.id);
       const status = finalStatus.status === 'succeeded' && !artifact ? 'failed' : finalStatus.status;
       return {
@@ -12404,7 +12520,7 @@ export async function startServer({
     lifecycle: { isDaemonShuttingDown: () => daemonShuttingDown },
     plugins: {
       connectorService,
-      detectSkillPluginCandidateOnRunSuccess,
+      detectSkillPluginCandidateOnRunSuccess: detectSkillPluginCandidateAfterRun,
       firePipelineForRun,
       loadPluginRegistryView,
       renderPluginBriefTemplate,
@@ -12441,7 +12557,6 @@ export async function startServer({
     },
     messages: {
       pinAssistantMessageOnRunCreate,
-      reconcileAssistantMessageOnRunEnd,
     },
     internalRuns: internalRunCreation,
     // POST /api/runs and POST /api/chat are this file's "create a run" entry
@@ -12501,8 +12616,12 @@ export async function startServer({
         : {}),
     };
     const stamp = formatLocalProjectTimestamp(new Date(now).toISOString());
-    let projectId;
-    let projectName;
+    let projectId = routine.target.mode === 'reuse'
+      ? routine.target.projectId
+      : `routine-${randomUUID()}`;
+    let projectName = routine.target.mode === 'reuse'
+      ? ''
+      : `${routine.name} · ${stamp}`;
     const scheduledPlaceholderProjectId = `routine-pending-project-${runId}`;
     const scheduledPlaceholderConversationId = `routine-pending-conv-${runId}`;
     let createdProjectId: string | null = null;
@@ -12510,8 +12629,6 @@ export async function startServer({
     let previousProjectSnapshotId: string | null = null;
     const createRoutineProject = () => {
       if (createdProjectId) return;
-      projectId = `routine-${randomUUID()}`;
-      projectName = `${routine.name} · ${stamp}`;
       insertProject(db, {
         id: projectId,
         name: projectName,
@@ -12667,22 +12784,21 @@ export async function startServer({
       }
       resolvedRoutineSnapshot = resolved;
     };
-    const run = design.runs.create({
-      projectId: projectId ?? scheduledPlaceholderProjectId,
-      conversationId: createdConversationId ? conversationId : scheduledPlaceholderConversationId,
+    const preparedRoutineRun = await internalRunCreation.prepare({
+      meta: {
+      projectId,
       assistantMessageId,
       clientRequestId: `routine-${trigger}-${randomUUID()}`,
       agentId,
       mediaExecution: defaultMediaExecutionPolicy(),
-      ...(resolvedRoutineSnapshot?.ok
-        ? {
-            appliedPluginSnapshotId: resolvedRoutineSnapshot.snapshotId,
-            pluginId: resolvedRoutineSnapshot.snapshot.pluginId,
-          }
-        : {}),
+      },
     });
+    if (preparedRoutineRun.kind !== 'ready') {
+      throw new Error(`Routine Run could not be prepared (${preparedRoutineRun.kind}).`);
+    }
+    const run = preparedRoutineRun.run;
     const persistPreparedRun = async (routineRun = null) => {
-      if (!projectId) {
+      if (routine.target.mode !== 'reuse' && !createdProjectId) {
         createRoutineProject();
       }
       if (projectId) {
@@ -12698,10 +12814,12 @@ export async function startServer({
       }
       createRoutineConversation();
       run.conversationId = conversationId;
+      run.assistantMessageId = assistantMessageId;
       if (routineRun) {
         routineRun.conversationId = conversationId;
         routineRun.agentRunId = run.id;
       }
+      design.runs.persistState(run);
       await resolveRoutinePluginSnapshot();
       if (resolvedRoutineSnapshot?.ok) {
         run.appliedPluginSnapshotId = resolvedRoutineSnapshot.snapshotId;
@@ -12727,6 +12845,7 @@ export async function startServer({
     };
 
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+    run.recordTerminalErrorInAssistantMessage = true;
     const start = () => {
       // Notify any open `ProjectView` only after the routine run row has
       // been accepted and preparation has completed, so failed setup does not
@@ -12767,7 +12886,7 @@ export async function startServer({
     // / snapshot writes have to be rolled back. Dropping the run keeps it
     // off `/api/runs` instead of leaving a phantom canceled entry there.
     const discardUnstarted = () => {
-      design.runs.drop(run);
+      internalRunCreation.discard(run);
     };
 
     const discard = () => {
@@ -12778,6 +12897,7 @@ export async function startServer({
         run.conversationId = null;
       }
       design.runs.finish(run, 'canceled');
+      internalRunCreation.discard(run);
       if (routine.target.mode === 'reuse') {
         // Prefer the fully-resolved snapshot id; fall back to whatever id
         // `resolvePluginSnapshot()` left pinned on the project if it threw
@@ -12813,14 +12933,6 @@ export async function startServer({
       const failureErrorCode = finalStatus.status === 'failed'
         ? (typeof finalStatus.errorCode === 'string' && finalStatus.errorCode.trim() ? finalStatus.errorCode.trim() : null)
         : null;
-      if (failureError) {
-        appendMessageStatusEvent(db, assistantMessageId, {
-          label: 'error',
-          detail: failureError,
-        });
-      }
-      db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
-        .run(finalStatus.status, Date.now(), assistantMessageId);
       let evolutionSummary = '';
       if (finalStatus.status === 'succeeded' && routineContext.connectorIds?.length) {
         try {
@@ -12854,8 +12966,8 @@ export async function startServer({
     })();
 
     return {
-      projectId: run.projectId,
-      conversationId: run.conversationId,
+      projectId: scheduledPlaceholderProjectId,
+      conversationId: scheduledPlaceholderConversationId,
       agentRunId: run.id,
       completion,
       prepare: persistPreparedRun,
@@ -12868,6 +12980,9 @@ export async function startServer({
 
   assertServerContextSatisfiesRoutes({
     db,
+    projectGitStore,
+    projectGitCoordination,
+    internalRuns: internalRunCreation,
     design,
     http: httpDeps,
     paths: pathDeps,
@@ -12898,7 +13013,7 @@ export async function startServer({
     mcp: { pendingAuth: mcpPendingAuth, daemonUrlRef },
     plugins: {
       connectorService,
-      detectSkillPluginCandidateOnRunSuccess,
+      detectSkillPluginCandidateOnRunSuccess: detectSkillPluginCandidateAfterRun,
       firePipelineForRun,
       loadPluginRegistryView,
       renderPluginBriefTemplate,
@@ -12918,7 +13033,6 @@ export async function startServer({
     chat: { prepareOdNextInitialPromptBundle, startChatRun },
     messages: {
       pinAssistantMessageOnRunCreate,
-      reconcileAssistantMessageOnRunEnd,
     },
     agents: agentDeps,
     critique: critiqueDeps,
@@ -12943,9 +13057,12 @@ export async function startServer({
   registerChatRoutes(app, {
     db,
     design,
+    projectGitCoordination,
     http: httpDeps,
     authorizeProjectRequest,
     paths: pathDeps,
+    projectStore: projectStoreDeps,
+    projectFiles: projectFileDeps,
     chat: { prepareOdNextInitialPromptBundle, startChatRun },
     agents: agentDeps,
     critique: critiqueDeps,

@@ -93,6 +93,29 @@ describe('public MCP write_file', () => {
     });
   });
 
+  it('forwards the captured project epoch through write and bodyless delete transports', async () => {
+    const base = nextBaseUrl();
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith('/api/projects')) {
+        return new Response(JSON.stringify({ projects: [{ id: 'p1', name: 'Demo' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', withDirectory(fetchMock));
+
+    await handleMcpToolCall(base, 'write_file', {
+      project: 'Demo', path: 'deck.html', content: 'v2', expectedProjectRevision: 7,
+    });
+    await handleMcpToolCall(base, 'delete_file', {
+      project: 'Demo', path: 'old.html', expectedProjectRevision: 7,
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)))
+      .toMatchObject({ expectedProjectRevision: 7 });
+    const deleteCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/raw/old.html'));
+    expect(new Headers(deleteCall?.[1]?.headers).get('X-OD-Project-Revision')).toBe('7');
+  });
+
   it('passes base64 encoding through unchanged', async () => {
     const base = nextBaseUrl();
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {

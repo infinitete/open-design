@@ -21,7 +21,7 @@ import { bindingOwnerRef, createProjectGitRegistration } from './registration.js
 import { materializeProject } from './materialize.js';
 import { mergeFileTrees } from './merge.js';
 import { readBindingEvidence, rootInventory, type BindingCapture } from './binding-evidence.js';
-import { nativeHistoryRoot, projectGitPaths } from './paths.js';
+import { nativeHistoryRoot, projectGitPathsAtRoot } from './paths.js';
 
 export interface BindingRequestContext { actorId: string; idempotencyKey: string; expectedProjectRevision?: number }
 export interface ProjectGitBindingServiceInput {
@@ -143,7 +143,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       }
       const staged = (await runGit({ cwd: project.root, args: git.head ? ['diff-index', '--cached', '--raw', '-z', git.head] : ['ls-files', '--stage', '-z'] })).stdout;
       if (staged.length) throw new GitDomainError('EXTERNAL_GIT_BUSY', 409, 'User-staged changes must be preserved.');
-      eligible = projectGitPaths(nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--cached', '-z'] })).stdout),
+      eligible = await projectGitPathsAtRoot(project.root,
+        nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--cached', '-z'] })).stdout),
         nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout));
     } else {
       const scratch = await mkdtemp(join(input.preparationRoot, 'binding-preview-'));
@@ -156,8 +157,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
           await durableWrite(join(scratch, path), beforeRules.get(path) ?? Buffer.alloc(0));
         }
       }
-      eligible = projectGitPaths([], nulPaths((await runGit({ cwd: scratch, args: ['ls-files', '--others', '--exclude-standard', '-z'],
-        ...(input.gitEnv ? { env: input.gitEnv } : {}) })).stdout));
+      eligible = await projectGitPathsAtRoot(project.root, [],
+        nulPaths((await runGit({ cwd: scratch, args: ['ls-files', '--others', '--exclude-standard', '-z'],
+          ...(input.gitEnv ? { env: input.gitEnv } : {}) })).stdout));
     }
     const changes = emptyChanges(); const dependencies: ProjectGitDependency[] = [];
     changes.privatePaths = [...new Set(eligible.filter(isPrivateProjectGitPath).map(path => path.replace(/\/od-private-placeholder$/u, '')))];

@@ -56,6 +56,7 @@ import { brandFromMaterial } from './provisional.js';
 import { prefetchBrand, prefetchFromHtml, type PrefetchResult } from './prefetch.js';
 import { BRAND_KIT_FILE, writeBrandKitPreview, type BrandKitStatus } from './kit-render.js';
 import { normalizeBrandKitLocale } from './kit-i18n.js';
+import type { ProjectGitMutationAdapter } from '../services/project-git/mutation-adapter.js';
 import { selfHostGoogleFonts } from './fonts.js';
 import { adoptExistingLogos, ensureLogoFallback, type LogoFallbackFn, type LogoSlot } from './logo-fallback.js';
 import { ensureImageryFallback, type ImageryFallbackFn, type ImagerySlot } from './imagery-fallback.js';
@@ -101,6 +102,8 @@ export interface StartBrandExtractionOptions {
    *  brand-extract template. */
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
+  /** Stable project mutation domain supplied by the daemon composition root. */
+  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
   randomId?: () => string;
   /** Override the deterministic logo harvester (tests inject a no-op / stub to
    *  avoid real network calls). Defaults to the live icon-fetching fallback. */
@@ -173,6 +176,8 @@ export interface ContinueBrandExtractionOptions {
   projectsRoot: string;
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
+  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  expectedProjectRevision?: number;
   userDesignSystemsRoot: string;
   dataDir?: string;
   randomId?: () => string;
@@ -342,16 +347,20 @@ export async function startBrandExtraction(
     ? null
     : brandExtractionPrompt({ url, brandId: id, host, hasWebsiteSource, hasDesignMdSource });
 
-  // Entity-first: register the `user:<id>` design system NOW, as a draft, so it
-  // appears under "Your systems" the moment the project opens and stays editable
-  // even if extraction fails or is stopped — instead of only materializing on a
-  // successful finalize (the bug where a started extraction never showed up in
-  // the list). finalizeBrandCore reuses this exact id (never duplicates),
-  // enriching the draft in place. This is part of the start contract: if the
-  // draft cannot be registered, the extraction should not create a project that
-  // looks like a design system but has no backing editable system.
-  let draftDesignSystemId: string | null = null;
-  try {
+  return opts.coordinateProjectMutation({
+    projectId,
+    source: 'brand.startup',
+  }, async () => {
+    // Entity-first: register the `user:<id>` design system NOW, as a draft, so it
+    // appears under "Your systems" the moment the project opens and stays editable
+    // even if extraction fails or is stopped — instead of only materializing on a
+    // successful finalize (the bug where a started extraction never showed up in
+    // the list). finalizeBrandCore reuses this exact id (never duplicates),
+    // enriching the draft in place. This is part of the start contract: if the
+    // draft cannot be registered, the extraction should not create a project that
+    // looks like a design system but has no backing editable system.
+    let draftDesignSystemId: string | null = null;
+    try {
     createBrandDir(brandsRoot, id, meta);
     if (designMd) writeDesignMdInput(brandsRoot, id, designMd);
 
@@ -514,6 +523,7 @@ export async function startBrandExtraction(
         hasWebsiteSource,
         locale,
         extractionAttemptId,
+        coordinateProjectMutation: opts.coordinateProjectMutation,
       };
       if (opts.dataDir) programmaticOptions.dataDir = opts.dataDir;
       if (opts.prefetch) programmaticOptions.prefetch = opts.prefetch;
@@ -537,22 +547,23 @@ export async function startBrandExtraction(
       status: meta.status,
       ...(draftDesignSystemId ? { designSystemId: draftDesignSystemId } : {}),
     };
-  } catch (err) {
-    await rollbackBrandExtractionStartup({
-      db,
-      brandsRoot,
-      projectsRoot,
-      brandId: id,
-      projectId,
-      metadata,
-      userDesignSystemsRoot: opts.userDesignSystemsRoot,
-      draftDesignSystemId,
-      ...(opts.deleteUserDesignSystem
-        ? { deleteDraftDesignSystem: opts.deleteUserDesignSystem }
-        : {}),
-    });
-    throw err;
-  }
+    } catch (err) {
+      await rollbackBrandExtractionStartup({
+        db,
+        brandsRoot,
+        projectsRoot,
+        brandId: id,
+        projectId,
+        metadata,
+        userDesignSystemsRoot: opts.userDesignSystemsRoot,
+        draftDesignSystemId,
+        ...(opts.deleteUserDesignSystem
+          ? { deleteDraftDesignSystem: opts.deleteUserDesignSystem }
+          : {}),
+      });
+      throw err;
+    }
+  });
 }
 
 function launchProgrammaticBackgroundExtraction(input: {
@@ -560,6 +571,24 @@ function launchProgrammaticBackgroundExtraction(input: {
   programmaticAbortSignal?: AbortSignal | undefined;
   fallbackPrompt: string;
   onBackgroundExtraction?: ((settled: Promise<unknown>) => void) | undefined;
+  locale?: string | undefined;
+}): Promise<BrandFinalizeResponse | null> {
+  const { programmaticOptions } = input;
+  const settled = programmaticOptions.coordinateProjectMutation({
+    projectId: programmaticOptions.projectId,
+    source: 'brand.background',
+    ...(programmaticOptions.expectedProjectRevision === undefined
+      ? {}
+      : { expectedProjectRevision: programmaticOptions.expectedProjectRevision }),
+  }, () => runProgrammaticBackgroundExtraction(input));
+  input.onBackgroundExtraction?.(settled);
+  return settled;
+}
+
+function runProgrammaticBackgroundExtraction(input: {
+  programmaticOptions: RunProgrammaticExtractionOptions;
+  programmaticAbortSignal?: AbortSignal | undefined;
+  fallbackPrompt: string;
   locale?: string | undefined;
 }): Promise<BrandFinalizeResponse | null> {
   const { programmaticOptions, programmaticAbortSignal, fallbackPrompt, locale } = input;
@@ -677,8 +706,6 @@ function launchProgrammaticBackgroundExtraction(input: {
       clearTimeout(stallTimer);
       clearTimeout(hardCapTimer);
     });
-  input.onBackgroundExtraction?.(settled);
-
   return settled;
 }
 
@@ -693,6 +720,13 @@ export async function continueBrandExtraction(
   const project = getProject(opts.db, projectId);
   if (!project) throw new Error(`brand backing project not found: ${projectId}`);
 
+  return opts.coordinateProjectMutation({
+    projectId,
+    source: 'brand.continue',
+    ...(opts.expectedProjectRevision === undefined
+      ? {}
+      : { expectedProjectRevision: opts.expectedProjectRevision }),
+  }, async () => {
   const randomId = opts.randomId ?? randomUUID;
   const locale = normalizeBrandKitLocale(opts.locale ?? meta.locale);
   const hasWebsiteSource = /^https?:\/\//i.test(sourceUrl);
@@ -784,6 +818,10 @@ export async function continueBrandExtraction(
     hasWebsiteSource,
     locale,
     extractionAttemptId,
+    coordinateProjectMutation: opts.coordinateProjectMutation,
+    ...(opts.expectedProjectRevision === undefined
+      ? {}
+      : { expectedProjectRevision: opts.expectedProjectRevision }),
   };
   if (opts.dataDir) programmaticOptions.dataDir = opts.dataDir;
   if (opts.prefetch) programmaticOptions.prefetch = opts.prefetch;
@@ -808,6 +846,7 @@ export async function continueBrandExtraction(
     ...(nextMeta.designSystemId ? { designSystemId: nextMeta.designSystemId } : {}),
     ...(detail.brand?.name ? { brandName: detail.brand.name } : {}),
   };
+  });
 }
 
 function resolveBrandRetryConversationId(input: {
@@ -1604,6 +1643,8 @@ export interface RunProgrammaticExtractionOptions {
   projectsRoot: string;
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
+  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  expectedProjectRevision?: number;
   dataDir?: string;
   description?: string;
   designMd?: string;
@@ -1699,7 +1740,10 @@ export async function runProgrammaticExtraction(
 }
 
 export interface ExtractBrandFromHtmlOptions
-  extends Omit<RunProgrammaticExtractionOptions, 'prefetch' | 'designMd' | 'projectId'> {
+  extends Omit<
+    RunProgrammaticExtractionOptions,
+    'prefetch' | 'designMd' | 'projectId' | 'coordinateProjectMutation' | 'expectedProjectRevision'
+  > {
   /** Backing project to sync the finalized system into; defaults to the brand's
    *  recorded project. */
   projectId?: string;
@@ -2030,7 +2074,7 @@ function brandLogoSlot(raw: unknown): LogoSlot {
   };
 }
 
-function brandProjectId(brandId: string): string {
+export function brandProjectId(brandId: string): string {
   return `brand-${brandId}`;
 }
 

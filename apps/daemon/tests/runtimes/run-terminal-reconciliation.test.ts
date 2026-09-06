@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { reconcileDurableRunTerminals } from '../../src/runtimes/run-terminal-reconciliation.js';
+import { beginDurableRunTerminalReconciliation, reconcileDurableRunTerminals } from '../../src/runtimes/run-terminal-reconciliation.js';
 
 describe('durable run terminal reconciliation', () => {
   let tmpDir: string;
@@ -15,14 +15,117 @@ describe('durable run terminal reconciliation', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-reconcile-test-'));
     db = new Database(':memory:');
     db.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT
+      );
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
+        conversation_id TEXT,
         run_id TEXT,
         run_status TEXT,
         ended_at INTEGER,
         events_json TEXT
       )
     `);
+  });
+
+  it('groups durable local repairs by exact project epoch and detaches delivery only after local ready', async () => {
+    const states = [
+      { id: 'run-a', projectId: 'p1', messageId: 'm-a', generation: 3, revision: 7 },
+      { id: 'run-b', projectId: 'p1', messageId: 'm-b', generation: 3, revision: 7 },
+      { id: 'run-c', projectId: 'p2', messageId: 'm-c', generation: 5, revision: 9 },
+    ];
+    for (const state of states) {
+      const runDir = path.join(tmpDir, state.id); fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+        schemaVersion: 1, id: state.id, projectId: state.projectId,
+        conversationId: `c-${state.id}`, assistantMessageId: state.messageId,
+        agentId: 'codex', status: 'failed', createdAt: 1, updatedAt: 2,
+        expectedProjectRevision: state.revision,
+        projectGitBindingGeneration: state.generation,
+      }));
+      db.prepare('INSERT INTO conversations (id, project_id) VALUES (?, ?)').run(`c-${state.id}`, state.projectId);
+      db.prepare(`INSERT INTO messages (id, conversation_id, run_id, run_status, events_json)
+        VALUES (?, ?, ?, 'running', '[]')`).run(state.messageId, `c-${state.id}`, state.id);
+    }
+    let releaseDelivery!: () => void;
+    const deliveryBarrier = new Promise<void>(resolve => { releaseDelivery = resolve; });
+    const groups: Array<{ projectId: string; generation: number; revision: number; runs: string[] }> = [];
+    const reconciliation = beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: projectId => projectId === 'p1'
+        ? { bindingGeneration: 3, projectRevision: 7 }
+        : { bindingGeneration: 5, projectRevision: 9 },
+      reconcileTerminalsWithLocalRepair: async (group, repair) => {
+        groups.push({ projectId: group.projectId, generation: group.bindingGeneration,
+          revision: group.projectRevision, runs: group.terminals.map(item => item.runId).sort() });
+        await repair();
+      },
+      reportLangfuse: vi.fn(async () => {
+        await deliveryBarrier;
+        return { langfuse_expected: false, langfuse_delivery_status: 'not_expected' as const };
+      }),
+    });
+    let deliverySettled = false;
+    void reconciliation.delivery.then(() => { deliverySettled = true; });
+
+    const local = await reconciliation.localReady;
+    expect(local.messagesReconciled).toBe(3);
+    expect(deliverySettled).toBe(false);
+    expect(groups.sort((a, b) => a.projectId.localeCompare(b.projectId))).toEqual([
+      { projectId: 'p1', generation: 3, revision: 7, runs: ['run-a', 'run-b'] },
+      { projectId: 'p2', generation: 5, revision: 9, runs: ['run-c'] },
+    ]);
+    expect(db.prepare('SELECT run_status AS status FROM messages ORDER BY id').all())
+      .toEqual([{ status: 'failed' }, { status: 'failed' }, { status: 'failed' }]);
+    releaseDelivery();
+    await reconciliation.delivery;
+  });
+
+  it('isolates a stale durable generation before local message or strategy effects', async () => {
+    const runDir = path.join(tmpDir, 'stale'); fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+      schemaVersion: 1, id: 'stale', projectId: 'p1', conversationId: 'c1', assistantMessageId: 'm1',
+      agentId: 'codex', status: 'failed', createdAt: 1, updatedAt: 2,
+      expectedProjectRevision: 7, projectGitBindingGeneration: 2,
+      langfuseCompletedAt: 2,
+    }));
+    db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c1', 'p1')").run();
+    db.prepare("INSERT INTO messages (id, conversation_id, run_id, run_status, events_json) VALUES ('m1', 'c1', 'stale', 'running', '[]')").run();
+    const localRepair = vi.fn(async () => undefined);
+    const reconciliation = beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => ({ bindingGeneration: 3, projectRevision: 7 }),
+      reconcileTerminalsWithLocalRepair: async () => { throw new Error('stale generation'); },
+      reportLangfuse: vi.fn(),
+    });
+    await reconciliation.localReady;
+    await reconciliation.delivery;
+    expect(localRepair).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm1'").get())
+      .toEqual({ status: 'running' });
+  });
+
+  it('groups orphan messages by persisted conversation project and captured boot epoch', async () => {
+    db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c1', 'p1')").run();
+    db.prepare("INSERT INTO messages (id, conversation_id, run_id, run_status, events_json) VALUES ('m1', 'c1', 'orphan-run', 'running', '[]')").run();
+    const groups: unknown[] = [];
+    const reconciliation = beginDurableRunTerminalReconciliation({
+      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
+      currentProjectEpoch: () => ({ bindingGeneration: 4, projectRevision: 11 }),
+      reconcileTerminalsWithLocalRepair: async (group, repair) => { groups.push(group); await repair(); },
+      reportLangfuse: vi.fn(),
+    });
+    const local = await reconciliation.localReady;
+    await reconciliation.delivery;
+    expect(local.messagesReconciled).toBe(1);
+    expect(groups).toEqual([{
+      projectId: 'p1', bindingGeneration: 4, projectRevision: 11,
+      terminals: [{ runId: 'orphan-run', terminal: 'failed' }],
+    }]);
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm1'").get())
+      .toEqual({ status: 'failed' });
   });
 
   afterEach(() => {
@@ -153,6 +256,52 @@ describe('durable run terminal reconciliation', () => {
     expect(result.messagesReconciled).toBe(1);
     expect(db.prepare(`SELECT run_status AS status FROM messages WHERE id = 'legacy-message'`).get())
       .toEqual({ status: 'failed' });
+  });
+
+  it('replays the private project checkpoint for every persisted terminal status', async () => {
+    const finalizeTerminalLocally = vi.fn();
+    for (const status of ['succeeded', 'failed', 'canceled']) {
+      const runId = `run-${status}`;
+      const runDir = path.join(tmpDir, runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+        schemaVersion: 1,
+        id: runId,
+        projectId: 'p1',
+        conversationId: null,
+        assistantMessageId: null,
+        agentId: 'codex',
+        status,
+        createdAt: 1_000,
+        updatedAt: 2_000,
+        terminalAt: 2_000,
+        expectedProjectRevision: 7,
+        projectGitBindingGeneration: 3,
+      }));
+    }
+
+    await reconcileDurableRunTerminals({
+      analytics: { capture: vi.fn() },
+      appVersion: '0.15.1',
+      db,
+      reportLangfuse: vi.fn(async () => ({
+        langfuse_expected: false,
+        langfuse_delivery_status: 'not_expected',
+      })),
+      runsLogDir: tmpDir,
+      finalizeTerminalLocally,
+    });
+
+    expect(finalizeTerminalLocally.mock.calls.map(([run, status]) => ({
+      id: run.id,
+      status,
+      generation: run.projectGitBindingGeneration,
+      revision: run.expectedProjectRevision,
+    })).sort((left, right) => left.id.localeCompare(right.id))).toEqual([
+      { id: 'run-canceled', status: 'canceled', generation: 3, revision: 7 },
+      { id: 'run-failed', status: 'failed', generation: 3, revision: 7 },
+      { id: 'run-succeeded', status: 'succeeded', generation: 3, revision: 7 },
+    ]);
   });
 
   it('preserves the real failure taxonomy when replaying incomplete analytics', async () => {

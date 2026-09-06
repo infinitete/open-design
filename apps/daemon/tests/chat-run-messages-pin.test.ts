@@ -2,22 +2,40 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { pinAssistantMessageOnRunCreate } from '../src/runtimes/chat-run-messages.js';
+import { reconcileAssistantMessageOnRunTerminal } from '../src/plugins/share-helpers.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, title TEXT);
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      title TEXT,
+      updated_at INTEGER
+    );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
+      agent_id TEXT,
+      agent_name TEXT,
+      result_delivery_state TEXT,
       events_json TEXT,
+      attachments_json TEXT,
+      comment_attachments_json TEXT,
+      produced_files_json TEXT,
+      trace_object_files_json TEXT,
+      feedback_json TEXT,
+      pre_turn_file_names_json TEXT,
       run_id TEXT,
       run_status TEXT,
       last_run_event_id TEXT,
       session_mode TEXT,
       run_context_json TEXT,
+      task_analytics_json TEXT,
+      applied_plugin_snapshot_json TEXT,
+      telemetry_finalized_at INTEGER,
       started_at INTEGER,
       ended_at INTEGER,
       position INTEGER NOT NULL,
@@ -357,5 +375,75 @@ describe('pinAssistantMessageOnRunCreate generation boundary (#6418)', () => {
     expect(m.content).toBe('conv-a msg');
     expect(m.eventsJson).not.toBeNull();
     expect(m.startedAt).toBe(100);
+  });
+
+  it('keeps the private project Git epoch out of portable assistant message context', () => {
+    const db = createDb();
+    db.prepare(`INSERT INTO conversations (id) VALUES ('conv-a')`).run();
+
+    pinAssistantMessageOnRunCreate(db, {
+      id: 'run-a',
+      conversationId: 'conv-a',
+      assistantMessageId: 'msg-1',
+      status: 'queued',
+      createdAt: 100,
+      context: { surface: 'chat' },
+      expectedProjectRevision: 7,
+      projectGitBindingGeneration: 3,
+    } as any);
+
+    const row = db.prepare(
+      `SELECT run_context_json AS runContextJson FROM messages WHERE id = 'msg-1'`,
+    ).get() as { runContextJson: string };
+    expect(JSON.parse(row.runContextJson)).toEqual({ surface: 'chat' });
+    expect(row.runContextJson).not.toContain('projectRevision');
+    expect(row.runContextJson).not.toContain('bindingGeneration');
+  });
+});
+
+describe('assistant message terminal reconciliation', () => {
+  it('writes the exact run-owned terminal before the caller proceeds', () => {
+    const db = createDb();
+    db.prepare(`INSERT INTO conversations (id) VALUES ('conv-a')`).run();
+    seedMessage(db, { id: 'msg-1', conversationId: 'conv-a', content: '', runId: 'run-a', runStatus: 'running' });
+
+    reconcileAssistantMessageOnRunTerminal(db, {
+      id: 'run-a', assistantMessageId: 'msg-1', projectId: 'project-a',
+    }, 'succeeded', 1234);
+
+    expect(readMessage(db, 'msg-1')).toMatchObject({ runStatus: 'succeeded', endedAt: 1234 });
+  });
+
+  it('does not overwrite a message rebound to another run', () => {
+    const db = createDb();
+    db.prepare(`INSERT INTO conversations (id) VALUES ('conv-a')`).run();
+    seedMessage(db, { id: 'msg-1', conversationId: 'conv-a', content: '', runId: 'run-new', runStatus: 'running' });
+
+    reconcileAssistantMessageOnRunTerminal(db, {
+      id: 'run-old', assistantMessageId: 'msg-1', projectId: 'project-a',
+    }, 'failed', 1234);
+
+    expect(readMessage(db, 'msg-1')).toMatchObject({ runStatus: 'running', endedAt: null });
+  });
+
+  it('persists an opted-in automation failure event in the same terminal step', () => {
+    const db = createDb();
+    db.prepare(`INSERT INTO conversations (id) VALUES ('conv-a')`).run();
+    seedMessage(db, { id: 'msg-1', conversationId: 'conv-a', content: '', runId: 'run-a', runStatus: 'running' });
+
+    reconcileAssistantMessageOnRunTerminal(db, {
+      id: 'run-a',
+      assistantMessageId: 'msg-1',
+      projectId: 'project-a',
+      recordTerminalErrorInAssistantMessage: true,
+      error: 'provider failed',
+    }, 'failed', 1234);
+
+    const eventsJson = readMessage(db, 'msg-1').eventsJson;
+    expect(JSON.parse(typeof eventsJson === 'string' ? eventsJson : '[]')).toContainEqual({
+      kind: 'status',
+      label: 'error',
+      detail: 'provider failed',
+    });
   });
 });

@@ -11,7 +11,7 @@ import { runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, validateTreeEntries } from './repository.js';
 import { prepareCheckpoint, publishCheckpoint, isPrivateProjectGitPath, computeCheckpointContentDigest } from './checkpoint.js';
 import { exportPortableProject, parsePortableEntries } from './portable.js';
-import { nativeHistoryRoot, projectGitPaths } from './paths.js';
+import { nativeHistoryRoot, projectGitPathsAtRoot } from './paths.js';
 import { readBindingEvidence } from './binding-evidence.js';
 import { mergeFileTrees } from './merge.js';
 import { materializeProject } from './materialize.js';
@@ -271,7 +271,7 @@ export function createProjectGitSyncDeps(input: {
       for (const name of await readdir(join(root, path))) await visit(`${path}/${name}`);
     };
     await visit('.open-design');
-    const paths = [...new Set([...projectGitPaths(listed[0]!, listed[1]!), ...reserved])].sort();
+    const paths = [...new Set([...await projectGitPathsAtRoot(root, listed[0]!, listed[1]!), ...reserved])].sort();
     validateTreeEntries(paths.map(path => ({ path, mode: '100644' }))); return paths;
   }
   function assertReservedUnchanged(tree: Map<string, { bytes: Buffer; mode: string }>, files: Map<string, { bytes: Buffer | null; mode: string }>) {

@@ -208,7 +208,7 @@ export function createPluginShareTaskStore(deps: CreatePluginShareTaskStoreDeps)
     const task = create(taskId, projectId, info);
     task.status = 'running';
     notify(task);
-    void run(task, folder).catch((err: unknown) => {
+    const settled = run(task, folder).catch((err: unknown) => {
       task.status = 'failed';
       task.error = {
         code: 'plugin-share-task-failed',
@@ -218,7 +218,7 @@ export function createPluginShareTaskStore(deps: CreatePluginShareTaskStoreDeps)
       task.endedAt = Date.now();
       notify(task);
     });
-    return task;
+    return { task, settled };
   }
 
   return { create, get, appendProgress, snapshot, notify, run, createAndStart };

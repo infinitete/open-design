@@ -59,6 +59,14 @@ export function migrateProjectGit(db: Database.Database): void {
       attempts INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS project_git_run_terminals (
+      run_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
+      project_revision INTEGER NOT NULL CHECK (project_revision >= 0),
+      terminal TEXT NOT NULL CHECK (terminal IN ('succeeded', 'failed', 'canceled')),
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS project_git_preview_consumers (
       preview_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
       consumer_operation_id TEXT NOT NULL UNIQUE REFERENCES project_git_operations(id)
