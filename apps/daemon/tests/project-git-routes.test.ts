@@ -414,6 +414,24 @@ describe('project Git route registrar matrix', () => {
     expect(await response.json()).toEqual(operation('op', 'project'));
   });
 
+  it('returns a retry receipt promptly and exposes its nonterminal target through polling', async () => {
+    const admitted: ProjectGitOperation = {
+      ...(operation('op', 'project') as ProjectGitOperation), status: 'queued', phase: 'waiting_idle', error: null,
+    };
+    vi.mocked(service.execute).mockResolvedValueOnce({ operationId: 'op' });
+    vi.mocked(service.getOperation).mockResolvedValueOnce(admitted);
+
+    const response = await request('/api/project-git-operations/op/retry', {
+      method: 'POST', body: JSON.stringify({ operationId: 'op', expectedProjectRevision: 7 }),
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ operationId: 'op' });
+
+    const polled = await request('/api/project-git-operations/op');
+    expect(polled.status).toBe(200);
+    expect(await polled.json()).toEqual(admitted);
+  });
+
   it('maps a losing different-key retry claim to a redacted domain conflict', async () => {
     vi.mocked(service.execute).mockRejectedValueOnce(new GitDomainError('CONFLICT', 409, 'The operation already belongs to another retry request.'));
     const response = await request('/api/project-git-operations/op/retry', {

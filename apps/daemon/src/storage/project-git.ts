@@ -176,6 +176,16 @@ export interface ProjectGitOperationUpdate {
   error: ApiError | null;
 }
 
+export interface ProjectGitRetryAttempt {
+  operationId: string;
+  attempt: number;
+  state: 'admitted' | 'started' | 'settled';
+  priorStatus: ProjectGitOperationStatus;
+  priorPhase: ProjectGitPhase;
+  priorResult: ProjectGitOperationResult | null;
+  priorError: ApiError | null;
+}
+
 export interface ProjectGitPushRecord {
   projectId: string;
   generation: number;
@@ -256,7 +266,14 @@ export interface ProjectGitStore {
   findOperationRequest(input: { actorId: string; projectId: string | null; action: 'retry'; idempotencyKey: string }):
     { operationId: string; requestDigest: string } | null;
   claimOperationRequest(input: { actorId: string; projectId: string | null; action: 'retry'; idempotencyKey: string;
-    requestDigest: string; operationId: string }): { operationId: string; requestDigest: string; created: boolean };
+    requestDigest: string; operationId: string }): { operationId: string; requestDigest: string; created: boolean;
+      admitted: boolean; attempt: number };
+  getRetryAttempt(operationId: string): ProjectGitRetryAttempt | null;
+  listActiveRetryAttempts(): ProjectGitRetryAttempt[];
+  startRetryAttempt(operationId: string, attempt: number): boolean;
+  settleRetryAttempt(operationId: string, attempt: number): void;
+  /** Settles bootstrap-owned retry attempts that cannot be resumed without guessing prior effects. */
+  reconcileInterruptedRetryAttempts(operationIds?: ReadonlySet<string>): string[];
   getJournal(id: string): ProjectGitJournalRecord | null;
   /** Associate a reserved import ID before prepared; does not create or expose an application project row. */
   attachOperationProject(id: string, projectId: string, basis: ProjectGitBasis): void;
@@ -301,6 +318,15 @@ interface OperationRow {
   result_json: string | null; error_json: string | null; journal_phase: ProjectGitJournalPhase | null;
   phase_completed: number; recovery_json: string | null; completed_project_revision: number | null; created_at: number; updated_at: number;
   records_transition_json: string | null; protection_json: string | null; owner_operation_id: string | null;
+}
+interface RetryAttemptRow {
+  operation_id: string;
+  attempt: number;
+  state: ProjectGitRetryAttempt['state'];
+  prior_status: ProjectGitOperationStatus;
+  prior_phase: ProjectGitPhase;
+  prior_result_json: string | null;
+  prior_error_json: string | null;
 }
 const phases: ProjectGitJournalPhase[] = ['prepared', 'protected', 'files_applied', 'records_applied', 'ref_published', 'index_published', 'complete'];
 const changed = () => new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The project state changed. Refresh and retry.');
@@ -375,6 +401,18 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
   const getJournal = (id: string) => {
     const row = db.prepare('SELECT * FROM project_git_operations WHERE id = ?').get(id) as OperationRow | undefined;
     return row ? journalFrom(row) : null;
+  };
+  const getRetryAttempt = (operationId: string): ProjectGitRetryAttempt | null => {
+    const row = db.prepare('SELECT * FROM project_git_retry_attempts WHERE operation_id = ?').get(operationId) as RetryAttemptRow | undefined;
+    return row ? {
+      operationId: row.operation_id,
+      attempt: row.attempt,
+      state: row.state,
+      priorStatus: row.prior_status,
+      priorPhase: row.prior_phase,
+      priorResult: row.prior_result_json === null ? null : JSON.parse(row.prior_result_json),
+      priorError: row.prior_error_json === null ? null : JSON.parse(row.prior_error_json),
+    } : null;
   };
   function requireGeneration(id: string, generation: number): ProjectGitBindingRecord {
     const b = getBinding(id); if (!b || b.generation !== generation) throw changed(); return b;
@@ -938,7 +976,80 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
         .run(input.actorId, scope, input.action, input.idempotencyKey, input.requestDigest, input.operationId, Date.now());
       const existing = store.findOperationRequest(input);
       if (!existing || existing.requestDigest !== input.requestDigest || existing.operationId !== input.operationId) throw conflict();
-      return { ...existing, created: inserted.changes === 1 };
+      const operation = getJournal(input.operationId);
+      const activeAttempt = getRetryAttempt(input.operationId);
+      if (!operation || operation.scope !== scope
+        || activeAttempt && activeAttempt.state !== 'settled') {
+        if (!operation || !activeAttempt || !['queued', 'running', 'waiting'].includes(operation.status)) throw conflict();
+        return { ...existing, created: inserted.changes === 1, admitted: false, attempt: activeAttempt.attempt };
+      }
+      if (operation.status === 'succeeded') {
+        return { ...existing, created: inserted.changes === 1, admitted: false, attempt: activeAttempt?.attempt ?? 0 };
+      }
+      if (!['failed', 'waiting'].includes(operation.status)) throw conflict();
+      const attempt = (activeAttempt?.attempt ?? 0) + 1;
+      const now = Date.now();
+      db.prepare(`INSERT INTO project_git_retry_attempts
+        (operation_id, attempt, state, prior_status, prior_phase, prior_result_json, prior_error_json, created_at, updated_at)
+        VALUES (?, ?, 'admitted', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(operation_id) DO UPDATE SET attempt = excluded.attempt, state = excluded.state,
+          prior_status = excluded.prior_status, prior_phase = excluded.prior_phase,
+          prior_result_json = excluded.prior_result_json, prior_error_json = excluded.prior_error_json,
+          created_at = excluded.created_at, updated_at = excluded.updated_at`)
+        .run(operation.id, attempt, operation.status, operation.phase,
+          operation.result === null ? null : json(operation.result), operation.error === null ? null : json(operation.error), now, now);
+      db.prepare("UPDATE project_git_operations SET status = 'queued', phase = 'waiting_idle', error_json = NULL, updated_at = ? WHERE id = ?")
+        .run(now, operation.id);
+      return { ...existing, created: inserted.changes === 1, admitted: true, attempt };
+    }),
+    getRetryAttempt,
+    listActiveRetryAttempts: () => (db.prepare("SELECT operation_id AS operationId FROM project_git_retry_attempts WHERE state IN ('admitted', 'started') ORDER BY created_at, operation_id")
+      .all() as { operationId: string }[]).map(row => getRetryAttempt(row.operationId)!),
+    startRetryAttempt: (operationId, attempt) => transaction(() => {
+      const retry = getRetryAttempt(operationId); const operation = getJournal(operationId);
+      if (!retry || retry.attempt !== attempt || retry.state !== 'admitted' || !operation
+        || operation.status !== 'queued' || operation.phase !== 'waiting_idle'
+        || operation.journalPhase !== null || operation.recoveryData !== null
+        || getRegistration(operationId)?.state === 'pending') return false;
+      const now = Date.now();
+      db.prepare("UPDATE project_git_retry_attempts SET state = 'started', updated_at = ? WHERE operation_id = ? AND attempt = ? AND state = 'admitted'")
+        .run(now, operationId, attempt);
+      db.prepare("UPDATE project_git_operations SET status = 'running', updated_at = ? WHERE id = ?")
+        .run(now, operationId);
+      return true;
+    }),
+    settleRetryAttempt: (operationId, attempt) => transaction(() => {
+      const retry = getRetryAttempt(operationId); const operation = getJournal(operationId);
+      if (!retry || retry.attempt !== attempt || !operation) throw recoveryRequired();
+      if (retry.state === 'settled') return;
+      if (['queued', 'running'].includes(operation.status) && operation.journalPhase === null
+        && operation.recoveryData === null && getRegistration(operationId)?.state !== 'pending') throw recoveryRequired();
+      db.prepare("UPDATE project_git_retry_attempts SET state = 'settled', updated_at = ? WHERE operation_id = ? AND attempt = ?")
+        .run(Date.now(), operationId, attempt);
+    }),
+    reconcileInterruptedRetryAttempts: operationIds => transaction(() => {
+      const rows = db.prepare("SELECT operation_id AS operationId FROM project_git_retry_attempts WHERE state IN ('admitted', 'started') ORDER BY created_at, operation_id")
+        .all() as { operationId: string }[];
+      const reconciled: string[] = [];
+      for (const row of rows) {
+        if (operationIds && !operationIds.has(row.operationId)) continue;
+        const operation = getJournal(row.operationId);
+        if (!operation) throw recoveryRequired();
+        if (!['queued', 'running', 'waiting'].includes(operation.status)) {
+          db.prepare("UPDATE project_git_retry_attempts SET state = 'settled', updated_at = ? WHERE operation_id = ?")
+            .run(Date.now(), operation.id);
+          continue;
+        }
+        if (operation.journalPhase !== null || operation.recoveryData !== null || getRegistration(operation.id)?.state === 'pending') continue;
+        const now = Date.now();
+        db.prepare("UPDATE project_git_operations SET status = 'failed', phase = 'failed', result_json = NULL, error_json = ?, updated_at = ? WHERE id = ?")
+          .run(json({ code: 'RECOVERY_REQUIRED', message: 'The admitted retry was interrupted before it could safely resume.',
+            details: { reason: 'interrupted_retry', nextStep: 'Retry the operation.' } }), now, operation.id);
+        db.prepare("UPDATE project_git_retry_attempts SET state = 'settled', updated_at = ? WHERE operation_id = ?")
+          .run(now, operation.id);
+        reconciled.push(operation.id);
+      }
+      return reconciled;
     }),
     getJournal,
     attachOperationProject: (id, projectId, basis) => transaction(() => {

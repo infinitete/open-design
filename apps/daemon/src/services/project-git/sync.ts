@@ -626,7 +626,10 @@ export function createProjectGitSyncDeps(input: {
     if (existing) {
       if (existing.requestDigest !== resolution.requestDigest) throw new GitDomainError('CONFLICT', 409, 'The idempotency key belongs to a different request.');
       if (retryOperationId === undefined) return store.getOperation(existing.id)!;
-      if (existing.id !== retryOperationId || existing.status !== 'failed' || existing.recoveryData !== null || existing.journalPhase !== null) {
+      const retry = store.getRetryAttempt(existing.id);
+      const retryStarted = existing.status === 'running' && retry?.state === 'started' && retry.priorStatus === 'failed';
+      if (existing.id !== retryOperationId || (!retryStarted && existing.status !== 'failed')
+        || existing.recoveryData !== null || existing.journalPhase !== null) {
         throw new GitDomainError('CONFLICT', 409, 'This conflict resolution cannot be retried safely.');
       }
     } else if (retryOperationId !== undefined) {
@@ -716,7 +719,9 @@ export function createProjectGitSyncDeps(input: {
   };
   const retryConflictResolution: ProjectGitSyncRuntime['retryConflictResolution'] = async operationId => {
     const operation = store.getJournal(operationId); const payload = operation?.payload;
-    if (!operation || operation.kind !== 'resolve' || operation.projectId === null || operation.status !== 'failed'
+    const retry = operation ? store.getRetryAttempt(operation.id) : null;
+    const retryStarted = operation?.status === 'running' && retry?.state === 'started' && retry.priorStatus === 'failed';
+    if (!operation || operation.kind !== 'resolve' || operation.projectId === null || (!retryStarted && operation.status !== 'failed')
       || operation.recoveryData !== null || operation.journalPhase !== null || !isObject(payload)
       || typeof payload.conflictOperationId !== 'string' || !ProjectGitBasisSchema.safeParse(payload.basis).success
       || !Array.isArray(payload.resolutions) || !payload.resolutions.every(item => ProjectGitResolutionSchema.safeParse(item).success)) {

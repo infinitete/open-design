@@ -1,8 +1,11 @@
 import Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProjectGitEvent } from '@open-design/contracts';
 import { createProjectGitServiceComposition } from '../../../src/services/project-git/service.js';
@@ -55,7 +58,7 @@ async function fixture(options: {
   store.saveBinding({ projectId: 'project', cloneId: 'clone', repositoryProjectId: 'local-repository', canonicalRoot: await realpath(git.a), commonDir: repo.commonDir,
     branch: 'main', remoteUrl: 'ssh://git@example.invalid/repo', generation: 0, autoSync: true, localHead: await git.git(git.a, 'rev-parse', 'HEAD'),
     observedRemoteHead: null, confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0, exportedContentRevision: 0, materializedHead: null, dirty: false });
-  cleanups.push(async () => { await composition.service.stop(); db.close(); await git.close(); await rm(data, { recursive: true, force: true }); });
+  cleanups.push(async () => { await composition.service.stop(); if (db.open) db.close(); await git.close(); await rm(data, { recursive: true, force: true }); });
   return { ...composition, db, store, operationRoot, git, data, denyPush, blockPush, pushEntered, blockFetch, fetchEntered, unmanaged };
 }
 
@@ -533,7 +536,8 @@ it('fences a manual sync queued behind network work that retains a conflict befo
 });
 
 it('fences a sync retry queued behind network work without starting another transport', async () => {
-  const f = await fixture();
+  const events: ProjectGitEvent[] = [];
+  const f = await fixture({ emit: (_projectId, event) => { events.push(event); } });
   await writeFile(f.blockFetch, 'block');
   const predecessor = await f.service.execute({ kind: 'sync' }, {
     actorId: 'local', projectId: 'project', idempotencyKey: 'retry-lane-predecessor', expectedProjectRevision: 0,
@@ -553,6 +557,12 @@ it('fences a sync retry queued behind network work without starting another tran
   await expect(f.service.execute({ kind: 'retry', operationId: target.id }, {
     actorId: 'local', projectId: 'project', idempotencyKey: 'queued-sync-retry', expectedProjectRevision: 0,
   })).resolves.toEqual({ operationId: target.id });
+  expect(f.store.getOperation(target.id)).toMatchObject({ status: expect.stringMatching(/queued|running/),
+    phase: 'waiting_idle', error: null });
+  expect(f.store.getRetryAttempt(target.id)).toMatchObject({ attempt: 1, state: 'started',
+    priorStatus: 'failed', priorError: { code: 'CONFLICT' } });
+  expect(events.some(event => event.type === 'project-git-operation' && event.operation.id === target.id
+    && ['queued', 'running'].includes(event.operation.status))).toBe(true);
   const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
     idempotencyKey: 'queued-retry-conflict', requestDigest: 'queued-retry-conflict', basis, payload: { lane: 'network' } });
   f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
@@ -677,7 +687,7 @@ it('quarantines a missing managed root without blocking unrelated project startu
   });
   expect(unavailableRetry.operationId).toBe(quarantine.id);
   const retryDeadline = Date.now() + 5_000;
-  while (f.store.getJournal(quarantine.id)!.updatedAt <= quarantine.updatedAt) {
+  while (f.store.getRetryAttempt(quarantine.id)?.state !== 'settled') {
     if (Date.now() >= retryDeadline) throw new Error('quarantine retry did not recheck the missing root');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
@@ -767,6 +777,83 @@ it('terminalizes every interrupted phase-null admission before startup schedules
       error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_admission' } } });
   }
   expect(f.store.getOperation(retained.id)).toMatchObject({ status: 'waiting', phase: 'conflict' });
+});
+
+it('settles receipt-owned sync, resolve, and projectless open retries after SQLite reopen exactly once', async () => {
+  const firstEvents: ProjectGitEvent[] = [];
+  const f = await fixture();
+  f.store.saveBinding({ ...f.store.getBinding('project')!, autoSync: false });
+  const binding = f.store.getBinding('project')!;
+  const basis = { projectRevision: binding.projectRevision, contentRevision: binding.contentRevision,
+    localHead: binding.localHead, remoteHead: binding.observedRemoteHead, bindingGeneration: binding.generation };
+  const conflict = f.store.enqueueOperation({ projectId: 'project', actorId: 'project-git-background', kind: 'sync',
+    idempotencyKey: 'retry-reopen-conflict', requestDigest: 'retry-reopen-conflict', basis, payload: { lane: 'network' } });
+  f.store.updateOperation(conflict.id, { status: 'waiting', phase: 'conflict', result: null,
+    error: { code: 'CONFLICT', message: 'Resolve this conflict.' } });
+  const targets = [
+    f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'sync', idempotencyKey: 'retry-reopen-sync',
+      requestDigest: 'retry-reopen-sync', basis, payload: { lane: 'network' } }),
+    f.store.enqueueOperation({ projectId: 'project', actorId: 'local', kind: 'resolve', idempotencyKey: 'retry-reopen-resolve',
+      requestDigest: 'retry-reopen-resolve', basis, payload: { conflictOperationId: conflict.id, basis, resolutions: [] } }),
+    f.store.enqueueOperation({ projectId: null, actorId: 'local', kind: 'open', idempotencyKey: 'retry-reopen-open',
+      requestDigest: 'retry-reopen-open', payload: { url: 'ssh://git@example.invalid/repo', branch: 'main' } }),
+  ];
+  for (const target of targets) {
+    f.store.updateOperation(target.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' } });
+  }
+  await f.service.stop(); f.db.close();
+
+  const storeModule = fileURLToPath(new URL('../../../src/storage/project-git.ts', import.meta.url));
+  const script = `import Database from 'better-sqlite3';
+    import { createProjectGitStore } from ${JSON.stringify(storeModule)};
+    const settings = JSON.parse(process.argv[1]); const db = new Database(settings.database); const store = createProjectGitStore(db);
+    for (const target of settings.targets) store.claimOperationRequest({ actorId: 'local', projectId: target.projectId,
+      action: 'retry', idempotencyKey: 'receipt-' + target.id, requestDigest: 'receipt-' + target.id, operationId: target.id });
+    if (!store.startRetryAttempt(settings.targets[1].id, 1)) process.exit(2);
+    process.stdout.write(JSON.stringify(settings.targets.map(target => store.getOperation(target.id)?.status)));
+    db.close();`;
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script,
+    JSON.stringify({ database: join(f.data, 'app.sqlite'), targets: targets.map(({ id, projectId }) => ({ id, projectId })) })], {
+    cwd: fileURLToPath(new URL('../../../', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', bytes => { stdout += String(bytes); });
+  child.stderr.on('data', bytes => { stderr += String(bytes); });
+  expect(await once(child, 'exit')).toEqual([0, null]);
+  expect(stderr).toBe('');
+  expect(JSON.parse(stdout)).toEqual(['queued', 'running', 'queued']);
+
+  let reopenedDb = new Database(join(f.data, 'app.sqlite')); migrateProjectGit(reopenedDb);
+  let reopenedStore = createProjectGitStore(reopenedDb);
+  let restarted = await createProjectGitServiceComposition({ db: reopenedDb, store: reopenedStore, operationRoot: f.operationRoot,
+    resolveProjectRoot: async id => id === 'project' ? f.git.a : id === 'unmanaged' ? f.unmanaged : join(f.data, 'missing'),
+    emit: (_projectId, event) => { firstEvents.push(event); }, gitEnv: fixtureGitEnv });
+  try {
+    await restarted.service.start();
+    for (const target of targets) {
+      expect(reopenedStore.getOperation(target.id)).toMatchObject({ status: 'failed', phase: 'failed',
+        error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_retry' } } });
+      expect(reopenedStore.getRetryAttempt(target.id)).toMatchObject({ attempt: 1, state: 'settled' });
+    }
+    expect(firstEvents.filter(event => event.type === 'project-git-operation'
+      && targets.slice(0, 2).some(target => target.id === event.operation.id))).toHaveLength(2);
+    await restarted.service.stop(); reopenedDb.close();
+
+    reopenedDb = new Database(join(f.data, 'app.sqlite')); migrateProjectGit(reopenedDb);
+    reopenedStore = createProjectGitStore(reopenedDb);
+    const secondEvents: ProjectGitEvent[] = [];
+    restarted = await createProjectGitServiceComposition({ db: reopenedDb, store: reopenedStore, operationRoot: f.operationRoot,
+      resolveProjectRoot: async id => id === 'project' ? f.git.a : join(f.data, 'missing'),
+      emit: (_projectId, event) => { secondEvents.push(event); }, gitEnv: fixtureGitEnv });
+    await restarted.service.start();
+    expect(reopenedStore.listActiveRetryAttempts()).toEqual([]);
+    expect(secondEvents.filter(event => event.type === 'project-git-operation'
+      && targets.some(target => target.id === event.operation.id))).toEqual([]);
+  } finally {
+    await restarted.service.stop().catch(() => undefined);
+    if (reopenedDb.open) reopenedDb.close();
+  }
 });
 
 it('quarantines corrupt repositories and unavailable Git as project-local state', async () => {

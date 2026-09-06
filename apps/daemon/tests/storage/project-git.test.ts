@@ -220,9 +220,11 @@ describe('project Git durable store', () => {
   it('keeps an exact wrapper-free retry receipt across database reopen', () => {
     let store = createProjectGitStore(db);
     const operation = store.enqueueOperation(request);
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' } });
     expect(store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
       idempotencyKey: 'retry-request', requestDigest: 'retry-digest', operationId: operation.id })).toEqual({
-      created: true, operationId: operation.id, requestDigest: 'retry-digest',
+      created: true, admitted: true, attempt: 1, operationId: operation.id, requestDigest: 'retry-digest',
     });
 
     db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
@@ -230,13 +232,83 @@ describe('project Git durable store', () => {
       .toEqual({ operationId: operation.id, requestDigest: 'retry-digest' });
     expect(store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
       idempotencyKey: 'retry-request', requestDigest: 'retry-digest', operationId: operation.id })).toEqual({
-      created: false, operationId: operation.id, requestDigest: 'retry-digest',
+      created: false, admitted: false, attempt: 1, operationId: operation.id, requestDigest: 'retry-digest',
     });
     expect(() => store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
       idempotencyKey: 'different-retry', requestDigest: 'other-digest', operationId: operation.id })).toThrow();
     expect(store.findOperationRequest({ actorId: 'local', projectId: null, action: 'retry', idempotencyKey: 'different-retry' })).toBeNull();
     expect(() => store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
       idempotencyKey: 'retry-request', requestDigest: 'different', operationId: operation.id })).toThrow();
+  });
+
+  it('backfills a legacy receipt-only retry as a visible startup-owned attempt', () => {
+    const store = createProjectGitStore(db);
+    const operation = store.enqueueOperation({ ...request, idempotencyKey: 'legacy-retry-target' });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' } });
+    db.prepare(`INSERT INTO project_git_operation_requests
+      (actor_id, scope, action, idempotency_key, request_digest, operation_id, created_at)
+      VALUES ('local', 'import', 'retry', 'legacy-retry-request', 'legacy-retry-digest', ?, 1)`).run(operation.id);
+    db.prepare('DELETE FROM project_git_retry_attempts WHERE operation_id = ?').run(operation.id);
+
+    migrateProjectGit(db);
+
+    expect(createProjectGitStore(db).getRetryAttempt(operation.id)).toMatchObject({
+      attempt: 1, state: 'admitted', priorStatus: 'failed', priorPhase: 'failed',
+    });
+    expect(createProjectGitStore(db).getOperation(operation.id)).toMatchObject({
+      status: 'queued', phase: 'waiting_idle', error: null,
+    });
+  });
+
+  it('atomically couples a retry receipt to a visible nonterminal attempt before SQLite reopen', () => {
+    let store = createProjectGitStore(db);
+    const operation = store.enqueueOperation({ ...request, idempotencyKey: 'failed-open' });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure repository authentication.' } });
+
+    store.claimOperationRequest({ actorId: 'local', projectId: null, action: 'retry',
+      idempotencyKey: 'retry-failed-open', requestDigest: 'retry-digest', operationId: operation.id });
+
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'queued', phase: 'waiting_idle', error: null });
+    expect(db.prepare(`SELECT operation_id AS operationId, attempt, state, prior_status AS priorStatus,
+      prior_phase AS priorPhase FROM project_git_retry_attempts WHERE operation_id = ?`).get(operation.id)).toEqual({
+      operationId: operation.id, attempt: 1, state: 'admitted', priorStatus: 'failed', priorPhase: 'failed',
+    });
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'queued', phase: 'waiting_idle' });
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([operation.id]);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'failed', phase: 'failed',
+      error: { code: 'RECOVERY_REQUIRED', details: { reason: 'interrupted_retry' } } });
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+
+    db.close(); db = new Database(file); migrateProjectGit(db); store = createProjectGitStore(db);
+    expect(store.reconcileInterruptedRetryAttempts(new Set([operation.id]))).toEqual([]);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+  });
+
+  it('claims one retry worker and preserves explicit failed-attempt re-execution', () => {
+    const store = createProjectGitStore(db);
+    const operation = store.enqueueOperation({ ...request, idempotencyKey: 'retry-attempt-owner' });
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Configure authentication.' } });
+    const input = { actorId: 'local', projectId: null, action: 'retry' as const,
+      idempotencyKey: 'retry-attempt-request', requestDigest: 'retry-attempt-digest', operationId: operation.id };
+    expect(store.claimOperationRequest(input)).toMatchObject({ admitted: true, attempt: 1 });
+
+    expect(store.startRetryAttempt(operation.id, 1)).toBe(true);
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'running', phase: 'waiting_idle', error: null });
+    expect(store.startRetryAttempt(operation.id, 1)).toBe(false);
+    store.updateOperation(operation.id, { status: 'failed', phase: 'failed', result: null,
+      error: { code: 'GIT_AUTH_REQUIRED', message: 'Authentication still required.' } });
+    store.settleRetryAttempt(operation.id, 1);
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 1, state: 'settled' });
+
+    expect(store.claimOperationRequest(input)).toMatchObject({ created: false, admitted: true, attempt: 2 });
+    expect(store.getOperation(operation.id)).toMatchObject({ status: 'queued', phase: 'waiting_idle', error: null });
+    expect(store.getRetryAttempt(operation.id)).toMatchObject({ attempt: 2, state: 'admitted',
+      priorStatus: 'failed', priorPhase: 'failed', priorError: { code: 'GIT_AUTH_REQUIRED' } });
   });
 
   it('admits only one resolution operation for a retained conflict', () => {

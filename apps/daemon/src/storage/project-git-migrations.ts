@@ -70,6 +70,31 @@ export function migrateProjectGit(db: Database.Database): void {
       PRIMARY KEY (actor_id, scope, action, idempotency_key),
       UNIQUE (operation_id)
     );
+    CREATE TABLE IF NOT EXISTS project_git_retry_attempts (
+      operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
+      attempt INTEGER NOT NULL CHECK (attempt >= 1),
+      state TEXT NOT NULL CHECK (state IN ('admitted', 'started', 'settled')),
+      prior_status TEXT NOT NULL,
+      prior_phase TEXT NOT NULL,
+      prior_result_json TEXT,
+      prior_error_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO project_git_retry_attempts
+      (operation_id, attempt, state, prior_status, prior_phase, prior_result_json, prior_error_json, created_at, updated_at)
+    SELECT request.operation_id, 1,
+      CASE WHEN operation.status = 'succeeded' THEN 'settled' ELSE 'admitted' END,
+      operation.status, operation.phase, operation.result_json, operation.error_json,
+      request.created_at, request.created_at
+    FROM project_git_operation_requests AS request
+    JOIN project_git_operations AS operation ON operation.id = request.operation_id
+    WHERE request.action = 'retry';
+    UPDATE project_git_operations
+    SET status = 'queued', phase = 'waiting_idle', error_json = NULL,
+      updated_at = MAX(updated_at, (SELECT updated_at FROM project_git_retry_attempts WHERE operation_id = project_git_operations.id))
+    WHERE status IN ('failed', 'waiting')
+      AND id IN (SELECT operation_id FROM project_git_retry_attempts WHERE state IN ('admitted', 'started'));
     CREATE TABLE IF NOT EXISTS project_git_conflict_resolutions (
       conflict_operation_id TEXT PRIMARY KEY REFERENCES project_git_operations(id),
       resolve_operation_id TEXT NOT NULL UNIQUE REFERENCES project_git_operations(id)

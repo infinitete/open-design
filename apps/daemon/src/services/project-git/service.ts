@@ -275,6 +275,7 @@ export async function createProjectGitServiceComposition(
   const interruptedAdmissions = new Set(input.store.listPendingOperations()
     .filter(operation => operation.journalPhase === null && operation.recoveryData === null)
     .map(operation => operation.id));
+  const interruptedRetryAttempts = new Set(input.store.listActiveRetryAttempts().map(attempt => attempt.operationId));
   scheduler = createProjectGitScheduler({
     store: input.store,
     now: Date.now,
@@ -483,7 +484,7 @@ export async function createProjectGitServiceComposition(
   async function admitRetry(
     action: Extract<ProjectGitAction, { kind: 'retry' }>,
     context: ProjectGitRequestContext,
-  ): Promise<{ operation: ProjectGitOperation; startWorker: boolean }> {
+  ): Promise<{ operation: ProjectGitOperation; startWorker: boolean; attempt: number | null }> {
     if (context.projectId) await input.requireProject?.(context.actorId, context.projectId);
     const digest = requestDigest({ action, expectedProjectRevision: context.expectedProjectRevision ?? null });
     const replay = input.store.findOperationRequest({ actorId: context.actorId, projectId: context.projectId,
@@ -493,8 +494,8 @@ export async function createProjectGitServiceComposition(
       const operation = input.store.getOperation(replay.operationId);
       if (!operation) throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The retried operation is unavailable.');
       const journal = input.store.getJournal(operation.id)!;
-      if (operation.status === 'succeeded' || operation.status === 'running' || journal.recoveryData !== null) {
-        return { operation, startWorker: false };
+      if (operation.status === 'succeeded' || ['queued', 'running'].includes(operation.status) || journal.recoveryData !== null) {
+        return { operation, startWorker: false, attempt: null };
       }
     }
     const target = input.store.getJournal(action.operationId);
@@ -536,10 +537,14 @@ export async function createProjectGitServiceComposition(
     if (target.projectId && payload.lane !== 'quarantine') await resolveRuntime(target.projectId);
     const claim = input.store.claimOperationRequest({ actorId: context.actorId, projectId: context.projectId,
       action: 'retry', idempotencyKey: context.idempotencyKey, requestDigest: digest, operationId: target.id });
-    return { operation: input.store.getOperation(target.id)!, startWorker: claim.created || replay !== null };
+    return { operation: input.store.getOperation(target.id)!, startWorker: claim.admitted,
+      attempt: claim.admitted ? claim.attempt : null };
   }
 
-  async function retryOperation(operationId: string): Promise<ProjectGitOperation> {
+  async function retryOperation(operationId: string, attempt: number): Promise<ProjectGitOperation> {
+    if (!input.store.startRetryAttempt(operationId, attempt)) {
+      throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted retry worker is unavailable.');
+    }
     const target = input.store.getJournal(operationId);
     const payload = target?.payload;
     if (!target || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -566,17 +571,7 @@ export async function createProjectGitServiceComposition(
         });
       });
     }
-    const resume = async (work: () => Promise<ProjectGitOperation>): Promise<ProjectGitOperation> => {
-      input.store.updateOperation(target.id, { status: 'running', phase: 'waiting_idle', result: target.result, error: null });
-      try { return await work(); }
-      catch (error) {
-        const current = input.store.getJournal(target.id);
-        if (current?.journalPhase === null) input.store.updateOperation(target.id, {
-          status: 'failed', phase: target.phase, result: target.result, error: target.error,
-        });
-        throw error;
-      }
-    };
+    const resume = (work: () => Promise<ProjectGitOperation>): Promise<ProjectGitOperation> => work();
     if (target.kind === 'open') {
       return resume(() => bindingService.openRepository({ actorId: original.actorId, idempotencyKey: original.idempotencyKey,
         url: payload.url as string, branch: payload.branch as string }));
@@ -684,6 +679,7 @@ export async function createProjectGitServiceComposition(
         const request = contextRequest(context);
         let operationAtAdmission: ProjectGitOperation | null = null;
         let prestartedWorker: Promise<ProjectGitOperation> | null = null;
+        let retryAttempt: number | null = null;
         let startWorker = true;
         switch (action.kind) {
           case 'enable_preview': operationAtAdmission = await bindingService.admitPreviewEnable(context.projectId!, request); break;
@@ -709,6 +705,7 @@ export async function createProjectGitServiceComposition(
             const retry = await admitRetry(action, context);
             operationAtAdmission = retry.operation;
             startWorker = retry.startWorker;
+            retryAttempt = retry.attempt;
             break;
           }
         }
@@ -736,7 +733,7 @@ export async function createProjectGitServiceComposition(
               return input.store.getOperation(result.operationId)!;
             }
             case 'sync': return manualSync(context);
-            case 'retry': return retryOperation(action.operationId);
+            case 'retry': return retryOperation(action.operationId, retryAttempt!);
             case 'resolve': throw new GitDomainError('RECOVERY_REQUIRED', 409, 'The admitted conflict resolution worker is unavailable.');
             default: return shortOperation(action, context);
           }
@@ -750,12 +747,14 @@ export async function createProjectGitServiceComposition(
           });
         }
         const completed = worker.then(async operation => {
+          if (retryAttempt !== null) input.store.settleRetryAttempt(operation.id, retryAttempt);
           await accepted(operation);
           return { ok: true as const, operation };
         }, async error => {
           const operation = operationForRequest(action, context);
           if (operation) {
             input.store.settleAdmittedOperationFailure(operation.id, publicError(error));
+            if (retryAttempt !== null) input.store.settleRetryAttempt(operation.id, retryAttempt);
             await accepted(input.store.getOperation(operation.id)!);
           }
           return { ok: false as const, error };
@@ -815,6 +814,14 @@ export async function createProjectGitServiceComposition(
       if (startPromise) return startPromise;
       startPromise = (async () => {
         await recoveryReady;
+        if (stopping || stopped) return;
+        const settledRetries = input.store.reconcileInterruptedRetryAttempts(interruptedRetryAttempts);
+        for (const operationId of settledRetries) {
+          const operation = input.store.getOperation(operationId);
+          if (!operation) continue;
+          await emitOperation(operation);
+          if (operation.projectId) await emitState(operation.projectId);
+        }
         if (stopping || stopped) return;
         input.store.reconcileInterruptedAdmissions(interruptedAdmissions);
         if (stopping || stopped) return;
