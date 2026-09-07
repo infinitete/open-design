@@ -1,4 +1,7 @@
 export type PluginFolderAgentAction = 'install' | 'publish' | 'contribute';
+export type PluginFolderAgentActionResult =
+  | { status: 'success'; message?: string; url?: string }
+  | { status: 'stale' };
 
 const INSTALL_TITLE = 'Install this generated plugin into My plugins.';
 const INSTALL_NOTE =

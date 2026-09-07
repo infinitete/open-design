@@ -121,7 +121,10 @@ import {
   type BrowserPageSnapshotToastEvent,
   type BrowserPageInfo,
 } from './DesignBrowserPanel';
-import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
+import type {
+  PluginFolderAgentAction,
+  PluginFolderAgentActionResult,
+} from './design-files/pluginFolderActions';
 import { designSystemGithubEvidenceState, repoConnectCopy } from './design-system-github-evidence';
 import { APP_CHROME_FILE_ACTIONS_ID } from './AppChromeHeader';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
@@ -272,7 +275,7 @@ interface Props {
   onPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
   focusMode?: boolean;

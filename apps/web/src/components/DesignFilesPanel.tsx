@@ -20,7 +20,10 @@ import {
   isFileSystemReadError,
 } from '../utils/fileSystemErrors';
 import { isVisualStabilityMode } from '../utils/visualStability';
-import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
+import type {
+  PluginFolderAgentAction,
+  PluginFolderAgentActionResult,
+} from './design-files/pluginFolderActions';
 import { getPluginFolderCandidates } from './design-files/pluginFolders';
 import { Icon } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
@@ -99,7 +102,7 @@ interface Props {
   onPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
   navState?: DesignFilesNavState;
@@ -1299,10 +1302,11 @@ export function DesignFilesPanel({
     }
     try {
       const outcome = await onPluginFolderAgentAction(relativePath, action);
-      const url = outcome && typeof outcome === 'object' && typeof outcome.url === 'string'
+      if (outcome.status !== 'success') return;
+      const url = typeof outcome.url === 'string'
         ? outcome.url
         : '';
-      const message = outcome && typeof outcome === 'object' && typeof outcome.message === 'string'
+      const message = typeof outcome.message === 'string'
         ? outcome.message
         : '';
       if (message || url) setInstallNotice(buildActionNotice(message || url, url));

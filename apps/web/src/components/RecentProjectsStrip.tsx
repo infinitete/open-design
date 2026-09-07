@@ -1433,6 +1433,13 @@ export function RecentProjectsStrip({
     });
   }
 
+  function closeBulkDelete() {
+    if (bulkDeletePending) return;
+    setBulkDeleteOpen(false);
+    setBulkDeleteTargetIds([]);
+    setBulkDeleteError(null);
+  }
+
   return (
     <section className="recent-projects" data-testid="recent-projects-strip">
       {fullPageGrid ? (
@@ -2273,7 +2280,7 @@ export function RecentProjectsStrip({
         <Dialog
           className="modal-confirm"
           role="alertdialog"
-          onClose={() => setBulkDeleteOpen(false)}
+          onClose={closeBulkDelete}
           closeOnEscape
           ariaLabelledBy={bulkDeleteTitleId}
         >
@@ -2283,7 +2290,7 @@ export function RecentProjectsStrip({
           </DialogDescription>
           {bulkDeleteError ? <div role="alert">{bulkDeleteError}</div> : null}
           <DialogFooter className="row">
-            <button type="button" onClick={() => setBulkDeleteOpen(false)}>
+            <button type="button" disabled={bulkDeletePending} onClick={closeBulkDelete}>
               {t('designs.renameCancel')}
             </button>
             <button

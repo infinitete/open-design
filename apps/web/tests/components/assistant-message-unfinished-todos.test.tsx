@@ -206,7 +206,7 @@ describe('AssistantMessage unfinished todo state', () => {
 
   it('surfaces generated plugin next actions in the latest assistant turn', async () => {
     const onOpen = vi.fn();
-    const onPluginFolderAgentAction = vi.fn(async () => {});
+    const onPluginFolderAgentAction = vi.fn(async () => ({ status: 'success' as const }));
     render(
       <AssistantMessage
         message={{

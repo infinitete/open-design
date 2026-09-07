@@ -7,7 +7,7 @@
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
 import * as registry from '../../src/providers/registry';
@@ -19,7 +19,15 @@ import {
   unregisterProjectMutationStore,
 } from '../../src/state/project-git';
 
-let defaultProjectStore: ReturnType<typeof createProjectGitStateStore>;
+const ownedProjectStores = new Map<string, ReturnType<typeof createProjectGitStateStore>>();
+const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+
+function registerOwnedProjectStore(projectId: string, state: ProjectGitState) {
+  const store = createProjectGitStateStore(state);
+  registerProjectMutationStore(projectId, store);
+  ownedProjectStores.set(projectId, store);
+  return store;
+}
 
 beforeAll(() => {
   const store = new Map<string, string>();
@@ -33,9 +41,19 @@ beforeAll(() => {
     },
   });
 });
+afterAll(() => {
+  if (originalLocalStorageDescriptor) {
+    Object.defineProperty(window, 'localStorage', originalLocalStorageDescriptor);
+  } else {
+    delete (window as { localStorage?: Storage }).localStorage;
+  }
+});
 afterEach(() => {
-  unregisterProjectMutationStore('proj-1', defaultProjectStore);
-  defaultProjectStore.dispose();
+  for (const [projectId, store] of ownedProjectStores) {
+    unregisterProjectMutationStore(projectId, store);
+    store.dispose();
+  }
+  ownedProjectStores.clear();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -43,8 +61,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  defaultProjectStore = createProjectGitStateStore(projectGitState(1));
-  registerProjectMutationStore('proj-1', defaultProjectStore);
+  registerOwnedProjectStore('proj-1', projectGitState(1));
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -252,8 +269,7 @@ describe('AssistantMessage feedback gate', () => {
 
   it('does not continue a plugin draft after its captured project epoch is revoked', async () => {
     const projectId = 'plugin-draft-project';
-    const store = createProjectGitStateStore(projectGitState(4));
-    registerProjectMutationStore(projectId, store);
+    const store = registerOwnedProjectStore(projectId, projectGitState(4));
     let releaseDraft!: (response: Response) => void;
     const draftResponse = new Promise<Response>((resolve) => { releaseDraft = resolve; });
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => draftResponse);
@@ -297,8 +313,7 @@ describe('AssistantMessage feedback gate', () => {
 
   it('re-enables plugin share when a never-resolving request loses authority', async () => {
     const projectId = 'plugin-share-abort-project';
-    const store = createProjectGitStateStore(projectGitState(8));
-    registerProjectMutationStore(projectId, store);
+    const store = registerOwnedProjectStore(projectId, projectGitState(8));
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
       async () => new Promise<Response>(() => {}),
     );
@@ -330,7 +345,7 @@ describe('AssistantMessage feedback gate', () => {
 
   it('sends plugin share with its captured revision and keeps the stale-state notice', async () => {
     const projectId = 'plugin-share-project';
-    registerProjectMutationStore(projectId, createProjectGitStateStore(projectGitState(7)));
+    registerOwnedProjectStore(projectId, projectGitState(7));
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Plugin action belongs to older history' },
     }), { status: 409, headers: { 'content-type': 'application/json' } }));

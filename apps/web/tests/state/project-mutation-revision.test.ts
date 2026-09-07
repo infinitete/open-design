@@ -18,7 +18,17 @@ import {
   ProjectStateChangedError,
   createProjectGitStateStore,
   registerProjectMutationStore,
+  unregisterProjectMutationStore,
 } from '../../src/state/project-git';
+
+const ownedStores = new Map<string, ReturnType<typeof createProjectGitStateStore>>();
+
+function readyStore(projectId: string, revision: number) {
+  const store = createProjectGitStateStore(state(revision));
+  registerProjectMutationStore(projectId, store);
+  ownedStores.set(projectId, store);
+  return store;
+}
 
 function state(revision: number): ProjectGitState {
   return {
@@ -29,13 +39,28 @@ function state(revision: number): ProjectGitState {
   };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  for (const [projectId, store] of ownedStores) {
+    unregisterProjectMutationStore(projectId, store);
+    store.dispose();
+  }
+  ownedStores.clear();
+  vi.unstubAllGlobals();
+});
 
 describe('project mutation transport', () => {
+  it('fails a project patch closed when no ready mutation authority exists', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(patchProject('unmanaged-project', { name: 'Must not escape' })).resolves.toBeNull();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('keeps an old prepared write bound to its captured revision and abort signal', async () => {
     const projectId = 'mutation-project';
-    const store = createProjectGitStateStore(state(4));
-    registerProjectMutationStore(projectId, store);
+    const store = readyStore(projectId, 4);
     const captured = store.capture();
     store.accept(state(5), 'event');
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
@@ -53,8 +78,7 @@ describe('project mutation transport', () => {
 
   it('captures once for a multipart batch and preserves PROJECT_STATE_CHANGED', async () => {
     const projectId = 'upload-project';
-    const store = createProjectGitStateStore(state(8));
-    registerProjectMutationStore(projectId, store);
+    const store = readyStore(projectId, 8);
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Restored elsewhere', retryable: false },
     }), { status: 409, headers: { 'content-type': 'application/json' } }));
@@ -68,7 +92,7 @@ describe('project mutation transport', () => {
 
   it('does not collapse a project patch 409 to null', async () => {
     const projectId = 'settings-project';
-    registerProjectMutationStore(projectId, createProjectGitStateStore(state(3)));
+    readyStore(projectId, 3);
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Reload the project' },
     }), { status: 409, headers: { 'content-type': 'application/json' } })));
@@ -79,8 +103,7 @@ describe('project mutation transport', () => {
 
   it('binds terminal creation to the captured revision and preserves a stale-state rejection', async () => {
     const projectId = 'terminal-project';
-    const store = createProjectGitStateStore(state(6));
-    registerProjectMutationStore(projectId, store);
+    const store = readyStore(projectId, 6);
     const captured = store.capture();
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Terminal intent is stale' },
@@ -97,8 +120,7 @@ describe('project mutation transport', () => {
 
   it('uses one captured revision for a library apply and rethrows stale-state rejection', async () => {
     const projectId = 'library-apply-project';
-    const store = createProjectGitStateStore(state(9));
-    registerProjectMutationStore(projectId, store);
+    const store = readyStore(projectId, 9);
     const captured = store.capture();
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Library selection is stale' },
@@ -122,8 +144,7 @@ describe('project mutation transport', () => {
 
   it('preserves revision authority and stale-state errors for all live-artifact mutations', async () => {
     const projectId = 'live-artifact-project';
-    const store = createProjectGitStateStore(state(11));
-    registerProjectMutationStore(projectId, store);
+    const store = readyStore(projectId, 11);
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       error: { code: 'PROJECT_STATE_CHANGED', message: 'Live artifact action is stale' },
     }), { status: 409, headers: { 'content-type': 'application/json' } }));

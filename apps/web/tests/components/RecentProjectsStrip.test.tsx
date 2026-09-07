@@ -866,6 +866,9 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     ready.set('project-2', true);
     view.rerender(<RecentProjectsStrip {...props} />);
     expect(confirm).not.toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(targetEvents.at(-1)).toEqual([]));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     window.removeEventListener('open-design:project-mutation-targets', onTargets);
   });
 

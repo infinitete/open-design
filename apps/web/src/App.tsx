@@ -2228,10 +2228,16 @@ function AppInner() {
     id: string,
     suppliedMutationContext?: ProjectMutationContext,
   ): Promise<import('./state/projects').ProjectDeleteResult> => {
-    if (!suppliedMutationContext && !projectGitAuthorities.isReady(id)) return false;
-    const mutationContext = suppliedMutationContext ?? captureProjectMutation(id);
-    if (!mutationContext) return false;
-    if (!isProjectMutationCurrent(id, mutationContext)) return 'stale';
+    const freshMutationContext = captureProjectMutation(id);
+    if (!freshMutationContext) return false;
+    if (suppliedMutationContext && (
+      !isProjectMutationCurrent(id, suppliedMutationContext)
+      || suppliedMutationContext.generation !== freshMutationContext.generation
+      || suppliedMutationContext.expectedProjectRevision
+        !== freshMutationContext.expectedProjectRevision
+      || suppliedMutationContext.signal !== freshMutationContext.signal
+    )) return 'stale';
+    const mutationContext = suppliedMutationContext ?? freshMutationContext;
     try {
       await deleteProjectApi(id, mutationContext);
     } catch (error) {
@@ -2251,7 +2257,7 @@ function AppInner() {
       navigate({ kind: 'home', view: 'home' });
     }
     return true;
-  }, [clearLocalProject, iframeKeepAlivePool, projectGitAuthorities, route]);
+  }, [clearLocalProject, iframeKeepAlivePool, route]);
 
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
@@ -2293,9 +2299,19 @@ function AppInner() {
     });
   }, [iframeKeepAlivePool, route]);
 
-  const handleClearPendingPrompt = useCallback(() => {
+  const handleClearPendingPrompt = useCallback(async () => {
     const projectId = route.kind === 'project' ? route.projectId : null;
     if (!projectId) return;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
+    let persisted: Project | null;
+    try {
+      persisted = await patchProject(projectId, { pendingPrompt: null }, mutationContext);
+    } catch (error) {
+      if (error instanceof ProjectStateChangedError) return;
+      throw error;
+    }
+    if (!persisted || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setProjects((curr) =>
       curr.map((p) =>
         p.id === projectId ? { ...p, pendingPrompt: undefined } : p,
@@ -2305,12 +2321,13 @@ function AppInner() {
       patch: (cachedProjects) => cachedProjects.map((project) =>
         project.id === projectId ? { ...project, pendingPrompt: undefined } : project),
     });
-    void patchProject(projectId, { pendingPrompt: null });
   }, [route]);
 
   const handleTouchProject = useCallback(() => {
     const projectId = route.kind === 'project' ? route.projectId : null;
     if (!projectId) return;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const updatedAt = Date.now();
     setProjects((curr) =>
       curr.map((p) => (p.id === projectId ? { ...p, updatedAt } : p)),
@@ -2319,7 +2336,7 @@ function AppInner() {
       patch: (cachedProjects) => cachedProjects.map((project) =>
         project.id === projectId ? { ...project, updatedAt } : project),
     });
-    void patchProject(projectId, { updatedAt });
+    void patchProject(projectId, { updatedAt }, mutationContext);
   }, [route]);
 
   const handleProjectChange = useCallback((updated: Project) => {

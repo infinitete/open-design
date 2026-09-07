@@ -93,7 +93,10 @@ import {
 } from './ChatComposer';
 import type { PlaceholderScenario } from './home-hero/placeholderScenarios';
 import { listDesignArtifactCandidates } from './design-files/designArtifacts';
-import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
+import type {
+  PluginFolderAgentAction,
+  PluginFolderAgentActionResult,
+} from './design-files/pluginFolderActions';
 import { Icon, type IconName } from './Icon';
 import { UserActionCard, type UserActionCardTone } from './UserActionCard';
 import { repoConnectCopy } from './design-system-github-evidence';
@@ -514,6 +517,7 @@ interface Props {
   // canonical text; non-run errors leave the source undefined.
   errorSourceAssistantId?: string | null;
   projectId: string | null;
+  projectGeneration?: number;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
   // Analytics-only — forwarded to AssistantMessage so the feedback
@@ -572,7 +576,7 @@ interface Props {
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
   // "Share to OpenDesign" button on each completed assistant message —
@@ -923,6 +927,7 @@ export function ChatPane({
   error,
   errorSourceAssistantId,
   projectId,
+  projectGeneration,
   sessionMode = 'design',
   onSessionModeChange,
   projectKindForTracking = null,
@@ -1603,6 +1608,7 @@ export function ChatPane({
     if (!composerDraftSignal) return;
     if (
       composerDraftSignal.projectId !== projectId
+      || (projectGeneration !== undefined && composerDraftSignal.generation !== projectGeneration)
       || composerDraftSignal.conversationId !== activeConversationId
       || lastDraftSignalIdRef.current === composerDraftSignal.id
       || !composerRef.current
@@ -1614,7 +1620,7 @@ export function ChatPane({
     });
     lastDraftSignalIdRef.current = composerDraftSignal.id;
     onComposerDraftRestored?.(composerDraftSignal.id);
-  }, [activeConversationId, composerDraftSignal, onComposerDraftRestored, projectId]);
+  }, [activeConversationId, composerDraftSignal, onComposerDraftRestored, projectGeneration, projectId]);
 
   // Library "optimize design system" hand-off: when the user pushed selected
   // assets into this project's design system from the Library, pre-fill the
@@ -3165,7 +3171,10 @@ function ChatRows({
   onRequestOpenFile?: (name: string) => void;
   onRequestPluginDetails?: (pluginId: string) => void;
   onRequestDesignSystemDetails?: (system: DesignSystemSummary) => void;
-  onRequestPluginFolderAgentAction?: (relativePath: string, action: PluginFolderAgentAction) => void;
+  onRequestPluginFolderAgentAction?: (
+    relativePath: string,
+    action: PluginFolderAgentAction,
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
   onShareToOpenDesign?: (assistantMessageId: string) => void;

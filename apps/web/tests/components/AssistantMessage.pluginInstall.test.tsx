@@ -16,10 +16,13 @@
 
 import { useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
+import type { PluginFolderAgentActionResult } from '../../src/components/design-files/pluginFolderActions';
 import type { AgentEvent, ChatMessage, ProjectFile } from '../../src/types';
+
+const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
 
 beforeAll(() => {
   if (window.localStorage) return;
@@ -33,6 +36,14 @@ beforeAll(() => {
       setItem: (key: string, value: string) => store.set(key, value),
     },
   });
+});
+
+afterAll(() => {
+  if (originalLocalStorageDescriptor) {
+    Object.defineProperty(window, 'localStorage', originalLocalStorageDescriptor);
+  } else {
+    delete (window as { localStorage?: Storage }).localStorage;
+  }
 });
 
 afterEach(() => {
@@ -87,7 +98,7 @@ function ToggleHostWrapper({
   resolveSignal,
 }: {
   folderPath: string;
-  outcome: { message?: string; url?: string } | void;
+  outcome: PluginFolderAgentActionResult;
   resolveSignal: { resolve: () => void; promise: Promise<void> };
 }) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
@@ -116,7 +127,7 @@ function ToggleHostWrapper({
 
 describe('AssistantMessage plugin install success feedback (#2876)', () => {
   it('keeps generated plugin-folder actions inert and never fabricates success without authority', async () => {
-    const onAction = vi.fn(async () => undefined);
+    const onAction = vi.fn(async () => ({ status: 'stale' as const }));
     const folderPath = 'locked-skill';
     render(
       <AssistantMessage
@@ -152,7 +163,7 @@ describe('AssistantMessage plugin install success feedback (#2876)', () => {
     render(
       <ToggleHostWrapper
         folderPath={folderPath}
-        outcome={{ message: 'Installed My Skill.' }}
+        outcome={{ status: 'success', message: 'Installed My Skill.' }}
         resolveSignal={signal}
       />,
     );
@@ -186,7 +197,7 @@ describe('AssistantMessage plugin install success feedback (#2876)', () => {
     render(
       <ToggleHostWrapper
         folderPath={folderPath}
-        outcome={undefined}
+        outcome={{ status: 'success' }}
         resolveSignal={signal}
       />,
     );
@@ -206,5 +217,24 @@ describe('AssistantMessage plugin install success feedback (#2876)', () => {
     await waitFor(() => {
       expect(screen.getByText(/added to my plugins/i)).toBeTruthy();
     });
+  });
+
+  it('does not turn an accepted callback that became stale into install success', async () => {
+    const folderPath = 'stale-skill';
+    render(
+      <AssistantMessage
+        message={pluginMessage(folderPath)}
+        streaming={false}
+        isLast
+        projectId="proj-1"
+        projectFiles={pluginFolderFiles(folderPath)}
+        onRequestPluginFolderAgentAction={async () => ({ status: 'stale' })}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId(`assistant-plugin-install-${folderPath}`));
+    await act(async () => undefined);
+
+    expect(screen.queryByText(/added to my plugins/i)).toBeNull();
   });
 });

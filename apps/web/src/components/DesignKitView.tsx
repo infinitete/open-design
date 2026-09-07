@@ -724,6 +724,14 @@ function DesignKitViewInner({
     const mutationContext = kit.projectId
       ? captureProjectMutation(kit.projectId)
       : undefined;
+    if (
+      kit.projectId
+      && (
+        !isProjectMutationReady(kit.projectId)
+        || !mutationContext
+        || !isProjectMutationCurrent(kit.projectId, mutationContext)
+      )
+    ) return;
     const isCurrent = () => !kit.projectId || Boolean(
       mutationContext && isProjectMutationCurrent(kit.projectId, mutationContext),
     );

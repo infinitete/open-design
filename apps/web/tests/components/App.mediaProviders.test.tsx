@@ -51,7 +51,9 @@ vi.mock('../../src/state/project-git', async () => {
   );
   return {
     ...actual,
-    captureProjectMutation: vi.fn(() => projectMutationContext),
+    captureProjectMutation: vi.fn(() => (
+      projectAuthorityHarness.ready ? projectMutationContext : undefined
+    )),
     isProjectMutationCurrent: vi.fn(() => projectAuthorityHarness.current),
   };
 });
@@ -124,11 +126,21 @@ vi.mock('../../src/components/EntryView', async () => {
 vi.mock('../../src/components/ProjectView', () => ({
   ProjectView: ({
     onDeleteProject,
+    onClearPendingPrompt,
+    onTouchProject,
+    project,
   }: {
     onDeleteProject?: (id: string, context?: typeof projectMutationContext) => Promise<unknown>;
+    onClearPendingPrompt: () => void;
+    onTouchProject: () => void;
+    project: { pendingPrompt?: string; updatedAt: number };
   }) => (
     <div>
       Project view
+      <span>{project.pendingPrompt}</span>
+      <span>Updated at {project.updatedAt}</span>
+      <button type="button" onClick={onClearPendingPrompt}>Acknowledge restored draft</button>
+      <button type="button" onClick={onTouchProject}>Touch active project</button>
       <button
         type="button"
         onClick={() => void onDeleteProject?.('project-rename', projectMutationContext)
@@ -356,6 +368,63 @@ describe('App media provider sync flows', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete active backing project' }));
     await act(async () => undefined);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+  });
+
+  it('does not use a retained supplied delete context after authority read failure', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    projectAuthorityHarness.ready = false;
+    projectAuthorityHarness.current = true;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      new Response(JSON.stringify({ project, resolvedDir: '/project' }), { status: 200 })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete active backing project' }));
+    await act(async () => undefined);
+
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+    expect(activeDeleteResult).toBe(false);
+  });
+
+  it('keeps a pending prompt when its restore acknowledgement has no ready authority', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      pendingPrompt: 'Keep this draft',
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    projectAuthorityHarness.ready = false;
+    render(<App />);
+
+    expect(await screen.findByText('Keep this draft')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge restored draft' }));
+
+    expect(mockedPatchProject).not.toHaveBeenCalled();
+    expect(screen.getByText('Keep this draft')).toBeTruthy();
+  });
+
+  it('keeps an implicit active-project touch inert when fresh authority is unavailable', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    projectAuthorityHarness.ready = false;
+    render(<App />);
+
+    expect(await screen.findByText('Updated at 2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Touch active project' }));
+
+    expect(screen.getByText('Updated at 2')).toBeTruthy();
+    expect(mockedPatchProject).not.toHaveBeenCalled();
   });
 
   it('maps a real structured project revision 409 to a stale delete result', async () => {

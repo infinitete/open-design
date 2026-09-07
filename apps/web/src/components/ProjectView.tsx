@@ -273,6 +273,7 @@ import {
 } from './FileWorkspace';
 import {
   type PluginFolderAgentAction,
+  type PluginFolderAgentActionResult,
 } from './design-files/pluginFolderActions';
 import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunityPrompt';
 import { CenteredLoader } from './Loading';
@@ -5985,7 +5986,12 @@ export function ProjectView({
             releaseReattachRuns();
             clearActiveRunRefs(reattachConversationId, controller, cancelController);
             releaseConversationOperation(reattachConversationId, reattachOperationToken!);
+            if (mountedRef.current) setRecoveryTick((tick) => tick + 1);
           });
+        // One conversation-operation token belongs to exactly one controller.
+        // A later recovery tick may inspect the next eligible row after this
+        // controller releases the active slot.
+        return;
       }
       } finally {
         if (!operationTransferred) releaseActiveOperation();
@@ -8512,10 +8518,15 @@ export function ProjectView({
       : apiProtocolModelLabel(config.apiProtocol, config.model);
 
   const handlePluginFolderAgentAction = useCallback(
-    async (relativePath: string, action: PluginFolderAgentAction) => {
-      if (currentConversationActionDisabled || !activeConversationId) return;
+    async (
+      relativePath: string,
+      action: PluginFolderAgentAction,
+    ): Promise<PluginFolderAgentActionResult> => {
+      if (currentConversationActionDisabled || !activeConversationId) return { status: 'stale' };
       const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
+        return { status: 'stale' };
+      }
       const pluginWorkflowWorkspaceContext = projectRunWorkspaceContext;
       setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
       if (action === 'install') {
@@ -8539,9 +8550,9 @@ export function ProjectView({
             return next;
           });
         }
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return { status: 'stale' };
         if (!outcome.ok) throw new Error(outcome.message);
-        return { message: outcome.message };
+        return { status: 'success', message: outcome.message };
       }
       const conversationId = activeConversationId;
       const shareAction = action === 'publish' ? 'publish-github' : 'contribute-open-design';
@@ -8565,7 +8576,7 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return { status: 'stale' };
         throw error;
       }
       if (!isProjectMutationCurrent(project.id, mutationContext)) {
@@ -8579,7 +8590,7 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        return;
+        return { status: 'stale' };
       }
       const startedAt = taskStart.startedAt;
       const messageId = randomUUID();
@@ -8779,7 +8790,7 @@ export function ProjectView({
         );
         updateConversationLatestRun('failed', endedAt);
       });
-      return;
+      return { status: 'success' };
     },
     [
       activeConversationId,
@@ -8823,7 +8834,10 @@ export function ProjectView({
   const persistDesignSystemReviewEntry = useCallback((
     sectionTitle: string,
     entry: DesignSystemReviewEntry,
-  ) => {
+    suppliedMutationContext?: ProjectMutationContext,
+  ): boolean => {
+    const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return false;
     const baseMetadata: ProjectMetadata = {
       kind: project.metadata?.kind ?? 'other',
       ...project.metadata,
@@ -8836,7 +8850,8 @@ export function ProjectView({
       },
     };
     onProjectChange({ ...project, metadata });
-    void patchProject(project.id, { metadata });
+    void patchProject(project.id, { metadata }, mutationContext);
+    return true;
   }, [onProjectChange, project, projectRunWorkspaceContext]);
 
   const sendDesignSystemFeedback = useCallback((
@@ -8876,6 +8891,8 @@ export function ProjectView({
     decision: DesignSystemReviewEntry['decision'],
     details?: DesignSystemReviewDetails,
   ) => {
+    const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     const entry: DesignSystemReviewEntry = {
       decision,
       updatedAt: new Date().toISOString(),
@@ -8883,8 +8900,8 @@ export function ProjectView({
     if (details?.feedback) entry.feedback = details.feedback;
     if (details?.files) entry.files = details.files;
     if (details?.agentTask) entry.agentTask = details.agentTask;
-    persistDesignSystemReviewEntry(sectionTitle, entry);
-  }, [persistDesignSystemReviewEntry]);
+    persistDesignSystemReviewEntry(sectionTitle, entry, mutationContext);
+  }, [persistDesignSystemReviewEntry, project.id]);
   useEffect(() => {
     if (!activeConversationId || !messagesInitialized || currentConversationActionDisabled) return;
     const queued = Object.entries(project.metadata?.designSystemReview ?? {}).find(
@@ -9461,6 +9478,8 @@ export function ProjectView({
   const handleChangeDesignSystemId = useCallback(
     (nextId: string | null) => {
       if (projectMutationReadOnly) return;
+      const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       if ((projectDesignSystemId ?? null) === nextId) return;
       // `design_system_apply_result` studio variant. The existing
       // NewProjectPanel picker fires the same event under
@@ -9532,7 +9551,7 @@ export function ProjectView({
         updatedAt: Date.now(),
       };
       onProjectChange(updated);
-      void patchProject(project.id, { designSystemId: nextId });
+      void patchProject(project.id, { designSystemId: nextId }, mutationContext);
     },
     [
       project,
@@ -10104,33 +10123,40 @@ export function ProjectView({
     config.mode === 'daemon' &&
     projectIsProgrammaticBrandExtraction &&
     !autoSendFirstMessageRef.current;
-  const acknowledgedPendingPromptRef = useRef<string | null>(null);
+  const pendingPromptOccurrenceRef = useRef<{ key: string; id: string } | null>(null);
   useEffect(() => {
     const pendingPrompt = project.pendingPrompt;
-    if (!pendingPrompt) return;
+    if (!pendingPrompt) {
+      pendingPromptOccurrenceRef.current = null;
+      return;
+    }
     if (autoSendFirstMessageRef.current) {
       autoSendSeedRef.current = pendingPrompt;
       return;
     }
     if (!activeConversationId) return;
-    const pendingKey = `${project.id}\u0000${pendingPrompt}`;
-    if (acknowledgedPendingPromptRef.current === pendingKey) return;
+    const pendingKey = [
+      project.id,
+      projectGit.generation,
+      activeConversationId,
+      pendingPrompt,
+    ].join('\u0000');
+    let occurrence = pendingPromptOccurrenceRef.current;
+    if (occurrence?.key !== pendingKey) {
+      occurrence = { key: pendingKey, id: randomUUID() };
+      pendingPromptOccurrenceRef.current = occurrence;
+    }
+    const nextDraft = {
+      id: occurrence.id,
+      projectId: project.id,
+      generation: projectGit.generation,
+      conversationId: activeConversationId,
+      text: pendingPrompt,
+      source: 'pending-prompt' as const,
+    };
     setComposerDraftSignal((current) => {
-      if (
-        current?.source === 'pending-prompt'
-        && current.projectId === project.id
-        && current.generation === projectGit.generation
-        && current.conversationId === activeConversationId
-        && current.text === pendingPrompt
-      ) return current;
-      return {
-        id: randomUUID(),
-        projectId: project.id,
-        generation: projectGit.generation,
-        conversationId: activeConversationId,
-        text: pendingPrompt,
-        source: 'pending-prompt',
-      };
+      if (current?.id === nextDraft.id) return current;
+      return nextDraft;
     });
   }, [activeConversationId, project.id, project.pendingPrompt, projectGit.generation]);
   useEffect(() => {
@@ -10139,7 +10165,10 @@ export function ProjectView({
       composerDraftSignal.projectId !== project.id
       || composerDraftSignal.generation !== projectGit.generation
       || composerDraftSignal.conversationId !== activeConversationId
-    ) setComposerDraftSignal(undefined);
+    ) {
+      const invalidatedSignalId = composerDraftSignal.id;
+      setComposerDraftSignal((current) => current?.id === invalidatedSignalId ? undefined : current);
+    }
   }, [activeConversationId, composerDraftSignal, project.id, projectGit.generation]);
   const chatInitialDraft = chatSeed?.value;
   // Home → Studio handoff confirmation (spec §11.1 onboarding_prompt_prefilled):
@@ -10182,6 +10211,9 @@ export function ProjectView({
     if (brandProgrammaticContinueStartingRef.current) return;
     const brandId = currentProject.metadata?.brandId?.trim();
     if (!projectIsProgrammaticBrandExtraction || !brandId) return;
+    const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
+    const ownsContinuation = () => isProjectMutationCurrent(project.id, mutationContext);
     brandProgrammaticContinueStartingRef.current = true;
     setBrandProgrammaticContinueStarting(true);
     setBrandExtractionStatusOverride({ brandId, status: 'extracting' });
@@ -10195,6 +10227,7 @@ export function ProjectView({
       status: string,
       conversationId?: string | null,
     ) => {
+      if (!ownsContinuation()) return;
       setBrandExtractionStatusOverride({
         brandId,
         status: isBrandStatusValue(status) ? status : 'extracting',
@@ -10206,12 +10239,13 @@ export function ProjectView({
         Promise.resolve(onDesignSystemsRefresh?.()),
         refreshWorkspaceItems(),
       ]);
+      if (!ownsContinuation()) return;
       bumpFilesRefresh();
       requestOpenFile(brandPreviewFile);
       const returnedConversationId = conversationId?.trim() || null;
       if (returnedConversationId) {
         const stillCurrent = await refreshConversationsForProgrammaticBrandRetry(returnedConversationId);
-        if (!stillCurrent) return;
+        if (!ownsContinuation() || !stillCurrent) return;
         if (
           returnedConversationId !== activeConversationId
           || failedMessagesConversationId === returnedConversationId
@@ -10240,6 +10274,7 @@ export function ProjectView({
         snapshot: BrandBrowserSnapshot,
         options: { recoverableFailureIsMiss?: boolean } = {},
       ): Promise<BrandBrowserSnapshotExtractionResult> => {
+        if (!ownsContinuation()) return { status: 'handled' };
         if (snapshot.status !== 'ready') {
           return { status: 'miss', message: snapshot.message };
         }
@@ -10261,6 +10296,7 @@ export function ProjectView({
           css: snapshot.css,
           baseUrl: snapshot.baseUrl,
         });
+        if (!ownsContinuation()) return { status: 'handled' };
         if (!outcome.ok) {
           if (options.recoverableFailureIsMiss) {
             return { status: 'miss', message: outcome.error };
@@ -10284,16 +10320,19 @@ export function ProjectView({
       };
 
       const localSnapshot = await readLocalBrowserPageArchiveSnapshot(brandExtractionSourceUrl);
+      if (!ownsContinuation()) return;
       const localExtract = await extractSnapshot(localSnapshot, { recoverableFailureIsMiss: true });
       if (localExtract.status === 'handled') return;
 
       const daemonOutcome = await continueBrandExtraction(brandId);
+      if (!ownsContinuation()) return;
       let fallbackMessage: string | null = localExtract.message;
       if (daemonOutcome.ok) {
         await refreshAfterProgrammaticContinue(
           daemonOutcome.result.status,
           daemonOutcome.result.conversationId,
         );
+        if (!ownsContinuation()) return;
         if (daemonOutcome.result.status === 'ready') return;
         if (!isOpenDesignHostAvailable() && !hasBrowserFallback()) return;
       } else {
@@ -10324,15 +10363,20 @@ export function ProjectView({
           focusOnly: true,
         });
         await delay(600);
+        if (!ownsContinuation()) return;
       }
 
       const liveSnapshot = await readBrandBrowserSnapshotWithRetry(BRAND_BROWSER_TAB_ID);
+      if (!ownsContinuation()) return;
       requestOpenFile(brandPreviewFile);
       if ((await extractSnapshot(liveSnapshot)).status === 'handled') return;
+      if (!ownsContinuation()) return;
 
       const archivedSnapshot = await downloadBrandBrowserPageArchive(brandExtractionSourceUrl);
+      if (!ownsContinuation()) return;
       requestOpenFile(brandPreviewFile);
       if ((await extractSnapshot(archivedSnapshot)).status === 'handled') return;
+      if (!ownsContinuation()) return;
 
       // Still no readable local source. Recoverable — clear/settle/download the
       // Browser page and click Continue again, or use the agent fallback.
@@ -10358,6 +10402,7 @@ export function ProjectView({
       });
     })()
       .catch((err) => {
+        if (!ownsContinuation()) return;
         setBrandExtractionStatusOverride({ brandId, status: 'needs_input' });
         setProjectActionsToast({
           message: err instanceof Error ? err.message : t('chat.brandBrowserAssistReadFailed'),
@@ -10769,11 +10814,12 @@ export function ProjectView({
     setStreamingConversationId(null);
     // Draft payloads are exact-epoch values. Never retag an old payload into
     // a new generation; an already-applied editor draft remains local.
-    const invalidatedDraft = composerDraftSignalRef.current;
-    if (invalidatedDraft?.source === 'pending-prompt') {
-      acknowledgedPendingPromptRef.current = `${project.id}\u0000${invalidatedDraft.text}`;
+    // A pending prompt remains a durable, unapplied occurrence. Keep its old
+    // payload in state until the generation-scoped effect replaces it; the
+    // render boundary above withholds the stale generation from ChatPane.
+    if (composerDraftSignalRef.current?.source !== 'pending-prompt') {
+      setComposerDraftSignal(undefined);
     }
-    setComposerDraftSignal(undefined);
     if (autoSendFirstMessageRef.current && !autoSentRef.current) {
       const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
       const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
@@ -11179,6 +11225,7 @@ export function ProjectView({
                 conversationLoadError ? null : errorSourceAssistantId
               }
               projectId={project.id}
+              projectGeneration={projectGit.generation}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}
               projectKindForTracking={projectKindFromMetadataToTracking(currentProject.metadata)}
@@ -11337,12 +11384,26 @@ export function ProjectView({
                   </div>
                 ) : null
               }
-              composerDraftSignal={composerDraftSignal}
+              composerDraftSignal={
+                composerDraftSignal?.projectId === project.id
+                && composerDraftSignal.generation === projectGit.generation
+                && composerDraftSignal.conversationId === activeConversationId
+                  ? composerDraftSignal
+                  : undefined
+              }
               onComposerDraftRestored={(signalId) => {
                 const currentDraft = composerDraftSignalRef.current;
                 if (currentDraft?.id !== signalId) return;
+                const currentContext = projectGit.capture();
+                if (
+                  currentDraft.projectId !== project.id
+                  || currentDraft.generation !== projectGit.generation
+                  || currentDraft.conversationId !== activeConversationIdRef.current
+                  || !currentContext
+                  || currentContext.generation !== currentDraft.generation
+                  || !projectGit.isCurrent(currentContext)
+                ) return;
                 if (currentDraft.source === 'pending-prompt') {
-                  acknowledgedPendingPromptRef.current = `${project.id}\u0000${currentDraft.text}`;
                   onClearPendingPrompt();
                 }
                 setComposerDraftSignal(undefined);

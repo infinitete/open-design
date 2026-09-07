@@ -608,8 +608,10 @@ type ProjectPatch = Omit<Partial<Project>, 'pendingPrompt' | 'customInstructions
 export async function patchProject(
   id: string,
   patch: ProjectPatch,
-  mutationContext = captureProjectMutation(id),
+  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<Project | null> {
+  const mutationContext = suppliedMutationContext ?? captureProjectMutation(id);
+  if (!mutationContext) return null;
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'PATCH',

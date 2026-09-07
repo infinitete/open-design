@@ -15,6 +15,7 @@ const isProjectMutationCurrent = vi.fn((_projectId: string, context: typeof muta
   !context.signal.aborted
 ));
 const isProjectMutationReady = vi.fn((_projectId: string) => true);
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
 
 vi.mock('../../src/i18n', () => ({
   useT: () => ((key: string) => key),
@@ -46,6 +47,11 @@ function deferred<T>() {
 
 afterEach(() => {
   cleanup();
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, 'clipboard', originalClipboardDescriptor);
+  } else {
+    delete (navigator as { clipboard?: Clipboard }).clipboard;
+  }
   vi.clearAllMocks();
   captureProjectMutation.mockReturnValue(mutationContext);
   isProjectMutationCurrent.mockImplementation((_projectId, context) => !context.signal.aborted);
@@ -85,13 +91,14 @@ describe('DesignKitView project mutation capture', () => {
 
   it('does not publish a pasted project image when authority capture is unavailable', async () => {
     captureProjectMutation.mockReturnValueOnce(undefined as never);
+    const readClipboard = vi.fn(async () => [{
+      types: ['image/png'],
+      getType: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
+    }]);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
-        read: vi.fn(async () => [{
-          types: ['image/png'],
-          getType: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
-        }]),
+        read: readClipboard,
       },
     });
     const onUploadModule = vi.fn();
@@ -102,6 +109,23 @@ describe('DesignKitView project mutation capture', () => {
     await Promise.resolve();
 
     expect(onUploadModule).not.toHaveBeenCalled();
+    expect(readClipboard).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a retained ready paste action before requesting clipboard permission', async () => {
+    const readClipboard = vi.fn(async () => []);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { read: readClipboard },
+    });
+    render(<DesignKitView kit={kit} onUploadModule={vi.fn()} />);
+    captureProjectMutation.mockReturnValue(undefined as never);
+
+    fireEvent.click(within(screen.getByTestId('design-kit-logo-section'))
+      .getByRole('button', { name: 'ds.pasteImage' }));
+    await Promise.resolve();
+
+    expect(readClipboard).not.toHaveBeenCalled();
   });
 
   it('captures before clipboard.read and passes the original context to upload', async () => {

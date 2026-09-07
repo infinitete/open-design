@@ -80,7 +80,10 @@ import {
   getPluginFolderCandidates,
   type PluginFolderCandidate,
 } from "./design-files/pluginFolders";
-import type { PluginFolderAgentAction } from "./design-files/pluginFolderActions";
+import type {
+  PluginFolderAgentAction,
+  PluginFolderAgentActionResult,
+} from "./design-files/pluginFolderActions";
 import { Icon, type IconName } from "./Icon";
 import { UserActionCard } from "./UserActionCard";
 import { NextStepActions, type NextStepActionsVariant } from "./NextStepActions";
@@ -488,7 +491,7 @@ interface Props {
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
   // Click handler for the post-completion "Share to OpenDesign" submission
@@ -819,12 +822,13 @@ function AssistantMessageImpl({
       });
       try {
         const outcome = await onRequestPluginFolderAgentAction(folder.path, action);
+        if (outcome.status !== "success") return;
         const url =
-          outcome && typeof outcome === "object" && typeof outcome.url === "string"
+          typeof outcome.url === "string"
             ? outcome.url
             : "";
         const message =
-          outcome && typeof outcome === "object" && typeof outcome.message === "string"
+          typeof outcome.message === "string"
             ? outcome.message
             : "";
         // The install endpoint's PluginInstallOutcome contract leaves
@@ -2448,7 +2452,7 @@ function PluginActionPanel({
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  ) => Promise<PluginFolderAgentActionResult> | PluginFolderAgentActionResult;
   activePluginActionPaths?: Set<string>;
 }) {
   const noticeByFolder = notices;
