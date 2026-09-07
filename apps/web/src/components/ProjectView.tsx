@@ -282,6 +282,9 @@ import type { SettingsSection } from './SettingsDialog';
 import { Toast } from './Toast';
 import { ProjectGitStatus, useProjectGitStatusActions } from './project-git/ProjectGitStatus';
 import { ProjectGitSettings } from './project-git/ProjectGitSettings';
+import { ProjectGitHistory, ProjectGitPanel } from './project-git/ProjectGitHistory';
+import { ProjectGitRestoreDialog } from './project-git/ProjectGitRestoreDialog';
+import { ProjectGitConflicts } from './project-git/ProjectGitConflicts';
 import { ProjectActionsToolbar } from './ProjectActionsToolbar';
 import { defaultProjectGitClient } from '../providers/project-git';
 import { FirstArtifactHint } from './FirstArtifactHint';
@@ -1782,6 +1785,18 @@ export function ProjectView({
   const projectGit = useProjectGit(project.id);
   const projectGitActions = useProjectGitStatusActions(projectGit.execute, projectGit.state?.autoSync ?? false);
   const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
+  const [projectGitHistoryPath, setProjectGitHistoryPath] = useState<string | null>(null);
+  const [projectGitRestoreOid, setProjectGitRestoreOid] = useState<string | null>(null);
+  const [projectGitConflictsOpen, setProjectGitConflictsOpen] = useState(false);
+  useEffect(() => {
+    setProjectGitHistoryPath(null); setProjectGitRestoreOid(null); setProjectGitConflictsOpen(false);
+    const openHistory = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId?: string; path?: string }>).detail;
+      if (detail?.projectId === project.id) setProjectGitHistoryPath(detail.path ?? '');
+    };
+    window.addEventListener('open-design:project-git-history', openHistory);
+    return () => window.removeEventListener('open-design:project-git-history', openHistory);
+  }, [project.id]);
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
   // The prompt the recommendation prefilled into the composer. Prefer the seed
@@ -11275,13 +11290,21 @@ export function ProjectView({
         <ProjectActionsToolbar gitStatus={<>
           <ProjectGitStatus
             state={projectGit.state}
-            onHistory={() => window.dispatchEvent(new CustomEvent('open-design:project-git-history', { detail: { projectId: project.id } }))}
+            onHistory={() => setProjectGitHistoryPath('')}
             {...projectGitActions}
           />
           <button type="button" onClick={() => setProjectGitSettingsOpen(true)}>{t('projectGit.settings')}</button>
+          {projectGit.state.phase === 'conflict' && projectGit.state.operationId ? <button type="button" onClick={() => setProjectGitConflictsOpen(true)}>{t('projectGit.conflicts')}</button> : null}
         </>} />
       ) : null}
       {projectGitSettingsOpen ? <ProjectGitSettings projectId={project.id} client={defaultProjectGitClient} onClose={() => setProjectGitSettingsOpen(false)} /> : null}
+      {projectGitHistoryPath !== null && !projectGitRestoreOid ? <ProjectGitPanel title={t('projectGit.history')} onClose={() => setProjectGitHistoryPath(null)}>
+        <ProjectGitHistory key={`${project.id}:${projectGitHistoryPath}:${projectGit.generation}`} projectId={project.id} path={projectGitHistoryPath} client={defaultProjectGitClient} onRestore={setProjectGitRestoreOid} restoreDisabled={projectGit.state?.phase === 'conflict' || projectGit.writeLocked} />
+      </ProjectGitPanel> : null}
+      {projectGitRestoreOid ? <ProjectGitRestoreDialog key={`${project.id}:${projectGitRestoreOid}`} projectId={project.id} targetOid={projectGitRestoreOid} client={defaultProjectGitClient} onClose={() => setProjectGitRestoreOid(null)} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitRestoreOid(null); setProjectGitHistoryPath(null); }} /> : null}
+      {projectGitConflictsOpen && projectGit.state?.operationId ? <ProjectGitPanel title={t('projectGit.conflicts')} onClose={() => setProjectGitConflictsOpen(false)}>
+        <ProjectGitConflicts key={`${project.id}:${projectGit.state.operationId}`} projectId={project.id} operationId={projectGit.state.operationId} client={defaultProjectGitClient} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitConflictsOpen(false); }} />
+      </ProjectGitPanel> : null}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}

@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  'projectGit.confirmRestore': "تأیید بازیابی",
+  'projectGit.completeVersion': "نسخه کامل",
+  'projectGit.fileVersion': "نسخه فایل‌ها",
+  'projectGit.filesOnlyRestore': "فقط فایل‌ها بازیابی شوند؛ تنظیمات و گفتگوهای فعلی حفظ شوند.",
+  'projectGit.restoreImpact': "بازیابی یک کامیت فرزند جدید برای HEAD می‌سازد، از محتوای ثبت‌نشده محافظت می‌کند و تاریخچه میانی را نگه می‌دارد. تغییرات فایل‌ها، تنظیمات و گفتگوها را بررسی کنید. ویرایش خارجی را تا پایان بازیابی متوقف کنید.",
+  'projectGit.gitPathHistory': "تاریخچه مسیر Git",
+  'projectGit.parents': "کامیت‌های والد",
+  'projectGit.moreHistory': "تاریخچه بیشتر",
+  'projectGit.historicalPreview': "پیش‌نمایش تاریخی",
+  'projectGit.historicalReadOnly': "تاریخچه فقط‌خواندنی است. فرم‌ها و کارهای قدیمی اجرا نمی‌شوند.",
+  'projectGit.turnOrder': "ترتیب کامل نوبت‌ها",
+  'projectGit.submitResolution': "ارسال راه‌حل",
+  'projectGit.conflictEditingNotice': "ویرایش محلی هنگام تعارض همچنان ممکن است. بازیابی غیرفعال است و سرور همه انتخاب‌ها را بررسی می‌کند.",
+  'projectGit.legacyHistory': "تاریخچه قدیمی HTML",
   'projectGit.open': "باز کردن مخزن",
   'projectGit.openFailed': "مخزن باز نشد و به پروژه‌های اخیر اضافه نشده است.",
   'projectGit.history': "تاریخچه",

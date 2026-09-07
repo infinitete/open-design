@@ -30,6 +30,20 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'projectGit.confirmRestore': string;
+  'projectGit.completeVersion': string;
+  'projectGit.fileVersion': string;
+  'projectGit.filesOnlyRestore': string;
+  'projectGit.restoreImpact': string;
+  'projectGit.gitPathHistory': string;
+  'projectGit.parents': string;
+  'projectGit.moreHistory': string;
+  'projectGit.historicalPreview': string;
+  'projectGit.historicalReadOnly': string;
+  'projectGit.turnOrder': string;
+  'projectGit.submitResolution': string;
+  'projectGit.conflictEditingNotice': string;
+  'projectGit.legacyHistory': string;
   'projectGit.open': string;
   'projectGit.rebindNotice': string;
   'projectGit.unbindNotice': string;

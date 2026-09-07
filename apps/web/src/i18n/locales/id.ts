@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  'projectGit.confirmRestore': "Konfirmasi pemulihan",
+  'projectGit.completeVersion': "Versi lengkap",
+  'projectGit.fileVersion': "Versi berkas",
+  'projectGit.filesOnlyRestore': "Pulihkan berkas saja; pertahankan pengaturan dan percakapan saat ini.",
+  'projectGit.restoreImpact': "Pemulihan membuat commit anak baru dari HEAD, melindungi konten yang belum di-commit, dan mempertahankan riwayat perantara. Tinjau perubahan berkas, pengaturan, dan percakapan. Jeda penyuntingan eksternal hingga pemulihan selesai.",
+  'projectGit.gitPathHistory': "Riwayat jalur Git",
+  'projectGit.parents': "Commit induk",
+  'projectGit.moreHistory': "Riwayat lainnya",
+  'projectGit.historicalPreview': "Pratinjau historis",
+  'projectGit.historicalReadOnly': "Riwayat hanya baca. Formulir dan tugas lama tidak dapat dijalankan.",
+  'projectGit.turnOrder': "Urutan giliran lengkap",
+  'projectGit.submitResolution': "Kirim penyelesaian",
+  'projectGit.conflictEditingNotice': "Penyuntingan lokal tetap tersedia selama konflik. Pemulihan dinonaktifkan; server memvalidasi semua pilihan.",
+  'projectGit.legacyHistory': "Riwayat HTML lama",
   'projectGit.open': "Buka repositori",
   'projectGit.openFailed': "Repositori tidak dapat dibuka. Repositori tidak ditambahkan ke proyek terbaru.",
   'projectGit.history': "Riwayat",

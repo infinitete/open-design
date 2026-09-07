@@ -1,6 +1,20 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  'projectGit.confirmRestore': "確認還原",
+  'projectGit.completeVersion': "完整版本",
+  'projectGit.fileVersion': "檔案版本",
+  'projectGit.filesOnlyRestore': "僅還原檔案，保留目前設定和對話。",
+  'projectGit.restoreImpact': "還原會在目前 HEAD 後建立新提交，保護未提交內容並保留中間歷史。請檢查下方檔案、設定和對話變更。 請暫停外部編輯，直到還原完成。",
+  'projectGit.gitPathHistory': "Git 路徑歷史",
+  'projectGit.parents': "父提交",
+  'projectGit.moreHistory': "更多歷史",
+  'projectGit.historicalPreview': "歷史預覽",
+  'projectGit.historicalReadOnly': "唯讀歷史，歷史表單和任務無法執行。",
+  'projectGit.turnOrder': "完整輪次順序",
+  'projectGit.submitResolution': "提交解決方案",
+  'projectGit.conflictEditingNotice': "衝突期間仍可本機編輯，還原已停用；所有選擇經服務驗證後套用。",
+  'projectGit.legacyHistory': "舊 HTML 歷史",
   'projectGit.open': "開啟儲存庫",
   'projectGit.openFailed': "無法開啟儲存庫，未將其加入最近的專案。",
   'projectGit.history': "歷史紀錄",

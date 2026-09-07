@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  'projectGit.confirmRestore': "復元を確認",
+  'projectGit.completeVersion': "完全なバージョン",
+  'projectGit.fileVersion': "ファイルバージョン",
+  'projectGit.filesOnlyRestore': "ファイルのみ復元し、現在の設定と会話を保持します。",
+  'projectGit.restoreImpact': "復元は現在の HEAD の子コミットを作成し、未コミットの内容と途中の履歴を保護します。ファイル、設定、会話の変更を確認してください。 復元が完了するまで外部エディターでの編集を停止してください。",
+  'projectGit.gitPathHistory': "Git パス履歴",
+  'projectGit.parents': "親コミット",
+  'projectGit.moreHistory': "履歴をさらに表示",
+  'projectGit.historicalPreview': "履歴プレビュー",
+  'projectGit.historicalReadOnly': "読み取り専用の履歴です。過去のフォームやタスクは実行できません。",
+  'projectGit.turnOrder': "すべてのターンの順序",
+  'projectGit.submitResolution': "解決案を送信",
+  'projectGit.conflictEditingNotice': "競合中もローカル編集は可能です。復元は無効です。すべての選択をサーバーで検証します。",
+  'projectGit.legacyHistory': "旧 HTML 履歴",
   'projectGit.open': "リポジトリを開く",
   'projectGit.openFailed': "リポジトリを開けませんでした。最近のプロジェクトには追加されていません。",
   'projectGit.history': "履歴",

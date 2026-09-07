@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const en: Dict = {
+  'projectGit.confirmRestore': "Confirm restore",
+  'projectGit.completeVersion': "Complete version",
+  'projectGit.fileVersion': "File version",
+  'projectGit.filesOnlyRestore': "Restore files only; keep current settings and conversations.",
+  'projectGit.restoreImpact': "Restore creates a new child commit of the current HEAD, protects uncommitted content and retains intermediate history. Review file, settings and conversation changes below. Pause external editing until restoration finishes.",
+  'projectGit.gitPathHistory': "Git path history",
+  'projectGit.parents': "Parents",
+  'projectGit.moreHistory': "More history",
+  'projectGit.historicalPreview': "Historical preview",
+  'projectGit.historicalReadOnly': "Read-only history. Historical forms and tasks cannot run.",
+  'projectGit.turnOrder': "Complete turn order",
+  'projectGit.submitResolution': "Submit resolution",
+  'projectGit.conflictEditingNotice': "Local editing remains available during conflicts. Restore is disabled; submit all choices for server validation.",
+  'projectGit.legacyHistory': "Legacy HTML history",
   'projectGit.open': "Open repository",
   'projectGit.rebindNotice': "Changing the binding pauses automatic sync before preview. Local versions remain; review how the new repository affects this project.",
   'projectGit.unbindNotice': "Disconnecting keeps local versions and waits for active operations to finish.",

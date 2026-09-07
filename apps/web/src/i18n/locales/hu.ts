@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  'projectGit.confirmRestore': "Visszaállítás megerősítése",
+  'projectGit.completeVersion': "Teljes verzió",
+  'projectGit.fileVersion': "Fájlverzió",
+  'projectGit.filesOnlyRestore': "Csak fájlok visszaállítása; a jelenlegi beállítások és beszélgetések megmaradnak.",
+  'projectGit.restoreImpact': "A visszaállítás új gyermek-commitot hoz létre a HEAD után, védi a nem véglegesített tartalmat és megőrzi a köztes előzményeket. Ellenőrizze a fájlok, beállítások és beszélgetések változásait. A visszaállítás végéig szüneteltesse a külső szerkesztést.",
+  'projectGit.gitPathHistory': "Git útvonalelőzmények",
+  'projectGit.parents': "Szülő commitok",
+  'projectGit.moreHistory': "További előzmények",
+  'projectGit.historicalPreview': "Korábbi előnézet",
+  'projectGit.historicalReadOnly': "Csak olvasható előzmények. Korábbi űrlapok és feladatok nem futtathatók.",
+  'projectGit.turnOrder': "A fordulók teljes sorrendje",
+  'projectGit.submitResolution': "Megoldás beküldése",
+  'projectGit.conflictEditingNotice': "Ütközés közben is lehet helyben szerkeszteni. A visszaállítás letiltva; a szerver ellenőrzi a választásokat.",
+  'projectGit.legacyHistory': "Régi HTML-előzmények",
   'projectGit.open': "Tároló megnyitása",
   'projectGit.openFailed': "A tárolót nem sikerült megnyitni. Nem került a legutóbbi projektek közé.",
   'projectGit.history': "Előzmények",

@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  'projectGit.confirmRestore': "Confirmar restauração",
+  'projectGit.completeVersion': "Versão completa",
+  'projectGit.fileVersion': "Versão de arquivos",
+  'projectGit.filesOnlyRestore': "Restaurar apenas arquivos; manter configurações e conversas atuais.",
+  'projectGit.restoreImpact': "A restauração cria um novo commit filho de HEAD, protege o conteúdo não confirmado e preserva o histórico intermediário. Revise as mudanças em arquivos, configurações e conversas. Pause a edição externa até a restauração terminar.",
+  'projectGit.gitPathHistory': "Histórico de caminho Git",
+  'projectGit.parents': "Commits pais",
+  'projectGit.moreHistory': "Mais histórico",
+  'projectGit.historicalPreview': "Prévia histórica",
+  'projectGit.historicalReadOnly': "Histórico somente leitura. Formulários e tarefas antigos não podem ser executados.",
+  'projectGit.turnOrder': "Ordem completa dos turnos",
+  'projectGit.submitResolution': "Enviar resolução",
+  'projectGit.conflictEditingNotice': "A edição local continua disponível durante conflitos. A restauração está desativada; o servidor valida todas as escolhas.",
+  'projectGit.legacyHistory': "Histórico HTML antigo",
   'projectGit.open': "Abrir repositório",
   'projectGit.openFailed': "Não foi possível abrir o repositório. Ele não foi adicionado aos projetos recentes.",
   'projectGit.history': "Histórico",

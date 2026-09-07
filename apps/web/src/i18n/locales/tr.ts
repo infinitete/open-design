@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  'projectGit.confirmRestore': "Geri yüklemeyi onayla",
+  'projectGit.completeVersion': "Tam sürüm",
+  'projectGit.fileVersion': "Dosya sürümü",
+  'projectGit.filesOnlyRestore': "Yalnızca dosyaları geri yükle; mevcut ayarları ve konuşmaları koru.",
+  'projectGit.restoreImpact': "Geri yükleme HEAD altında yeni bir commit oluşturur, kaydedilmemiş içeriği ve ara geçmişi korur. Dosya, ayar ve konuşma değişikliklerini inceleyin. Geri yükleme bitene kadar harici düzenlemeyi duraklatın.",
+  'projectGit.gitPathHistory': "Git yol geçmişi",
+  'projectGit.parents': "Üst commitler",
+  'projectGit.moreHistory': "Daha fazla geçmiş",
+  'projectGit.historicalPreview': "Geçmiş önizlemesi",
+  'projectGit.historicalReadOnly': "Salt okunur geçmiş. Eski formlar ve görevler çalıştırılamaz.",
+  'projectGit.turnOrder': "Eksiksiz tur sırası",
+  'projectGit.submitResolution': "Çözümü gönder",
+  'projectGit.conflictEditingNotice': "Çakışma sırasında yerel düzenleme sürer. Geri yükleme devre dışıdır; sunucu tüm seçimleri doğrular.",
+  'projectGit.legacyHistory': "Eski HTML geçmişi",
   'projectGit.open': "Depoyu aç",
   'projectGit.openFailed': "Depo açılamadı. Son projelere eklenmedi.",
   'projectGit.history': "Geçmiş",

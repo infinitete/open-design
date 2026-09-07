@@ -1,6 +1,20 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  'projectGit.confirmRestore': "确认恢复",
+  'projectGit.completeVersion': "完整版本",
+  'projectGit.fileVersion': "文件版本",
+  'projectGit.filesOnlyRestore': "仅恢复文件，保留当前设置和聊天",
+  'projectGit.restoreImpact': "恢复会在当前 HEAD 后创建新提交，保护未提交内容并保留中间历史。请检查下方文件、设置和聊天的变更。 请暂停外部编辑，直到恢复完成。",
+  'projectGit.gitPathHistory': "Git 路径历史",
+  'projectGit.parents': "父提交",
+  'projectGit.moreHistory': "更多历史",
+  'projectGit.historicalPreview': "历史预览",
+  'projectGit.historicalReadOnly': "只读历史，历史表单和任务不可运行。",
+  'projectGit.turnOrder': "完整轮次顺序",
+  'projectGit.submitResolution': "提交解决方案",
+  'projectGit.conflictEditingNotice': "冲突期间仍可本地编辑，恢复已禁用；所有选择由服务校验后应用。",
+  'projectGit.legacyHistory': "旧 HTML 历史",
   'projectGit.open': "打开仓库",
   'projectGit.rebindNotice': "更换绑定会先暂停自动同步再预览。本地版本会保留，请检查新仓库对项目的影响。",
   'projectGit.unbindNotice': "解绑会保留本地版本，并等待进行中的操作完成。",

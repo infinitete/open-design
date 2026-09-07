@@ -7,6 +7,8 @@ import {
   type OpenDesignHostPreviewNavigationFailure,
 } from '@open-design/host';
 import { CenteredLoader } from './Loading';
+import { defaultProjectGitClient } from '../providers/project-git';
+import { subscribeProjectEvents } from '../providers/project-events';
 import { APP_CHROME_FILE_ACTIONS_ID, APP_CHROME_FILE_ACTIONS_SELECTOR } from './AppChromeHeader';
 import {
   commentSendCompleted,
@@ -7365,6 +7367,20 @@ function HtmlViewer({
   // them while retained so the hidden document is already current when its tab
   // becomes visible.
   const appliedFilesRefreshKeyRef = useRef(filesRefreshKey);
+  const [fileGitEnabled, setFileGitEnabled] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController(); let receivedState = false;
+    setFileGitEnabled(false);
+    // This entry is a read-only capability indicator. ProjectView owns mutation
+    // authority and recovery reconciliation; mounting a viewer must not replace it.
+    const unsubscribe = subscribeProjectEvents(projectId, event => {
+      if (event.type === 'project-git-state') { receivedState = true; setFileGitEnabled(event.state.enabled); }
+    });
+    void defaultProjectGitClient.state(projectId, controller.signal).then(state => {
+      if (!controller.signal.aborted && !receivedState) setFileGitEnabled(state.enabled);
+    }).catch(() => {});
+    return () => { controller.abort(); unsubscribe(); };
+  }, [projectId]);
   const workspaceActiveRef = useRef(workspaceActive);
   workspaceActiveRef.current = workspaceActive;
   const filesRefreshPending = filesRefreshKey !== 0
@@ -16608,6 +16624,7 @@ function HtmlViewer({
               ) : null}
             </div>
           ) : null}
+          {fileGitEnabled && !viewerOnly ? <button type="button" className="chrome-action chrome-action-secondary" aria-label={t('projectGit.gitPathHistory')} onClick={() => window.dispatchEvent(new CustomEvent('open-design:project-git-history', { detail: { projectId, path: file.path || file.name } }))}>{t('projectGit.gitPathHistory')}</button> : null}
           {versioningAvailable && (rawCanShare || rawCanDownload) ? (
             <button
               type="button"
@@ -16622,7 +16639,7 @@ function HtmlViewer({
               // which had un-gated the entry on the reasoning that browsing
               // history is a read action.
               disabled={source === null || viewerOnly}
-              aria-label={t('fileViewer.versions.entry')}
+              aria-label={fileGitEnabled ? t('projectGit.legacyHistory') : t('fileViewer.versions.entry')}
               aria-expanded={Boolean(versionModalOpen)}
               data-tooltip={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.versions.entryFull')}
               data-tooltip-placement="bottom"

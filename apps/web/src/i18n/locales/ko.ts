@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  'projectGit.confirmRestore': "복원 확인",
+  'projectGit.completeVersion': "전체 버전",
+  'projectGit.fileVersion': "파일 버전",
+  'projectGit.filesOnlyRestore': "파일만 복원하고 현재 설정과 대화는 유지합니다.",
+  'projectGit.restoreImpact': "복원은 현재 HEAD의 새 하위 커밋을 만들고 커밋되지 않은 내용과 중간 기록을 보호합니다. 파일, 설정, 대화 변경 사항을 확인하세요. 복원이 끝날 때까지 외부 편집을 중지하세요.",
+  'projectGit.gitPathHistory': "Git 경로 기록",
+  'projectGit.parents': "부모 커밋",
+  'projectGit.moreHistory': "기록 더 보기",
+  'projectGit.historicalPreview': "과거 미리보기",
+  'projectGit.historicalReadOnly': "읽기 전용 기록입니다. 과거 양식과 작업은 실행할 수 없습니다.",
+  'projectGit.turnOrder': "전체 대화 차례 순서",
+  'projectGit.submitResolution': "해결안 제출",
+  'projectGit.conflictEditingNotice': "충돌 중에도 로컬 편집은 가능합니다. 복원은 비활성화되며 서버가 모든 선택을 검증합니다.",
+  'projectGit.legacyHistory': "기존 HTML 기록",
   'projectGit.open': "저장소 열기",
   'projectGit.openFailed': "저장소를 열지 못했습니다. 최근 프로젝트에 추가되지 않았습니다.",
   'projectGit.history': "기록",

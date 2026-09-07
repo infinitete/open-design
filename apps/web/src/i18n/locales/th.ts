@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
+  'projectGit.confirmRestore': "ยืนยันการกู้คืน",
+  'projectGit.completeVersion': "เวอร์ชันสมบูรณ์",
+  'projectGit.fileVersion': "เวอร์ชันไฟล์",
+  'projectGit.filesOnlyRestore': "กู้คืนเฉพาะไฟล์ โดยเก็บการตั้งค่าและบทสนทนาปัจจุบันไว้",
+  'projectGit.restoreImpact': "การกู้คืนจะสร้างคอมมิตลูกใหม่ของ HEAD ปกป้องเนื้อหาที่ยังไม่คอมมิตและเก็บประวัติระหว่างทาง ตรวจสอบการเปลี่ยนแปลงไฟล์ การตั้งค่า และบทสนทนา หยุดการแก้ไขภายนอกจนกว่าการกู้คืนจะเสร็จสิ้น",
+  'projectGit.gitPathHistory': "ประวัติพาธ Git",
+  'projectGit.parents': "คอมมิตแม่",
+  'projectGit.moreHistory': "ประวัติเพิ่มเติม",
+  'projectGit.historicalPreview': "ตัวอย่างประวัติ",
+  'projectGit.historicalReadOnly': "ประวัติแบบอ่านอย่างเดียว ไม่สามารถเรียกใช้แบบฟอร์มหรืองานเก่าได้",
+  'projectGit.turnOrder': "ลำดับรอบทั้งหมด",
+  'projectGit.submitResolution': "ส่งการแก้ไขข้อขัดแย้ง",
+  'projectGit.conflictEditingNotice': "ยังแก้ไขในเครื่องได้ระหว่างมีข้อขัดแย้ง การกู้คืนถูกปิดไว้ เซิร์ฟเวอร์จะตรวจสอบทุกตัวเลือก",
+  'projectGit.legacyHistory': "ประวัติ HTML เดิม",
   'projectGit.open': "เปิดที่เก็บโค้ด",
   'projectGit.openFailed': "เปิดที่เก็บโค้ดไม่ได้ และไม่ได้เพิ่มลงในโปรเจกต์ล่าสุด",
   'projectGit.history': "ประวัติ",

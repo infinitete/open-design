@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const it: Dict = {
+  'projectGit.confirmRestore': "Conferma ripristino",
+  'projectGit.completeVersion': "Versione completa",
+  'projectGit.fileVersion': "Versione dei file",
+  'projectGit.filesOnlyRestore': "Ripristina solo i file; mantieni impostazioni e conversazioni attuali.",
+  'projectGit.restoreImpact': "Il ripristino crea un nuovo commit figlio di HEAD, protegge il contenuto non salvato e conserva la cronologia intermedia. Controlla le modifiche a file, impostazioni e conversazioni. Sospendi le modifiche esterne fino al termine del ripristino.",
+  'projectGit.gitPathHistory': "Cronologia percorso Git",
+  'projectGit.parents': "Commit genitori",
+  'projectGit.moreHistory': "Altra cronologia",
+  'projectGit.historicalPreview': "Anteprima storica",
+  'projectGit.historicalReadOnly': "Cronologia in sola lettura. Moduli e attività storici non possono essere eseguiti.",
+  'projectGit.turnOrder': "Ordine completo dei turni",
+  'projectGit.submitResolution': "Invia risoluzione",
+  'projectGit.conflictEditingNotice': "La modifica locale resta disponibile durante i conflitti. Il ripristino è disabilitato; il server verifica tutte le scelte.",
+  'projectGit.legacyHistory': "Vecchia cronologia HTML",
   'projectGit.open': "Apri repository",
   'projectGit.openFailed': "Impossibile aprire il repository. Non è stato aggiunto ai progetti recenti.",
   'projectGit.history': "Cronologia",

@@ -11,3 +11,9 @@
 .modal button:hover:not(:disabled), .textButton:hover:not(:disabled) { background:var(--bg-subtle); }
 .preview { margin-top:16px; padding:12px; background:var(--bg-panel); border-radius:var(--radius-md); overflow-wrap:anywhere; }
 .error { color:var(--red); }
+.history label { display:grid; gap:4px; margin-block:12px; }
+.history pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:24rem; overflow:auto; }
+.history iframe { width:100%; min-height:20rem; border:1px solid var(--border); }
+.history img { max-width:100%; }
+.history textarea { width:100%; min-height:6rem; color:var(--text); background:var(--bg-panel); border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px; }
+.sides { display:grid; grid-template-columns:repeat(auto-fit,minmax(8rem,1fr)); gap:12px; }

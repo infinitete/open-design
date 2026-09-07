@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
+  'projectGit.confirmRestore': "Подтвердить восстановление",
+  'projectGit.completeVersion': "Полная версия",
+  'projectGit.fileVersion': "Версия файлов",
+  'projectGit.filesOnlyRestore': "Восстановить только файлы, сохранив текущие настройки и диалоги.",
+  'projectGit.restoreImpact': "Восстановление создаёт новый дочерний коммит HEAD, защищает незафиксированные данные и сохраняет промежуточную историю. Проверьте изменения файлов, настроек и диалогов. Приостановите редактирование во внешних программах до завершения восстановления.",
+  'projectGit.gitPathHistory': "История пути Git",
+  'projectGit.parents': "Родительские коммиты",
+  'projectGit.moreHistory': "Ещё история",
+  'projectGit.historicalPreview': "Исторический просмотр",
+  'projectGit.historicalReadOnly': "История только для чтения. Старые формы и задачи нельзя запускать.",
+  'projectGit.turnOrder': "Полный порядок ходов",
+  'projectGit.submitResolution': "Отправить решение",
+  'projectGit.conflictEditingNotice': "При конфликтах можно редактировать локально. Восстановление отключено; сервер проверит все решения.",
+  'projectGit.legacyHistory': "Старая история HTML",
   'projectGit.open': "Открыть репозиторий",
   'projectGit.openFailed': "Не удалось открыть репозиторий. Он не добавлен в недавние проекты.",
   'projectGit.history': "История",

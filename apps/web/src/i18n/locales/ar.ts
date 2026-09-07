@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  'projectGit.confirmRestore': "تأكيد الاستعادة",
+  'projectGit.completeVersion': "نسخة كاملة",
+  'projectGit.fileVersion': "نسخة الملفات",
+  'projectGit.filesOnlyRestore': "استعادة الملفات فقط مع الاحتفاظ بالإعدادات والمحادثات الحالية.",
+  'projectGit.restoreImpact': "تنشئ الاستعادة التزامًا جديدًا تابعًا لـ HEAD وتحمي المحتوى غير المثبت وتحفظ السجل الوسيط. راجع تغييرات الملفات والإعدادات والمحادثات. أوقف التحرير الخارجي مؤقتًا حتى تنتهي الاستعادة.",
+  'projectGit.gitPathHistory': "سجل مسار Git",
+  'projectGit.parents': "الالتزامات الأصلية",
+  'projectGit.moreHistory': "المزيد من السجل",
+  'projectGit.historicalPreview': "معاينة تاريخية",
+  'projectGit.historicalReadOnly': "سجل للقراءة فقط. لا يمكن تشغيل النماذج والمهام القديمة.",
+  'projectGit.turnOrder': "الترتيب الكامل للأدوار",
+  'projectGit.submitResolution': "إرسال الحل",
+  'projectGit.conflictEditingNotice': "يظل التحرير المحلي متاحًا أثناء التعارضات. الاستعادة معطلة ويتحقق الخادم من جميع الاختيارات.",
+  'projectGit.legacyHistory': "سجل HTML القديم",
   'projectGit.open': "فتح المستودع",
   'projectGit.openFailed': "تعذر فتح المستودع. لم تتم إضافته إلى المشاريع الأخيرة.",
   'projectGit.history': "السجل",

@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  'projectGit.confirmRestore': "Potwierdź przywracanie",
+  'projectGit.completeVersion': "Pełna wersja",
+  'projectGit.fileVersion': "Wersja plików",
+  'projectGit.filesOnlyRestore': "Przywróć tylko pliki; zachowaj bieżące ustawienia i rozmowy.",
+  'projectGit.restoreImpact': "Przywracanie tworzy nowy commit potomny HEAD, chroni niezatwierdzone dane i zachowuje historię pośrednią. Sprawdź zmiany plików, ustawień i rozmów. Wstrzymaj edycję zewnętrzną do zakończenia przywracania.",
+  'projectGit.gitPathHistory': "Historia ścieżki Git",
+  'projectGit.parents': "Commity nadrzędne",
+  'projectGit.moreHistory': "Więcej historii",
+  'projectGit.historicalPreview': "Podgląd historii",
+  'projectGit.historicalReadOnly': "Historia tylko do odczytu. Dawnych formularzy i zadań nie można uruchamiać.",
+  'projectGit.turnOrder': "Pełna kolejność tur",
+  'projectGit.submitResolution': "Prześlij rozwiązanie",
+  'projectGit.conflictEditingNotice': "Edycja lokalna jest możliwa podczas konfliktów. Przywracanie jest wyłączone; serwer sprawdzi wszystkie wybory.",
+  'projectGit.legacyHistory': "Stara historia HTML",
   'projectGit.open': "Otwórz repozytorium",
   'projectGit.openFailed': "Nie udało się otworzyć repozytorium. Nie dodano go do ostatnich projektów.",
   'projectGit.history': "Historia",

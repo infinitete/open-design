@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  'projectGit.confirmRestore': "Wiederherstellung bestätigen",
+  'projectGit.completeVersion': "Vollständige Version",
+  'projectGit.fileVersion': "Dateiversion",
+  'projectGit.filesOnlyRestore': "Nur Dateien wiederherstellen; aktuelle Einstellungen und Unterhaltungen behalten.",
+  'projectGit.restoreImpact': "Die Wiederherstellung erstellt einen neuen Commit nach HEAD, schützt nicht gespeicherte Änderungen und erhält den bisherigen Verlauf. Prüfen Sie die Datei-, Einstellungs- und Unterhaltungsänderungen. Pausieren Sie externe Bearbeitungen, bis die Wiederherstellung abgeschlossen ist.",
+  'projectGit.gitPathHistory': "Git-Pfadverlauf",
+  'projectGit.parents': "Eltern-Commits",
+  'projectGit.moreHistory': "Mehr Verlauf",
+  'projectGit.historicalPreview': "Historische Vorschau",
+  'projectGit.historicalReadOnly': "Schreibgeschützter Verlauf. Historische Formulare und Aufgaben können nicht ausgeführt werden.",
+  'projectGit.turnOrder': "Vollständige Reihenfolge der Gesprächsrunden",
+  'projectGit.submitResolution': "Lösung einreichen",
+  'projectGit.conflictEditingNotice': "Lokale Bearbeitung bleibt bei Konflikten möglich. Wiederherstellung ist deaktiviert; der Server prüft alle Entscheidungen.",
+  'projectGit.legacyHistory': "Alter HTML-Verlauf",
   'projectGit.open': "Repository öffnen",
   'projectGit.openFailed': "Das Repository konnte nicht geöffnet werden. Es wurde nicht zu den letzten Projekten hinzugefügt.",
   'projectGit.history': "Verlauf",

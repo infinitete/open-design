@@ -1,6 +1,20 @@
 import type { Dict } from '../types';
 
 export const uk: Dict = {
+  'projectGit.confirmRestore': "Підтвердити відновлення",
+  'projectGit.completeVersion': "Повна версія",
+  'projectGit.fileVersion': "Версія файлів",
+  'projectGit.filesOnlyRestore': "Відновити лише файли, зберігши поточні налаштування й розмови.",
+  'projectGit.restoreImpact': "Відновлення створює новий дочірній коміт HEAD, захищає незафіксовані дані та зберігає проміжну історію. Перевірте зміни файлів, налаштувань і розмов. Призупиніть редагування в зовнішніх програмах до завершення відновлення.",
+  'projectGit.gitPathHistory': "Історія шляху Git",
+  'projectGit.parents': "Батьківські коміти",
+  'projectGit.moreHistory': "Більше історії",
+  'projectGit.historicalPreview': "Історичний перегляд",
+  'projectGit.historicalReadOnly': "Історія лише для читання. Старі форми й завдання не можна запускати.",
+  'projectGit.turnOrder': "Повний порядок ходів",
+  'projectGit.submitResolution': "Надіслати рішення",
+  'projectGit.conflictEditingNotice': "Під час конфліктів можна редагувати локально. Відновлення вимкнено; сервер перевірить усі рішення.",
+  'projectGit.legacyHistory': "Стара історія HTML",
   'projectGit.open': "Відкрити репозиторій",
   'projectGit.openFailed': "Не вдалося відкрити репозиторій. Його не додано до останніх проєктів.",
   'projectGit.history': "Історія",
