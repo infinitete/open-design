@@ -59,7 +59,7 @@ export interface ProjectGitStateStore {
 }
 
 const projectMutationStores = new Map<string, ProjectGitStateStore>();
-const projectEpochInvalidators = new Map<string, Set<() => void>>();
+const projectEpochInvalidators = new Map<string, Set<(generation: number) => void>>();
 
 export function registerProjectMutationStore(projectId: string, store: ProjectGitStateStore): void {
   projectMutationStores.set(projectId, store);
@@ -69,8 +69,11 @@ export function unregisterProjectMutationStore(projectId: string, store: Project
   if (projectMutationStores.get(projectId) === store) projectMutationStores.delete(projectId);
 }
 
-export function registerProjectEpochInvalidator(projectId: string, invalidate: () => void): () => void {
-  const listeners = projectEpochInvalidators.get(projectId) ?? new Set<() => void>();
+export function registerProjectEpochInvalidator(
+  projectId: string,
+  invalidate: (generation: number) => void,
+): () => void {
+  const listeners = projectEpochInvalidators.get(projectId) ?? new Set<(generation: number) => void>();
   listeners.add(invalidate);
   projectEpochInvalidators.set(projectId, listeners);
   return () => {
@@ -79,8 +82,8 @@ export function registerProjectEpochInvalidator(projectId: string, invalidate: (
   };
 }
 
-export function invalidateProjectBrowserEpoch(projectId: string): void {
-  for (const invalidate of projectEpochInvalidators.get(projectId) ?? []) invalidate();
+export function invalidateProjectBrowserEpoch(projectId: string, generation: number): void {
+  for (const invalidate of projectEpochInvalidators.get(projectId) ?? []) invalidate(generation);
 }
 
 /** Capture once at the user/queue boundary and carry this object to fetch. */
@@ -156,7 +159,7 @@ export function rethrowProjectStateChanged(error: unknown): void {
 
 export function createProjectGitStateStore(
   initialState: ProjectGitState | null = null,
-  options: { onRevisionAdvance?: (state: ProjectGitState) => void } = {},
+  options: { onRevisionAdvance?: (state: ProjectGitState, generation: number) => void } = {},
 ): ProjectGitStateStore {
   let currentState = initialState;
   let generation = 0;
@@ -204,7 +207,7 @@ export function createProjectGitStateStore(
       // Browser intent invalidation is deliberately synchronous with accepting
       // the new revision. Consumers cannot observe the new epoch while old
       // queued work is still considered valid.
-      options.onRevisionAdvance?.(nextState);
+      options.onRevisionAdvance?.(nextState, generation);
     }
     emit();
     return advanced ? 'advanced' : 'updated';

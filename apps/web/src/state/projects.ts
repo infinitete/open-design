@@ -41,6 +41,7 @@ import type {
 } from '../types';
 import { removeDesignBrowserProjectCache } from '../components/design-browser-storage';
 import { boundedRequestErrorCode } from '../analytics/workspace';
+import { withFreshProjectMutation } from '../providers/project-git';
 import {
   captureProjectMutation,
   isProjectMutationCurrent,
@@ -635,6 +636,23 @@ export async function patchProject(
     rethrowProjectStateChanged(error);
     return null;
   }
+}
+
+/**
+ * Post-create/bootstrap writes run before ProjectView mounts its authority
+ * subscription. Load one exact state snapshot, keep that authority leased for
+ * the complete PATCH, and fail loudly instead of pretending an unseeded
+ * project was prepared successfully.
+ */
+export async function patchProjectWithFreshAuthority(
+  id: string,
+  patch: ProjectPatch,
+): Promise<Project> {
+  return withFreshProjectMutation(id, async (mutationContext) => {
+    const project = await patchProject(id, patch, mutationContext);
+    if (!project) throw new Error('Could not persist project bootstrap state');
+    return project;
+  });
 }
 
 /**
@@ -1601,6 +1619,9 @@ export async function installGeneratedPluginFolder(
     return outcome;
   } catch (err) {
     rethrowProjectStateChanged(err);
+    if (typeof err === 'object' && err !== null && 'name' in err && err.name === 'AbortError') {
+      throw err;
+    }
     return {
       ok: false,
       warnings: [],

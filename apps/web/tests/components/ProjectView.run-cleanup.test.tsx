@@ -24,6 +24,12 @@ import {
 } from '../../src/runtime/brand-browser-bridge';
 import type { Artifact, ChatMessage, ProjectFile } from '../../src/types';
 import type { ProjectEvent } from '../../src/providers/project-events';
+import {
+  ProjectStateChangedError,
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+} from '../../src/state/project-git';
 
 const listConversations = vi.fn();
 const listMessages = vi.fn();
@@ -45,6 +51,8 @@ const saveMessage = vi.fn();
 const createConversation = vi.fn();
 const patchConversation = vi.fn();
 const patchProject = vi.fn();
+const installGeneratedPluginFolder = vi.fn();
+const startGeneratedPluginShareTask = vi.fn();
 const patchPreviewCommentStatus = vi.fn();
 const upsertPreviewComment = vi.fn();
 const saveTabs = vi.fn();
@@ -53,12 +61,36 @@ const fetchProjectFileText = vi.fn();
 const cancelBrandExtraction = vi.fn();
 const continueBrandExtraction = vi.fn();
 const finalizeBrandProject = vi.fn();
+const analyticsTrack = vi.hoisted(() => vi.fn());
 const subscribeProjectEvents = vi.fn((
   _projectId: string,
   _listener: (event: ProjectEvent) => void,
   _options?: { onReady?: () => void },
 ) => () => {});
 const originalFetch = globalThis.fetch;
+
+async function withFreshProjectMutation<T>(
+  projectId: string,
+  mutation: (
+    context: import('../../src/state/project-git').ProjectMutationContext,
+  ) => Promise<T> | T,
+): Promise<T> {
+  const provider = await import('../../src/providers/project-git');
+  return provider.withFreshProjectMutation(projectId, mutation);
+}
+
+async function initializeProjectAuthority(projectId: string): Promise<void> {
+  await act(async () => {
+    await withFreshProjectMutation(projectId, () => undefined);
+  });
+}
+
+async function advanceProjectAuthority(projectId: string): Promise<void> {
+  await act(async () => {
+    await expect(withFreshProjectMutation(projectId, () => undefined))
+      .rejects.toThrow(/authority unavailable/i);
+  });
+}
 
 const replayArtifact: Artifact = {
   identifier: 'real-daemon-smoke',
@@ -131,6 +163,23 @@ vi.mock('../../src/providers/anthropic', () => ({
   streamMessage: vi.fn(),
 }));
 
+vi.mock('../../src/analytics/provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
+  return {
+    ...actual,
+    useAnalytics: () => ({
+      track: analyticsTrack,
+      setConsent: vi.fn(),
+      setIdentity: vi.fn(),
+      setConfigureGlobals: vi.fn(),
+      setUserId: vi.fn(),
+      anonymousId: 'test',
+      sessionId: 'test',
+      newRequestId: () => 'request-test',
+    }),
+  };
+});
+
 vi.mock('../../src/providers/daemon', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/daemon')>(
     '../../src/providers/daemon',
@@ -188,6 +237,8 @@ vi.mock('../../src/state/projects', () => ({
   createConversation: (...args: unknown[]) => createConversation(...args),
   deleteConversation: vi.fn(),
   getTemplate: (...args: unknown[]) => getTemplate(...args),
+  installGeneratedPluginFolder: (...args: unknown[]) => installGeneratedPluginFolder(...args),
+  startGeneratedPluginShareTask: (...args: unknown[]) => startGeneratedPluginShareTask(...args),
   listConversations: (...args: unknown[]) => listConversations(...args),
   listMessages: (...args: unknown[]) => listMessages(...args),
   loadTabs: (...args: unknown[]) => loadTabs(...args),
@@ -247,6 +298,8 @@ async function waitForReadyChatPaneProps() {
       url?: string;
     }) => Promise<{ ok: boolean; action?: string; message?: string } | void> | { ok: boolean; action?: string; message?: string } | void;
     onContinueBrandExtraction?: () => void;
+    onContinueBrandAgentExtraction?: () => void;
+    onContinueBrandEnrichment?: () => void;
     designSystemPicker?: { props?: { onChange?: (id: string | null) => void } };
     onRequestPluginFolderAgentAction?: (
       relativePath: string,
@@ -276,7 +329,7 @@ async function settleTestClock(): Promise<void> {
 }
 
 function prepareReadyRunProject(projectId: string, projectOverrides: Record<string, unknown> = {}) {
-  const gitState: ProjectGitState = {
+  let gitState: ProjectGitState = {
     enabled: true,
     phase: 'synced',
     localHead: 'a'.repeat(40),
@@ -324,13 +377,14 @@ function prepareReadyRunProject(projectId: string, projectOverrides: Record<stri
   getTemplate.mockResolvedValue(null);
   listActiveChatRuns.mockResolvedValue([]);
   fetchChatRunStatus.mockResolvedValue(null);
+  return (nextState: ProjectGitState) => { gitState = nextState; };
 }
 
 function runProjectView(
   projectId: string,
   options: {
     pendingPrompt?: string;
-    onClearPendingPrompt?: () => void;
+    onClearPendingPrompt?: ComponentProps<typeof ProjectView>['onClearPendingPrompt'];
     onProjectChange?: (project: unknown) => void;
     projectOverrides?: Record<string, unknown>;
   } = {},
@@ -658,6 +712,14 @@ describe('ProjectView daemon cleanup', () => {
     listProjectRuns.mockResolvedValue([]);
     fetchConnectorStatuses.mockResolvedValue({});
     cancelBrandExtraction.mockResolvedValue({ ok: true, status: 'failed' });
+    installGeneratedPluginFolder.mockResolvedValue({ ok: true, message: 'installed' });
+    startGeneratedPluginShareTask.mockResolvedValue({
+      taskId: 'plugin-share-task',
+      action: 'publish-github',
+      path: 'generated-plugin',
+      status: 'running',
+      startedAt: 1,
+    });
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/git')) {
         return new Response(JSON.stringify({
@@ -708,9 +770,6 @@ describe('ProjectView daemon cleanup', () => {
     const firstId = chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal?.id;
     expect(firstId).toBeTypeOf('string');
 
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
     const advancedState: ProjectGitState = {
       enabled: true,
       phase: 'synced',
@@ -728,7 +787,14 @@ describe('ProjectView daemon cleanup', () => {
       binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
       dependencies: [],
     };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: advancedState }));
+    const initialFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === `/api/projects/${projectId}/git`) {
+        return new Response(JSON.stringify(advancedState), { status: 200 });
+      }
+      return initialFetch(input, init);
+    }) as typeof fetch;
+    await expect(withFreshProjectMutation(projectId, () => undefined)).rejects.toThrow(/authority unavailable/i);
 
     await waitFor(() => expect(
       chatPaneSpy.mock.calls.map(([props]) => ({
@@ -748,6 +814,43 @@ describe('ProjectView daemon cleanup', () => {
     expect(onClearPendingPrompt).not.toHaveBeenCalled();
   });
 
+  it('keeps a pending-prompt signal until its exact-authority clear succeeds', async () => {
+    const projectId = 'project-draft-ack-persisted';
+    let resolveClear!: (cleared: boolean) => void;
+    const onClearPendingPrompt = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveClear = resolve;
+    }));
+    prepareReadyRunProject(projectId);
+    render(runProjectView(projectId, {
+      pendingPrompt: 'Persist this acknowledgement',
+      onClearPendingPrompt,
+    }));
+
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toMatchObject({
+      projectId,
+      generation: 0,
+      conversationId: 'conv-1',
+      source: 'pending-prompt',
+    }));
+    const signal = chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal;
+    const acknowledge = chatPaneSpy.mock.calls.at(-1)?.[0]?.onComposerDraftRestored as
+      | ((signalId: string) => void)
+      | undefined;
+    act(() => acknowledge?.(signal.id));
+
+    await waitFor(() => expect(onClearPendingPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      expectedProjectRevision: 1,
+      generation: 0,
+    })));
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal?.id).toBe(signal.id);
+
+    await act(async () => {
+      resolveClear(true);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toBeUndefined());
+  });
+
   it('keeps retained design-system picker and review callbacks inert after revision advance', async () => {
     const projectId = 'project-retained-design-system-actions';
     const onProjectChange = vi.fn();
@@ -764,32 +867,37 @@ describe('ProjectView daemon cleanup', () => {
     };
     expect(pickerOnChange).toBeTypeOf('function');
     expect(workspaceProps.onDesignSystemReviewDecision).toBeTypeOf('function');
-
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({
-      type: 'project-git-state',
-      projectId,
-      state: {
-        enabled: true, phase: 'synced', localHead: 'b'.repeat(40),
-        observedRemoteHead: 'b'.repeat(40), confirmedRemoteHead: 'b'.repeat(40),
-        projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
-        dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
-        binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-        dependencies: [],
-      },
-    }));
+    const lockedStore = createProjectGitStateStore({
+      enabled: true, phase: 'synced', localHead: 'b'.repeat(40),
+      observedRemoteHead: 'b'.repeat(40), confirmedRemoteHead: 'b'.repeat(40),
+      projectRevision: 1, contentRevision: 1, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    });
+    registerProjectMutationStore(projectId, lockedStore);
+    lockedStore.accept({
+      enabled: true, phase: 'synced', localHead: 'c'.repeat(40),
+      observedRemoteHead: 'c'.repeat(40), confirmedRemoteHead: 'c'.repeat(40),
+      projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    }, 'event');
     patchProject.mockClear();
     onProjectChange.mockClear();
 
-    act(() => {
-      pickerOnChange?.('design-system-next');
-      workspaceProps.onDesignSystemReviewDecision?.('Colors', 'approved');
-    });
-
-    expect(onProjectChange).not.toHaveBeenCalled();
-    expect(patchProject).not.toHaveBeenCalled();
+    try {
+      act(() => {
+        pickerOnChange?.('design-system-next');
+        workspaceProps.onDesignSystemReviewDecision?.('Colors', 'approved');
+      });
+      expect(onProjectChange).not.toHaveBeenCalled();
+      expect(patchProject).not.toHaveBeenCalled();
+    } finally {
+      unregisterProjectMutationStore(projectId, lockedStore);
+      lockedStore.dispose();
+    }
   });
 
   it('returns stale and performs no work from retained Continue and plugin callbacks', async () => {
@@ -805,34 +913,71 @@ describe('ProjectView daemon cleanup', () => {
 
     const chatProps = await waitForReadyChatPaneProps();
     const continueAction = chatProps.onContinueBrandExtraction;
+    const continueAgentAction = chatProps.onContinueBrandAgentExtraction;
+    const continueEnrichmentAction = chatProps.onContinueBrandEnrichment;
     const pluginAction = chatProps.onRequestPluginFolderAgentAction;
     expect(continueAction).toBeTypeOf('function');
+    expect(continueAgentAction).toBeTypeOf('function');
+    expect(continueEnrichmentAction).toBeTypeOf('function');
     expect(pluginAction).toBeTypeOf('function');
 
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({
-      type: 'project-git-state',
-      projectId,
-      state: {
-        enabled: true, phase: 'synced', localHead: 'c'.repeat(40),
-        observedRemoteHead: 'c'.repeat(40), confirmedRemoteHead: 'c'.repeat(40),
-        projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
-        dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
-        binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-        dependencies: [],
-      },
+    const lockedStore = createProjectGitStateStore({
+      enabled: true, phase: 'synced', localHead: 'b'.repeat(40),
+      observedRemoteHead: 'b'.repeat(40), confirmedRemoteHead: 'b'.repeat(40),
+      projectRevision: 1, contentRevision: 1, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    });
+    registerProjectMutationStore(projectId, lockedStore);
+    lockedStore.accept({
+      enabled: true, phase: 'synced', localHead: 'c'.repeat(40),
+      observedRemoteHead: 'c'.repeat(40), confirmedRemoteHead: 'c'.repeat(40),
+      projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    }, 'event');
+    try {
+      fetchProjectFileText.mockClear();
+      continueBrandExtraction.mockClear();
+      analyticsTrack.mockClear();
+      saveTabs.mockClear();
+      let pluginResultPromise: Promise<unknown> | undefined;
+      act(() => {
+        pluginResultPromise = pluginAction?.('generated-plugin', 'install');
+        continueAction?.();
+        continueAgentAction?.();
+        continueEnrichmentAction?.();
+      });
+      const pluginResult = await pluginResultPromise;
+
+      expect(pluginResult).toEqual({ status: 'stale' });
+      expect(fetchProjectFileText).not.toHaveBeenCalled();
+      expect(continueBrandExtraction).not.toHaveBeenCalled();
+      expect(analyticsTrack).not.toHaveBeenCalled();
+      expect(saveTabs).not.toHaveBeenCalled();
+    } finally {
+      unregisterProjectMutationStore(projectId, lockedStore);
+      lockedStore.dispose();
+    }
+  });
+
+  it('translates structured conflicts and aborted plugin actions to stale', async () => {
+    const projectId = 'project-plugin-stale-protocol';
+    prepareReadyRunProject(projectId);
+    render(runProjectView(projectId));
+
+    const action = (await waitForReadyChatPaneProps()).onRequestPluginFolderAgentAction;
+    expect(action).toBeTypeOf('function');
+    installGeneratedPluginFolder.mockRejectedValueOnce(new ProjectStateChangedError({
+      code: 'PROJECT_STATE_CHANGED',
+      message: 'History changed',
     }));
-    fetchProjectFileText.mockClear();
-    continueBrandExtraction.mockClear();
+    startGeneratedPluginShareTask.mockRejectedValueOnce(new DOMException('History changed', 'AbortError'));
 
-    act(() => continueAction?.());
-    const pluginResult = await pluginAction?.('generated-plugin', 'install');
-
-    expect(pluginResult).toEqual({ status: 'stale' });
-    expect(fetchProjectFileText).not.toHaveBeenCalled();
-    expect(continueBrandExtraction).not.toHaveBeenCalled();
+    await expect(action?.('generated-plugin', 'install')).resolves.toEqual({ status: 'stale' });
+    await expect(action?.('generated-plugin', 'contribute')).resolves.toEqual({ status: 'stale' });
   });
 
   it('serializes two recoverable rows and keeps late predecessor callbacks away from the owner', async () => {
@@ -1177,7 +1322,7 @@ describe('ProjectView daemon cleanup', () => {
 
   it('does not publish a deferred manual conversation after revision ownership changes', async () => {
     const projectId = 'project-stale-manual-conversation';
-    prepareReadyRunProject(projectId);
+    const setGitState = prepareReadyRunProject(projectId);
     listMessages.mockResolvedValue([{ id: 'user-existing', role: 'user', content: 'existing' }]);
     let resolveCreate!: (value: { id: string; title: string }) => void;
     createConversation.mockReturnValue(new Promise((resolve) => { resolveCreate = resolve; }));
@@ -1187,16 +1332,14 @@ describe('ProjectView daemon cleanup', () => {
     await waitFor(() => expect(initial.onNewConversation).toBeTypeOf('function'));
     const creating = initial.onNewConversation?.();
     await waitFor(() => expect(createConversation).toHaveBeenCalledOnce());
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
     const nextGitState: ProjectGitState = {
       enabled: true, phase: 'synced', localHead: 'b'.repeat(40), observedRemoteHead: null,
       confirmedRemoteHead: null, projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
       dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
       binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
     };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: nextGitState }));
+    setGitState(nextGitState);
+    await advanceProjectAuthority(projectId);
     resolveCreate({ id: 'conv-stale', title: 'Stale conversation' });
     await creating;
 
@@ -1206,7 +1349,7 @@ describe('ProjectView daemon cleanup', () => {
 
   it('does not publish a stale manual conversation creation error after revision ownership changes', async () => {
     const projectId = 'project-stale-manual-conversation-error';
-    prepareReadyRunProject(projectId);
+    const setGitState = prepareReadyRunProject(projectId);
     listMessages.mockResolvedValue([{ id: 'user-existing', role: 'user', content: 'existing' }]);
     let rejectCreate!: (error: Error) => void;
     createConversation.mockReturnValue(new Promise((_resolve, reject) => { rejectCreate = reject; }));
@@ -1215,16 +1358,14 @@ describe('ProjectView daemon cleanup', () => {
     const initial = await waitForReadyChatPaneProps();
     const creating = initial.onNewConversation?.();
     await waitFor(() => expect(createConversation).toHaveBeenCalledOnce());
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
     const nextGitState: ProjectGitState = {
       enabled: true, phase: 'synced', localHead: 'c'.repeat(40), observedRemoteHead: null,
       confirmedRemoteHead: null, projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
       dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
       binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
     };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: nextGitState }));
+    setGitState(nextGitState);
+    await advanceProjectAuthority(projectId);
     rejectCreate(new Error('stale create failed'));
     await creating;
 
@@ -1260,7 +1401,6 @@ describe('ProjectView daemon cleanup', () => {
     getTemplate.mockResolvedValue(null);
     listActiveChatRuns.mockResolvedValue([]);
     fetchChatRunStatus.mockResolvedValue(null);
-
     let oldHandlers: { onRunStatus: (status: 'succeeded') => void } | undefined;
     let calls = 0;
     streamViaDaemon.mockImplementation(async (options: {
@@ -1364,17 +1504,14 @@ describe('ProjectView daemon cleanup', () => {
     />);
 
     const props = await waitForReadyChatPaneProps();
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     await props.onSend?.('stream a tool', [], []);
     await waitFor(() => expect(handlers).toBeDefined());
     act(() => handlers?.onToolInputDelta('tool-old', 'Write', '{"path":'));
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.liveToolInput).toHaveProperty('tool-old'));
 
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     act(() => handlers?.onToolInputDelta('tool-late', 'Write', '"late"}'));
 
     await waitFor(() => {
@@ -1549,10 +1686,7 @@ describe('ProjectView daemon cleanup', () => {
     />);
 
     const props = await waitForReadyChatPaneProps();
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     props.onSend?.('remember this safely', [], []);
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith(
       '/api/memory/extract',
@@ -1578,7 +1712,7 @@ describe('ProjectView daemon cleanup', () => {
     });
 
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await act(async () => {
       resolveMemory(new Response(JSON.stringify({ changed: [] }), { status: 200 }));
       await Promise.resolve();
@@ -1640,10 +1774,7 @@ describe('ProjectView daemon cleanup', () => {
     />);
 
     const props = await waitForReadyChatPaneProps();
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     act(() => props.onShareToOpenDesign?.('assistant-share'));
     await waitFor(() => {
       expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.shareToOpenDesignBusyMessageId)
@@ -1651,7 +1782,7 @@ describe('ProjectView daemon cleanup', () => {
     });
 
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await waitFor(() => {
       expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.shareToOpenDesignBusyMessageId).toBeNull();
     });
@@ -1735,12 +1866,7 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.sendDisabled).toBe(false));
-    const subscription = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId);
-    expect(subscription).toBeDefined();
-    const listener = subscription?.[1] as ((event: ProjectEvent) => void) | undefined;
-    act(() => {
-      listener?.({ type: 'project-git-state', projectId, state: initialGitState });
-    });
+    await initializeProjectAuthority(projectId);
     gitState = {
       ...initialGitState,
       enabled: true,
@@ -1753,9 +1879,7 @@ describe('ProjectView daemon cleanup', () => {
       autoSync: true,
       binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
     };
-    act(() => {
-      listener?.({ type: 'project-git-state', projectId, state: gitState });
-    });
+    await advanceProjectAuthority(projectId);
 
     await waitFor(() => expect(onProjectsRefresh).toHaveBeenCalledWith({
       throwOnError: true,
@@ -1890,11 +2014,7 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     const firstSendProps = await waitForReadyChatPaneProps();
-    const subscription = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId);
-    const listener = subscription?.[1] as ((event: ProjectEvent) => void) | undefined;
-    act(() => {
-      listener?.({ type: 'project-git-state', projectId, state: initialGitState });
-    });
+    await initializeProjectAuthority(projectId);
     await firstSendProps.onSend?.('create old artifact', [], []);
     await waitFor(() => expect(oldCompletionReadClaimed).toBe(true));
     const oldAssistantId = streamViaDaemon.mock.calls[0]?.[0]?.assistantMessageId as string;
@@ -1904,6 +2024,10 @@ describe('ProjectView daemon cleanup', () => {
       (call) => call[2]?.id === oldAssistantId && call[2]?.resultDeliveryState,
     )).toBe(false);
 
+    let resolveReconciledConversations!: (value: Array<{ id: string; title: string }>) => void;
+    listConversations.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveReconciledConversations = resolve;
+    }));
     gitState = {
       ...initialGitState,
       localHead: 'b'.repeat(40),
@@ -1912,15 +2036,16 @@ describe('ProjectView daemon cleanup', () => {
       projectRevision: 2,
       contentRevision: 2,
     };
-    act(() => {
-      listener?.({ type: 'project-git-state', projectId, state: gitState });
-    });
+    await advanceProjectAuthority(projectId);
 
     // A callback retained from the ready render must fail closed while the
     // revision reconciliation barrier is locked.
     void firstSendProps.onSend?.('start newer run', [], []);
     await act(async () => Promise.resolve());
     expect(streamViaDaemon).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveReconciledConversations([{ id: 'conv-1', title: 'Conversation' }]);
+    });
     const reconciledSendProps = await waitFor(async () => {
       const candidate = chatPaneSpy.mock.calls.at(-1)?.[0];
       expect(candidate).not.toBe(firstSendProps);
@@ -2016,19 +2141,24 @@ describe('ProjectView daemon cleanup', () => {
     />);
 
     const send = await waitForReadyChatPaneProps();
-    const subscription = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId);
-    const listener = subscription?.[1] as ((event: ProjectEvent) => void) | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     await send.onSend?.('finish old brand', [], []);
     await waitFor(() => expect(finalizeBrandProject).toHaveBeenCalledOnce());
     const oldAssistantId = streamViaDaemon.mock.calls[0]?.[0]?.assistantMessageId as string;
     expect(finalizeBrandProject.mock.calls[0]?.[2]?.expectedProjectRevision).toBe(1);
 
+    let resolveReconciledConversations!: (value: Array<{ id: string; title: string }>) => void;
+    listConversations.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveReconciledConversations = resolve;
+    }));
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     void send.onSend?.('start newer brand run', [], []);
     await act(async () => Promise.resolve());
     expect(streamViaDaemon).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveReconciledConversations([{ id: 'conv-1', title: 'Conversation' }]);
+    });
     const reconciledSend = await waitFor(async () => {
       const candidate = chatPaneSpy.mock.calls.at(-1)?.[0];
       expect(candidate).not.toBe(send);
@@ -2149,10 +2279,7 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     const send = await waitForReadyChatPaneProps();
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     await send.onSend?.('old run', [], []);
     await waitFor(() => expect(handlers).toBeDefined());
     await handlers!.onError(disconnect);
@@ -2161,7 +2288,7 @@ describe('ProjectView daemon cleanup', () => {
     saveMessage.mockClear();
     patchConversation.mockClear();
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     resolveStatus({
       id: 'run-old',
       status: 'succeeded',
@@ -2278,10 +2405,7 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     const send = await waitForReadyChatPaneProps();
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     await send.onSend?.('old event run', [], []);
     await waitFor(() => expect(handlers).toBeDefined());
     eventArtifactsPending = true;
@@ -2303,7 +2427,7 @@ describe('ProjectView daemon cleanup', () => {
       expect(fetchProjectFiles).toHaveBeenCalled();
     });
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     expect(oldRunSignal?.aborted).toBe(true);
     const workspaceCallsBeforeResolve = fileWorkspaceSpy.mock.calls.length;
     await act(async () => {
@@ -2399,12 +2523,9 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(listConversations).toHaveBeenCalledTimes(1));
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await waitFor(() => expect(listConversations.mock.calls.length).toBeGreaterThanOrEqual(2));
     await act(async () => {
       resolveInitialConversations([{ id: 'conv-stale', title: 'Stale conversation' }]);
@@ -2483,9 +2604,10 @@ describe('ProjectView daemon cleanup', () => {
     listActiveChatRuns.mockResolvedValue([]);
     fetchChatRunStatus.mockResolvedValue(null);
     let resolveStaleSeed!: (value: { id: string; title: string }) => void;
+    let resolveCurrentSeed!: (value: { id: string; title: string }) => void;
     createConversation
       .mockReturnValueOnce(new Promise((resolve) => { resolveStaleSeed = resolve; }))
-      .mockResolvedValueOnce({ id: 'conv-current', title: 'Current conversation' });
+      .mockReturnValueOnce(new Promise((resolve) => { resolveCurrentSeed = resolve; }));
 
     render(
       <ProjectView
@@ -2511,12 +2633,9 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(listConversations).toHaveBeenCalledTimes(1));
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
     expect(createConversation).toHaveBeenNthCalledWith(
       1,
@@ -2526,7 +2645,7 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     gitState = { ...initialGitState, projectRevision: 3, contentRevision: 3, localHead: 'c'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(2));
     expect(createConversation).toHaveBeenNthCalledWith(
       2,
@@ -2534,6 +2653,9 @@ describe('ProjectView daemon cleanup', () => {
       undefined,
       { mutationContext: expect.objectContaining({ expectedProjectRevision: 3, generation: 2 }) },
     );
+    await act(async () => {
+      resolveCurrentSeed({ id: 'conv-current', title: 'Current conversation' });
+    });
     await act(async () => {
       resolveStaleSeed({ id: 'conv-stale', title: 'Stale conversation' });
       await Promise.resolve();
@@ -2547,6 +2669,108 @@ describe('ProjectView daemon cleanup', () => {
       ]);
       expect(props?.sendDisabled).toBe(false);
     });
+  });
+
+  it('keeps empty-conversation creation single-flight across a same-generation authority reload', async () => {
+    const projectId = 'project-empty-conversation-same-generation';
+    const gitState: ProjectGitState = {
+      enabled: true,
+      phase: 'synced',
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40),
+      projectRevision: 1,
+      contentRevision: 1,
+      bindingGeneration: 1,
+      dirty: false,
+      pendingPush: false,
+      autoSync: true,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    };
+    let failGitRead = false;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) {
+        if (failGitRead) {
+          return new Response(JSON.stringify({
+            error: { code: 'INTERNAL_ERROR', message: 'temporary read failure' },
+          }), { status: 503 });
+        }
+        return new Response(JSON.stringify(gitState), { status: 200 });
+      }
+      if (url === `/api/projects/${projectId}`) {
+        return new Response(JSON.stringify({
+          project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+          resolvedDir: '/project',
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchConnectorStatuses.mockResolvedValue({});
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+    let resolveSeed!: (value: { id: string; title: string }) => void;
+    createConversation.mockReturnValue(new Promise((resolve) => { resolveSeed = resolve; }));
+
+    render(
+      <ProjectView
+        project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+    failGitRead = true;
+    await act(async () => {
+      await expect(withFreshProjectMutation(projectId, () => undefined))
+        .rejects.toThrow('temporary read failure');
+    });
+    await act(async () => {
+      resolveSeed({ id: 'conv-current', title: 'Current conversation' });
+      await Promise.resolve();
+    });
+
+    failGitRead = false;
+    await initializeProjectAuthority(projectId);
+    expect(createConversation).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => {
+      const props = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(props?.activeConversationId).toBe('conv-current');
+      expect(props?.conversations).toEqual([
+        expect.objectContaining({ id: 'conv-current' }),
+      ]);
+    });
+    expect(createConversation).toHaveBeenCalledTimes(1);
   });
 
   it('does not let the initial message list replace the transcript accepted by a revision barrier', async () => {
@@ -2625,12 +2849,9 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(listMessages).toHaveBeenCalledTimes(1));
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await initializeProjectAuthority(projectId);
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await advanceProjectAuthority(projectId);
     await waitFor(() => expect(listMessages.mock.calls.length).toBeGreaterThanOrEqual(2));
     await act(async () => {
       resolveInitialMessages([
@@ -2737,15 +2958,27 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(listConversations).toHaveBeenCalledTimes(1));
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await withFreshProjectMutation(projectId, () => undefined);
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await expect(withFreshProjectMutation(projectId, () => undefined)).rejects.toThrow(/authority unavailable/i);
 
-    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toBeUndefined());
-    expect(streamViaDaemon).not.toHaveBeenCalled();
+    await waitFor(() => expect(listConversations.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.map(([props]) => props.composerDraftSignal))
+      .toContainEqual(expect.objectContaining({
+        projectId,
+        generation: 1,
+        conversationId: 'conv-current',
+        text: 'Build from Home',
+        attachments: [attachment],
+        meta: { context: { workspaceItems: [workspaceItem] } },
+        source: 'auto-send',
+      })));
+    expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      mutationContext: expect.objectContaining({
+        expectedProjectRevision: 2,
+        generation: 1,
+      }),
+    }));
     expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBe('1');
     expect(window.sessionStorage.getItem(`od:auto-send-prompt:${projectId}`)).toBe('Build from Home');
   });
@@ -2832,12 +3065,9 @@ describe('ProjectView daemon cleanup', () => {
       text: 'Keep this manual draft',
     }));
     const oldSignalId = chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal?.id;
-    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
-      | ((event: ProjectEvent) => void)
-      | undefined;
-    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await withFreshProjectMutation(projectId, () => undefined);
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await expect(withFreshProjectMutation(projectId, () => undefined)).rejects.toThrow(/authority unavailable/i);
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toMatchObject({
       projectId,
       generation: 1,
@@ -3615,7 +3845,7 @@ describe('ProjectView daemon cleanup', () => {
     streamViaDaemon.mockResolvedValue(undefined);
 
     chatPaneSpy.mockClear();
-    const onClearPendingPrompt = vi.fn();
+    const onClearPendingPrompt = vi.fn(async () => true);
     window.sessionStorage.setItem('od:auto-send-first:project-hydrating', '1');
 
     const baseProps = {
@@ -3731,7 +3961,7 @@ describe('ProjectView daemon cleanup', () => {
           onRefreshAgents={() => {}}
           onOpenSettings={() => {}}
           onBack={() => {}}
-          onClearPendingPrompt={() => {}}
+          onClearPendingPrompt={async () => true}
           onTouchProject={() => {}}
           onProjectChange={() => {}}
           onProjectsRefresh={() => {}}
@@ -3822,7 +4052,7 @@ describe('ProjectView daemon cleanup', () => {
           onRefreshAgents={() => {}}
           onOpenSettings={() => {}}
           onBack={() => {}}
-          onClearPendingPrompt={() => {}}
+          onClearPendingPrompt={async () => true}
           onTouchProject={() => {}}
           onProjectChange={() => {}}
           onProjectsRefresh={() => {}}
@@ -4007,7 +4237,7 @@ describe('ProjectView daemon cleanup', () => {
         onRefreshAgents={() => {}}
         onOpenSettings={() => {}}
         onBack={() => {}}
-        onClearPendingPrompt={() => {}}
+        onClearPendingPrompt={async () => true}
         onTouchProject={() => {}}
         onProjectChange={() => {}}
         onProjectsRefresh={() => {}}

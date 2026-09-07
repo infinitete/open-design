@@ -133,6 +133,7 @@ import {
   deleteTemplate,
   duplicatePluginAsProject,
   patchProject,
+  patchProjectWithFreshAuthority,
 } from './state/projects';
 import {
   captureProjectMutation,
@@ -2299,19 +2300,25 @@ function AppInner() {
     });
   }, [iframeKeepAlivePool, route]);
 
-  const handleClearPendingPrompt = useCallback(async () => {
+  const handleClearPendingPrompt = useCallback(async (mutationContext: ProjectMutationContext) => {
     const projectId = route.kind === 'project' ? route.projectId : null;
-    if (!projectId) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
+    if (!projectId) return false;
+    const readyContext = captureProjectMutation(projectId);
+    if (
+      !readyContext
+      || readyContext.generation !== mutationContext.generation
+      || readyContext.expectedProjectRevision !== mutationContext.expectedProjectRevision
+      || readyContext.signal !== mutationContext.signal
+      || !isProjectMutationCurrent(projectId, readyContext)
+    ) return false;
     let persisted: Project | null;
     try {
-      persisted = await patchProject(projectId, { pendingPrompt: null }, mutationContext);
+      persisted = await patchProject(projectId, { pendingPrompt: null }, readyContext);
     } catch (error) {
-      if (error instanceof ProjectStateChangedError) return;
+      if (error instanceof ProjectStateChangedError) return false;
       throw error;
     }
-    if (!persisted || !isProjectMutationCurrent(projectId, mutationContext)) return;
+    if (!persisted || !isProjectMutationCurrent(projectId, readyContext)) return false;
     setProjects((curr) =>
       curr.map((p) =>
         p.id === projectId ? { ...p, pendingPrompt: undefined } : p,
@@ -2321,6 +2328,7 @@ function AppInner() {
       patch: (cachedProjects) => cachedProjects.map((project) =>
         project.id === projectId ? { ...project, pendingPrompt: undefined } : project),
     });
+    return true;
   }, [route]);
 
   const handleTouchProject = useCallback(() => {
@@ -2793,26 +2801,9 @@ function AppInner() {
           // back to the old prompt-only project.
           void (async () => {
             const name = summarizeProjectNameFromPrompt(prompt) || t('common.untitled');
+            let result: Awaited<ReturnType<typeof duplicatePluginAsProject>>;
             try {
-              const result = await duplicatePluginAsProject(templateId, { name });
-              const seeded = await patchProject(
-                result.projectId,
-                { pendingPrompt: prompt },
-              );
-              if (!seeded) {
-                // The project itself exists and is bound — only the prompt seed
-                // was refused. Keep the user on it (retrying through the catch
-                // below would leave the copy orphaned and create a second,
-                // empty project) and surface the dropped seed instead of
-                // discarding it silently.
-                console.error('Community remix: could not seed the template prompt.');
-              }
-              navigate({
-                kind: 'project',
-                projectId: result.projectId,
-                conversationId: result.conversationId,
-                fileName: result.relPath,
-              });
+              result = await duplicatePluginAsProject(templateId, { name });
             } catch {
               await handleCreateProject({
                 name,
@@ -2821,6 +2812,21 @@ function AppInner() {
                 metadata: { kind: 'other', nameSource: 'prompt' },
                 pendingPrompt: prompt,
               });
+              return;
+            }
+            try {
+              await patchProjectWithFreshAuthority(
+                result.projectId,
+                { pendingPrompt: prompt },
+              );
+              navigate({
+                kind: 'project',
+                projectId: result.projectId,
+                conversationId: result.conversationId,
+                fileName: result.relPath,
+              });
+            } catch {
+              console.error('Community remix: could not seed the template prompt.');
             }
           })();
         }}

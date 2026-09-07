@@ -127,7 +127,7 @@ import type { CreateInput, CreateTab, ImportClaudeDesignOutcome } from './NewPro
 import type { PluginLoopSubmit } from './PluginLoopHome';
 import {
   duplicatePluginAsProject,
-  patchProject,
+  patchProjectWithFreshAuthority,
   ProjectCreateError,
   type PluginShareAction,
   type PluginShareProjectOutcome,
@@ -1192,6 +1192,7 @@ export function EntryShell({
                   void (async () => {
                     const name =
                       summarizeProjectNameFromPrompt(prompt) || t('common.untitled');
+                    let result: Awaited<ReturnType<typeof duplicatePluginAsProject>>;
                     try {
                       // One resolved authority for BOTH requests: the create
                       // binds the copied project to this workspace, and the
@@ -1200,24 +1201,10 @@ export function EntryShell({
                       // legacy caller and leaves the project bound to no
                       // workspace at all, which is what kept remixed projects
                       // out of the member's own 草稿 list.
-                      const result = await duplicatePluginAsProject(
+                      result = await duplicatePluginAsProject(
                         templateId,
                         { name },
                       );
-                      const seeded = await patchProject(
-                        result.projectId,
-                        { pendingPrompt: prompt },
-                      );
-                      if (!seeded) {
-                        // The project itself exists and is bound — only the
-                        // prompt seed was refused. Keep the user on it
-                        // (retrying through the catch below would leave the
-                        // copy orphaned and create a second, empty project)
-                        // and surface the dropped seed instead of discarding
-                        // it silently.
-                        console.error('Community remix: could not seed the template prompt.');
-                      }
-                      await Promise.resolve(onOpenProject(result.projectId, result.relPath));
                     } catch {
                       await onCreateProject({
                         name,
@@ -1226,6 +1213,20 @@ export function EntryShell({
                         metadata: { kind: 'other', nameSource: 'prompt' },
                         pendingPrompt: prompt,
                       });
+                      return;
+                    }
+                    try {
+                      await patchProjectWithFreshAuthority(
+                        result.projectId,
+                        { pendingPrompt: prompt },
+                      );
+                      await Promise.resolve(onOpenProject(result.projectId, result.relPath));
+                    } catch (error) {
+                      // A copied project already exists after duplication.
+                      // Never navigate to it as if its prompt were seeded, and
+                      // never create a second fallback project when the fresh
+                      // authority read or seed patch fails.
+                      console.error('Community remix: could not seed the template prompt.', error);
                     }
                   })();
                 }}

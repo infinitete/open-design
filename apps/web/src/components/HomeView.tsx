@@ -46,9 +46,9 @@ import {
   duplicatePluginAsProject,
   listPlugins,
   listPluginsFresh,
+  patchProjectWithFreshAuthority,
   pluginCatalogCacheKey,
   readCachedVisiblePlugins,
-  patchProject,
   ProjectCreateError,
   renderPluginBriefTemplate,
   resolvePluginQueryFallback,
@@ -3375,9 +3375,16 @@ export function HomeView({
             }}
             onImported={(result, projectId) => {
               void (async () => {
-                await patchProject(projectId, { pendingPrompt: result.suggestedPrompt });
-                setFigmaModalOpen(false);
-                onOpenProject(projectId);
+                try {
+                  await patchProjectWithFreshAuthority(
+                    projectId,
+                    { pendingPrompt: result.suggestedPrompt },
+                  );
+                  setFigmaModalOpen(false);
+                  onOpenProject(projectId);
+                } catch (error) {
+                  console.error('Could not seed the imported Figma project.', error);
+                }
               })();
             }}
             onFigmaUrl={(url, notes) => {

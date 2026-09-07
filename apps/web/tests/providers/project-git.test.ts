@@ -4,6 +4,7 @@ import {
   ProjectGitHttpError,
   createProjectGitClient,
   createProjectGitHub,
+  withFreshProjectMutation,
 } from '../../src/providers/project-git';
 import { captureProjectMutation } from '../../src/state/project-git';
 
@@ -19,7 +20,10 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe('ProjectGitClient', () => {
   it('validates state and sends the captured revision through the exact mutation transport', async () => {
@@ -149,6 +153,40 @@ describe('ProjectGitClient', () => {
 });
 
 describe('shared project Git hub', () => {
+  it('loads and owns exact fresh authority for a post-create mutation, then releases it', async () => {
+    const fetchMock = vi.fn(async () => json(legalState));
+    vi.stubGlobal('fetch', fetchMock);
+    const mutation = vi.fn(async (context: ReturnType<typeof captureProjectMutation>) => {
+      expect(context).toMatchObject({ expectedProjectRevision: 7, generation: 0 });
+      expect(captureProjectMutation('post-create-project')).toEqual(context);
+      return 'persisted';
+    });
+
+    await expect(withFreshProjectMutation('post-create-project', mutation)).resolves.toBe('persisted');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/post-create-project/git',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(mutation).toHaveBeenCalledOnce();
+    expect(captureProjectMutation('post-create-project')).toBeUndefined();
+  });
+
+  it('releases post-create authority leases on callback and fresh-read failures', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(legalState)));
+    await expect(withFreshProjectMutation('callback-failure-project', async () => {
+      throw new Error('seed write failed');
+    })).rejects.toThrow('seed write failed');
+    expect(captureProjectMutation('callback-failure-project')).toBeUndefined();
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'unavailable' }, 503)));
+    const mutation = vi.fn();
+    await expect(withFreshProjectMutation('read-failure-project', mutation)).rejects.toThrow();
+    expect(mutation).not.toHaveBeenCalled();
+    expect(captureProjectMutation('read-failure-project')).toBeUndefined();
+  });
+
   it('shares one state GET and one project event subscription per project', async () => {
     let resolveState!: (value: ProjectGitState) => void;
     const statePromise = new Promise<ProjectGitState>((resolve) => { resolveState = resolve; });

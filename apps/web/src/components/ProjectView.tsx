@@ -53,6 +53,7 @@ import {
   captureProjectMutation,
   isProjectMutationReady,
   isProjectMutationCurrent,
+  ProjectStateChangedError,
   registerProjectEpochInvalidator,
   type ProjectMutationContext,
 } from '../state/project-git';
@@ -614,7 +615,9 @@ interface Props {
   onBrowsePlugins?: () => void;
   onOpenConnectors?: () => void;
   onBack: () => void;
-  onClearPendingPrompt: () => void;
+  onClearPendingPrompt: (
+    mutationContext: ProjectMutationContext,
+  ) => Promise<boolean | void> | boolean | void;
   onTouchProject: () => void;
   onProjectChange: (next: Project) => void;
   onProjectRenameStarted?: (optimistic: Project) => ProjectRenameFenceToken | null;
@@ -2339,6 +2342,13 @@ export function ProjectView({
   const messagesAuthorityKeyRef = useRef<string | null>(null);
   const creatingConversationRef = useRef(false);
   const conversationCreationGenerationRef = useRef(0);
+  const emptyConversationSeedFlightRef = useRef<{
+    projectId: string;
+    authorityGeneration: number;
+    creationGeneration: number;
+    mutationContext: ProjectMutationContext;
+    result: Promise<Conversation | null>;
+  } | null>(null);
   // Last conversation id this view pushed into the URL. Lets the
   // route -> active-conversation sync tell a genuine external navigation
   // apart from the URL merely lagging a local conversation switch.
@@ -2544,40 +2554,59 @@ export function ProjectView({
     projectRunAuthorityKey,
   ]);
 
+  const pendingEmptyConversationSeedProjectId = pendingEmptyConversationSeed?.projectId;
+  const pendingEmptyConversationSeedAuthorityKey = pendingEmptyConversationSeed?.authorityKey;
   useEffect(() => {
     if (
-      !pendingEmptyConversationSeed
-      || pendingEmptyConversationSeed.projectId !== project.id
-      || pendingEmptyConversationSeed.authorityKey !== 'current'
+      pendingEmptyConversationSeedProjectId !== project.id
+      || pendingEmptyConversationSeedAuthorityKey !== 'current'
       || projectMutationReadOnly
     ) {
       return;
     }
+    const authorityGeneration = projectGit.generation;
     let cancelled = false;
     (async () => {
-      const creationGeneration = conversationCreationGenerationRef.current + 1;
-      conversationCreationGenerationRef.current = creationGeneration;
-      const mutationContext = captureProjectMutation(project.id);
+      let flight = emptyConversationSeedFlightRef.current;
+      if (
+        !flight
+        || flight.projectId !== project.id
+        || flight.authorityGeneration !== authorityGeneration
+        || flight.creationGeneration !== conversationCreationGenerationRef.current
+      ) {
+        const creationGeneration = conversationCreationGenerationRef.current + 1;
+        conversationCreationGenerationRef.current = creationGeneration;
+        const mutationContext = captureProjectMutation(project.id);
+        if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
+        flight = {
+          projectId: project.id,
+          authorityGeneration,
+          creationGeneration,
+          mutationContext,
+          result: createConversation(project.id, undefined, { mutationContext }),
+        };
+        emptyConversationSeedFlightRef.current = flight;
+      }
       const ownsCreation = () => Boolean(
         !cancelled
-        && conversationCreationGenerationRef.current === creationGeneration
-        && mutationContext
-        && isProjectMutationCurrent(project.id, mutationContext)
+        && emptyConversationSeedFlightRef.current === flight
+        && conversationCreationGenerationRef.current === flight.creationGeneration
+        && isProjectMutationCurrent(project.id, flight.mutationContext)
       );
       try {
         if (!ownsCreation()) return;
-        const fresh = await createConversation(project.id, undefined, {
-          mutationContext,
-        });
+        const fresh = await flight.result;
         if (!ownsCreation()) return;
         if (!fresh) {
           throw new Error('Could not create a conversation for this project.');
         }
+        emptyConversationSeedFlightRef.current = null;
         setPendingEmptyConversationSeed(null);
         setConversations([fresh]);
         setActiveConversationId(fresh.id);
       } catch (err) {
         if (!ownsCreation()) return;
+        emptyConversationSeedFlightRef.current = null;
         const message =
           err instanceof Error
             ? err.message
@@ -2591,8 +2620,10 @@ export function ProjectView({
       cancelled = true;
     };
   }, [
-    pendingEmptyConversationSeed,
+    pendingEmptyConversationSeedAuthorityKey,
+    pendingEmptyConversationSeedProjectId,
     project.id,
+    projectGit.generation,
     projectMutationReadOnly,
   ]);
 
@@ -8538,6 +8569,15 @@ export function ProjectView({
             relativePath,
             mutationContext,
           );
+        } catch (error) {
+          if (
+            error instanceof ProjectStateChangedError
+            || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
+            || !isProjectMutationCurrent(project.id, mutationContext)
+          ) {
+            return { status: 'stale' };
+          }
+          throw error;
         } finally {
           setActivePluginActionPaths((prev) => {
             const next = new Set(prev);
@@ -8576,7 +8616,11 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return { status: 'stale' };
+        if (
+          error instanceof ProjectStateChangedError
+          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
+          || !isProjectMutationCurrent(project.id, mutationContext)
+        ) return { status: 'stale' };
         throw error;
       }
       if (!isProjectMutationCurrent(project.id, mutationContext)) {
@@ -8858,7 +8902,9 @@ export function ProjectView({
     sectionTitle: string,
     feedback: string,
     sectionFiles: string[],
+    suppliedMutationContext: ProjectMutationContext,
   ): DesignSystemReviewAgentTask | void => {
+    if (!isProjectMutationCurrent(project.id, suppliedMutationContext)) return;
     const cleanFeedback = feedback.trim();
     if (!cleanFeedback) return;
     const prompt = designSystemNeedsWorkPrompt(sectionTitle, cleanFeedback, sectionFiles);
@@ -8877,21 +8923,30 @@ export function ProjectView({
       sentAt: queuedAt,
     };
     sentDesignSystemReviewTaskKeysRef.current.add(`${sectionTitle}:${queuedAt}`);
-    void handleSend(prompt, designSystemFeedbackAttachments(projectFiles, sectionFiles), []);
+    void handleSend(
+      prompt,
+      designSystemFeedbackAttachments(projectFiles, sectionFiles),
+      [],
+      undefined,
+      undefined,
+      suppliedMutationContext,
+    );
     return task;
   }, [
     activeConversationId,
     currentConversationActionDisabled,
     handleSend,
     messagesInitialized,
+    project.id,
     projectFiles,
   ]);
   const persistDesignSystemReviewDecision = useCallback((
     sectionTitle: string,
     decision: DesignSystemReviewEntry['decision'],
     details?: DesignSystemReviewDetails,
+    suppliedMutationContext?: ProjectMutationContext,
   ) => {
-    const mutationContext = captureProjectMutation(project.id);
+    const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
     if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     const entry: DesignSystemReviewEntry = {
       decision,
@@ -8902,6 +8957,7 @@ export function ProjectView({
     if (details?.agentTask) entry.agentTask = details.agentTask;
     persistDesignSystemReviewEntry(sectionTitle, entry, mutationContext);
   }, [persistDesignSystemReviewEntry, project.id]);
+
   useEffect(() => {
     if (!activeConversationId || !messagesInitialized || currentConversationActionDisabled) return;
     const queued = Object.entries(project.metadata?.designSystemReview ?? {}).find(
@@ -10440,6 +10496,8 @@ export function ProjectView({
   ]);
 
   const handleBrandAgentExtraction = useCallback(() => {
+    const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (brandAgentExtractionStarting) return;
     const brandId = currentProject.metadata?.brandId?.trim();
     if (brandId) setBrandExtractionStatusOverride({ brandId, status: 'extracting' });
@@ -10450,13 +10508,21 @@ export function ProjectView({
     });
     setBrandAgentExtractionStarting(true);
     requestOpenFile(brandExtractionPreviewFileName(projectFiles));
-    void handleSend(prompt, [], []).finally(() => setBrandAgentExtractionStarting(false));
+    void handleSend(
+      prompt,
+      [],
+      [],
+      undefined,
+      undefined,
+      mutationContext,
+    ).finally(() => setBrandAgentExtractionStarting(false));
   }, [
     brandAgentExtractionStarting,
     brandEnrichmentPromptSeed,
     brandEnrichmentPromptSeedCache,
     currentProject.metadata,
     handleSend,
+    project.id,
     projectFiles,
     requestOpenFile,
   ]);
@@ -10469,6 +10535,8 @@ export function ProjectView({
   // stops a double trigger: `brandEnrichmentStarting` only updates after a
   // re-render, so it cannot reject a second call inside the same tick.
   const startBrandEnrichment = useCallback(() => {
+    const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (config.mode !== 'daemon') return;
     const system = designSystemProject ?? activeDesignSystemSummary;
     const skillIds = installedBrandEnrichmentSkillIds(skills);
@@ -10490,6 +10558,8 @@ export function ProjectView({
       [],
       [],
       { ...(skillIds.length > 0 ? { skillIds } : {}), dsEnrichment: true },
+      undefined,
+      mutationContext,
     ).finally(() => setBrandEnrichmentStarting(false));
   }, [
     activeDesignSystemSummary,
@@ -10501,6 +10571,7 @@ export function ProjectView({
     handleSend,
     currentProject.metadata,
     projectDesignSystemId,
+    project.id,
     projectFiles,
     skills,
   ]);
@@ -10766,7 +10837,7 @@ export function ProjectView({
   const autoSentRef = useRef(false);
   const autoSendInFlightRef = useRef(false);
 
-  useEffect(() => registerProjectEpochInvalidator(project.id, () => {
+  useEffect(() => registerProjectEpochInvalidator(project.id, (advancedGeneration) => {
     // Detach browser work synchronously with the epoch transition. Deliberately
     // leave cancelRef/cancel controllers alone: those map to the daemon's
     // user-visible run cancellation endpoint, while a restore only revokes
@@ -10830,7 +10901,7 @@ export function ProjectView({
         setComposerDraftSignal({
           id: randomUUID(),
           projectId: project.id,
-          generation: projectGit.generation,
+          generation: advancedGeneration,
           conversationId,
           text,
           attachments,
@@ -10987,6 +11058,32 @@ export function ProjectView({
     if (autoSentRef.current) return;
     if (autoSendInFlightRef.current) return;
     if (!activeConversationId) return;
+    if (autoSendFirstMessageRef.current) {
+      const currentDraft = composerDraftSignalRef.current;
+      if (
+        !currentDraft
+        || currentDraft.projectId !== project.id
+        || currentDraft.generation !== projectGit.generation
+        || currentDraft.conversationId !== activeConversationId
+      ) {
+        const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
+        const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
+        const context = autoSendContextRef.current ?? readAutoSendContext(project.id);
+        if (text.trim() || attachments.length > 0 || context) {
+          setComposerDraftSignal({
+            id: randomUUID(),
+            projectId: project.id,
+            generation: projectGit.generation,
+            conversationId: activeConversationId,
+            text,
+            attachments,
+            ...(context ? { meta: { context } } : {}),
+            source: 'auto-send',
+          });
+          return;
+        }
+      }
+    }
     // `messagesInitialized` is React state, while the conversation ownership
     // guard used by handleSend is a ref. Require both to agree before consuming
     // the one-shot handoff: during a project/context transition there can be a
@@ -11035,7 +11132,7 @@ export function ProjectView({
         ...homeAutoSendIdentity(project.id),
         acceptDurableQueue: true,
       })
-      .then((accepted) => {
+      .then(async (accepted) => {
         if (!accepted) {
           // The handoff was not accepted (for example a transient project
           // scope/conversation transition or a recoverable preflight block).
@@ -11045,11 +11142,24 @@ export function ProjectView({
           return;
         }
         autoSentRef.current = true;
+        const clearContext = captureProjectMutation(project.id);
+        const pendingPromptCleared = Boolean(
+          clearContext
+          && await onClearPendingPrompt(clearContext)
+          && isProjectMutationCurrent(project.id, clearContext),
+        );
+        if (!pendingPromptCleared) {
+          // The accepted user turn is durable, but the project seed was not
+          // safely cleared. Retain the complete composer payload and session
+          // handoff so a keyed remount cannot collapse it to text-only state.
+          autoSendInFlightRef.current = false;
+          return;
+        }
         if (isDesignSystemWorkspaceMetadata(project.metadata)) {
           markDesignSystemAuditAutoRepairEligible(project.id);
         }
         clearAutoSendSession(project.id);
-        onClearPendingPrompt();
+        setComposerDraftSignal((current) => current?.source === 'auto-send' ? undefined : current);
         autoSendAttachmentsRef.current = [];
         autoSendInFlightRef.current = false;
       })
@@ -11065,6 +11175,7 @@ export function ProjectView({
     streaming,
     messages.length,
     project.id,
+    projectGit.generation,
     projectIsProgrammaticBrandExtraction,
     project.metadata,
     composerDraftSignal,
@@ -11392,21 +11503,35 @@ export function ProjectView({
                   : undefined
               }
               onComposerDraftRestored={(signalId) => {
-                const currentDraft = composerDraftSignalRef.current;
-                if (currentDraft?.id !== signalId) return;
-                const currentContext = projectGit.capture();
-                if (
-                  currentDraft.projectId !== project.id
-                  || currentDraft.generation !== projectGit.generation
-                  || currentDraft.conversationId !== activeConversationIdRef.current
-                  || !currentContext
-                  || currentContext.generation !== currentDraft.generation
-                  || !projectGit.isCurrent(currentContext)
-                ) return;
-                if (currentDraft.source === 'pending-prompt') {
-                  onClearPendingPrompt();
-                }
-                setComposerDraftSignal(undefined);
+                void (async () => {
+                  const currentDraft = composerDraftSignalRef.current;
+                  if (currentDraft?.id !== signalId) return;
+                  const currentContext = captureProjectMutation(project.id);
+                  if (
+                    currentDraft.projectId !== project.id
+                    || currentDraft.generation !== projectGit.generation
+                    || currentDraft.conversationId !== activeConversationIdRef.current
+                    || !currentContext
+                    || currentContext.generation !== currentDraft.generation
+                    || !isProjectMutationCurrent(project.id, currentContext)
+                  ) return;
+                  if (currentDraft.source === 'auto-send') {
+                    // Application into the editor is not durable acceptance.
+                    // The complete payload remains parent-owned until the send
+                    // and pending-prompt clear both succeed.
+                    return;
+                  }
+                  if (
+                    currentDraft.source === 'pending-prompt'
+                    && !await onClearPendingPrompt(currentContext)
+                  ) return;
+                  if (
+                    composerDraftSignalRef.current?.id !== signalId
+                    || activeConversationIdRef.current !== currentDraft.conversationId
+                    || !isProjectMutationCurrent(project.id, currentContext)
+                  ) return;
+                  setComposerDraftSignal((candidate) => candidate?.id === signalId ? undefined : candidate);
+                })();
               }}
               researchAvailable={config.mode === 'daemon'}
               byokApiProtocol={config.apiProtocol}

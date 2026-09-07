@@ -311,12 +311,14 @@ interface Props {
     sectionTitle: string,
     feedback: string,
     files: string[],
+    mutationContext: ProjectMutationContext,
   ) => DesignSystemReviewAgentTask | void;
   designSystemReview?: ProjectMetadata['designSystemReview'];
   onDesignSystemReviewDecision?: (
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
+    mutationContext?: ProjectMutationContext,
   ) => void;
   onUseDesignSystem?: (id: string, title: string) => Promise<void> | void;
   designSystemEditRequest?: DesignKitEditFocusRequest | null;
@@ -4717,12 +4719,14 @@ function DesignSystemProjectPanel({
     sectionTitle: string,
     feedback: string,
     files: string[],
+    mutationContext: ProjectMutationContext,
   ) => DesignSystemReviewAgentTask | void;
   designSystemReview?: ProjectMetadata['designSystemReview'];
   onReviewDecision?: (
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
+    mutationContext?: ProjectMutationContext,
   ) => void;
   onUseDesignSystem?: (id: string, title: string) => Promise<void> | void;
   editFocusRequest?: DesignKitEditFocusRequest | null;
@@ -4972,7 +4976,7 @@ function DesignSystemProjectPanel({
       // aren't user-editable; that's fine.
       const deleted = await onDeleteDesignSystemProject(projectId);
       if (deleted === 'stale') {
-        setKitToast(null);
+        notifyKit('error', 'Project history changed. Reload and confirm deletion again.');
         setKitActionBusy(null);
         return;
       }
@@ -5153,6 +5157,8 @@ function DesignSystemProjectPanel({
   const generationProgress = designSystemGenerationProgress(generationSteps);
 
   async function togglePublished(nextPublished: boolean) {
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!editable) return;
     if (nextPublished && !githubEvidence.ready) return;
     setStatusBusy(true);
@@ -5162,12 +5168,15 @@ function DesignSystemProjectPanel({
       const updated = await updateDesignSystemDraft(
         system.id,
         { status: nextStatus },
+        mutationContext,
       );
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       if (!updated) throw new Error(t('ds.actionFailed'));
       setStatus(updated.status ?? nextStatus);
       await onDesignSystemsRefresh?.();
       notifyKit('success', t('ds.actionDone'));
     } catch {
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       notifyKit('error', t('ds.actionFailed'));
     } finally {
       setStatusBusy(false);
@@ -5193,13 +5202,17 @@ function DesignSystemProjectPanel({
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
+    suppliedMutationContext?: ProjectMutationContext,
   ) {
+    const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     setReviewDecisions((current) => ({ ...current, [sectionTitle]: decision }));
-    onReviewDecision?.(sectionTitle, decision, details);
+    onReviewDecision?.(sectionTitle, decision, details, mutationContext);
     if (decision === 'looks-good' && feedbackSection === sectionTitle) {
       setFeedbackSection(null);
       setFeedbackText('');
     }
+    return true;
   }
 
   function toggleSection(sectionTitle: string) {
@@ -5210,6 +5223,8 @@ function DesignSystemProjectPanel({
   }
 
   function openNeedsWorkFeedback(sectionTitle: string, expansionKey: string) {
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!editable) return;
     setReviewDecisions((current) => ({ ...current, [sectionTitle]: 'needs-work' }));
     setExpandedSections((current) => ({ ...current, [expansionKey]: true }));
@@ -5218,14 +5233,16 @@ function DesignSystemProjectPanel({
   }
 
   function submitNeedsWorkFeedback(sectionTitle: string, sectionFiles: string[]) {
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const feedback = feedbackText.trim();
     if (!feedback) return;
-    const agentTask = onNeedsWork?.(sectionTitle, feedback, sectionFiles);
+    const agentTask = onNeedsWork?.(sectionTitle, feedback, sectionFiles, mutationContext);
     markSectionReview(sectionTitle, 'needs-work', {
       feedback,
       files: sectionFiles,
       ...(agentTask ? { agentTask } : {}),
-    });
+    }, mutationContext);
     setFeedbackSection(null);
     setFeedbackText('');
   }
@@ -6325,6 +6342,7 @@ function designSystemSectionStatusClass(status: DesignSystemSectionStatus): stri
       return 'is-missing';
   }
 }
+
 
 function designSystemInitialGenerationSteps({
   files,

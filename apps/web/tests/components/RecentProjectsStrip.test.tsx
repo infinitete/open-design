@@ -842,34 +842,37 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
       if (detail.projectIds) targetEvents.push(detail.projectIds);
     };
     window.addEventListener('open-design:project-mutation-targets', onTargets);
-    const props = {
-      projects: projects(2),
-      heading: 'All projects',
-      onOpen: () => {},
-      onDelete: vi.fn(async () => true as const),
-      canManageProjectCollection: true,
-      projectMutationReady: (id: string) => ready.get(id) === true,
-    };
-    const view = render(<RecentProjectsStrip {...props} />);
+    try {
+      const props = {
+        projects: projects(2),
+        heading: 'All projects',
+        onOpen: () => {},
+        onDelete: vi.fn(async () => true as const),
+        canManageProjectCollection: true,
+        projectMutationReady: (id: string) => ready.get(id) === true,
+      };
+      const view = render(<RecentProjectsStrip {...props} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Multi-select' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Project 1' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Project 2' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
-    const dialog = await screen.findByRole('alertdialog');
-    const confirm = within(dialog).getByRole('button', { name: 'Delete selected' });
-    expect(confirm).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).not.toBeDisabled();
-    expect(targetEvents.some((ids) => ids.length === 2
-      && ids.includes('project-1') && ids.includes('project-2'))).toBe(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Multi-select' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Project 1' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Project 2' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+      const dialog = await screen.findByRole('alertdialog');
+      const confirm = within(dialog).getByRole('button', { name: 'Delete selected' });
+      expect(confirm).toBeDisabled();
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).not.toBeDisabled();
+      expect(targetEvents.some((ids) => ids.length === 2
+        && ids.includes('project-1') && ids.includes('project-2'))).toBe(true);
 
-    ready.set('project-2', true);
-    view.rerender(<RecentProjectsStrip {...props} />);
-    expect(confirm).not.toBeDisabled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(targetEvents.at(-1)).toEqual([]));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    window.removeEventListener('open-design:project-mutation-targets', onTargets);
+      ready.set('project-2', true);
+      view.rerender(<RecentProjectsStrip {...props} />);
+      expect(confirm).not.toBeDisabled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(targetEvents.at(-1)).toEqual([]));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    } finally {
+      window.removeEventListener('open-design:project-mutation-targets', onTargets);
+    }
   });
 
   it('retains only stale intent after a mixed bulk delete settlement', async () => {

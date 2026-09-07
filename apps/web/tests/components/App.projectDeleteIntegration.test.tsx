@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectEvent } from '../../src/providers/project-events';
 import type { ProjectGitState } from '@open-design/contracts';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+} from '../../src/state/project-git';
 
 const harness = vi.hoisted(() => ({
   project: null as Record<string, unknown> | null,
@@ -209,46 +214,33 @@ describe('App to real ProjectView and FileWorkspace project delete', () => {
 
   it('keeps the real backing-project action inert after authority advances', async () => {
     const project = setupProject('integration-delete-stale');
-    let gitReadUnavailable = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === `/api/projects/${project.id}/git`) {
-        return gitReadUnavailable
-          ? Response.json({ error: 'unavailable' }, { status: 503 })
-          : Response.json(gitState(4));
-      }
+      if (url === `/api/projects/${project.id}/git`) return Response.json(gitState(4));
       if (url === `/api/projects/${project.id}`) return Response.json({ project, resolvedDir: '/project' });
       return Response.json({});
     });
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
     const button = await screen.findByRole('button', { name: 'Delete backing project' });
-
-    gitReadUnavailable = true;
-    act(() => harness.projectEventListeners.get(String(project.id))?.({
-      type: 'project-git-state', projectId: String(project.id), state: gitState(5),
-    }));
-    await screen.findByText('workspace.readonlyNotice');
-    fireEvent.click(button);
-
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+    const lockedStore = createProjectGitStateStore(gitState(4));
+    registerProjectMutationStore(String(project.id), lockedStore);
+    lockedStore.accept(gitState(5), 'event');
+    try {
+      fireEvent.click(button);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+    } finally {
+      unregisterProjectMutationStore(String(project.id), lockedStore);
+      lockedStore.dispose();
+    }
   });
 
   it('keeps a real structured revision 409 actionable through the full component chain', async () => {
     const project = setupProject('integration-delete-409');
-    let gitReadUnavailable = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === `/api/projects/${project.id}/git`) {
-        return gitReadUnavailable
-          ? Response.json({ error: 'unavailable' }, { status: 503 })
-          : Response.json(gitState(4));
-      }
+      if (url === `/api/projects/${project.id}/git`) return Response.json(gitState(4));
       if (url === `/api/projects/${project.id}` && init?.method === 'DELETE') {
-        gitReadUnavailable = true;
-        harness.projectEventListeners.get(String(project.id))?.({
-          type: 'project-git-state', projectId: String(project.id), state: gitState(5),
-        });
         return Response.json({
           error: { code: 'PROJECT_STATE_CHANGED', message: 'Reload restored project', retryable: false },
         }, { status: 409 });
@@ -261,8 +253,9 @@ describe('App to real ProjectView and FileWorkspace project delete', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete backing project' }));
 
-    await waitFor(() => expect(screen.getByText('workspace.readonlyNotice')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Project history changed.*Reload/i)).toBeTruthy());
     expect(harness.navigate).not.toHaveBeenCalledWith({ kind: 'home', view: 'home' });
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/git'))).toHaveLength(1);
   });
 });

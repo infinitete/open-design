@@ -8,12 +8,12 @@
 // AssistantMessage unit specs pass.
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { forwardRef } from 'react';
+import { forwardRef, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FileWorkspace } from '../../src/components/FileWorkspace';
 import { I18nProvider } from '../../src/i18n';
-import { deleteDesignSystemDraft } from '../../src/providers/registry';
+import { deleteDesignSystemDraft, updateDesignSystemDraft } from '../../src/providers/registry';
 import { createTerminal, killTerminal } from '../../src/state/projects';
 import {
   createProjectGitStateStore,
@@ -25,6 +25,26 @@ import type { AppConfig, ChatMessage, Conversation, ProjectFile } from '../../sr
 const launcherCapture = vi.hoisted(() => ({ context: null as null | {
   createTerminal?: () => Promise<string | null>;
 } }));
+const analyticsTrack = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/analytics/provider', async () => {
+  const actual = await vi.importActual<typeof import('../../src/analytics/provider')>(
+    '../../src/analytics/provider',
+  );
+  return {
+    ...actual,
+    useAnalytics: () => ({
+      track: analyticsTrack,
+      setConsent: vi.fn(),
+      setIdentity: vi.fn(),
+      setConfigureGlobals: vi.fn(),
+      setUserId: vi.fn(),
+      anonymousId: 'test',
+      sessionId: 'test',
+      newRequestId: () => 'request-test',
+    }),
+  };
+});
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -38,6 +58,7 @@ vi.mock('../../src/providers/registry', async () => {
     writeProjectTextFile: vi.fn(),
     fetchProjectFolders: vi.fn().mockResolvedValue([]),
     deleteDesignSystemDraft: vi.fn(),
+    updateDesignSystemDraft: vi.fn(),
   };
 });
 
@@ -56,11 +77,21 @@ vi.mock('../../src/runtime/kit-upload', () => ({
 }));
 
 vi.mock('../../src/components/DesignKitView', () => ({
-  DesignKitView: ({ headerMenuActions }: { headerMenuActions?: Array<{ id: string; disabled?: boolean; onClick: () => void }> }) => (
+  DesignKitView: ({
+    actionsSlot,
+    headerMenuActions,
+    topSlot,
+  }: {
+    actionsSlot?: ReactNode;
+    headerMenuActions?: Array<{ id: string; disabled?: boolean; onClick: () => void }>;
+    topSlot?: ReactNode;
+  }) => (
     <div>
+      {actionsSlot}
       {headerMenuActions?.map((action) => (
         <button key={action.id} type="button" disabled={action.disabled} onClick={action.onClick}>{action.id}</button>
       ))}
+      {topSlot}
     </div>
   ),
 }));
@@ -312,7 +343,8 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
       resolveDelete('stale');
       await waitFor(() => expect(deleteButton).toBeEnabled());
       expect(deleteDesignSystemDraft).not.toHaveBeenCalled();
-      expect(screen.queryByTestId('kit-toast')).not.toBeInTheDocument();
+      expect(screen.getByTestId('kit-toast')).toHaveAttribute('data-tone', 'error');
+      expect(screen.getByTestId('kit-toast')).toHaveTextContent(/history changed.*reload/i);
     } finally {
       confirm.mockRestore();
     }
@@ -333,4 +365,169 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
       confirm.mockRestore();
     }
   });
+
+  it('keeps a retained publish handler inert after project authority advances', async () => {
+    const state = {
+      enabled: true,
+      phase: 'synced' as const,
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40),
+      projectRevision: 1,
+      contentRevision: 1,
+      bindingGeneration: 1,
+      dirty: false,
+      pendingPush: false,
+      autoSync: true,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    };
+    const store = createProjectGitStateStore(state);
+    registerProjectMutationStore('project-1', store);
+    try {
+      render(
+        <I18nProvider initial="en">
+          <FileWorkspace
+            projectId="project-1"
+            projectKind="design_system"
+            files={[workspaceFile('index.html')]}
+            liveArtifacts={[]}
+            onRefreshFiles={vi.fn()}
+            isDeck={false}
+            tabsState={{ tabs: ['__design_system__'], active: '__design_system__' }}
+            onTabsStateChange={vi.fn()}
+            designSystemProject={{ id: 'system-1', title: 'Design system', status: 'draft' } as never}
+            designSystemEditable
+          />
+        </I18nProvider>,
+      );
+      const publish = await screen.findByTestId('design-system-publish');
+      store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event');
+      vi.mocked(updateDesignSystemDraft).mockClear();
+
+      fireEvent.click(publish);
+
+      expect(updateDesignSystemDraft).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('kit-toast')).toBeNull();
+    } finally {
+      unregisterProjectMutationStore('project-1', store);
+      store.dispose();
+    }
+  });
+
+  it('publishes through the real design-kit child with the exact ready revision', async () => {
+    const state = {
+      enabled: true,
+      phase: 'synced' as const,
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40),
+      projectRevision: 7,
+      contentRevision: 7,
+      bindingGeneration: 1,
+      dirty: false,
+      pendingPush: false,
+      autoSync: true,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    };
+    const store = createProjectGitStateStore(state);
+    registerProjectMutationStore('project-1', store);
+    vi.mocked(updateDesignSystemDraft).mockResolvedValue({
+      id: 'system-1',
+      title: 'Design system',
+      status: 'published',
+    } as never);
+    try {
+      renderDesignSystemWorkspace(vi.fn(async () => true as const));
+      fireEvent.click(await screen.findByTestId('design-system-publish'));
+
+      await waitFor(() => expect(updateDesignSystemDraft).toHaveBeenCalledWith(
+        'system-1',
+        { status: 'published' },
+        expect.objectContaining({ expectedProjectRevision: 7, generation: 0 }),
+      ));
+      await waitFor(() => expect(screen.getByTestId('kit-toast')).toHaveAttribute('data-tone', 'success'));
+    } finally {
+      unregisterProjectMutationStore('project-1', store);
+      store.dispose();
+    }
+  });
+
+  it.each(['loading', 'error', 'write-lock'] as const)(
+    'keeps a retained publish handler inert after authority becomes %s',
+    async (unavailableKind) => {
+      const state = {
+        enabled: true,
+        phase: 'synced' as const,
+        localHead: 'a'.repeat(40),
+        observedRemoteHead: 'a'.repeat(40),
+        confirmedRemoteHead: 'a'.repeat(40),
+        projectRevision: 11,
+        contentRevision: 11,
+        bindingGeneration: 1,
+        dirty: false,
+        pendingPush: false,
+        autoSync: true,
+        operationId: null,
+        error: null,
+        binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+        dependencies: [],
+      };
+      const readyStore = createProjectGitStateStore(state);
+      registerProjectMutationStore('project-1', readyStore);
+      let replacementStore: ReturnType<typeof createProjectGitStateStore> | null = null;
+      try {
+        render(
+          <I18nProvider initial="en">
+            <FileWorkspace
+              projectId="project-1"
+              projectKind="design_system"
+              files={[workspaceFile('index.html')]}
+              liveArtifacts={[]}
+              onRefreshFiles={vi.fn()}
+              isDeck={false}
+              tabsState={{ tabs: ['__design_system__'], active: '__design_system__' }}
+              onTabsStateChange={vi.fn()}
+              designSystemProject={{ id: 'system-1', title: 'Design system', status: 'draft' } as never}
+              designSystemEditable
+            />
+          </I18nProvider>,
+        );
+        const publish = await screen.findByTestId('design-system-publish');
+
+        if (unavailableKind === 'write-lock') {
+          readyStore.accept({ ...state, projectRevision: 12, contentRevision: 12 }, 'event');
+        } else {
+          replacementStore = createProjectGitStateStore();
+          if (unavailableKind === 'error') {
+            const token = replacementStore.beginRead();
+            replacementStore.failRead(token, new Error('Git state unavailable'));
+          }
+          registerProjectMutationStore('project-1', replacementStore);
+        }
+        vi.mocked(updateDesignSystemDraft).mockClear();
+        analyticsTrack.mockClear();
+
+        fireEvent.click(publish);
+
+        expect(updateDesignSystemDraft).not.toHaveBeenCalled();
+        expect(analyticsTrack).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('kit-toast')).toBeNull();
+      } finally {
+        if (replacementStore) {
+          unregisterProjectMutationStore('project-1', replacementStore);
+          replacementStore.dispose();
+        } else {
+          unregisterProjectMutationStore('project-1', readyStore);
+        }
+        readyStore.dispose();
+      }
+    },
+  );
+
 });

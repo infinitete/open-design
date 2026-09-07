@@ -38,7 +38,7 @@ import {
   listMessages,
   loadTabs,
   patchConversation,
-  patchProject,
+  patchProjectWithFreshAuthority,
   saveMessage,
   saveTabs,
 } from '../state/projects';
@@ -4361,7 +4361,7 @@ function scheduleAfterProjectHandoff(task: () => void): void {
   run();
 }
 
-async function prepareCreatedDesignSystemProject({
+export async function prepareCreatedDesignSystemProject({
   project,
   state,
   composioConfigured,
@@ -4510,7 +4510,7 @@ async function prepareCreatedDesignSystemProject({
       stagedAssets,
       stagedFigma,
     );
-    const preparedProject = await patchProject(
+    const preparedProject = await patchProjectWithFreshAuthority(
       project.id,
       { pendingPrompt: prompt, metadata },
     );
@@ -4521,11 +4521,7 @@ async function prepareCreatedDesignSystemProject({
       // If sessionStorage is unavailable, the project still opens with the
       // pending prompt ready for the user to send manually.
     }
-    onProjectPrepared?.(preparedProject ?? {
-      ...project,
-      pendingPrompt: prompt,
-      metadata,
-    });
+    onProjectPrepared?.(preparedProject);
     void onSystemsRefresh?.();
   } catch (err) {
     console.error('Could not prepare the design system project after opening it.', err);

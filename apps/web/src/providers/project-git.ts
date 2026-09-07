@@ -24,8 +24,11 @@ import {
   type ProjectGitStateStore,
 } from '../state/project-git';
 import {
+  captureProjectMutation,
   invalidateProjectBrowserEpoch,
+  isProjectMutationCurrent,
   registerProjectMutationStore,
+  type ProjectMutationContext,
   unregisterProjectMutationStore,
 } from '../state/project-git';
 import { subscribeProjectEvents, type ProjectEvent } from './project-events';
@@ -264,6 +267,10 @@ export interface ProjectGitHub {
   store(projectId: string): ProjectGitStateStore;
   snapshot(projectId: string): ProjectGitStateSnapshot;
   capture(projectId: string): import('../state/project-git').ProjectMutationContext | undefined;
+  withFreshMutation<T>(
+    projectId: string,
+    mutation: (context: ProjectMutationContext) => Promise<T> | T,
+  ): Promise<T>;
   disposeIfUnused(projectId: string): void;
 }
 
@@ -282,6 +289,7 @@ interface HubEntry {
   inFlight: Promise<void> | null;
   readController: AbortController | null;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
+  mutationLeases: number;
 }
 
 export function createProjectGitHub(
@@ -294,7 +302,7 @@ export function createProjectGitHub(
     const existing = entries.get(projectId);
     if (existing) return existing;
     const store = createProjectGitStateStore(null, {
-      onRevisionAdvance: () => invalidateProjectBrowserEpoch(projectId),
+      onRevisionAdvance: (_state, generation) => invalidateProjectBrowserEpoch(projectId, generation),
     });
     const entry: HubEntry = {
       listeners: new Set(),
@@ -303,6 +311,7 @@ export function createProjectGitHub(
       inFlight: null,
       readController: null,
       cleanupTimer: null,
+      mutationLeases: 0,
     };
     store.subscribe(() => {
       for (const listener of entry.listeners) listener(store.snapshot());
@@ -356,7 +365,11 @@ export function createProjectGitHub(
   };
 
   const disposeEntryIfUnused = (projectId: string, entry: HubEntry): void => {
-    if (entries.get(projectId) !== entry || entry.listeners.size !== 0) return;
+    if (
+      entries.get(projectId) !== entry
+      || entry.listeners.size !== 0
+      || entry.mutationLeases !== 0
+    ) return;
     if (entry.cleanupTimer !== null) clearTimeout(entry.cleanupTimer);
     entry.cleanupTimer = null;
     entry.stopEvents?.();
@@ -374,6 +387,21 @@ export function createProjectGitHub(
     store: projectId => entries.get(projectId)?.store ?? createProjectGitStateStore(),
     snapshot: projectId => entries.get(projectId)?.store.snapshot() ?? EMPTY_PROJECT_GIT_SNAPSHOT,
     capture: projectId => entries.get(projectId)?.store.capture(),
+    async withFreshMutation(projectId, mutation) {
+      const entry = getEntry(projectId);
+      entry.mutationLeases += 1;
+      try {
+        await refresh(projectId, { fresh: true });
+        const context = captureProjectMutation(projectId);
+        if (!context || !isProjectMutationCurrent(projectId, context)) {
+          throw new Error('Project Git authority unavailable after fresh load');
+        }
+        return await mutation(context);
+      } finally {
+        entry.mutationLeases -= 1;
+        disposeEntryIfUnused(projectId, entry);
+      }
+    },
     disposeIfUnused(projectId) {
       const entry = entries.get(projectId);
       if (entry) disposeEntryIfUnused(projectId, entry);
@@ -422,6 +450,12 @@ export function createProjectGitHub(
 
 const defaultProjectGitClient = createProjectGitClient();
 const defaultProjectGitHub = createProjectGitHub(defaultProjectGitClient);
+export function withFreshProjectMutation<T>(
+  projectId: string,
+  mutation: (context: ProjectMutationContext) => Promise<T> | T,
+): Promise<T> {
+  return defaultProjectGitHub.withFreshMutation(projectId, mutation);
+}
 export function useProjectGit(projectId: string | null | undefined) {
   const subscribe = useCallback((listener: () => void) => {
     if (!projectId) return () => {};

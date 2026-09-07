@@ -22,7 +22,12 @@ import {
   fetchPromptTemplates,
   fetchSkills,
 } from '../../src/providers/registry';
-import { listProjects, listTemplates, patchProject } from '../../src/state/projects';
+import {
+  duplicatePluginAsProject,
+  listProjects,
+  listTemplates,
+  patchProject,
+} from '../../src/state/projects';
 
 const projectAuthorityHarness = vi.hoisted(() => ({ ready: true, current: true }));
 const projectMutationContext = {
@@ -152,6 +157,21 @@ vi.mock('../../src/components/ProjectView', () => ({
   ),
 }));
 
+vi.mock('../../src/components/CommunityView', () => ({
+  CommunityView: ({
+    onRemixTemplate,
+  }: {
+    onRemixTemplate: (input: { templateId: string; prompt: string }) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => onRemixTemplate({ templateId: 'template-1', prompt: 'Seed this remix' })}
+    >
+      Remix community template
+    </button>
+  ),
+}));
+
 vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: ({
     initial,
@@ -213,6 +233,7 @@ vi.mock('../../src/state/projects', async () => {
     ...actual,
     listProjects: vi.fn(),
     listTemplates: vi.fn(),
+    duplicatePluginAsProject: vi.fn(),
     patchProject: vi.fn(),
   };
 });
@@ -240,6 +261,7 @@ const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
+const mockedDuplicatePluginAsProject = vi.mocked(duplicatePluginAsProject);
 const mockedPatchProject = vi.mocked(patchProject);
 const mockedFetchComposioConfigFromDaemon = vi.mocked(fetchComposioConfigFromDaemon);
 const mockedLoadConfig = vi.mocked(loadConfig);
@@ -425,6 +447,52 @@ describe('App media provider sync flows', () => {
 
     expect(screen.getByText('Updated at 2')).toBeTruthy();
     expect(mockedPatchProject).not.toHaveBeenCalled();
+  });
+
+  it('loads exact authority before navigating a newly duplicated Community remix', async () => {
+    useRouteMock.mockReturnValue({ kind: 'community' } as never);
+    mockedDuplicatePluginAsProject.mockResolvedValue({
+      projectId: 'community-copy',
+      conversationId: 'community-conversation',
+      relPath: 'index.html',
+    } as never);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/community-copy/git') {
+        return new Response(JSON.stringify({
+          enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+          confirmedRemoteHead: null, projectRevision: 17, contentRevision: 2,
+          bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
+          operationId: null, error: null,
+          binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+        }), { status: 200 });
+      }
+      if (url === '/api/projects/community-copy' && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ project: {
+          id: 'community-copy', name: 'Community copy', skillId: null, designSystemId: null,
+          pendingPrompt: 'Seed this remix', createdAt: 1, updatedAt: 2,
+          status: { value: 'not_started' },
+        } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remix community template' }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input) === '/api/projects/community-copy' && init?.method === 'PATCH'
+    ))).toBe(true));
+    const [, patchInit] = fetchMock.mock.calls.find(([input, init]) => (
+      String(input) === '/api/projects/community-copy' && init?.method === 'PATCH'
+    ))!;
+    expect(new Headers(patchInit?.headers).get('X-OD-Project-Revision')).toBe('17');
+    expect(patchInit?.body).toBe(JSON.stringify({ pendingPrompt: 'Seed this remix' }));
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
+      kind: 'project', projectId: 'community-copy', conversationId: 'community-conversation',
+      fileName: 'index.html',
+    }));
   });
 
   it('maps a real structured project revision 409 to a stale delete result', async () => {

@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectGitState } from '@open-design/contracts';
 import {
   createTerminal,
+  installGeneratedPluginFolder,
   listConversations,
   listProjects,
   patchProject,
+  patchProjectWithFreshAuthority,
+  startGeneratedPluginShareTask,
 } from '../../src/state/projects';
 import {
   applyLibraryAsset,
@@ -16,6 +19,7 @@ import {
 } from '../../src/providers/registry';
 import {
   ProjectStateChangedError,
+  captureProjectMutation,
   createProjectGitStateStore,
   registerProjectMutationStore,
   unregisterProjectMutationStore,
@@ -49,6 +53,38 @@ afterEach(() => {
 });
 
 describe('project mutation transport', () => {
+  it('loads post-create authority and sends the seed patch with its exact revision', async () => {
+    const projectId = 'post-create-seed';
+    const project = {
+      id: projectId, name: 'Seeded', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === `/api/projects/${projectId}/git`) {
+        return new Response(JSON.stringify(state(12)), { status: 200 });
+      }
+      if (String(input) === `/api/projects/${projectId}` && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ project }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(patchProjectWithFreshAuthority(projectId, { pendingPrompt: 'Persist me' }))
+      .resolves.toEqual(project);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]).toEqual([
+      `/api/projects/${projectId}`,
+      expect.objectContaining({
+        method: 'PATCH',
+        headers: expect.objectContaining({ 'X-OD-Project-Revision': '12' }),
+        body: JSON.stringify({ pendingPrompt: 'Persist me' }),
+      }),
+    ]);
+    expect(captureProjectMutation(projectId)).toBeUndefined();
+  });
+
   it('fails a project patch closed when no ready mutation authority exists', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -140,6 +176,46 @@ describe('project mutation transport', () => {
       expectedProjectRevision: 9,
     });
     expect(init.signal).toBe(captured.signal);
+  });
+
+  it('preserves exact authority for every generated-plugin provider conflict', async () => {
+    const projectId = 'plugin-provider-conflict';
+    const store = readyStore(projectId, 13);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'PROJECT_STATE_CHANGED', message: 'Plugin intent is stale' },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (const run of [
+      () => installGeneratedPluginFolder(projectId, 'plugins/generated', store.capture()),
+      () => startGeneratedPluginShareTask(projectId, 'plugins/generated', 'publish-github', store.capture()),
+      () => startGeneratedPluginShareTask(projectId, 'plugins/generated', 'contribute-open-design', store.capture()),
+    ]) {
+      await expect(run()).rejects.toBeInstanceOf(ProjectStateChangedError);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>) {
+      expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('13');
+    }
+  });
+
+  it('does not collapse an aborted generated-plugin provider into an ordinary failure', async () => {
+    const projectId = 'plugin-provider-abort';
+    const store = readyStore(projectId, 14);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('History changed', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const contexts = [store.capture(), store.capture(), store.capture()];
+    const pending = [
+      installGeneratedPluginFolder(projectId, 'plugins/generated', contexts[0]),
+      startGeneratedPluginShareTask(projectId, 'plugins/generated', 'publish-github', contexts[1]),
+      startGeneratedPluginShareTask(projectId, 'plugins/generated', 'contribute-open-design', contexts[2]),
+    ];
+    const assertions = pending.map((result) => expect(result).rejects.toMatchObject({ name: 'AbortError' }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    store.accept(state(15), 'event');
+    await Promise.all(assertions);
   });
 
   it('preserves revision authority and stale-state errors for all live-artifact mutations', async () => {
