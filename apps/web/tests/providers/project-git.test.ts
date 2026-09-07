@@ -242,6 +242,7 @@ describe('shared project Git hub', () => {
     const hub = createProjectGitHub(client, { subscribeEvents });
     const offFirst = hub.subscribe('bounded-project', vi.fn());
     const firstStore = hub.store('bounded-project');
+    await hub.refresh('bounded-project');
     expect(captureProjectMutation('bounded-project')).toBeDefined();
 
     offFirst();

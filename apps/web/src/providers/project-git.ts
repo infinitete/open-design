@@ -264,6 +264,7 @@ export interface ProjectGitHub {
   store(projectId: string): ProjectGitStateStore;
   snapshot(projectId: string): ProjectGitStateSnapshot;
   capture(projectId: string): import('../state/project-git').ProjectMutationContext | undefined;
+  disposeIfUnused(projectId: string): void;
 }
 
 const EMPTY_PROJECT_GIT_SNAPSHOT: ProjectGitStateSnapshot = {
@@ -354,11 +355,29 @@ export function createProjectGitHub(
     return pending;
   };
 
+  const disposeEntryIfUnused = (projectId: string, entry: HubEntry): void => {
+    if (entries.get(projectId) !== entry || entry.listeners.size !== 0) return;
+    if (entry.cleanupTimer !== null) clearTimeout(entry.cleanupTimer);
+    entry.cleanupTimer = null;
+    entry.stopEvents?.();
+    entry.stopEvents = null;
+    entry.readController?.abort();
+    entry.readController = null;
+    entry.inFlight = null;
+    entry.store.dispose();
+    unregisterProjectMutationStore(projectId, entry.store);
+    entries.delete(projectId);
+  };
+
   return {
     refresh,
     store: projectId => entries.get(projectId)?.store ?? createProjectGitStateStore(),
     snapshot: projectId => entries.get(projectId)?.store.snapshot() ?? EMPTY_PROJECT_GIT_SNAPSHOT,
     capture: projectId => entries.get(projectId)?.store.capture(),
+    disposeIfUnused(projectId) {
+      const entry = entries.get(projectId);
+      if (entry) disposeEntryIfUnused(projectId, entry);
+    },
     subscribe(projectId, listener) {
       const entry = getEntry(projectId);
       if (entry.cleanupTimer !== null) {
@@ -394,16 +413,7 @@ export function createProjectGitHub(
         entry.listeners.delete(listener);
         if (entry.listeners.size !== 0 || entry.cleanupTimer !== null) return;
         entry.cleanupTimer = setTimeout(() => {
-          entry.cleanupTimer = null;
-          if (entries.get(projectId) !== entry || entry.listeners.size !== 0) return;
-          entry.stopEvents?.();
-          entry.stopEvents = null;
-          entry.readController?.abort();
-          entry.readController = null;
-          entry.inFlight = null;
-          entry.store.dispose();
-          unregisterProjectMutationStore(projectId, entry.store);
-          entries.delete(projectId);
+          disposeEntryIfUnused(projectId, entry);
         }, 0);
       };
     },
@@ -485,8 +495,16 @@ export function useProjectGitAuthoritySet(projectIds: readonly string[]) {
   );
   const [snapshots, setSnapshots] = useState<Record<string, ProjectGitStateSnapshot>>({});
   const reconcilingRef = useRef(new Set<string>());
+  const previousProjectIdsRef = useRef<string[]>([]);
 
   useEffect(() => {
+    const currentProjectIds = new Set(stableProjectIds);
+    for (const previousProjectId of previousProjectIdsRef.current) {
+      if (!currentProjectIds.has(previousProjectId)) {
+        defaultProjectGitHub.disposeIfUnused(previousProjectId);
+      }
+    }
+    previousProjectIdsRef.current = stableProjectIds;
     setSnapshots((current) => {
       const next: Record<string, ProjectGitStateSnapshot> = {};
       for (const projectId of stableProjectIds) {

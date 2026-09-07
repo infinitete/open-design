@@ -85,7 +85,11 @@ export function invalidateProjectBrowserEpoch(projectId: string): void {
 
 /** Capture once at the user/queue boundary and carry this object to fetch. */
 export function captureProjectMutation(projectId: string): ProjectMutationContext | undefined {
-  return projectMutationStores.get(projectId)?.capture();
+  const store = projectMutationStores.get(projectId);
+  if (!store) return undefined;
+  const snapshot = store.snapshot();
+  if (!snapshot.state || snapshot.loading || snapshot.error || snapshot.writeLocked) return undefined;
+  return store.capture();
 }
 
 export function isProjectMutationReady(projectId: string): boolean {

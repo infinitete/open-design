@@ -2242,17 +2242,35 @@ export function ProjectView({
   // successor finished and released the active slot.
   const conversationOperationsRef = useRef<Map<string, number>>(new Map());
   const activeConversationOperationsRef = useRef<Map<string, number>>(new Map());
-  const claimConversationOperation = useCallback((conversationId: string) => {
+  const conversationOperationContextsRef = useRef<Map<string, {
+    token: number;
+    mutationContext: ProjectMutationContext;
+  }>>(new Map());
+  const claimConversationOperation = useCallback((
+    conversationId: string,
+    mutationContext: ProjectMutationContext,
+  ) => {
     const token = conversationOperationSequenceRef.current + 1;
     conversationOperationSequenceRef.current = token;
     conversationOperationsRef.current.set(conversationId, token);
     activeConversationOperationsRef.current.set(conversationId, token);
+    conversationOperationContextsRef.current.set(conversationId, { token, mutationContext });
     return token;
   }, []);
   const releaseConversationOperation = useCallback((conversationId: string, token: number) => {
     if (activeConversationOperationsRef.current.get(conversationId) === token) {
       activeConversationOperationsRef.current.delete(conversationId);
     }
+    if (conversationOperationContextsRef.current.get(conversationId)?.token === token) {
+      conversationOperationContextsRef.current.delete(conversationId);
+    }
+  }, []);
+  const supersedeConversationOperation = useCallback((conversationId: string) => {
+    const token = conversationOperationSequenceRef.current + 1;
+    conversationOperationSequenceRef.current = token;
+    conversationOperationsRef.current.set(conversationId, token);
+    activeConversationOperationsRef.current.delete(conversationId);
+    conversationOperationContextsRef.current.delete(conversationId);
   }, []);
   // Runs explicitly superseded by a "send now" interrupt. Their abort
   // controller is recorded here synchronously — before handleStop() clears the
@@ -2800,6 +2818,7 @@ export function ProjectView({
     return () => {
       conversationOperationsRef.current.clear();
       activeConversationOperationsRef.current.clear();
+      conversationOperationContextsRef.current.clear();
       sendTextBufferRef.current?.cancel();
       sendTextBufferRef.current = null;
       // Unmounts / conversation switches should only detach local stream
@@ -4436,6 +4455,7 @@ export function ProjectView({
       commentId?: string,
     ) => {
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return null;
       const commentConversationId = activeConversationId ?? routeConversationId;
       if (!commentConversationId) {
         setProjectActionsToast({
@@ -4674,23 +4694,20 @@ export function ProjectView({
     const reattachConversationId = activeConversationId;
 
     const attachRecoverableRuns = async () => {
+      if (activeConversationOperationsRef.current.has(reattachConversationId)) return;
       const mutationContext = captureProjectMutation(project.id);
-      let activeOperationToken: number | null = null;
+      if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+      const activeOperationToken = claimConversationOperation(reattachConversationId, mutationContext);
+      let operationTransferred = false;
       const releaseActiveOperation = () => {
-        if (activeOperationToken === null) return;
         releaseConversationOperation(reattachConversationId, activeOperationToken);
-        activeOperationToken = null;
       };
       const recoveryIsCurrent = () => Boolean(
-        mutationContext
-        && projectGit.isCurrent(mutationContext)
-        && (
-          activeOperationToken === null
-          || conversationOperationsRef.current.get(reattachConversationId) === activeOperationToken
-        ),
+        projectGit.isCurrent(mutationContext)
+        && conversationOperationsRef.current.get(reattachConversationId) === activeOperationToken,
       );
-      if (!recoveryIsCurrent()) return;
-      const missingRunIdMessages = messages.filter((m) => {
+      try {
+        const missingRunIdMessages = messages.filter((m) => {
         if (m.role !== 'assistant' || m.runId) return false;
         if (isProgrammaticBrandExtractionStatusMessage(m, currentProject.metadata)) return false;
         return isActiveRunStatus(m.runStatus);
@@ -4762,7 +4779,6 @@ export function ProjectView({
         );
         const needsFullReplay = needsReplayForMessage || needsTaskProjectionProbe;
         if (!needsFullReplay) continue;
-        if (activeConversationOperationsRef.current.has(reattachConversationId)) continue;
         const fallbackRun = !message.runId
           ? activeByMessage.get(message.id) ?? historicalByMessage.get(message.id) ?? null
           : null;
@@ -4797,8 +4813,6 @@ export function ProjectView({
           genericDisconnectBackoffUntilRef.current.get(runId) ?? 0;
         if (genericDisconnectBackoffUntil > Date.now()) continue;
         genericDisconnectBackoffUntilRef.current.delete(runId);
-        activeOperationToken = claimConversationOperation(reattachConversationId);
-
         if (fallbackRun && !message.runId) {
           updateMessageById(
             message.id,
@@ -5378,6 +5392,7 @@ export function ProjectView({
           reattachTextBuffersRef.current.delete(textBuffer);
         };
 
+        operationTransferred = true;
         void reattachDaemonRun({
           agentId: message.agentId,
           runId: reattachRunId,
@@ -5970,8 +5985,10 @@ export function ProjectView({
             releaseReattachRuns();
             clearActiveRunRefs(reattachConversationId, controller, cancelController);
             releaseConversationOperation(reattachConversationId, reattachOperationToken!);
-            if (activeOperationToken === reattachOperationToken) activeOperationToken = null;
           });
+      }
+      } finally {
+        if (!operationTransferred) releaseActiveOperation();
       }
     };
 
@@ -6019,16 +6036,17 @@ export function ProjectView({
 
     const recoverArtifacts = async () => {
       if (recovering) return;
+      if (activeConversationOperationsRef.current.has(activeConversationId)) return;
       recovering = true;
       const mutationContext = captureProjectMutation(project.id);
-      let activeOperationToken: number | null = null;
+      if (!mutationContext || !projectGit.isCurrent(mutationContext)) {
+        recovering = false;
+        return;
+      }
+      const activeOperationToken = claimConversationOperation(activeConversationId, mutationContext);
       const recoveryIsCurrent = () => Boolean(
-        mutationContext
-        && projectGit.isCurrent(mutationContext)
-        && (
-          activeOperationToken === null
-          || conversationOperationsRef.current.get(activeConversationId) === activeOperationToken
-        ),
+        projectGit.isCurrent(mutationContext)
+        && conversationOperationsRef.current.get(activeConversationId) === activeOperationToken,
       );
       try {
         if (!recoveryIsCurrent()) return;
@@ -6046,9 +6064,6 @@ export function ProjectView({
           if (recoveredArtifactMessagesRef.current.has(message.id)) continue;
           const runId = message.runId;
           if (!runId) continue;
-          if (activeConversationOperationsRef.current.has(activeConversationId)) return;
-          activeOperationToken = claimConversationOperation(activeConversationId);
-
           const sourceText = message.content.trim().length > 0
             ? message.content
             : textContentFromAgentEvents(message.events);
@@ -6170,9 +6185,7 @@ export function ProjectView({
           onProjectsRefresh();
         }
       } finally {
-        if (activeOperationToken !== null) {
-          releaseConversationOperation(activeConversationId, activeOperationToken);
-        }
+        releaseConversationOperation(activeConversationId, activeOperationToken);
         recovering = false;
       }
     };
@@ -6279,6 +6292,7 @@ export function ProjectView({
     prompt: string;
   }) => {
     const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return false;
     const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
     const queuedMeta = stripQueueOnlyFromMeta({
       ...(input.meta ?? {}),
@@ -6296,7 +6310,7 @@ export function ProjectView({
         ? {}
         : { expectedProjectRevision: mutationContext.expectedProjectRevision }),
     });
-    if (!enqueued) return;
+    if (!enqueued) return false;
     if (input.commentAttachments.length > 0) {
       const reservedCommentIds = new Set(
         input.commentAttachments
@@ -6327,6 +6341,7 @@ export function ProjectView({
         ).catch(() => {});
       }
     }
+    return true;
   }, [commitPreviewComments, enqueueChatSend, project.id, projectRunWorkspaceContext]);
 
   const handleSend = useCallback(
@@ -6439,7 +6454,7 @@ export function ProjectView({
         return false;
       }
       if (!retryTarget && meta?.queueOnly) {
-        queueChatSendForCurrentConversation({
+        const queued = queueChatSendForCurrentConversation({
           conversationId: activeConversationId,
           prompt,
           attachments: effectiveAttachments,
@@ -6449,17 +6464,17 @@ export function ProjectView({
         // `true` means the send has been durably accepted by this view's
         // queue. Callers that own persisted annotations may only remove them
         // after this acknowledgement; preflight rejection remains `false`.
-        return true;
+        return queued;
       }
       if (currentConversationBusy) {
-        queueChatSendForCurrentConversation({
+        const queued = queueChatSendForCurrentConversation({
           conversationId: activeConversationId,
           prompt,
           attachments: effectiveAttachments,
           commentAttachments,
           meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
         });
-        return meta?.acceptDurableQueue === true;
+        return queued && meta?.acceptDurableQueue === true;
       }
       if (resumesBlockedTask) blockedRunTaskRef.current = null;
       // First genuine send in a recommendation-started project — the
@@ -6595,7 +6610,7 @@ export function ProjectView({
       const nextVisibleMessages = retryTarget
         ? [...nextHistory, ...retryTarget.preservedAttempts, assistantMsg]
         : [...nextHistory, assistantMsg];
-      const operationToken = claimConversationOperation(runConversationId);
+      const operationToken = claimConversationOperation(runConversationId, mutationContext);
       messagesRef.current = nextVisibleMessages;
       setMessages(nextVisibleMessages);
       markStreamingConversation(runConversationId);
@@ -8077,6 +8092,13 @@ export function ProjectView({
   // make room for the prioritized send.
   const handleStop = useCallback(() => {
     const stoppedAt = Date.now();
+    const stoppedConversationId = streamingConversationIdRef.current ?? activeConversationId;
+    const stoppedOperation = stoppedConversationId
+      ? conversationOperationContextsRef.current.get(stoppedConversationId)
+      : undefined;
+    const stoppedMutationContext = stoppedOperation?.mutationContext
+      ?? activeMutationContextRef.current
+      ?? captureProjectMutation(project.id);
     const programmaticBrandId = isProgrammaticBrandExtractionProject(currentProject.metadata)
       ? currentProject.metadata?.brandId?.trim() || ''
       : '';
@@ -8105,6 +8127,7 @@ export function ProjectView({
     }
     cancelSendTextBuffer(true);
     cancelReattachTextBuffers(true);
+    if (stoppedConversationId) supersedeConversationOperation(stoppedConversationId);
     cancelRef.current?.abort();
     cancelRef.current = null;
     for (const controller of reattachCancelControllersRef.current.values()) {
@@ -8120,21 +8143,29 @@ export function ProjectView({
     setStreaming(false);
     streamingConversationIdRef.current = null;
     setStreamingConversationId(null);
-    setMessages((curr) => {
-      const { messages: next, finalized } = finalizeActiveAssistantMessagesOnStop(curr, stoppedAt);
-      for (const message of finalized) persistMessage(message, { telemetryFinalized: true });
-      return next;
-    });
+    const stopProjection = finalizeActiveAssistantMessagesOnStop(messagesRef.current, stoppedAt);
+    messagesRef.current = stopProjection.messages;
+    setMessages(stopProjection.messages);
+    if (stoppedConversationId && stoppedMutationContext) {
+      for (const message of stopProjection.finalized) {
+        void saveMessage(project.id, stoppedConversationId, message, {
+          telemetryFinalized: true,
+          mutationContext: stoppedMutationContext,
+        });
+      }
+    }
   }, [
+    activeConversationId,
     cancelSendTextBuffer,
     cancelReattachTextBuffers,
     currentProject.metadata,
     onDesignSystemsRefresh,
     onProjectsRefresh,
-    persistMessage,
+    project.id,
     projectDetail.refresh,
     requestOpenFile,
     refreshWorkspaceItems,
+    supersedeConversationOperation,
   ]);
 
   // Flip the deck preview to the slide a queued send's marked element lives on
@@ -8151,6 +8182,7 @@ export function ProjectView({
     const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
     const mutationContext = captureProjectMutation(project.id);
+    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (currentConversationBusy) {
       // "Send now" while the agent is still working: the user has explicitly
       // chosen this turn over the in-flight one, so interrupt the running run
@@ -8375,6 +8407,9 @@ export function ProjectView({
       images: File[] = [],
     ): Promise<CommentSendResult> => {
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
+        return { status: 'rejected', commentIds: [] };
+      }
       if (currentConversationQueueDisabled) {
         return { status: 'rejected', commentIds: [] };
       }
@@ -8480,7 +8515,7 @@ export function ProjectView({
     async (relativePath: string, action: PluginFolderAgentAction) => {
       if (currentConversationActionDisabled || !activeConversationId) return;
       const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext) return;
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const pluginWorkflowWorkspaceContext = projectRunWorkspaceContext;
       setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
       if (action === 'install') {
@@ -9033,43 +9068,53 @@ export function ProjectView({
     async (id: string) => {
       if (projectMutationReadOnly) return;
       const mutationContext = captureProjectMutation(project.id);
-      const ok = await deleteConversationApi(
-        project.id,
-        id,
-        mutationContext,
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
+      const operationToken = claimConversationOperation(id, mutationContext);
+      const ownsDelete = () => Boolean(
+        isProjectMutationCurrent(project.id, mutationContext)
+        && conversationOperationsRef.current.get(id) === operationToken
       );
-      if (!ok) return;
-      // The deleted conversation may have owned an unanswered
-      // `<question-form>`, which the daemon counts toward the project's
-      // `needsInput` flag in `/api/projects`. Home cards render that
-      // flag from the cached projects payload, so without refreshing
-      // it here the `Needs input` badge survives the deletion until
-      // the next manual reload.
-      onProjectsRefresh();
-      setConversations((curr) => {
-        const next = curr.filter((c) => c.id !== id);
+      try {
+        const ok = await deleteConversationApi(
+          project.id,
+          id,
+          mutationContext,
+        );
+        if (!ok || !ownsDelete()) return;
+        // The deleted conversation may have owned an unanswered
+        // `<question-form>`, which the daemon counts toward the project's
+        // `needsInput` flag in `/api/projects`. Home cards render that
+        // flag from the cached projects payload, so without calling
+        // onProjectsRefresh here the badge survives until manual reload.
+        onProjectsRefresh();
+        const next = conversationsRef.current.filter((conversation) => conversation.id !== id);
+        conversationsRef.current = next;
+        setConversations(next);
         if (next.length === 0) {
           // Re-seed so the project always has at least one conversation
-          // to write into.
-          void createConversation(project.id, undefined, {
+          // to write into. Keep the create outside a React updater and under
+          // the delete operation's original authority/token.
+          const fresh = await createConversation(project.id, undefined, {
             mutationContext,
-          }).then((fresh) => {
-            if (fresh) {
-              setConversations([fresh]);
-              setActiveConversationId(fresh.id);
-            }
           });
+          if (!fresh || !ownsDelete()) return;
+          conversationsRef.current = [fresh];
+          setConversations([fresh]);
+          setActiveConversationId(fresh.id);
         } else if (id === activeConversationId) {
           setActiveConversationId(next[0]!.id);
         }
-        return next;
-      });
+      } finally {
+        releaseConversationOperation(id, operationToken);
+      }
     },
     [
       project.id,
       activeConversationId,
+      claimConversationOperation,
       onProjectsRefresh,
       projectMutationReadOnly,
+      releaseConversationOperation,
     ],
   );
 
@@ -9077,6 +9122,7 @@ export function ProjectView({
     async (id: string, title: string) => {
       if (projectMutationReadOnly) return;
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const trimmed = title.trim() || null;
       setConversations((curr) =>
         curr.map((c) => (c.id === id ? { ...c, title: trimmed } : c)),
@@ -9095,6 +9141,7 @@ export function ProjectView({
     async (id: string, sessionMode: ChatSessionMode) => {
       if (projectMutationReadOnly) return;
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       setConversations((curr) =>
         curr.map((conversation) =>
           conversation.id === id ? { ...conversation, sessionMode } : conversation,
@@ -9128,6 +9175,8 @@ export function ProjectView({
   const handleForkFromMessage = useCallback(
     async (assistantMessage: ChatMessage) => {
       if (!activeConversationId || forkingMessageId || projectMutationReadOnly) return;
+      const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const requestId = analytics.newRequestId();
       const startedAt = Date.now();
       const forkIndex = messages.findIndex((message) => message.id === assistantMessage.id);
@@ -9152,7 +9201,6 @@ export function ProjectView({
       trackConversationForkClick(analytics.track, forkContext, { requestId });
       setForkingMessageId(assistantMessage.id);
       setConversationLoadError(null);
-      const mutationContext = captureProjectMutation(project.id);
       let emptyResponse = false;
       try {
         const sourceTitle = activeConversation?.title?.trim();
@@ -9176,6 +9224,7 @@ export function ProjectView({
           emptyResponse = true;
           throw new Error(t('chat.forkConversationFailed'));
         }
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         trackConversationForkResult(
           analytics.track,
           {
@@ -9211,6 +9260,7 @@ export function ProjectView({
         onProjectsRefresh();
         setError(null);
       } catch (err) {
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         trackConversationForkResult(
           analytics.track,
           {
@@ -9261,6 +9311,7 @@ export function ProjectView({
       if (!trimmed || trimmed === project.name) return;
       const previousName = project.name;
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const renameKey = JSON.stringify([project.id]);
       let renameState = projectRenameStatesRef.current.get(renameKey);
       if (!renameState || renameState.pending === 0) {
@@ -9561,6 +9612,7 @@ export function ProjectView({
   // `teamSynced`, i.e. the caller's own system or a built-in preset) reads as
   // editable, matching every other consumer of this field.
   const designSystemEditable =
+    !projectMutationReadOnly &&
     designSystemProject?.canMutate !== false &&
     (
       !projectIsProgrammaticBrandExtraction ||
@@ -9674,13 +9726,33 @@ export function ProjectView({
     };
   }, [connectRepoNeeded]);
 
-  // Signal that pushes a draft into the chat composer (the "Import repo" CTA).
+  // One project/revision/conversation-owned payload carries every part of a
+  // parent-restored draft. ChatPane acknowledges it only after applying it.
   const [composerDraftSignal, setComposerDraftSignal] = useState<{
+    id: string;
+    projectId: string;
+    generation: number;
+    conversationId: string;
     text: string;
     attachments?: ChatAttachment[];
     meta?: ProjectChatSendMeta;
-    nonce: number;
+    source?: 'pending-prompt' | 'auto-send' | 'connect-repo' | 'browser';
   }>();
+  const composerDraftSignalRef = useRef(composerDraftSignal);
+  composerDraftSignalRef.current = composerDraftSignal;
+  const handleScopedComposerSend = useCallback(
+    async (
+      prompt: string,
+      attachments: ChatAttachment[],
+      commentAttachments: ChatCommentAttachment[],
+      meta?: ChatSendMeta,
+    ): Promise<ChatSendOutcome> => {
+      const outcome = await handleComposerSend(prompt, attachments, commentAttachments, meta);
+      if (outcome !== 'restore-draft') setComposerDraftSignal(undefined);
+      return outcome;
+    },
+    [handleComposerSend],
+  );
   // One handler for both the review banner and the chat CTA. When GitHub is
   // not connected it opens Connectors; once connected it prefills the composer
   // with the import instruction so the user can review and send it.
@@ -9688,15 +9760,19 @@ export function ProjectView({
     // Status not resolved yet; the CTA is disabled in this window, but guard
     // anyway so a stray call can't route a connected account to Connectors.
     if (githubConnected === undefined) return;
-    if (githubConnected) {
+    if (githubConnected && activeConversationId) {
       setComposerDraftSignal({
+        id: randomUUID(),
+        projectId: project.id,
+        generation: projectGit.generation,
+        conversationId: activeConversationId,
         text: buildRepoImportPrompt(designSystemProject, projectFiles.map((file) => file.name)),
-        nonce: Date.now(),
+        source: 'connect-repo',
       });
     } else {
       onOpenSettings('composio');
     }
-  }, [githubConnected, onOpenSettings, designSystemProject, projectFiles]);
+  }, [activeConversationId, githubConnected, onOpenSettings, designSystemProject, project.id, projectFiles, projectGit.generation]);
 
   // "Next step" affordance handlers (shown under the last assistant message
   // once it produced a previewable HTML artifact). Share reuses the preview
@@ -9720,12 +9796,17 @@ export function ProjectView({
   );
 
   const handleBrowserUsePrompt = useCallback((text: string) => {
+    if (!activeConversationId) return;
     setWorkspaceFocused(false);
     setComposerDraftSignal({
+      id: randomUUID(),
+      projectId: project.id,
+      generation: projectGit.generation,
+      conversationId: activeConversationId,
       text,
-      nonce: Date.now(),
+      source: 'browser',
     });
-  }, []);
+  }, [activeConversationId, project.id, projectGit.generation]);
 
   const isDeck = useMemo(
     () =>
@@ -10023,75 +10104,44 @@ export function ProjectView({
     config.mode === 'daemon' &&
     projectIsProgrammaticBrandExtraction &&
     !autoSendFirstMessageRef.current;
-  const [initialDraft, setInitialDraft] = useState<
-    {
-      id: string;
-      projectId: string;
-      generation: number;
-      conversationId: string | null;
-      value: string;
-    } | undefined
-  >(
-    autoSendSeedRef.current || !project.pendingPrompt
-      ? undefined
-      : {
-          id: randomUUID(),
-          projectId: project.id,
-          generation: projectGit.generation,
-          conversationId: null,
-          value: project.pendingPrompt,
-        },
-  );
+  const acknowledgedPendingPromptRef = useRef<string | null>(null);
   useEffect(() => {
     const pendingPrompt = project.pendingPrompt;
     if (!pendingPrompt) return;
     if (autoSendFirstMessageRef.current) {
       autoSendSeedRef.current = pendingPrompt;
-      onClearPendingPrompt();
       return;
     }
-    setInitialDraft((current) =>
-      current?.projectId === project.id
-        ? current
-        : {
-            id: randomUUID(),
-            projectId: project.id,
-            generation: projectGit.generation,
-            conversationId: activeConversationIdRef.current,
-            value: pendingPrompt,
-          },
-    );
-    onClearPendingPrompt();
-  }, [project.id, project.pendingPrompt, projectGit.generation, onClearPendingPrompt]);
+    if (!activeConversationId) return;
+    const pendingKey = `${project.id}\u0000${pendingPrompt}`;
+    if (acknowledgedPendingPromptRef.current === pendingKey) return;
+    setComposerDraftSignal((current) => {
+      if (
+        current?.source === 'pending-prompt'
+        && current.projectId === project.id
+        && current.generation === projectGit.generation
+        && current.conversationId === activeConversationId
+        && current.text === pendingPrompt
+      ) return current;
+      return {
+        id: randomUUID(),
+        projectId: project.id,
+        generation: projectGit.generation,
+        conversationId: activeConversationId,
+        text: pendingPrompt,
+        source: 'pending-prompt',
+      };
+    });
+  }, [activeConversationId, project.id, project.pendingPrompt, projectGit.generation]);
   useEffect(() => {
-    if (!initialDraft || initialDraft.conversationId || !activeConversationId) return;
-    setInitialDraft((current) => current?.id === initialDraft.id
-      ? { ...current, conversationId: activeConversationId }
-      : current);
-  }, [activeConversationId, initialDraft]);
-  useEffect(() => {
-    if (!initialDraft) return;
-    const wrongScope = initialDraft.projectId !== project.id
-      || (
-        initialDraft.conversationId !== null
-        && activeConversationId !== null
-        && initialDraft.conversationId !== activeConversationId
-      );
-    if (wrongScope) setInitialDraft(undefined);
-  }, [activeConversationId, initialDraft, project.id, projectGit.generation]);
-  const chatInitialDraft =
-    chatSeed?.value ??
-    (
-      brandEnrichmentEligibleForProject
-        ? undefined
-        : (
-          initialDraft?.projectId === project.id
-          && initialDraft.generation === projectGit.generation
-          && initialDraft.conversationId === activeConversationId
-            ? initialDraft.value
-            : undefined
-        )
-    );
+    if (!composerDraftSignal) return;
+    if (
+      composerDraftSignal.projectId !== project.id
+      || composerDraftSignal.generation !== projectGit.generation
+      || composerDraftSignal.conversationId !== activeConversationId
+    ) setComposerDraftSignal(undefined);
+  }, [activeConversationId, composerDraftSignal, project.id, projectGit.generation]);
+  const chatInitialDraft = chatSeed?.value;
   // Home → Studio handoff confirmation (spec §11.1 onboarding_prompt_prefilled):
   // the recommendation's first request actually reached this composer. Fires
   // once, only for recommendation-started projects that arrived with a seed.
@@ -10111,7 +10161,7 @@ export function ProjectView({
   }, [chatInitialDraft, analytics.track]);
   const brandEnrichmentPromptSeed =
     project.pendingPrompt?.trim() ||
-    (initialDraft?.projectId === project.id ? initialDraft.value.trim() : '');
+    (composerDraftSignal?.projectId === project.id ? composerDraftSignal.text.trim() : '');
   const [brandEnrichmentPromptSeedCache, setBrandEnrichmentPromptSeedCache] = useState(
     () => brandEnrichmentPromptSeed,
   );
@@ -10554,10 +10604,14 @@ export function ProjectView({
   // to patch the server before the page reloaded). Drop the seed so the
   // textarea does not echo a prompt the user already submitted.
   useEffect(() => {
-    if (initialDraft && messages.length > 0 && !restoredManualDraftRef.current) {
-      setInitialDraft(undefined);
+    if (
+      composerDraftSignal?.source === 'pending-prompt'
+      && messages.length > 0
+      && !restoredManualDraftRef.current
+    ) {
+      setComposerDraftSignal(undefined);
     }
-  }, [initialDraft, messages.length]);
+  }, [composerDraftSignal, messages.length]);
 
   // §8.4 — when the project was created with a plugin pinned (the
   // PluginLoopHome → POST /api/projects path), fetch the immutable
@@ -10681,6 +10735,7 @@ export function ProjectView({
     sendTextBufferRef.current = null;
     conversationOperationsRef.current.clear();
     activeConversationOperationsRef.current.clear();
+    conversationOperationContextsRef.current.clear();
     for (const buffer of reattachTextBuffersRef.current) buffer.cancel();
     reattachTextBuffersRef.current.clear();
     abortRef.current?.abort();
@@ -10712,43 +10767,34 @@ export function ProjectView({
     setStreaming(false);
     streamingConversationIdRef.current = null;
     setStreamingConversationId(null);
-    const reconciledDraftContext = captureProjectMutation(project.id);
-    setInitialDraft((current) => current && reconciledDraftContext
-      ? {
-          ...current,
-          generation: reconciledDraftContext.generation,
-          conversationId: activeConversationIdRef.current,
-        }
-      : current);
+    // Draft payloads are exact-epoch values. Never retag an old payload into
+    // a new generation; an already-applied editor draft remains local.
+    const invalidatedDraft = composerDraftSignalRef.current;
+    if (invalidatedDraft?.source === 'pending-prompt') {
+      acknowledgedPendingPromptRef.current = `${project.id}\u0000${invalidatedDraft.text}`;
+    }
+    setComposerDraftSignal(undefined);
     if (autoSendFirstMessageRef.current && !autoSentRef.current) {
       const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
       const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
       const context = autoSendContextRef.current ?? readAutoSendContext(project.id);
-      if (text.trim() || attachments.length > 0 || context) {
+      const conversationId = activeConversationIdRef.current;
+      if (conversationId && (text.trim() || attachments.length > 0 || context)) {
         restoredManualDraftRef.current = true;
-        const restoredContext = captureProjectMutation(project.id);
-        setInitialDraft(text ? {
+        setComposerDraftSignal({
           id: randomUUID(),
           projectId: project.id,
-          generation: restoredContext?.generation ?? projectGit.generation,
-          conversationId: activeConversationIdRef.current,
-          value: text,
-        } : undefined);
-        setComposerDraftSignal({
+          generation: projectGit.generation,
+          conversationId,
           text,
           attachments,
           ...(context ? { meta: { context } } : {}),
-          nonce: Date.now(),
+          source: 'auto-send',
         });
       }
     }
-    clearAutoSendSession(project.id);
-    autoSendSeedRef.current = '';
-    autoSendAttachmentsRef.current = [];
-    autoSendContextRef.current = null;
-    autoSendFirstMessageRef.current = false;
+    // Keep the durable Home handoff until the send boundary accepts it.
     autoSendInFlightRef.current = false;
-    autoSentRef.current = true;
     setError('Project history changed. Reloaded content is being reconciled; your manual draft is preserved.');
   }), [iframeKeepAlivePool, project.id, setError]);
 
@@ -10928,7 +10974,7 @@ export function ProjectView({
     // ref was not populated (e.g. sessionStorage error path).
     const seed = (
       autoSendSeedRef.current ||
-      (initialDraft?.projectId === project.id ? initialDraft.value : '') ||
+      (composerDraftSignal?.projectId === project.id ? composerDraftSignal.text : '') ||
       project.pendingPrompt ||
       ''
     ).trim();
@@ -10957,6 +11003,7 @@ export function ProjectView({
           markDesignSystemAuditAutoRepairEligible(project.id);
         }
         clearAutoSendSession(project.id);
+        onClearPendingPrompt();
         autoSendAttachmentsRef.current = [];
         autoSendInFlightRef.current = false;
       })
@@ -10974,9 +11021,10 @@ export function ProjectView({
     project.id,
     projectIsProgrammaticBrandExtraction,
     project.metadata,
-    initialDraft,
+    composerDraftSignal,
     project.pendingPrompt,
     handleSend,
+    onClearPendingPrompt,
   ]);
 
   // Wire the Critique Theater drop-in mount into the project workspace.
@@ -11147,7 +11195,7 @@ export function ProjectView({
               onAttachComment={attachPreviewComment}
               onDetachComment={detachPreviewComment}
               onDeleteComment={(commentId) => void removePreviewComment(commentId)}
-              onSend={handleComposerSend}
+              onSend={handleScopedComposerSend}
               onRetry={handleRetry}
               onResumeRun={handleResumeRun}
               onStop={handleStop}
@@ -11165,14 +11213,6 @@ export function ProjectView({
               shareToOpenDesignBusyMessageId={shareToOpenDesignBusyMessageId}
               forceStreamingMessageIds={forceStreamingPluginMessageIds}
               initialDraft={chatInitialDraft}
-              initialDraftSignalId={
-                chatInitialDraft && initialDraft?.conversationId === activeConversationId
-                  ? initialDraft.id
-                  : undefined
-              }
-              onInitialDraftRestored={(signalId) => {
-                setInitialDraft((current) => current?.id === signalId ? undefined : current);
-              }}
               onboardingStarterPath={onboardingEntryRef.current?.productType ?? null}
               questionFormSubmitDisabled={currentConversationActionDisabled}
               onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId, mutationContext) => {
@@ -11298,6 +11338,15 @@ export function ProjectView({
                 ) : null
               }
               composerDraftSignal={composerDraftSignal}
+              onComposerDraftRestored={(signalId) => {
+                const currentDraft = composerDraftSignalRef.current;
+                if (currentDraft?.id !== signalId) return;
+                if (currentDraft.source === 'pending-prompt') {
+                  acknowledgedPendingPromptRef.current = `${project.id}\u0000${currentDraft.text}`;
+                  onClearPendingPrompt();
+                }
+                setComposerDraftSignal(undefined);
+              }}
               researchAvailable={config.mode === 'daemon'}
               byokApiProtocol={config.apiProtocol}
               byokImageModel={byokImageModelOverride}

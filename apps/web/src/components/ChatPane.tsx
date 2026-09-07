@@ -688,11 +688,15 @@ interface Props {
   // Bumped by the parent to push a draft into the composer (used by the
   // "Import repo" CTA). The nonce lets the same text fire more than once.
   composerDraftSignal?: {
+    id: string;
+    projectId: string;
+    generation: number;
+    conversationId: string;
     text: string;
     attachments?: ChatAttachment[];
     meta?: ChatSendMeta;
-    nonce: number;
   };
+  onComposerDraftRestored?: (signalId: string) => void;
   projectMetadata?: ProjectMetadata;
   // Authoritative post-patch project from the daemon — see ChatComposer's
   // prop of the same name for the recency invariant.
@@ -996,6 +1000,7 @@ export function ChatPane({
   onCreateDesignSystemFromProject,
   createDesignSystemFromProjectBusy,
   composerDraftSignal,
+  onComposerDraftRestored,
   projectMetadata,
   onProjectMetadataChange,
   activeWorkspaceContext,
@@ -1591,20 +1596,25 @@ export function ChatPane({
     onInitialDraftRestored?.(initialDraftSignalId);
   }, [initialDraftSignalId, onInitialDraftRestored]);
 
-  // Parent-driven composer prefill (the "Import repo" CTA). Reuse the same
-  // imperative setDraft the starter cards use; the nonce guards against
-  // re-applying the same signal on unrelated re-renders.
-  const lastDraftSignalNonceRef = useRef<number | null>(null);
+  // Parent-driven composer prefill. The payload owns the complete draft and
+  // its scope; acknowledge only after applying it to the mounted composer.
+  const lastDraftSignalIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!composerDraftSignal) return;
-    if (lastDraftSignalNonceRef.current === composerDraftSignal.nonce) return;
-    lastDraftSignalNonceRef.current = composerDraftSignal.nonce;
-    composerRef.current?.restoreDraft({
+    if (
+      composerDraftSignal.projectId !== projectId
+      || composerDraftSignal.conversationId !== activeConversationId
+      || lastDraftSignalIdRef.current === composerDraftSignal.id
+      || !composerRef.current
+    ) return;
+    composerRef.current.restoreDraft({
       text: composerDraftSignal.text,
       attachments: composerDraftSignal.attachments,
       meta: composerDraftSignal.meta,
     });
-  }, [composerDraftSignal]);
+    lastDraftSignalIdRef.current = composerDraftSignal.id;
+    onComposerDraftRestored?.(composerDraftSignal.id);
+  }, [activeConversationId, composerDraftSignal, onComposerDraftRestored, projectId]);
 
   // Library "optimize design system" hand-off: when the user pushed selected
   // assets into this project's design system from the Library, pre-fill the

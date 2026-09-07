@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,6 +30,7 @@ const projectMutationContext = {
   expectedProjectRevision: 7,
   signal: new AbortController().signal,
 };
+let activeDeleteResult: unknown;
 
 vi.mock('../../src/providers/project-git', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/project-git')>(
@@ -80,14 +81,22 @@ vi.mock('../../src/router', () => ({
     ),
 }));
 
-vi.mock('../../src/components/EntryView', () => ({
+vi.mock('../../src/components/EntryView', async () => {
+  const { RecentProjectsStrip } = await vi.importActual<
+    typeof import('../../src/components/RecentProjectsStrip')
+  >('../../src/components/RecentProjectsStrip');
+  return {
   EntryView: ({
     onOpenSettings,
     onRenameProject,
+    onDeleteProject,
+    projectMutationReady,
     projects,
   }: {
     onOpenSettings: (section?: 'execution' | 'media') => void;
     onRenameProject: (id: string, name: string) => void;
+    onDeleteProject: (id: string) => Promise<true | false | 'stale'>;
+    projectMutationReady: (id: string) => boolean;
     projects: Array<{ id: string; name: string }>;
   }) => (
     <div>
@@ -98,9 +107,19 @@ vi.mock('../../src/components/EntryView', () => ({
       <button type="button" onClick={() => onRenameProject('project-rename', 'Renamed project')}>
         Rename Home project
       </button>
+      <RecentProjectsStrip
+        projects={projects as never}
+        heading="All projects"
+        onOpen={() => undefined}
+        onDelete={onDeleteProject}
+        onRename={onRenameProject}
+        projectMutationReady={projectMutationReady}
+        canManageProjectCollection
+      />
     </div>
   ),
-}));
+  };
+});
 
 vi.mock('../../src/components/ProjectView', () => ({
   ProjectView: ({
@@ -112,7 +131,8 @@ vi.mock('../../src/components/ProjectView', () => ({
       Project view
       <button
         type="button"
-        onClick={() => void onDeleteProject?.('project-rename', projectMutationContext)}
+        onClick={() => void onDeleteProject?.('project-rename', projectMutationContext)
+          .then((result) => { activeDeleteResult = result; })}
       >
         Delete active backing project
       </button>
@@ -267,7 +287,7 @@ describe('App media provider sync flows', () => {
     mockedListProjects.mockResolvedValue([originalProject]);
     projectAuthorityHarness.ready = false;
     render(<App />);
-    await screen.findByText('Original project');
+    await screen.findAllByText('Original project');
 
     fireEvent.click(screen.getByRole('button', { name: 'Rename Home project' }));
     expect(mockedPatchProject).not.toHaveBeenCalled();
@@ -338,8 +358,84 @@ describe('App media provider sync flows', () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
   });
 
+  it('maps a real structured project revision 409 to a stale delete result', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === `/api/projects/${project.id}` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({
+          error: { code: 'PROJECT_STATE_CHANGED', message: 'Restored elsewhere', retryable: false },
+        }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ project, resolvedDir: '/project' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete active backing project' }));
+
+    await waitFor(() => expect(activeDeleteResult).toBe('stale'));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+    expect(navigateMock).not.toHaveBeenCalledWith({ kind: 'home', view: 'home' });
+  });
+
+  it('preserves stale selection through the production App to Recent bulk delete boundary', async () => {
+    const projects = [
+      {
+        id: 'project-bulk-ok', name: 'Bulk success', skillId: null, designSystemId: null,
+        createdAt: 1, updatedAt: 3, status: { value: 'not_started' as const },
+      },
+      {
+        id: 'project-bulk-stale', name: 'Bulk stale', skillId: null, designSystemId: null,
+        createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+      },
+    ];
+    mockedListProjects.mockResolvedValue(projects);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE' && String(input) === '/api/projects/project-bulk-ok') {
+        return new Response(null, { status: 204 });
+      }
+      if (init?.method === 'DELETE' && String(input) === '/api/projects/project-bulk-stale') {
+        return new Response(JSON.stringify({
+          error: { code: 'PROJECT_STATE_CHANGED', message: 'Restored elsewhere', retryable: false },
+        }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    await screen.findAllByText('Bulk success');
+    fireEvent.click(screen.getByRole('button', { name: 'Multi-select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Bulk success' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Bulk stale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toEqual([
+      ['/api/projects/project-bulk-ok', expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-OD-Project-Revision': '7' },
+      })],
+      ['/api/projects/project-bulk-stale', expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-OD-Project-Revision': '7' },
+      })],
+    ]);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed|reload/i);
+    expect(screen.queryByRole('button', { name: 'Bulk success' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Bulk stale' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
   afterEach(() => {
     cleanup();
+    activeDeleteResult = undefined;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });

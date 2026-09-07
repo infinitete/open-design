@@ -137,6 +137,7 @@ import {
 import {
   captureProjectMutation,
   isProjectMutationCurrent,
+  ProjectStateChangedError,
   type ProjectMutationContext,
 } from './state/project-git';
 import { useProjectGitAuthoritySet } from './providers/project-git';
@@ -293,7 +294,6 @@ type QueuedProjectRenameState = {
   generation: number;
   confirmed: Project;
   pending: number;
-  tail: Promise<void>;
 };
 
 export async function persistComposioConfigChange(
@@ -2232,7 +2232,12 @@ function AppInner() {
     const mutationContext = suppliedMutationContext ?? captureProjectMutation(id);
     if (!mutationContext) return false;
     if (!isProjectMutationCurrent(id, mutationContext)) return 'stale';
-    await deleteProjectApi(id, mutationContext);
+    try {
+      await deleteProjectApi(id, mutationContext);
+    } catch (error) {
+      if (error instanceof ProjectStateChangedError) return 'stale';
+      throw error;
+    }
     // A restore that wins while the request is in flight is neither a daemon
     // failure nor a successful deletion in this browser epoch. Leave every
     // local projection untouched and let Home close the obsolete intent.
@@ -2262,7 +2267,6 @@ function AppInner() {
       generation: renameGeneration,
       confirmed: previous,
       pending: 1,
-      tail: Promise.resolve(),
     });
     const persisted = await patchProject(id, { name: trimmed }, mutationContext);
     if (!isProjectMutationCurrent(id, mutationContext)) return false;

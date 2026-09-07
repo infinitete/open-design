@@ -186,6 +186,9 @@ export function DesignsTab({
 	const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
 	const [renameInput, setRenameInput] = useState("");
 	const [renameError, setRenameError] = useState<string | null>(null);
+	const renameOperationRef = useRef(0);
+	const renamePendingRef = useRef(false);
+	const [renamePending, setRenamePending] = useState(false);
 	const [confirmTarget, setConfirmTarget] = useState<{
 		projectIds: string[];
 		title: string;
@@ -494,30 +497,49 @@ export function DesignsTab({
 	};
 	const handleRenameProject = (project: Project) => {
 		if (!projectMutationReady(project.id)) return;
+		renameOperationRef.current += 1;
+		renamePendingRef.current = false;
+		setRenamePending(false);
 		setRenameTarget({ id: project.id, original: project.name });
 		setRenameInput(project.name);
 		setRenameError(null);
 	};
 	const commitRename = async () => {
-		if (!renameTarget || !projectMutationReady(renameTarget.id)) return;
+		if (!renameTarget || !projectMutationReady(renameTarget.id) || renamePendingRef.current) return;
+		const target = renameTarget;
+		const operation = renameOperationRef.current + 1;
+		renameOperationRef.current = operation;
+		renamePendingRef.current = true;
+		setRenamePending(true);
 		const trimmed = renameInput.trim();
 		if (trimmed && trimmed !== renameTarget.original) {
 			try {
-				const renamed = await onRename?.(renameTarget.id, trimmed);
+				const renamed = await onRename?.(target.id, trimmed);
+				if (renameOperationRef.current !== operation) return;
 				if (renamed === false) {
 					setRenameError("Project history changed. Reload and try renaming again.");
 					return;
 				}
 			} catch {
+				if (renameOperationRef.current !== operation) return;
 				setRenameError("Project history changed. Reload and try renaming again.");
 				return;
+			} finally {
+				if (renameOperationRef.current === operation) {
+					renamePendingRef.current = false;
+					setRenamePending(false);
+				}
 			}
 		}
+		if (renameOperationRef.current !== operation) return;
 		setRenameTarget(null);
 		setRenameInput("");
 		setRenameError(null);
 	};
 	const cancelRename = () => {
+		renameOperationRef.current += 1;
+		renamePendingRef.current = false;
+		setRenamePending(false);
 		setRenameTarget(null);
 		setRenameInput("");
 		setRenameError(null);
@@ -564,7 +586,13 @@ export function DesignsTab({
 				);
 				const deleted = results.filter((result) => result === true).length;
 				const failed = results.filter((result) => result === false).length;
-				if (deleted === 0 && failed === 0) return 'stale';
+				const stale = results.filter((result) => result === 'stale').length;
+				const retainedIds = ids.filter((_, index) => results[index] !== true);
+				if (retainedIds.length > 0) {
+					setSelected(new Set(retainedIds));
+					if (stale > 0) return 'stale';
+					return false;
+				}
 				exitSelectMode();
 				const message =
 					failed > 0
@@ -1018,22 +1046,20 @@ export function DesignsTab({
 											aria-label={t("designs.menuMore")}
 											aria-haspopup="menu"
 											aria-expanded={menuOpenId === p.id}
-											onClick={(e) => {
-												e.stopPropagation();
-												setMenuOpenId((cur) => {
-													const nextId = cur === p.id ? null : p.id;
-													if (nextId === p.id) {
-														const projectKind = projectKindFromMetadataToTracking(p.metadata);
-														trackProjectsListClick(analytics.track, {
-															page_name: "projects",
-															area: "list",
-															element: "more",
-															project_id: p.id,
-															...(projectKind ? { project_kind: projectKind } : {}),
-														});
-													}
-													return nextId;
+										onClick={(e) => {
+											e.stopPropagation();
+											const opening = menuOpenId !== p.id;
+											if (opening) {
+												const projectKind = projectKindFromMetadataToTracking(p.metadata);
+												trackProjectsListClick(analytics.track, {
+													page_name: "projects",
+													area: "list",
+													element: "more",
+													project_id: p.id,
+													...(projectKind ? { project_kind: projectKind } : {}),
 												});
+											}
+											setMenuOpenId(opening ? p.id : null);
 											}}
 										>
 											<Icon name="more-horizontal" size={14} />
@@ -1294,6 +1320,7 @@ export function DesignsTab({
 							type="submit"
 							className="primary"
 							disabled={
+								renamePending ||
 								!projectMutationReady(renameTarget.id) ||
 								!renameInput.trim() ||
 								renameInput.trim() === renameTarget.original

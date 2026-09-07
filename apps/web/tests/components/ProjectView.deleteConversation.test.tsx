@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { StrictMode } from 'react';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../../src/components/ProjectView';
@@ -171,7 +172,7 @@ vi.mock('../../src/components/Loading', () => ({
   CenteredLoader: () => null,
 }));
 
-function renderProjectView(onProjectsRefresh: () => void) {
+function renderProjectView(onProjectsRefresh: () => void, strict = false) {
   const delegatedFetch = globalThis.fetch;
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === '/api/projects/project-1/git') {
@@ -185,7 +186,7 @@ function renderProjectView(onProjectsRefresh: () => void) {
     }
     return delegatedFetch(input, init);
   }));
-  return render(
+  const view = (
     <ProjectView
       project={{ id: 'project-1', name: 'Project', skillId: null, designSystemId: null } as never}
       routeFileName={null}
@@ -205,8 +206,9 @@ function renderProjectView(onProjectsRefresh: () => void) {
       onTouchProject={() => {}}
       onProjectChange={() => {}}
       onProjectsRefresh={onProjectsRefresh}
-    />,
+    />
   );
+  return render(strict ? <StrictMode>{view}</StrictMode> : view);
 }
 
 describe('ProjectView conversation delete', () => {
@@ -389,6 +391,33 @@ describe('ProjectView conversation delete', () => {
     );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-fresh']);
+  });
+
+  it('re-seeds the last deleted conversation exactly once under StrictMode updater replay', async () => {
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation 1' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    fetchChatRunStatus.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    reattachDaemonRun.mockResolvedValue(undefined);
+    deleteConversation.mockResolvedValue(true);
+    createConversation.mockResolvedValue({ id: 'conv-fresh', title: 'Fresh Conversation' });
+
+    renderProjectView(vi.fn(), true);
+    await waitFor(() => expect(chatPaneProps.onDeleteConversation).toBeDefined());
+
+    await act(async () => {
+      await chatPaneProps.onDeleteConversation!('conv-1');
+    });
+
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));
   });
 
   it('keeps the latest unanswered question form in chat instead of the workspace panel', async () => {

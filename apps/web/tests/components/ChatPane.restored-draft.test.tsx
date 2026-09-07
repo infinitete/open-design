@@ -13,6 +13,52 @@ vi.mock('../../src/i18n', () => ({
 afterEach(() => cleanup());
 
 describe('ChatPane restored manual draft', () => {
+  it('acknowledges one scoped payload only after an async arrival is applied', async () => {
+    const acknowledged = vi.fn();
+    const pane = (draft?: {
+      id: string;
+      projectId: string;
+      generation: number;
+      conversationId: string;
+      text: string;
+    }) => (
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={[]}
+        streaming={false}
+        error={null}
+        projectId="project-restored-draft"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-restored-draft'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={[{ id: 'conv-restored', projectId: 'project-restored-draft', title: 'Restored', createdAt: 1, updatedAt: 1 }]}
+        activeConversationId="conv-restored"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={{ kind: 'prototype' }}
+        composerDraftSignal={draft}
+        onComposerDraftRestored={acknowledged}
+      />
+    );
+    const view = render(pane());
+
+    expect(screen.getByRole('combobox')).not.toHaveTextContent('Async scoped draft');
+    expect(acknowledged).not.toHaveBeenCalled();
+
+    view.rerender(pane({
+      id: 'draft-1',
+      projectId: 'project-restored-draft',
+      generation: 7,
+      conversationId: 'conv-restored',
+      text: 'Async scoped draft',
+    }));
+
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Async scoped draft'));
+    expect(acknowledged).toHaveBeenCalledOnce();
+    expect(acknowledged).toHaveBeenCalledWith('draft-1');
+  });
+
   it('keeps text, attachments, and workspace context editable over a hydrated transcript without sending', async () => {
     const onSend = vi.fn();
     render(
@@ -52,6 +98,10 @@ describe('ChatPane restored manual draft', () => {
           url: 'https://example.com/reference-a',
         }]}
         composerDraftSignal={{
+          id: 'draft-complete',
+          projectId: 'project-restored-draft',
+          generation: 1,
+          conversationId: 'conv-restored',
           text: 'Keep this restored draft',
           attachments: [{ path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 }],
           meta: {
@@ -65,7 +115,6 @@ describe('ChatPane restored manual draft', () => {
               }],
             },
           },
-          nonce: 1,
         }}
         />
     );
@@ -110,10 +159,13 @@ describe('ChatPane restored manual draft', () => {
         workspaceContexts={[workspaceItem]}
         initialWorkspaceContexts={[]}
         composerDraftSignal={nonce === null ? undefined : {
+          id: `draft-${nonce}`,
+          projectId: 'project-restored-draft',
+          generation: 1,
+          conversationId,
           text: `Draft ${nonce}`,
           attachments: [],
           meta: { context: { workspaceItems: [workspaceItem] } },
-          nonce,
         }}
       />
     );
@@ -197,10 +249,13 @@ describe('ChatPane restored manual draft', () => {
         projectMetadata={{ kind: 'prototype' }}
         workspaceContexts={[workspaceItem]}
         composerDraftSignal={{
+          id: 'draft-rejected',
+          projectId: 'project-restored-draft',
+          generation: 1,
+          conversationId: 'conv-rejected',
           text: 'Keep rejected draft',
           attachments: [{ path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 }],
           meta: { context: { workspaceItems: [workspaceItem] } },
-          nonce: 99,
         }}
       />,
     );

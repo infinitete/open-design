@@ -706,6 +706,163 @@ describe('ProjectView daemon cleanup', () => {
     )).toBe(false);
   });
 
+  it('claims reattach authority before its first run-list await so artifact recovery cannot steal it', async () => {
+    const projectId = 'project-reattach-first-await';
+    prepareReadyRunProject(projectId);
+    const recoveredArtifact = artifactProjectFile('successor.html', 3);
+    const messages = [{
+      id: 'assistant-old', role: 'assistant', content: '', createdAt: 1, runStatus: 'running',
+    }, {
+      id: 'assistant-successor', role: 'assistant',
+      content: '<artifact identifier="real-daemon-smoke" type="text/html" title="Real Daemon Smoke"><html>done</html></artifact>',
+      createdAt: 1, startedAt: 1, runId: 'run-successor', runStatus: 'succeeded', producedFiles: [],
+    }];
+    listMessages.mockResolvedValue(messages);
+    let resolveActiveRuns!: (runs: Array<Record<string, unknown>>) => void;
+    listActiveChatRuns.mockReturnValue(new Promise((resolve) => {
+      resolveActiveRuns = resolve;
+    }));
+    fetchChatRunStatus.mockResolvedValue({
+      id: 'run-successor', status: 'succeeded', createdAt: 1, updatedAt: 2,
+      exitCode: 0, signal: null,
+    });
+    fetchProjectFiles.mockImplementation(async () =>
+      writeProjectTextFile.mock.calls.length > 0 ? [recoveredArtifact] : []
+    );
+    writeProjectTextFile.mockResolvedValue(recoveredArtifact);
+    reattachDaemonRun.mockReturnValue(new Promise<void>(() => {}));
+
+    render(runProjectView(projectId));
+    await waitFor(() => expect(listActiveChatRuns).toHaveBeenCalledOnce());
+    await act(async () => Promise.resolve());
+    expect(fetchChatRunStatus).not.toHaveBeenCalledWith('run-successor');
+
+    resolveActiveRuns([]);
+
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+    expect(reattachDaemonRun).not.toHaveBeenCalled();
+  });
+
+  it('does not let artifact recovery claim authority after its first message-list await loses to a completed successor', async () => {
+    const projectId = 'project-artifact-first-await';
+    prepareReadyRunProject(projectId);
+    const recoveredArtifact = artifactProjectFile('real-daemon-smoke.html', 3);
+    const artifactMessage = {
+      id: 'assistant-artifact-old', role: 'assistant',
+      content: '<artifact identifier="real-daemon-smoke" type="text/html" title="Real Daemon Smoke"><html>old</html></artifact>',
+      createdAt: 1, startedAt: 1, runId: 'run-artifact-old', runStatus: 'succeeded', producedFiles: [],
+    };
+    let listMessageCall = 0;
+    let resolveRecoveryMessages!: (messages: Array<Record<string, unknown>>) => void;
+    listMessages.mockImplementation(() => {
+      listMessageCall += 1;
+      if (listMessageCall === 1) return Promise.resolve([artifactMessage]);
+      return new Promise((resolve) => { resolveRecoveryMessages = resolve; });
+    });
+    streamViaDaemon.mockImplementation(async (options: {
+      handlers: { onDelta: (text: string) => void; onDone: (text?: string) => void };
+      onRunCreated?: (runId: string) => void;
+      onRunStatus: (status: 'succeeded') => void;
+    }) => {
+      options.onRunCreated?.('run-successor');
+      options.handlers.onDelta('successor complete');
+      options.handlers.onDone('successor complete');
+      options.onRunStatus('succeeded');
+    });
+    fetchChatRunStatus.mockResolvedValue({
+      id: 'run-artifact-old', status: 'succeeded', createdAt: 1, updatedAt: 2,
+      exitCode: 0, signal: null,
+    });
+    fetchProjectFiles.mockImplementation(async () =>
+      writeProjectTextFile.mock.calls.length > 0 ? [recoveredArtifact] : []
+    );
+    writeProjectTextFile.mockResolvedValue(recoveredArtifact);
+
+    render(runProjectView(projectId));
+    const props = await waitForReadyChatPaneProps();
+    await waitFor(() => expect(listMessages.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await props.onSend?.('successor', [], []);
+    await waitFor(() => expect(saveMessage.mock.calls.some(
+      (call) => call[2]?.runId === 'run-successor' && call[2]?.content === 'successor complete',
+    )).toBe(true));
+    writeProjectTextFile.mockClear();
+
+    resolveRecoveryMessages([artifactMessage]);
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+    expect(fetchChatRunStatus).not.toHaveBeenCalledWith('run-artifact-old');
+    expect(writeProjectTextFile).not.toHaveBeenCalled();
+  });
+
+  it('persists stopped assistant messages exactly once outside StrictMode updater replay', async () => {
+    const projectId = 'project-stop-pure-updater';
+    prepareReadyRunProject(projectId);
+    streamViaDaemon.mockImplementation(async (options: {
+      onRunCreated?: (runId: string) => void;
+    }) => {
+      options.onRunCreated?.('run-stop');
+      return new Promise<void>(() => {});
+    });
+
+    render(<StrictMode>{runProjectView(projectId)}</StrictMode>);
+    const props = await waitForReadyChatPaneProps();
+    await props.onSend?.('stop me', [], []);
+    await waitFor(() => expect(saveMessage.mock.calls.some(
+      (call) => call[2]?.runId === 'run-stop' && call[2]?.runStatus === 'queued',
+    )).toBe(true));
+    saveMessage.mockClear();
+
+    act(() => (props as typeof props & { onStop?: () => void }).onStop?.());
+
+    await waitFor(() => expect(saveMessage.mock.calls.filter(
+      (call) => call[2]?.runId === 'run-stop' && call[2]?.runStatus === 'canceled',
+    )).toHaveLength(1));
+    expect(saveMessage.mock.calls.find(
+      (call) => call[2]?.runId === 'run-stop' && call[2]?.runStatus === 'canceled',
+    )?.[3]).toEqual(expect.objectContaining({
+      telemetryFinalized: true,
+      mutationContext: expect.objectContaining({ expectedProjectRevision: 1 }),
+    }));
+  });
+
+  it('releases the stopped operation before a swallowed AbortError so artifact recovery can claim the slot', async () => {
+    const projectId = 'project-stop-abort-release';
+    prepareReadyRunProject(projectId);
+    let runOptions: {
+      handlers: { onDelta: (delta: string) => void; onError: (error: Error) => Promise<void> };
+      onRunCreated?: (runId: string) => void;
+    } | undefined;
+    streamViaDaemon.mockImplementation(async (options: typeof runOptions) => {
+      runOptions = options;
+      options?.onRunCreated?.('run-stop-abort');
+      return new Promise<void>(() => {});
+    });
+    fetchChatRunStatus.mockResolvedValue({
+      id: 'run-stop-abort', status: 'canceled', createdAt: 1, updatedAt: 2,
+      exitCode: null, signal: 'SIGTERM',
+    });
+
+    render(runProjectView(projectId));
+    const props = await waitForReadyChatPaneProps();
+    await props.onSend?.('make an artifact', [], []);
+    await waitFor(() => expect(runOptions).toBeDefined());
+    act(() => runOptions?.handlers.onDelta(
+      '<artifact identifier="real-daemon-smoke" type="text/html" title="Real Daemon Smoke"><html>partial</html></artifact>',
+    ));
+    act(() => (props as typeof props & { onStop?: () => void }).onStop?.());
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.messages?.some(
+      (message: ChatMessage) => message.runId === 'run-stop-abort'
+        && message.runStatus === 'canceled'
+        && message.content.includes('<artifact'),
+    )).toBe(true));
+    const abortError = new Error('aborted');
+    abortError.name = 'AbortError';
+    await act(async () => runOptions?.handlers.onError(abortError));
+
+    await waitFor(() => expect(fetchChatRunStatus).toHaveBeenCalledWith('run-stop-abort'));
+  });
+
   it('does not let a predecessor error cancel the ordinary successor text buffer', async () => {
     const projectId = 'project-normal-successor-error';
     prepareReadyRunProject(projectId);
@@ -1513,11 +1670,18 @@ describe('ProjectView daemon cleanup', () => {
       listener?.({ type: 'project-git-state', projectId, state: gitState });
     });
 
-    // Keep the original intent callback so the test can deterministically
-    // start a replacement run while the reconciliation UI is still locked.
-    // Its capture happens at invocation and must belong to revision 2; the
-    // old completion may not borrow it through a mutable component ref.
+    // A callback retained from the ready render must fail closed while the
+    // revision reconciliation barrier is locked.
     void firstSendProps.onSend?.('start newer run', [], []);
+    await act(async () => Promise.resolve());
+    expect(streamViaDaemon).toHaveBeenCalledTimes(1);
+    const reconciledSendProps = await waitFor(async () => {
+      const candidate = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(candidate).not.toBe(firstSendProps);
+      expect(candidate?.sendDisabled).toBe(false);
+      return candidate;
+    });
+    void reconciledSendProps.onSend?.('start newer run', [], []);
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(2));
     expect(streamViaDaemon.mock.calls[1]?.[0]?.mutationContext?.expectedProjectRevision).toBe(2);
     expect(saveMessage.mock.calls.some(
@@ -1617,6 +1781,15 @@ describe('ProjectView daemon cleanup', () => {
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
     act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
     void send.onSend?.('start newer brand run', [], []);
+    await act(async () => Promise.resolve());
+    expect(streamViaDaemon).toHaveBeenCalledTimes(1);
+    const reconciledSend = await waitFor(async () => {
+      const candidate = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(candidate).not.toBe(send);
+      expect(candidate?.sendDisabled).toBe(false);
+      return candidate;
+    });
+    void reconciledSend.onSend?.('start newer brand run', [], []);
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(2));
     expect(streamViaDaemon.mock.calls[1]?.[0]?.mutationContext?.expectedProjectRevision).toBe(2);
     const messageWritesBeforeRelease = saveMessage.mock.calls.length;
@@ -2230,7 +2403,7 @@ describe('ProjectView daemon cleanup', () => {
     });
   });
 
-  it('converts a Home auto-send handoff into a complete manual draft when revision authority changes', async () => {
+  it('invalidates the old Home draft payload while retaining the durable handoff for the next ready epoch', async () => {
     const projectId = 'project-auto-send-restored-draft';
     const attachment = { path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 };
     const workspaceItem = {
@@ -2325,18 +2498,13 @@ describe('ProjectView daemon cleanup', () => {
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
     act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
 
-    await waitFor(() => {
-      expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toMatchObject({
-        text: 'Build from Home',
-        attachments: [attachment],
-        meta: { context: { workspaceItems: [workspaceItem] } },
-      });
-    });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toBeUndefined());
     expect(streamViaDaemon).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBeNull();
+    expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBe('1');
+    expect(window.sessionStorage.getItem(`od:auto-send-prompt:${projectId}`)).toBe('Build from Home');
   });
 
-  it('preserves an ordinary manual pending prompt across revision reconciliation', async () => {
+  it('clears an old-generation pending draft payload instead of retagging it', async () => {
     const projectId = 'project-manual-draft-restored';
     const initialGitState: ProjectGitState = {
       enabled: true,
@@ -2411,14 +2579,19 @@ describe('ProjectView daemon cleanup', () => {
       />,
     );
 
-    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.initialDraft).toBe('Keep this manual draft'));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toMatchObject({
+      projectId,
+      generation: 0,
+      conversationId: 'conv-1',
+      text: 'Keep this manual draft',
+    }));
     const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
       | ((event: ProjectEvent) => void)
       | undefined;
     act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
     act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
-    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.initialDraft).toBe('Keep this manual draft'));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toBeUndefined());
   });
 
   it('uses the routed conversation as the comment anchor while conversations hydrate', async () => {
@@ -3772,7 +3945,7 @@ describe('ProjectView daemon cleanup', () => {
 
   // Sister check: without the auto-send flag, the composer should still
   // seed from pendingPrompt so the user can edit before manually sending.
-  it('seeds composer initialDraft with pendingPrompt when auto-send flag is absent', async () => {
+  it('publishes pendingPrompt as one scoped composer payload when auto-send is absent', async () => {
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([]);
     fetchPreviewComments.mockResolvedValue([]);
@@ -3786,8 +3959,9 @@ describe('ProjectView daemon cleanup', () => {
 
     chatPaneSpy.mockClear();
     window.sessionStorage.removeItem('od:auto-send-first:project-3');
+    const onClearPendingPrompt = vi.fn();
 
-    render(
+    const view = render(
       <ProjectView
         project={{
           id: 'project-3',
@@ -3809,7 +3983,7 @@ describe('ProjectView daemon cleanup', () => {
         onRefreshAgents={() => {}}
         onOpenSettings={() => {}}
         onBack={() => {}}
-        onClearPendingPrompt={() => {}}
+        onClearPendingPrompt={onClearPendingPrompt}
         onTouchProject={() => {}}
         onProjectChange={() => {}}
         onProjectsRefresh={() => {}}
@@ -3817,12 +3991,57 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() => expect(chatPaneSpy).toHaveBeenCalled());
-    // The first render — before activeConversationId resolves — must
-    // pass the seed through so ChatComposer can populate its draft.
+    // The payload waits for the routed conversation and carries its complete
+    // owner identity instead of being split across two draft channels.
     const seedingCall = chatPaneSpy.mock.calls.find(
-      (call) => call[0]?.initialDraft === 'design a landing page for a coffee shop',
+      (call) => call[0]?.composerDraftSignal?.text === 'design a landing page for a coffee shop',
     );
     expect(seedingCall).toBeTruthy();
+    expect(seedingCall?.[0]?.composerDraftSignal).toMatchObject({
+      projectId: 'project-3',
+      conversationId: 'conv-1',
+      text: 'design a landing page for a coffee shop',
+    });
+    const firstSignal = seedingCall?.[0]?.composerDraftSignal as { id: string };
+    const staleAcknowledge = seedingCall?.[0]?.onComposerDraftRestored as (id: string) => void;
+    act(() => staleAcknowledge(firstSignal.id));
+    expect(onClearPendingPrompt).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <ProjectView
+        project={{
+          id: 'project-3',
+          name: 'Project',
+          skillId: null,
+          designSystemId: null,
+          pendingPrompt: 'a later legitimate prompt',
+        } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={onClearPendingPrompt}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+      />,
+    );
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal).toMatchObject({
+      text: 'a later legitimate prompt',
+    }));
+    const laterSignalId = chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal?.id;
+    act(() => staleAcknowledge(firstSignal.id));
+    expect(onClearPendingPrompt).toHaveBeenCalledOnce();
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.composerDraftSignal?.id).toBe(laterSignalId);
   });
 
   // Root-cause regression for the "Working 24m+ / Waiting for first output"
@@ -6163,9 +6382,18 @@ describe('ProjectView daemon cleanup', () => {
     const artifactContent =
       `<artifact type="text/css" title="Theme">${finalCss}</artifact>`;
 
-    globalThis.fetch = vi.fn(async () =>
-      new Response('body { color: blue; }', { status: 200 }),
-    ) as typeof fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/projects/project-css-recover/git') {
+        return new Response(JSON.stringify({
+          enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+          confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
+          bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+          operationId: null, error: null,
+          binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+        }), { status: 200 });
+      }
+      return new Response('body { color: blue; }', { status: 200 });
+    }) as typeof fetch;
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([
       {

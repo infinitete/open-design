@@ -378,6 +378,35 @@ describe('DesignsTab select mode', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  it('retains only stale intent after a mixed bulk project delete', async () => {
+    const secondProject = { ...project, id: 'project-2', name: 'Brand system' };
+    const onDelete = vi.fn(async (id: string) => id === project.id ? true as const : 'stale' as const);
+    render(
+      <DesignsTab
+        projects={[project, secondProject]}
+        skills={[]}
+        designSystems={[]}
+        onOpen={vi.fn()}
+        onOpenLiveArtifact={vi.fn()}
+        onDelete={onDelete}
+        onRename={vi.fn()}
+        projectMutationReady={() => true}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByText('Landing refresh').closest('.design-card') as HTMLElement);
+    fireEvent.click(screen.getByText('Brand system').closest('.design-card') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+    const dialog = screen.getByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('alertdialog')).toBe(dialog);
+    expect(screen.getByText('1 selected')).toBeTruthy();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed|reload/i);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('exits select mode when switching to kanban view', () => {
     render(
       <DesignsTab
@@ -514,6 +543,48 @@ describe('DesignsTab select mode', () => {
     expect(screen.getByRole('dialog')).toBe(dialog);
     expect(within(dialog).getByRole('textbox')).toHaveValue('Recovered name');
     expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed/i);
+  });
+
+  it('single-flights rename submits and ignores a late superseded response', async () => {
+    let resolveFirst!: (value: boolean) => void;
+    let resolveSecond!: (value: boolean) => void;
+    const onRename = vi.fn()
+      .mockReturnValueOnce(new Promise<boolean>((resolve) => { resolveFirst = resolve; }))
+      .mockReturnValueOnce(new Promise<boolean>((resolve) => { resolveSecond = resolve; }));
+    render(
+      <DesignsTab
+        projects={[project]}
+        skills={[]}
+        designSystems={[]}
+        onOpen={vi.fn()}
+        onOpenLiveArtifact={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={onRename}
+        projectMutationReady={() => true}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    let dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'First name' } });
+    const firstSubmit = within(dialog).getByRole('button', { name: 'OK' });
+    fireEvent.click(firstSubmit);
+    fireEvent.click(firstSubmit);
+    expect(onRename).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Second name' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    expect(onRename).toHaveBeenCalledTimes(2);
+
+    await act(async () => resolveSecond(true));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await act(async () => resolveFirst(false));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('treats a deferred live-artifact delete from an older revision as stale-neutral', async () => {

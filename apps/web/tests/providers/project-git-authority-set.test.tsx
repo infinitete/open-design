@@ -116,10 +116,7 @@ describe('Home project Git authority set', () => {
 
     await waitFor(() => expect(screen.getByTestId('authority')).toHaveAttribute('data-target-ready', 'false'));
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(captureProjectMutation('target-project')).toMatchObject({
-      expectedProjectRevision: 8,
-      generation: 1,
-    });
+    expect(captureProjectMutation('target-project')).toBeUndefined();
 
     resolveRefresh(new Response(JSON.stringify(nextState), { status: 200 }));
     await waitFor(() => expect(screen.getByTestId('authority')).toHaveAttribute('data-target-ready', 'true'));

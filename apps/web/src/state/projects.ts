@@ -43,6 +43,7 @@ import { removeDesignBrowserProjectCache } from '../components/design-browser-st
 import { boundedRequestErrorCode } from '../analytics/workspace';
 import {
   captureProjectMutation,
+  isProjectMutationCurrent,
   projectMutationBody,
   projectMutationHeaders,
   rethrowProjectStateChanged,
@@ -1323,6 +1324,7 @@ export async function persistTabsToDaemonNow(
   state: OpenTabsState,
   mutationContext = captureProjectMutation(projectId),
 ): Promise<void> {
+  if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
   try {
     await persistTabsToDaemon(projectId, state, mutationContext);
   } catch (error) {

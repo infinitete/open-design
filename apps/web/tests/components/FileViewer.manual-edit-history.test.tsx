@@ -1,10 +1,31 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProjectGitState } from '@open-design/contracts';
 import type { ComponentProps } from 'react';
 import { emptyManualEditStyles, type ManualEditTarget } from '../../src/edit-mode/types';
 import type { ProjectFile } from '../../src/types';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+  type ProjectGitStateStore,
+} from '../../src/state/project-git';
+
+const mutationState: ProjectGitState = {
+  enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+  confirmedRemoteHead: null, projectRevision: 1, contentRevision: 1,
+  bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+  operationId: null, error: null,
+  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+};
+let mutationStore: ProjectGitStateStore;
+
+beforeEach(() => {
+  mutationStore = createProjectGitStateStore(mutationState);
+  registerProjectMutationStore('project-1', mutationStore);
+});
 
 const panelState = vi.hoisted(() => ({
   props: null as ComponentProps<typeof import('../../src/components/ManualEditPanel').ManualEditPanel> | null,
@@ -99,6 +120,8 @@ async function selectManualEditTarget(target = heroTarget()) {
 }
 
 afterEach(() => {
+  unregisterProjectMutationStore('project-1', mutationStore);
+  mutationStore.dispose();
   cleanup();
   panelState.props = null;
   vi.restoreAllMocks();

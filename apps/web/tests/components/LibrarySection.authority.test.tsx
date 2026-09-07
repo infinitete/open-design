@@ -49,8 +49,23 @@ const legalState: ProjectGitState = {
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
-  readonly close = vi.fn();
-  constructor(readonly url: string | URL) { MockEventSource.instances.push(this); }
+  static active = 0;
+  static maxActive = 0;
+  private closed = false;
+  private readonly projectConnection: boolean;
+  readonly close = vi.fn(() => {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.projectConnection) MockEventSource.active -= 1;
+  });
+  constructor(readonly url: string | URL) {
+    this.projectConnection = String(url).includes('/api/projects/');
+    MockEventSource.instances.push(this);
+    if (this.projectConnection) {
+      MockEventSource.active += 1;
+      MockEventSource.maxActive = Math.max(MockEventSource.maxActive, MockEventSource.active);
+    }
+  }
   addEventListener() {}
 }
 
@@ -72,6 +87,8 @@ function projectConnections() {
 describe('LibrarySection operation-scoped project authority', () => {
   beforeEach(() => {
     MockEventSource.instances = [];
+    MockEventSource.active = 0;
+    MockEventSource.maxActive = 0;
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(legalState), {
       status: 200,
@@ -104,8 +121,10 @@ describe('LibrarySection operation-scoped project authority', () => {
     await waitFor(() => expect(projectConnections()).toHaveLength(2));
     expect(projectConnections()[0]?.close).toHaveBeenCalledOnce();
     expect(String(projectConnections()[1]?.url)).toContain('/project-1/events');
+    expect(MockEventSource.maxActive).toBeLessThanOrEqual(1);
 
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(projectConnections()[1]?.close).toHaveBeenCalledOnce());
+    expect(MockEventSource.active).toBe(0);
   });
 });

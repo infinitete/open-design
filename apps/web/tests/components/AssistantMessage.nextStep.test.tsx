@@ -66,6 +66,21 @@ const handlers = () => ({
 });
 
 describe('AssistantMessage next-step affordance', () => {
+  it('hides project-owned next-step controls while mutation authority is unavailable', () => {
+    render(
+      <AssistantMessage
+        message={baseMessage({ producedFiles: [producedFile('landing.html')] })}
+        streaming={false}
+        projectId="proj-1"
+        isLast
+        projectMutationDisabled
+        {...handlers()}
+      />,
+    );
+
+    expect(screen.queryByTestId('next-step-actions')).toBeNull();
+  });
+
   it('routes Share through the More → Share cascade with the file name', () => {
     const h = handlers();
     render(

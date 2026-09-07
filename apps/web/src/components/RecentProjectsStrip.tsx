@@ -448,6 +448,9 @@ export function RecentProjectsStrip({
   // spans N projects), mirroring the projects grid's own batch delete.
   const [bulkMoveAction, setBulkMoveAction] = useState<'to-team' | 'to-personal' | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleteTargetIds, setBulkDeleteTargetIds] = useState<string[]>([]);
+  const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (limit !== undefined) return;
@@ -495,13 +498,21 @@ export function RecentProjectsStrip({
   const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
+  const renameOperationRef = useRef(0);
+  const renamePendingRef = useRef(false);
+  const [renamePending, setRenamePending] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
   const authoritySourceId = useId();
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
       detail: {
         source: `recent-projects:${authoritySourceId}`,
-        projectIds: [...new Set([menuOpenId, renameTarget?.id, confirmTarget?.id].filter((id): id is string => Boolean(id)))],
+        projectIds: [...new Set([
+          menuOpenId,
+          renameTarget?.id,
+          confirmTarget?.id,
+          ...bulkDeleteTargetIds,
+        ].filter((id): id is string => Boolean(id)))],
       },
     }));
     return () => {
@@ -509,7 +520,7 @@ export function RecentProjectsStrip({
         detail: { source: `recent-projects:${authoritySourceId}`, projectIds: [] },
       }));
     };
-  }, [authoritySourceId, confirmTarget?.id, menuOpenId, renameTarget?.id]);
+  }, [authoritySourceId, bulkDeleteTargetIds, confirmTarget?.id, menuOpenId, renameTarget?.id]);
   // recvqbh189zBY6: commitDelete used to await onDelete and drop the result on
   // the floor either way — a 403/network failure closed the dialog exactly
   // like a success, leaving the project right where it was with no signal
@@ -1015,32 +1026,51 @@ export function RecentProjectsStrip({
       project_relation: 'self',
     });
     setMenuOpenId(null);
+    renameOperationRef.current += 1;
+    renamePendingRef.current = false;
+    setRenamePending(false);
     setRenameTarget({ id: project.id, original: project.name });
     setRenameInput(project.name);
     setRenameError(null);
   }
 
   function cancelRename() {
+    renameOperationRef.current += 1;
+    renamePendingRef.current = false;
+    setRenamePending(false);
     setRenameTarget(null);
     setRenameInput('');
     setRenameError(null);
   }
 
   async function commitRename() {
-    if (!renameTarget || !onRename) return;
+    if (!renameTarget || !onRename || renamePendingRef.current) return;
     const trimmed = renameInput.trim();
+    const target = renameTarget;
+    const operation = renameOperationRef.current + 1;
+    renameOperationRef.current = operation;
+    renamePendingRef.current = true;
+    setRenamePending(true);
     if (trimmed && trimmed !== renameTarget.original) {
       try {
-        const renamed = await onRename(renameTarget.id, trimmed);
+        const renamed = await onRename(target.id, trimmed);
+        if (renameOperationRef.current !== operation) return;
         if (renamed === false) {
           setRenameError('Project history changed. Reload and try renaming again.');
           return;
         }
       } catch {
+        if (renameOperationRef.current !== operation) return;
         setRenameError('Project history changed. Reload and try renaming again.');
         return;
+      } finally {
+        if (renameOperationRef.current === operation) {
+          renamePendingRef.current = false;
+          setRenamePending(false);
+        }
       }
     }
+    if (renameOperationRef.current !== operation) return;
     cancelRename();
   }
 
@@ -1356,11 +1386,12 @@ export function RecentProjectsStrip({
   }
 
   async function commitBulkDelete() {
-    const ids = selectedProjects.map(({ project }) => project.id);
+    if (bulkDeletePending || !onDelete) return;
+    const ids = [...bulkDeleteTargetIds];
+    if (ids.length === 0 || ids.some((id) => !projectMutationReady(id))) return;
     const startedAt = performance.now();
-    setBulkDeleteOpen(false);
-    exitSelectionMode();
-    if (!onDelete || ids.length === 0) return;
+    setBulkDeletePending(true);
+    setBulkDeleteError(null);
     const results = await Promise.all(
       ids.map(async (id) => {
         try {
@@ -1371,8 +1402,21 @@ export function RecentProjectsStrip({
         }
       }),
     );
+    setBulkDeletePending(false);
     const succeededCount = results.filter((result) => result === true).length;
     const failedCount = results.filter((result) => result === false).length;
+    const staleCount = results.filter((result) => result === 'stale').length;
+    const retainedIds = ids.filter((_, index) => results[index] !== true);
+    setSelectedProjectIds(new Set(retainedIds));
+    setBulkDeleteTargetIds(retainedIds);
+    if (retainedIds.length === 0) {
+      setBulkDeleteOpen(false);
+      exitSelectionMode();
+    } else {
+      setBulkDeleteError(staleCount > 0
+        ? 'Project history changed. Reload and confirm deletion again.'
+        : t('ds.actionFailed'));
+    }
     const requestedCount = succeededCount + failedCount;
     if (requestedCount === 0) return;
     trackWorkspaceProjectActionResult(analytics.track, {
@@ -1674,6 +1718,9 @@ export function RecentProjectsStrip({
                   trackCollection('bulk_delete', {
                     selection_count_bucket: countBucket(selectedCount),
                   });
+                  const frozenIds = selectedProjects.map(({ project }) => project.id);
+                  setBulkDeleteTargetIds(frozenIds);
+                  setBulkDeleteError(null);
                   setBulkDeleteOpen(true);
                 }}
               >
@@ -2089,6 +2136,8 @@ export function RecentProjectsStrip({
               type="submit"
               className="primary"
               disabled={
+                renamePending
+                ||
                 !projectMutationReady(renameTarget.id)
                 || !renameInput.trim()
                 || renameInput.trim() === renameTarget.original
@@ -2230,8 +2279,9 @@ export function RecentProjectsStrip({
         >
           <DialogTitle id={bulkDeleteTitleId}>{t('designs.deleteTitle')}</DialogTitle>
           <DialogDescription>
-            {t('designs.deleteSelectedConfirm', { n: selectedCount })}
+            {t('designs.deleteSelectedConfirm', { n: bulkDeleteTargetIds.length })}
           </DialogDescription>
+          {bulkDeleteError ? <div role="alert">{bulkDeleteError}</div> : null}
           <DialogFooter className="row">
             <button type="button" onClick={() => setBulkDeleteOpen(false)}>
               {t('designs.renameCancel')}
@@ -2239,6 +2289,9 @@ export function RecentProjectsStrip({
             <button
               type="button"
               className="primary danger"
+              disabled={bulkDeletePending
+                || bulkDeleteTargetIds.length === 0
+                || bulkDeleteTargetIds.some((id) => !projectMutationReady(id))}
               onClick={() => void commitBulkDelete()}
             >
               {t('designs.deleteSelected')}

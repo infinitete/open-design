@@ -808,7 +808,7 @@ function AssistantMessageImpl({
   const [pluginNoticeByFolder, setPluginNoticeByFolder] = useState<Record<string, ActionNotice>>({});
   const runPluginAction = useCallback(
     async (folder: PluginFolderCandidate, action: PluginFolderAgentAction) => {
-      if (pluginBusyKey || !onRequestPluginFolderAgentAction) return;
+      if (projectMutationDisabled || pluginBusyKey || !onRequestPluginFolderAgentAction) return;
       const key = `${action}:${folder.path}`;
       setPluginBusyKey(key);
       setPluginNoticeByFolder((prev) => {
@@ -854,7 +854,7 @@ function AssistantMessageImpl({
         setPluginBusyKey(null);
       }
     },
-    [pluginBusyKey, onRequestPluginFolderAgentAction],
+    [pluginBusyKey, onRequestPluginFolderAgentAction, projectMutationDisabled],
   );
   const usage = events.find((e) => e.kind === "usage") as
     | Extract<AgentEvent, { kind: "usage" }>
@@ -980,6 +980,7 @@ function AssistantMessageImpl({
       effectiveNextStepVariant === 'brand-programmatic-incomplete' ||
       effectiveNextStepVariant === 'brand-ai-incomplete');
   const showNextStepActions =
+    !projectMutationDisabled &&
     !streaming &&
     unfinishedTodos.length === 0 &&
     !hasPendingQuestionForm &&
@@ -1182,7 +1183,9 @@ function AssistantMessageImpl({
             busyKey={pluginBusyKey}
             onRunAction={runPluginAction}
             onRequestOpenFile={onRequestOpenFile}
-            onRequestPluginFolderAgentAction={onRequestPluginFolderAgentAction}
+            onRequestPluginFolderAgentAction={
+              projectMutationDisabled ? undefined : onRequestPluginFolderAgentAction
+            }
             activePluginActionPaths={activePluginActionPaths}
           />
         ) : null}
@@ -3071,6 +3074,7 @@ function FormBlock({
     const pending = pendingUploadCleanupRef.current;
     if (pending.length === 0) return true;
     if (!projectId) return false;
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     const deleted = await Promise.all(
       pending.map((attachment) =>
         deleteProjectFile(projectId, attachment.path, mutationContext),

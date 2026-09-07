@@ -2295,10 +2295,10 @@ export function FileWorkspace({
     const hasUnsavedStrokes = sketchEntry && (sketchEntry.dirty || !sketchEntry.persisted);
     if (hasUnsavedStrokes && !confirm(t('sketch.closeConfirm'))) return;
     if (isPending) {
+      clearSketchAutosave(name);
+      sketchSceneRevisionRef.current.delete(name);
       setSketches((curr) => {
         const next = { ...curr };
-        clearSketchAutosave(name);
-        sketchSceneRevisionRef.current.delete(name);
         delete next[name];
         return next;
       });
@@ -2318,7 +2318,6 @@ export function FileWorkspace({
       const next = { ...curr };
       const entry = next[name];
       if (entry && !entry.persisted) {
-        clearSketchAutosave(name);
         delete next[name];
       }
       return next;
@@ -2357,6 +2356,7 @@ export function FileWorkspace({
   async function uploadFiles(picked: File[]) {
     if (picked.length === 0) return;
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
 
     setUploadError(null);
     // Cohort math is shared across all three upload surfaces; see
@@ -2548,8 +2548,9 @@ export function FileWorkspace({
 
   async function handleDelete(name: string) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
-    if (!confirm(t('workspace.deleteFileConfirm', { name }))) return;
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
+    if (!confirm(t('workspace.deleteFileConfirm', { name }))) return;
     const ok = await deleteProjectFile(projectId, name, mutationContext);
     if (ok) {
       await onRefreshFiles();
@@ -2570,9 +2571,10 @@ export function FileWorkspace({
         const nextActive = tabsState.active === name ? null : tabsState.active;
         onTabsStateChange(workspaceTabsState(nextTabs, nextActive));
       }
+      clearSketchAutosave(name);
+      sketchSceneRevisionRef.current.delete(name);
       setSketches((curr) => {
         const next = { ...curr };
-        clearSketchAutosave(name);
         delete next[name];
         return next;
       });
@@ -2582,8 +2584,9 @@ export function FileWorkspace({
   async function handleDeleteMany(names: string[]) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
     if (names.length === 0) return;
-    if (!confirm(t('workspace.deleteSelectedFilesConfirm', { n: names.length }))) return;
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
+    if (!confirm(t('workspace.deleteSelectedFilesConfirm', { n: names.length }))) return;
     const deleted: string[] = [];
     const failed: string[] = [];
     for (const name of names) {
@@ -2604,11 +2607,13 @@ export function FileWorkspace({
           tabsState.active && deletedSet.has(tabsState.active) ? null : tabsState.active;
         onTabsStateChange(workspaceTabsState(nextTabs, nextActive));
       }
+      for (const name of deleted) {
+        clearSketchAutosave(name);
+        sketchSceneRevisionRef.current.delete(name);
+      }
       setSketches((curr) => {
         const next = { ...curr };
         for (const name of deleted) {
-          clearSketchAutosave(name);
-          sketchSceneRevisionRef.current.delete(name);
           delete next[name];
         }
         return next;
@@ -2631,6 +2636,7 @@ export function FileWorkspace({
     }
 
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return null;
     const result = await renameProjectFile(projectId, oldName, nextName, mutationContext);
     const renamed = result.file;
     await onRefreshFiles();
@@ -2641,14 +2647,16 @@ export function FileWorkspace({
     onTabsStateChange(workspaceTabsState(nextTabs, nextActive));
     if (activeTab === oldName) setActiveTab(renamed.name);
 
+    const renamedSketchRevision = sketchSceneRevisionRef.current.get(oldName);
+    clearSketchAutosave(oldName);
+    sketchSceneRevisionRef.current.delete(oldName);
+    if (renamedSketchRevision !== undefined) {
+      sketchSceneRevisionRef.current.set(renamed.name, renamedSketchRevision);
+    }
     setSketches((curr) => {
       const entry = curr[oldName];
       if (!entry) return curr;
       const next = { ...curr };
-      clearSketchAutosave(oldName);
-      const revision = sketchSceneRevisionRef.current.get(oldName);
-      sketchSceneRevisionRef.current.delete(oldName);
-      if (revision !== undefined) sketchSceneRevisionRef.current.set(renamed.name, revision);
       delete next[oldName];
       next[renamed.name] = isSketchName(renamed.name)
         ? { ...entry, sourceKey: sketchFileSourceKey(projectId, renamed) }
@@ -2703,6 +2711,7 @@ export function FileWorkspace({
 
   async function createMarkdownDocument() {
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const target = nextMarkdownDocumentPath(files, uploadDir);
     const file = await writeProjectTextFile(
       projectId,
@@ -2721,6 +2730,7 @@ export function FileWorkspace({
     const preset = projectPagePresetById(presetId, projectPagePresets) ?? projectPagePresets[0] ?? PROJECT_PAGE_PRESETS[0]!;
     const target = nextHtmlPagePath(visibleFiles, pagePresetFileBaseName(preset, t, locale));
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setPageCreating(true);
     try {
       const content = await contentForPagePreset(
@@ -2839,6 +2849,7 @@ export function FileWorkspace({
     revisionOverride?: number,
   ): Promise<boolean | undefined> {
     options = { ...options, mutationContext: options.mutationContext ?? captureProjectMutation(projectId) };
+    if (!options.mutationContext || !isProjectMutationCurrent(projectId, options.mutationContext)) return false;
     const entry = sketches[name] ?? (sceneOverride ? defaultSketchState(name, sceneOverride) : null);
     if (!entry) return;
     const scene = sceneOverride ?? entry.scene;
@@ -2972,11 +2983,13 @@ export function FileWorkspace({
   function queueSketchAutosave(name: string, scene: ExcalidrawSketchScene) {
     clearSketchAutosave(name);
     const revision = sketchSceneRevisionRef.current.get(name) ?? 0;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const options: SaveSketchOptions = {
       activate: false,
       refreshFiles: false,
       showSaving: false,
-      mutationContext: captureProjectMutation(projectId),
+      mutationContext,
     };
     if (sketchSaveInFlightRef.current.has(name)) {
       const pending = pendingSketchSavesRef.current.get(name);
@@ -3023,6 +3036,7 @@ export function FileWorkspace({
     imageFileName: string,
   ): Promise<{ fileName: string } | false> {
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     const targetDir = parentDirForProjectFile(sketchName);
     const targetName = targetDir ? `${targetDir}/${imageFileName}` : imageFileName;
     const file = await writeProjectBase64File(projectId, targetName, base64, mutationContext);
@@ -4608,6 +4622,7 @@ export function FileWorkspace({
             onClose={() => setShowLibraryPicker(false)}
             onConfirm={async (assets) => {
               const mutationContext = captureProjectMutation(projectId);
+              if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
               // Copy each picked asset into the project's design files (under the
               // folder currently in view, if any). Apply records a provenance
               // back-link so the registry knows the asset was consumed. For
@@ -4852,6 +4867,9 @@ function DesignSystemProjectPanel({
   });
   async function persistDesignMd(nextBody: string) {
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
+      throw new Error(t('ds.actionFailed'));
+    }
     const updated = await updateDesignSystemDraft(
       system.id,
       { body: nextBody },
@@ -5645,7 +5663,7 @@ function DesignSystemProjectPanel({
           onDeleteImage={editable ? (index) => void removeKitImage(index) : undefined}
           onRefresh={editable ? () => void refreshKit() : undefined}
           onDownload={editable ? () => void downloadKit() : undefined}
-          onEditClick={emitDesignSystemProjectEditClick}
+          onEditClick={editable ? emitDesignSystemProjectEditClick : undefined}
           uploading={kitUploading}
           actionBusy={kitActionBusy}
           onActionFeedback={notifyKit}

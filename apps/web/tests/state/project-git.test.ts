@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  captureProjectMutation,
   createProjectGitStateStore,
   createProjectRevisionTracker,
   isProjectMutationReady,
@@ -47,6 +48,38 @@ describe('project revision tracker', () => {
 });
 
 describe('project Git state store', () => {
+  it('captures mutation authority only from a loaded ready store', () => {
+    const loadingStore = createProjectGitStateStore();
+    const errorStore = createProjectGitStateStore();
+    const errorRead = errorStore.beginRead();
+    errorStore.failRead(errorRead, new Error('read failed'));
+    const lockedStore = createProjectGitStateStore(state(1));
+    lockedStore.accept(state(2), 'event');
+    const readyStore = createProjectGitStateStore(state(3));
+    const registrations = [
+      ['loading-project', loadingStore],
+      ['error-project', errorStore],
+      ['locked-project', lockedStore],
+      ['ready-project', readyStore],
+    ] as const;
+    for (const [projectId, store] of registrations) registerProjectMutationStore(projectId, store);
+    try {
+      expect(captureProjectMutation('missing-project')).toBeUndefined();
+      expect(captureProjectMutation('loading-project')).toBeUndefined();
+      expect(captureProjectMutation('error-project')).toBeUndefined();
+      expect(captureProjectMutation('locked-project')).toBeUndefined();
+      expect(captureProjectMutation('ready-project')).toMatchObject({
+        expectedProjectRevision: 3,
+        generation: 0,
+      });
+    } finally {
+      for (const [projectId, store] of registrations) {
+        unregisterProjectMutationStore(projectId, store);
+        store.dispose();
+      }
+    }
+  });
+
   it('treats a loaded unmanaged project as mutation-ready without a revision header', () => {
     const unmanaged = { ...state(0), enabled: false };
     const store = createProjectGitStateStore(unmanaged);

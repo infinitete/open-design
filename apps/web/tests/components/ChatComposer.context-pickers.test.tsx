@@ -339,11 +339,28 @@ beforeEach(() => {
 
 afterEach(() => {
   unregisterProjectMutationStore('project-1', defaultMutationStore);
+  defaultMutationStore.dispose();
   vi.unstubAllGlobals();
   cleanup();
 });
 
 describe('ChatComposer context pickers', () => {
+  it('does not open the linked-folder dialog before project mutation authority is ready', async () => {
+    unregisterProjectMutationStore('project-1', defaultMutationStore);
+    defaultMutationStore.dispose();
+    defaultMutationStore = createProjectGitStateStore();
+    registerProjectMutationStore('project-1', defaultMutationStore);
+    renderComposer({ projectMetadata: { kind: 'prototype' } });
+    await flushMounts();
+
+    fireEvent.click(screen.getByTestId('chat-plus-trigger'));
+    fireEvent.click(await screen.findByText('Link local code'));
+    await act(async () => Promise.resolve());
+
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/dialog/open-folder')).toHaveLength(0);
+    expect(projectPatchBodies()).toHaveLength(0);
+  });
+
   it('cancels a linked-folder mutation when the revision captured before the dialog is revoked', async () => {
     const store = createProjectGitStateStore(projectGitState(12));
     registerProjectMutationStore('project-1', store);
@@ -363,6 +380,7 @@ describe('ChatComposer context pickers', () => {
     await act(async () => Promise.resolve());
     expect(projectPatchBodies()).toHaveLength(0);
     unregisterProjectMutationStore('project-1', store);
+    store.dispose();
   });
 
   it('auto-stages the active workspace context and re-stages after a tab change', async () => {

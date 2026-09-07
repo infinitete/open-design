@@ -3899,11 +3899,12 @@ function FileVersionManagerModal({
 
   async function restoreVersion() {
     if (restoreDisabled || !selectedVersion || !selectedContentMatchesVersion || !selectedContent) return;
+    const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setRestoring(true);
     setError(null);
     let closingAfterRestore = false;
     const restoreStarted = performance.now();
-    const mutationContext = captureProjectMutation(projectId);
     // `versions` is sorted newest-first, so the index is "how many versions
     // back from the newest" the restore target sits.
     const fireRestoreResult = (result: 'success' | 'failed', errorCode?: string) => {
@@ -13110,6 +13111,7 @@ function HtmlViewer({
   async function applyManualEdit(patch: ManualEditPatch, label: string): Promise<boolean> {
     const startedAt = performance.now();
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13279,6 +13281,7 @@ function HtmlViewer({
     if (!latest) return;
     const startedAt = performance.now();
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13345,6 +13348,7 @@ function HtmlViewer({
     if (!latest) return;
     const startedAt = performance.now();
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13520,6 +13524,7 @@ function HtmlViewer({
     options?: { editSurface?: 'preview' | 'presenter' },
   ) {
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     const editSurface = options?.editSurface ?? 'preview';
     const currentSource = sourceRef.current ?? source;
     if (!currentSource) return false;
@@ -13682,6 +13687,7 @@ function HtmlViewer({
   async function saveInspectToSource() {
     if (!source) return;
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setSavingInspect(true);
     setInspectError(null);
     try {
@@ -15774,6 +15780,7 @@ function HtmlViewer({
       onFloatingPositionChange={selectedManualEditTarget ? setManualEditPanelPosition : undefined}
       onPickImage={async (pickedFile) => {
         const mutationContext = captureProjectMutation(projectId);
+        if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return null;
         const result = await uploadProjectFiles(projectId, [pickedFile], undefined, mutationContext);
         const uploaded = result.uploaded[0];
         if (!uploaded?.path) {
@@ -19199,6 +19206,7 @@ function MarkdownViewer({
         ...options,
         mutationContext: options.mutationContext ?? captureProjectMutation(projectId),
       };
+      if (!options.mutationContext || !isProjectMutationCurrent(projectId, options.mutationContext)) return;
       const run = async (nextValue: string, saveOptions: MarkdownSaveOptions): Promise<void> => {
         if (lastSavedTextRef.current === nextValue) {
           const showSaving = saveOptions.showSaving !== false;
@@ -19282,6 +19290,7 @@ function MarkdownViewer({
       window.clearTimeout(saveTimerRef.current);
     }
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return undefined;
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       saveMarkdownText(textRef.current, {
@@ -19344,6 +19353,7 @@ function MarkdownViewer({
       const images = files.filter((item) => isMarkdownImageFile(item));
       if (images.length === 0) return false;
       const mutationContext = captureProjectMutation(projectId);
+      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
       const targetDir = markdownDirectory(file.name);
       const result = await uploadProjectFiles(projectId, images, targetDir, mutationContext);
       if (result.uploaded.length > 0) {

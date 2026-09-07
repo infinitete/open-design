@@ -115,6 +115,30 @@ function ToggleHostWrapper({
 }
 
 describe('AssistantMessage plugin install success feedback (#2876)', () => {
+  it('keeps generated plugin-folder actions inert and never fabricates success without authority', async () => {
+    const onAction = vi.fn(async () => undefined);
+    const folderPath = 'locked-skill';
+    render(
+      <AssistantMessage
+        message={pluginMessage(folderPath)}
+        streaming={false}
+        isLast
+        projectId="proj-1"
+        projectFiles={pluginFolderFiles(folderPath)}
+        projectMutationDisabled
+        onRequestPluginFolderAgentAction={onAction}
+      />,
+    );
+
+    const addButton = screen.getByTestId(`assistant-plugin-install-${folderPath}`);
+    expect(addButton).toBeDisabled();
+    fireEvent.click(addButton);
+    await Promise.resolve();
+
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.queryByText(/added to my plugins/i)).toBeNull();
+  });
+
   it('leaves a visible success affordance after install resolves, even though the panel unmounts mid-install', async () => {
     const folderPath = 'my-skill';
     let resolveAction!: () => void;

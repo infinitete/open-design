@@ -105,7 +105,13 @@ describe('ChatPane connect-repo CTA', () => {
       connectRepoNeeded: true,
       githubConnected: true,
       onConnectRepo: vi.fn(),
-      composerDraftSignal: { text: 'Pull the linked repo', nonce: 1 },
+      composerDraftSignal: {
+        id: 'repo-draft',
+        projectId: 'project-1',
+        generation: 1,
+        conversationId: 'conv-1',
+        text: 'Pull the linked repo',
+      },
     });
 
     expect(composerMocks.restoreDraft).toHaveBeenCalledWith({
