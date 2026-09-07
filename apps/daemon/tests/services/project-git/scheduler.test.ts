@@ -6,6 +6,27 @@ import { createProjectGitScheduler } from '../../../src/services/project-git/sch
 
 afterEach(() => { vi.useRealTimers(); });
 
+it('rechecks after asynchronous dirty observation and stops scheduling once clean', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const db = new Database(':memory:'); migrateProjectGit(db); const store = createProjectGitStore(db);
+  const observations: number[] = [];
+  const scheduler = createProjectGitScheduler({ store, now: Date.now, random: () => 0.5,
+    detect: async () => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      observations.push(Date.now());
+      return observations.length === 1 ? 5_000 : undefined;
+    }, sync: async () => {} });
+  try {
+    scheduler.start(); scheduler.notify('project');
+    await vi.advanceTimersByTimeAsync(5_100);
+    expect(observations).toEqual([100]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(observations).toEqual([100, 5_200]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(observations).toEqual([100, 5_200]);
+  } finally { await scheduler.stop(); db.close(); }
+});
+
 function boundStore() {
   const db = new Database(':memory:'); migrateProjectGit(db); const store = createProjectGitStore(db);
   store.saveBinding({ projectId: 'project', cloneId: 'clone', repositoryProjectId: 'repository', canonicalRoot: '/fixture/project', commonDir: '/fixture/project/.git',

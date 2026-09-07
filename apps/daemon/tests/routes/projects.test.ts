@@ -17,8 +17,10 @@ import { mkdir, readdir, readFile, realpath, stat, symlink, writeFile } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 
 import { startServer } from '../../src/server.js';
+import { insertProject } from '../../src/db.js';
 
 describe('GET /api/projects/:id resolvedDir', () => {
   let server: http.Server;
@@ -137,17 +139,10 @@ describe('GET /api/projects/:id resolvedDir', () => {
 
   it('fails GET /api/projects/:id?ensureDir=1 when a managed folder cannot be materialized', async () => {
     const projectId = `proj-ensure-fails-${Date.now()}`;
-    const createResp = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: projectId,
-        name: 'Native fixture',
-        skillId: null,
-        designSystemId: null,
-      }),
-    });
-    expect(createResp.status).toBe(200);
+    // A pre-default native project may have a database row but no directory.
+    const db = new Database(path.join(process.env.OD_DATA_DIR!, 'app.sqlite'));
+    try { insertProject(db, { id: projectId, name: 'Native fixture', createdAt: 1, updatedAt: 1 }); }
+    finally { db.close(); }
 
     const detailResp = await fetch(`${baseUrl}/api/projects/${projectId}`);
     expect(detailResp.status).toBe(200);

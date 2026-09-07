@@ -85,6 +85,16 @@ describe('AI HTML version snapshots', () => {
     });
   });
 
+  it('delegates managed history to terminal convergence without touching legacy archives', async () => {
+    const { projectsRoot, projectId, projectRoot } = await makeProject();
+    const htmlPath = path.join(projectRoot, 'index.html');
+    await fs.writeFile(htmlPath, 'managed result');
+    await fs.writeFile(path.join(projectRoot, '.file-versions'), 'preserved legacy evidence');
+    expect(await snapshotAiHtmlVersionsForRun({ projectsRoot, projectId, projectRoot,
+      diff: { touchedPaths: [htmlPath] }, prompt: 'Make a page', managed: true })).toEqual({ snapshots: [] });
+    expect(await fs.readFile(path.join(projectRoot, '.file-versions'), 'utf8')).toBe('preserved legacy evidence');
+  });
+
   it('persists the validated run origin on each touched HTML snapshot', async () => {
     const { projectsRoot, projectId, projectRoot } = await makeProject();
     const htmlPath = path.join(projectRoot, 'index.html');

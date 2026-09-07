@@ -52,6 +52,7 @@ export interface ProjectGitRuntimeAdapterDeps {
   gateFor(projectId: string): ProjectGate | Promise<ProjectGate>;
   recoveryReady: Promise<void>;
   notify(projectId: string): void;
+  settled?(projectId: string): void;
   permits: Map<string, ProjectRunPermit>;
 }
 
@@ -213,6 +214,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
       if (!admission) return;
       deps.permits.delete(runId);
       admission.release();
+      deps.settled?.(admission.projectId);
     },
     reconcileTerminal(runId, projectId, bindingGeneration, projectRevision, terminal, executionAttempt) {
       if (deps.store.recordRunTerminal({

@@ -69,6 +69,8 @@ export interface ProjectGitConflictEvidence {
 }
 export interface ProjectGitSyncRuntime extends ProjectGitSyncDeps {
   readonly recoveryReady: Promise<void>;
+  /** Read-only scheduling hint from the existing coherent observation clock. */
+  quietDelay(projectId: string): number | null;
   resolveConflict(input: {
     projectId: string;
     conflictOperationId: string;
@@ -740,7 +742,12 @@ export function createProjectGitSyncDeps(input: {
     });
     resolvingConflicts.set(key, { requestDigest: operation.requestDigest, promise }); return promise;
   };
-  return Object.assign(deps, { recoveryReady: ready, resolveConflict, retryConflictResolution });
+  return Object.assign(deps, { recoveryReady: ready, resolveConflict, retryConflictResolution,
+    quietDelay(projectId: string): number | null {
+      const observation = observations.get(projectId);
+      return observation && !observation.saved ? Math.max(0, 5_000 - (input.now() - observation.changedAt)) : null;
+    },
+  });
 }
 
 export function retryDelayMs(attempt: number, random: () => number): number {

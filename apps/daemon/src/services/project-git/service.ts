@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import type {
   ApiError,
   PortableSnapshot,
@@ -35,6 +36,8 @@ import { createProjectGitScheduler, type ProjectGitScheduler } from './scheduler
 import { createProjectGitSyncDeps, readProjectGitConflictEvidence, syncProject, type ProjectGitSyncProject } from './sync.js';
 
 export interface ProjectGitService {
+  initializeNewProjectGit(projectId: string): Promise<void>;
+  recordEnablePending(projectId: string, error: unknown): Promise<void>;
   getState(projectId: string): Promise<ProjectGitState>;
   execute(action: ProjectGitAction, context: ProjectGitRequestContext): Promise<ProjectGitAccepted>;
   getOperation(id: string): Promise<ProjectGitOperation>;
@@ -60,6 +63,9 @@ export interface CreateProjectGitServiceInput {
   instanceId?: string;
   resolveProjectRoot(projectId: string): Promise<string>;
   prepareProjectRoot?(projectId: string): Promise<string>;
+  /** Trusted host capability probe; never supplied by a request or project metadata. */
+  resolveGitExecutable?(): string | Promise<string>;
+  requireDefaultEnable?(projectId: string): void | Promise<void>;
   gitEnv?: Record<string, string>;
   emit(projectId: string, event: ProjectGitEvent): void;
   requireProject?(actorId: string, projectId: string): void | Promise<void>;
@@ -92,6 +98,14 @@ function requestDigest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+async function probeGitExecutable(resolveExecutable?: () => string | Promise<string>): Promise<void> {
+  try { await promisify(execFile)(await resolveExecutable?.() ?? 'git', ['--version'], { timeout: 5_000, maxBuffer: 64 * 1024 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new GitDomainError('GIT_UNAVAILABLE', 503, 'Git is unavailable. Install Git, then enable project versioning.');
+    throw error;
+  }
+}
+
 /**
  * Owns the daemon's single project-Git runtime. The returned coordination and
  * service share one recovery promise, scheduler, gate registry and permit map.
@@ -120,7 +134,7 @@ export async function createProjectGitServiceComposition(
   };
   const projects = new Map<string, RuntimeProject>();
   const resolving = new Map<string, Promise<RuntimeProject>>();
-  const watchers = new Map<string, { unsubscribe(): void | Promise<void> }>();
+  const watchers = new Map<string, { ready: Promise<void>; unsubscribe(): void | Promise<void> }>();
   const unavailableRootCodes = new Set(['ENOENT', 'EACCES', 'ENOTDIR', 'ESTALE', 'EIO']);
 
   const basis = (projectId: string) => {
@@ -195,9 +209,12 @@ export async function createProjectGitServiceComposition(
         throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The registered project root changed.');
       }
       let repository: Awaited<ReturnType<typeof discoverRepository>> | null = null;
-      try { if (rootExists) repository = await discoverRepository(root); }
+      try {
+        if (input.resolveGitExecutable) await probeGitExecutable(input.resolveGitExecutable);
+        if (rootExists) repository = await discoverRepository(root);
+      }
       catch (error) {
-        if (binding || error instanceof GitDomainError && error.code === 'GIT_UNAVAILABLE') throw error;
+        if (binding) throw error;
       }
       const gate = repository
         ? await getProjectGate({ root, ...ownership })
@@ -278,15 +295,24 @@ export async function createProjectGitServiceComposition(
     .filter(operation => operation.journalPhase === null && operation.recoveryData === null)
     .map(operation => operation.id));
   const interruptedRetryAttempts = new Set(input.store.listActiveRetryAttempts().map(attempt => attempt.operationId));
+  const deferredInitializations = new Map(input.store.listPendingOperations()
+    .filter(operation => operation.projectId && operation.actorId === 'local-daemon'
+      && operation.kind === 'enable_preview' && operation.idempotencyKey === 'new-project:deferred'
+      && operation.requestDigest === requestDigest({ projectId: operation.projectId, defaultEnable: true })
+      && operation.payload !== null && typeof operation.payload === 'object' && !Array.isArray(operation.payload)
+      && operation.payload.defaultEnable === true)
+    .map(operation => [operation.projectId!, operation.id]));
   scheduler = createProjectGitScheduler({
     store: input.store,
     now: Date.now,
     random: Math.random,
     detect: async projectId => {
+      if (initializations.has(projectId)) return;
       await syncRuntime.detect(projectId);
       const operation = input.store.getLatestProjectOperation(projectId);
       if (operation) await emitOperation(operation);
       await emitState(projectId);
+      return syncRuntime.quietDelay(projectId) ?? undefined;
     },
     sync: async (projectId, oneShot) => {
       try { await syncProject({ projectId, oneShot, deps: syncRuntime }); }
@@ -319,7 +345,25 @@ export async function createProjectGitServiceComposition(
   const permits = new Map<string, ProjectRunPermit>();
   const notify = (projectId: string) => scheduler.notify(projectId);
   const mutation = createProjectGitMutationAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify });
-  const runtime = createProjectGitRuntimeAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify, permits });
+  const settling = new Map<string, Promise<void>>();
+  const runtime = createProjectGitRuntimeAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify, permits,
+    settled: projectId => {
+      if (deferredInitializations.has(projectId)) {
+        void service.initializeNewProjectGit(projectId).catch(() => {});
+        return;
+      }
+      if (settling.has(projectId) || !input.store.getBinding(projectId)) return;
+      // The runtime calls this only after terminal messages/files and permit
+      // release. Checkpoint admission waits for every other project writer.
+      const work = track(Promise.resolve().then(async () => {
+        try { await syncRuntime.checkpoint(projectId); }
+        catch { /* The checkpoint retains its durable error; AI status stays authoritative. */ }
+        await emitState(projectId);
+      }));
+      settling.set(projectId, work);
+      void work.finally(() => settling.delete(projectId)).catch(() => {});
+    },
+  });
   const coordination: ProjectGitCoordination = { ...mutation, recoveryReady, runtime };
 
   function state(projectId: string): ProjectGitState {
@@ -330,7 +374,7 @@ export async function createProjectGitServiceComposition(
       const operation = pending ?? (latest?.status === 'failed' ? latest : null);
       return {
       enabled: false,
-      phase: pending?.phase ?? (latest?.status === 'failed' ? 'failed' : 'enable_pending'),
+      phase: pending?.phase ?? (latest?.status === 'failed' ? latest.phase : 'enable_pending'),
       localHead: null,
       observedRemoteHead: null,
       confirmedRemoteHead: null,
@@ -657,7 +701,66 @@ export async function createProjectGitServiceComposition(
   };
   const requestAdmissions = new Map<string, Promise<void>>();
   const requestWorkers = new Map<string, { fingerprint: string; promise: Promise<ProjectGitOperation> }>();
+  const initializations = new Map<string, Promise<void>>();
   const service: ProjectGitService = {
+    async recordEnablePending(projectId, error) {
+      // Preserve original prepared effects and their recovery ownership. The
+      // explanatory record must never replace a recoverable journal.
+      const operation = input.store.enqueueOperation({ projectId, actorId: 'local-daemon', kind: 'enable_preview',
+        idempotencyKey: 'new-project:pending', requestDigest: requestDigest({ projectId, defaultEnable: true }),
+        payload: { defaultEnable: true } });
+      input.store.updateOperation(operation.id, { status: 'failed', phase: 'enable_pending', result: null, error: publicError(error) });
+      await accepted(input.store.getOperation(operation.id)!);
+    },
+    initializeNewProjectGit(projectId) {
+      const current = initializations.get(projectId);
+      if (current) return current;
+      const work = admit(async () => {
+        await recoveryReady;
+        if (!input.store.getBinding(projectId) && [...permits.values()].some(permit => permit.projectId === projectId)) {
+          const intent = input.store.enqueueOperation({ projectId, actorId: 'local-daemon', kind: 'enable_preview',
+            idempotencyKey: 'new-project:deferred', requestDigest: requestDigest({ projectId, defaultEnable: true }),
+            payload: { defaultEnable: true } });
+          input.store.updateOperation(intent.id, { status: 'waiting', phase: 'enable_pending', result: null, error: null });
+          deferredInitializations.set(projectId, intent.id);
+          return;
+        }
+        const deferred = deferredInitializations.get(projectId);
+        deferredInitializations.delete(projectId);
+        if (deferred) input.store.updateOperation(deferred, { status: 'running', phase: 'enable_pending', result: null, error: null });
+        try {
+          if (input.store.getBinding(projectId) || input.store.findOperation({ projectId, actorId: 'local-daemon',
+            kind: 'enable_preview', idempotencyKey: 'new-project:pending' })) return;
+          await input.requireDefaultEnable?.(projectId);
+          // This bounded probe makes unavailable tools a creation downgrade.
+          // Actual commands still use the reviewed restricted Git pipeline.
+          await probeGitExecutable(input.resolveGitExecutable);
+          const preview = await bindingService.previewEnable(projectId, { actorId: 'local-daemon', idempotencyKey: 'new-project:preview' });
+          const dependency = preview.result?.preview?.dependencies.find(item => ['git', 'identity'].includes(item.kind));
+          if (dependency) throw new GitDomainError(dependency.kind === 'git' ? 'GIT_UNAVAILABLE' : 'GIT_IDENTITY_REQUIRED', 409, dependency.label);
+          const operation = await bindingService.enable(projectId, preview.id, { actorId: 'local-daemon',
+            idempotencyKey: 'new-project:enable', expectedProjectRevision: preview.basis.projectRevision });
+          await accepted(operation);
+          await watchers.get(projectId)?.ready;
+        } catch (error) {
+          for (const kind of ['enable_preview', 'enable'] as const) {
+            const operation = input.store.findOperation({ projectId, actorId: 'local-daemon', kind,
+              idempotencyKey: kind === 'enable' ? 'new-project:enable' : 'new-project:preview' });
+            if (operation) input.store.settleAdmittedOperationFailure(operation.id, publicError(error));
+          }
+          await service.recordEnablePending(projectId, error);
+        } finally {
+          if (deferred) {
+            const saved = Boolean(input.store.getBinding(projectId)?.localHead);
+            input.store.updateOperation(deferred, { status: saved ? 'succeeded' : 'failed', phase: saved ? 'local_saved' : 'enable_pending',
+              result: null, error: saved ? null : input.store.getLatestProjectOperation(projectId)?.error ?? null });
+          }
+        }
+      });
+      initializations.set(projectId, work);
+      void work.finally(() => initializations.delete(projectId)).catch(() => {});
+      return work;
+    },
     getState(projectId) {
       return admit(() => state(projectId));
     },
@@ -829,6 +932,8 @@ export async function createProjectGitServiceComposition(
         }
         if (stopping || stopped) return;
         input.store.reconcileInterruptedAdmissions(interruptedAdmissions);
+        if (stopping || stopped) return;
+        for (const projectId of deferredInitializations.keys()) await service.initializeNewProjectGit(projectId);
         if (stopping || stopped) return;
         scheduler.start();
         for (const binding of input.store.listBindings()) {

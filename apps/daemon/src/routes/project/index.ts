@@ -356,7 +356,7 @@ function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination'> {
+export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination' | 'projectGit'> {
   pluginScope?: {
     loadRegistry: (options: {
       workspaceId?: string | null;
@@ -2008,6 +2008,7 @@ function cloneProjectMetadataForDuplicate(sourceProject: any): Record<string, un
   delete sourceMetadata.orchestratorWorkspace;
   return {
     ...sourceMetadata,
+    kind: sourceMetadata.kind ?? 'prototype',
     sourceProjectId: sourceProject.id,
     sourceProjectName: sourceProject.name,
   };
@@ -4370,6 +4371,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           }
         }
       }
+      await ctx.projectGit.initializeNewProjectGit(id);
       /** @type {import('@open-design/contracts').CreateProjectResponse} */
       const createdProject = pluginResolutionState.snapshot
         ? getProject(db, id) ?? project
@@ -4722,6 +4724,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           // Open-tabs state is convenience metadata; file duplication succeeds
           // without it.
         }
+        await ctx.projectGit.initializeNewProjectGit(targetProjectId);
         /** @type {import('@open-design/contracts').DuplicateProjectResponse} */
         const body = {
           project: createHome
@@ -4904,6 +4907,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           metadata,
         );
         await linkUserDesignSystemProject(USER_DESIGN_SYSTEMS_DIR, designSystem.id, targetProjectId);
+        await ctx.projectGit.initializeNewProjectGit(targetProjectId);
         /** @type {import('@open-design/contracts').CreateDesignSystemProjectFromProjectResponse} */
         const body = {
           project: createHome

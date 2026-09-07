@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import { join } from 'node:path';
 import { createServer as createNetServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
@@ -13,6 +14,7 @@ import { GitDomainError } from '../src/services/project-git/errors.js';
 import type { ProjectGitService } from '../src/services/project-git/service.js';
 import type { ProjectGitJournalRecord, ProjectGitStore } from '../src/storage/project-git.js';
 import { fixtureGitEnv } from './helpers/project-git-crash-worker.js';
+import { insertConversation, insertProject } from '../src/db.js';
 
 describe('project Git routes', () => {
   let server: http.Server;
@@ -37,12 +39,13 @@ describe('project Git routes', () => {
 
   async function createProject(): Promise<string> {
     const id = `project-git-${randomUUID()}`;
-    const response = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, name: 'Project Git route project' }),
-    });
-    expect(response.status, await response.clone().text()).toBe(200);
+    // These cases exercise explicit opt-in for projects predating default enablement.
+    const db = new Database(join(process.env.OD_DATA_DIR!, 'app.sqlite'));
+    try {
+      insertProject(db, { id, name: 'Project Git route project', createdAt: 1, updatedAt: 1 });
+      insertConversation(db, { id: randomUUID(), projectId: id, title: null, createdAt: 1, updatedAt: 1 });
+    }
+    finally { db.close(); }
     projectsToClean.push(id);
     return id;
   }

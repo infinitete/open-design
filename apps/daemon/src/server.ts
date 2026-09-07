@@ -2612,6 +2612,7 @@ export interface StartServerOptions {
   staticDir?: string;
   /** Trusted host Git environment used by the project-versioning runtime. */
   projectGitEnv?: Record<string, string>;
+  projectGitExecutableResolver?: () => string | Promise<string>;
   /** Host lifecycle checkpoint after a retry attempt becomes durably visible. */
   projectGitAfterRetryAttemptStarted?: import('./services/project-git/service.js').CreateProjectGitServiceInput['afterRetryAttemptStarted'];
   /** Daemon-owned host capability facts. HTTP/model output cannot populate it. */
@@ -2656,6 +2657,7 @@ export async function startServer({
   runtime = null,
   staticDir = STATIC_DIR,
   projectGitEnv,
+  projectGitExecutableResolver,
   projectGitAfterRetryAttemptStarted,
   odNextExecutionPreflightResolver = null,
   odNextComplexProductionResolver = null,
@@ -2817,8 +2819,12 @@ export async function startServer({
       resolveProjectDir,
       isSafeId,
     },
-    coordinateProjectMutation: (input, work) =>
-      projectGitCoordination.withProjectMutation(input, work),
+    coordinateProjectMutation: async (input, work) => {
+      const existed = Boolean(getProject(db, input.projectId));
+      const result = await projectGitCoordination.withProjectMutation(input, work);
+      if (!existed && getProject(db, input.projectId)) await projectGit.initializeNewProjectGit(input.projectId);
+      return result;
+    },
     bindProjectToWorkspace: (projectId, createdAt, designSystem) => {
       const workspaceId = designSystem.workspaceId?.trim();
       if (!workspaceId) return;
@@ -3001,6 +3007,18 @@ export async function startServer({
     operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
     instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
     ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
+    ...(projectGitExecutableResolver ? { resolveGitExecutable: projectGitExecutableResolver } : {}),
+    requireDefaultEnable: projectId => {
+      const metadata = getProject(db, projectId)?.metadata;
+      if (metadata?.orchestratorWorkspace) {
+        throw new GitDomainError('FORBIDDEN', 403, 'This workspace uses external writeback. Create an independent copy to enable local project versioning.');
+      }
+      if (metadata?.kind === 'orbit') {
+        throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Orbit projects are not supported by the portable project format.', {
+          nextStep: 'This project type does not support local versioning yet. Continue editing without versioning.',
+        });
+      }
+    },
     ...(projectGitAfterRetryAttemptStarted ? { afterRetryAttemptStarted: projectGitAfterRetryAttemptStarted } : {}),
     resolveProjectRoot: async (projectId) => {
       const project = getProject(db, projectId);
@@ -5095,6 +5113,7 @@ export async function startServer({
   });
   registerProjectRoutes(app, {
     db,
+    projectGit,
     projectGitCoordination,
     design,
     http: httpDeps,
@@ -5324,6 +5343,7 @@ export async function startServer({
   });
   registerImportRoutes(app, {
     db,
+    projectGit,
     projectGitCoordination,
     http: httpDeps,
     uploads: uploadDeps,
@@ -5819,6 +5839,7 @@ export async function startServer({
         const resolved = resolvePluginSnapshot({ db, body: { pluginId: actionPluginId, pluginInputs: { source_plugin_id: sourcePlugin.id, source_plugin_title: sourcePlugin.title || sourcePlugin.id, source_plugin_version: sourcePlugin.version, source_plugin_path: sourcePlugin.fsPath, plugin_context_path: stagedPath }, locale: typeof body.locale === 'string' ? body.locale : undefined }, projectId: id, conversationId: cid, registry, connectorProbe });
         if (resolved && !resolved.ok) return res.status(resolved.status).json(resolved.body);
         const project = getProject(db, id); if (!project) return sendApiError(res, 500, 'INTERNAL_ERROR', 'created project could not be loaded');
+        await projectGit.initializeNewProjectGit(id);
         res.json({ ok: true, project, conversationId: cid, ...(resolved?.ok ? { appliedPluginSnapshotId: resolved.snapshotId } : {}), actionPluginId, sourcePluginId: sourcePlugin.id, stagedPath, prompt, message: `Created a ${PLUGIN_SHARE_ACTION_LABELS[action]} task for ${sourcePlugin.title || sourcePlugin.id}.` });
       } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); }
     },
@@ -8008,6 +8029,7 @@ export async function startServer({
         projectsRoot: PROJECTS_DIR,
         projectId: run.projectId,
         projectRoot: outcome.projectRoot,
+        managed: projectGitStore.getBinding(run.projectId) !== null,
         diff: outcome.diff,
         prompt: promptInfo.prompt,
         ...(promptInfo.promptSource ? { promptSource: promptInfo.promptSource } : {}),
@@ -12535,6 +12557,9 @@ export async function startServer({
       throw new Error(`Orbit Run could not be prepared (${preparedOrbitRun.kind}).`);
     }
     const run = preparedOrbitRun.run;
+    // This initial run already owns the unmanaged project permit. The service
+    // persists default intent now and enables only after terminal settlement.
+    await projectGit.initializeNewProjectGit(projectId);
 
     try {
       if (template?.dir) {
@@ -12971,6 +12996,7 @@ export async function startServer({
         runStatus: 'queued',
         startedAt: now,
       });
+      if (createdProjectId) await projectGit.initializeNewProjectGit(createdProjectId);
     };
 
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};

@@ -14,7 +14,8 @@ export interface ProjectGitScheduler {
 
 export function createProjectGitScheduler(input: {
   store: ProjectGitStore; now: () => number; random: () => number;
-  detect(projectId: string): Promise<void>;
+  /** Remaining quiet time for a coherent dirty observation, otherwise no follow-up. */
+  detect(projectId: string): Promise<void | number>;
   sync(projectId: string, oneShot: boolean): Promise<void>;
 }): ProjectGitScheduler {
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -36,13 +37,17 @@ export function createProjectGitScheduler(input: {
   function detect(id: string): void {
     if (!running) return;
     if (detection.has(id)) { detectionPending.add(id); return; }
-    const work = Promise.resolve().then(() => input.detect(id)).catch(() => {}).finally(() => {
+    const work = Promise.resolve().then(async () => {
+      const delay = await input.detect(id);
+      if (typeof delay === 'number') scheduleQuietDetection(id, false, delay);
+    }).catch(() => {}).finally(() => {
       detection.delete(id);
       if (detectionPending.delete(id)) detect(id);
     });
     detection.set(id, work);
   }
-  function scheduleQuietDetection(id: string, prompt: boolean): void {
+  function scheduleQuietDetection(id: string, prompt: boolean, delay = 5_000): void {
+    if (!running) return;
     const current = quietTimers.get(id);
     if (current) clearTimeout(current);
     if (prompt && !watcherBursts.has(id)) {
@@ -53,7 +58,7 @@ export function createProjectGitScheduler(input: {
       quietTimers.delete(id);
       watcherBursts.delete(id);
       detect(id);
-    }, 5_000);
+    }, Math.max(1, delay));
     quiet.unref?.(); quietTimers.set(id, quiet);
   }
   function requestSync(id: string, oneShot: boolean): boolean {

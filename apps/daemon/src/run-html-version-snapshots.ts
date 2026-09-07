@@ -20,6 +20,8 @@ export interface AiHtmlVersionSnapshotInput {
   promptSource?: ProjectFileVersionPromptSource;
   origin?: ArtifactOrigin;
   metadata?: unknown;
+  /** Managed projects checkpoint through the all-terminal run finalizer. */
+  managed?: boolean;
 }
 
 export interface AiHtmlVersionSnapshotFailure {
@@ -82,7 +84,7 @@ function failureMessage(reason: unknown): string {
 export async function snapshotAiHtmlVersionsForRun(
   input: AiHtmlVersionSnapshotInput,
 ): Promise<AiHtmlVersionSnapshotResult> {
-  if (!input.projectId || input.diff.touchedPaths.length === 0) {
+  if (input.managed || !input.projectId || input.diff.touchedPaths.length === 0) {
     return { snapshots: [] };
   }
   const seen = new Set<string>();
