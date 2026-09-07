@@ -243,6 +243,7 @@ interface Props {
   // the user cannot type into the composer at all.
   inputDisabled?: boolean;
   initialDraft?: string;
+  onInitialDraftRestored?: () => void;
   composerPlaceholder?: string;
   placeholderScenarios?: ReadonlyArray<PlaceholderScenario>;
   draftStorageKey?: string;
@@ -447,6 +448,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       sendDisabled = false,
       inputDisabled = false,
       initialDraft,
+      onInitialDraftRestored,
       composerPlaceholder,
       placeholderScenarios = [],
       draftStorageKey,
@@ -623,7 +625,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     const restoredWorkspaceContextIdsRef = useRef(
       new Set(initialWorkspaceContexts.map((item) => item.id)),
     );
-    const restoredWorkspaceContextScopeRef = useRef(draftStorageKey);
     const [workspaceLinkedDirAdds, setWorkspaceLinkedDirAdds] = useState<Record<string, TrackedWorkspaceLinkedDir>>(
       () => trackedWorkspaceLinkedDirsForContexts(initialWorkspaceContexts, linkedDirs),
     );
@@ -815,30 +816,51 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // backspace before the parent stops passing initialDraft) does not get
     // overwritten by the effect.
     const seededRef = useRef(Boolean(initialDraft));
+    const acknowledgedInitialDraftRef = useRef(false);
+    const composerDraftScopeRef = useRef(draftStorageKey);
+    const skipDraftSaveForScopeRef = useRef(false);
 
     useEffect(() => {
-      if (seededRef.current) return;
-      if (initialDraft && initialDraft !== draft) {
-        setDraft(initialDraft);
-        seededRef.current = true;
-      } else if (initialDraft === undefined) {
-        seededRef.current = true;
-      }
-    }, [initialDraft, draft]);
+      if (composerDraftScopeRef.current === draftStorageKey) return;
+      composerDraftScopeRef.current = draftStorageKey;
+      skipDraftSaveForScopeRef.current = true;
+      acknowledgedInitialDraftRef.current = false;
+      const nextDraft = initialDraft ?? loadComposerDraft(draftStorageKey) ?? '';
+      seededRef.current = Boolean(initialDraft);
+      setDraft(nextDraft);
+      editorRef.current?.setText(nextDraft);
 
-    useEffect(() => {
-      saveComposerDraft(draftStorageKey, draft);
-    }, [draftStorageKey, draft]);
-
-    useEffect(() => {
-      if (restoredWorkspaceContextScopeRef.current === draftStorageKey) return;
-      restoredWorkspaceContextScopeRef.current = draftStorageKey;
       const restoredIds = restoredWorkspaceContextIdsRef.current;
       restoredWorkspaceContextIdsRef.current = new Set();
       setStagedWorkspaceContexts((current) => current.filter((item) => (
         !restoredIds.has(item.id) || Boolean(workspaceLinkedDirAdds[item.id])
       )));
-    }, [draftStorageKey, workspaceLinkedDirAdds]);
+    }, [draftStorageKey, initialDraft, workspaceLinkedDirAdds]);
+
+    useEffect(() => {
+      if (!seededRef.current && initialDraft && initialDraft !== draft) {
+        setDraft(initialDraft);
+        seededRef.current = true;
+      } else if (initialDraft === undefined) {
+        seededRef.current = true;
+      }
+      if (
+        initialDraft
+        && seededRef.current
+        && !acknowledgedInitialDraftRef.current
+      ) {
+        acknowledgedInitialDraftRef.current = true;
+        onInitialDraftRestored?.();
+      }
+    }, [initialDraft, draft, onInitialDraftRestored]);
+
+    useEffect(() => {
+      if (skipDraftSaveForScopeRef.current) {
+        skipDraftSaveForScopeRef.current = false;
+        return;
+      }
+      saveComposerDraft(draftStorageKey, draft);
+    }, [draftStorageKey, draft]);
 
     useEffect(() => {
       if (previousWorkspaceContextIdRef.current === activeWorkspaceContextId) return;

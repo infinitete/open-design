@@ -21,7 +21,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+} from '../../src/state/project-git';
 import type { ChatMessage } from '../../src/types';
+
+let authorityStore: ReturnType<typeof createProjectGitStateStore>;
 
 beforeAll(() => {
   const store = new Map<string, string>();
@@ -36,6 +43,8 @@ beforeAll(() => {
   });
 });
 afterEach(() => {
+  unregisterProjectMutationStore('proj-1', authorityStore);
+  authorityStore.dispose();
   cleanup();
   restoreSessionStorage();
   window.localStorage.clear();
@@ -43,6 +52,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 beforeEach(() => {
+  authorityStore = createProjectGitStateStore({
+    enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+    confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
+    bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+    operationId: null, error: null,
+    binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+  });
+  registerProjectMutationStore('proj-1', authorityStore);
   window.localStorage.clear();
   window.sessionStorage.clear();
 });

@@ -27,6 +27,7 @@ import {
   invalidateProjectFilesCache,
 } from '../providers/registry';
 import type { DesignSystemSummary, Project, ProjectDisplayStatus, ProjectFile } from '../types';
+import type { ProjectDeleteResult } from '../state/projects';
 import { Icon } from './Icon';
 import { STATUS_LABEL_KEYS } from './DesignsTab';
 import { isDesignSystemProject, isPublishedDesignSystemProject } from './design-system-project';
@@ -111,7 +112,7 @@ interface Props {
    * background cover work can resume after the foreground attempt finishes. */
   onOpen: (id: string) => boolean | void | Promise<boolean | void>;
   onViewAll?: () => void;
-  onDelete?: (id: string) => Promise<boolean | void> | boolean | void;
+  onDelete?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicate?: (id: string) => Promise<void> | void;
   onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
   projectMutationReady?: (id: string) => boolean;
@@ -514,7 +515,7 @@ export function RecentProjectsStrip({
   // like a success, leaving the project right where it was with no signal
   // that anything went wrong. Track failure so the dialog can stay open and
   // say so instead of silently doing nothing.
-  const [deleteFailed, setDeleteFailed] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletePending, setDeletePending] = useState(false);
   // Project → team-space sharing (the project card entry). The daemon gates on
   // `canShareProjects` (403 off-team / no rights), so we only badge on success.
@@ -1051,7 +1052,7 @@ export function RecentProjectsStrip({
       project_relation: 'self',
     });
     setMenuOpenId(null);
-    setDeleteFailed(false);
+    setDeleteError(null);
     setConfirmTarget(project);
   }
 
@@ -1203,7 +1204,7 @@ export function RecentProjectsStrip({
     if (!confirmTarget || !onDelete || deletePending) return;
     const target = confirmTarget;
     const startedAt = performance.now();
-    setDeleteFailed(false);
+    setDeleteError(null);
     setDeletePending(true);
     try {
       const result = await onDelete(target.id);
@@ -1223,7 +1224,11 @@ export function RecentProjectsStrip({
           error_code: 'request_failed',
           ...workspaceDimensions,
         });
-        setDeleteFailed(true);
+        setDeleteError(t('ds.actionFailed'));
+        return;
+      }
+      if (result === 'stale') {
+        setDeleteError('Project history changed. Reload and confirm deletion again.');
         return;
       }
       setConfirmTarget(null);
@@ -1240,7 +1245,7 @@ export function RecentProjectsStrip({
       });
     } catch (err) {
       console.warn('[RecentProjectsStrip] delete project failed:', err);
-      setDeleteFailed(true);
+      setDeleteError(t('ds.actionFailed'));
       trackWorkspaceProjectActionResult(analytics.track, {
         page_name: analyticsPage,
         area: 'project_collection',
@@ -1356,25 +1361,26 @@ export function RecentProjectsStrip({
     setBulkDeleteOpen(false);
     exitSelectionMode();
     if (!onDelete || ids.length === 0) return;
-    const deleted = await Promise.all(
+    const results = await Promise.all(
       ids.map(async (id) => {
         try {
-          const result = await onDelete(id);
-          return result === false ? null : id;
+          return await onDelete(id);
         } catch (err) {
           console.warn('[RecentProjectsStrip] bulk delete project failed:', err);
-          return null;
+          return false as const;
         }
       }),
     );
-    const succeededCount = deleted.filter((id): id is string => id !== null).length;
-    const failedCount = ids.length - succeededCount;
+    const succeededCount = results.filter((result) => result === true).length;
+    const failedCount = results.filter((result) => result === false).length;
+    const requestedCount = succeededCount + failedCount;
+    if (requestedCount === 0) return;
     trackWorkspaceProjectActionResult(analytics.track, {
       page_name: analyticsPage,
       area: 'project_collection',
       action: 'bulk_delete',
       result: failedCount === 0 ? 'success' : succeededCount > 0 ? 'partial_success' : 'failed',
-      requested_count: ids.length,
+      requested_count: requestedCount,
       succeeded_count: succeededCount,
       failed_count: failedCount,
       duration_ms: Math.round(performance.now() - startedAt),
@@ -2100,7 +2106,7 @@ export function RecentProjectsStrip({
           onClose={() => {
             if (deletePending) return;
             setConfirmTarget(null);
-            setDeleteFailed(false);
+            setDeleteError(null);
           }}
           closeOnBackdrop={!deletePending}
           ariaLabelledBy={confirmTitleId}
@@ -2109,18 +2115,18 @@ export function RecentProjectsStrip({
           <DialogDescription>
             {t('designs.deleteConfirm', { name: confirmTarget.name })}
           </DialogDescription>
-          {deleteFailed ? (
+          {deleteError ? (
             <p className="recent-projects__card-menu-error" role="alert">
-              {t('ds.actionFailed')}
+              {deleteError}
             </p>
           ) : null}
           <DialogFooter className="row">
             <button
               type="button"
-              disabled={deletePending || !projectMutationReady(confirmTarget.id)}
+              disabled={deletePending}
               onClick={() => {
                 setConfirmTarget(null);
-                setDeleteFailed(false);
+                setDeleteError(null);
               }}
             >
               {t('designs.renameCancel')}
@@ -2128,7 +2134,7 @@ export function RecentProjectsStrip({
             <button
               type="button"
               className="primary danger"
-              disabled={deletePending}
+              disabled={deletePending || !projectMutationReady(confirmTarget.id)}
               onClick={() => void commitDelete()}
             >
               {t('designs.menuDelete')}

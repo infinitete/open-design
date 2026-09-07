@@ -8,6 +8,7 @@ import {
 } from 'react';
 import type { ChatSessionMode, ConnectorDetail } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
+import type { ProjectDeleteResult } from '../state/projects';
 import {
   DEFAULT_AUDIO_MODEL,
   DEFAULT_IMAGE_MODEL,
@@ -129,7 +130,7 @@ interface Props {
     projectTitleHint?: ProjectTitleHint,
   ) => Promise<boolean> | boolean | void;
   onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
-  onDeleteProject: (id: string) => Promise<boolean | void> | boolean | void;
+  onDeleteProject: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject: (id: string, name: string) => Promise<boolean | void> | boolean | void;
   projectMutationReady?: (id: string) => boolean;

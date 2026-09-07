@@ -527,9 +527,11 @@ export function LibrarySection({
   const [dsMenuOpen, setDsMenuOpen] = useState(false);
   const [dsList, setDsList] = useState<DesignSystemSummary[]>([]);
   const [dsBusy, setDsBusy] = useState(false);
+  const [nominatedDesignSystemProjectId, setNominatedDesignSystemProjectId] =
+    useState<string | null>(null);
   useEffect(() => {
-    const projectIds = dsMenuOpen
-      ? [...new Set(dsList.flatMap((designSystem) => designSystem.projectId ? [designSystem.projectId] : []))]
+    const projectIds = dsMenuOpen && nominatedDesignSystemProjectId
+      ? [nominatedDesignSystemProjectId]
       : [];
     window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
       detail: { source: `library-section:${authoritySourceId}`, projectIds },
@@ -539,7 +541,10 @@ export function LibrarySection({
         detail: { source: `library-section:${authoritySourceId}`, projectIds: [] },
       }));
     };
-  }, [authoritySourceId, dsList, dsMenuOpen]);
+  }, [authoritySourceId, dsMenuOpen, nominatedDesignSystemProjectId]);
+  useEffect(() => {
+    if (!dsMenuOpen) setNominatedDesignSystemProjectId(null);
+  }, [dsMenuOpen]);
   const dsLoadedRef = useRef(false);
   const dsMenuWrapRef = useRef<HTMLDivElement>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
@@ -1304,6 +1309,8 @@ export function LibrarySection({
                       className={styles.dsMenuItem}
                       role="menuitem"
                       disabled={!ds.projectId || !projectMutationReady(ds.projectId)}
+                      onPointerEnter={() => setNominatedDesignSystemProjectId(ds.projectId ?? null)}
+                      onFocus={() => setNominatedDesignSystemProjectId(ds.projectId ?? null)}
                       onClick={() => void optimizeExistingDesignSystem(ds)}
                     >
                       <span className={styles.dsMenuItemTitle}>{ds.title}</span>

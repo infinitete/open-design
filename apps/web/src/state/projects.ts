@@ -53,6 +53,8 @@ import {
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';
 
+export type ProjectDeleteResult = true | false | 'stale';
+
 /** A refused project delete with the daemon's stable status/code preserved. */
 export class ProjectDeleteError extends Error {
   constructor(

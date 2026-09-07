@@ -32,6 +32,7 @@ import {
   type ProjectScenarioTaskProfile,
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
+import type { ProjectDeleteResult } from '../state/projects';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackHomeNavClick,
@@ -375,7 +376,7 @@ interface Props {
     projectTitleHint?: ProjectTitleHint,
   ) => Promise<boolean> | boolean | void;
   onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
-  onDeleteProject: (id: string) => Promise<boolean | void> | boolean | void;
+  onDeleteProject: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject: (id: string, name: string) => void;
   projectMutationReady?: (id: string) => boolean;

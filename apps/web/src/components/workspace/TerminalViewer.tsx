@@ -185,6 +185,7 @@ export function TerminalViewer({
   // session id; Restart spawns a fresh PTY and rebinds in place (the tab id is
   // just a stable container, so we don't churn OpenTabsState).
   const [sessionId, setSessionId] = useState(terminalId);
+  const restartGenerationRef = useRef(0);
 
   // Keep the id of the most-recently-applied resize so the ResizeObserver
   // doesn't spam identical POSTs on every layout tick.
@@ -366,6 +367,8 @@ export function TerminalViewer({
 
   // Spawn a fresh PTY and rebind this surface to it (the tab id is unchanged).
   const restart = useCallback(async () => {
+    const restartGeneration = restartGenerationRef.current + 1;
+    restartGenerationRef.current = restartGeneration;
     const mutationContext = captureProjectMutation(projectId);
     if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
       setPhase('unavailable');
@@ -381,8 +384,12 @@ export function TerminalViewer({
     });
     try {
       const next = await createTerminal(projectId, undefined, mutationContext);
-      if (!isProjectMutationCurrent(projectId, mutationContext)) {
-        setPhase('unavailable');
+      if (
+        restartGenerationRef.current !== restartGeneration
+        || !isProjectMutationCurrent(projectId, mutationContext)
+      ) {
+        if (next?.id) void killTerminal(projectId, next.id, { keepalive: true });
+        if (restartGenerationRef.current === restartGeneration) setPhase('unavailable');
         return;
       }
       if (next?.id) {
@@ -396,7 +403,7 @@ export function TerminalViewer({
       // surfaces PROJECT_STATE_CHANGED. The previous PTY is already detached;
       // keep the standard actionable Restart/Close state instead of leaving a
       // rejected promise and an indefinite connecting overlay.
-      setPhase('unavailable');
+      if (restartGenerationRef.current === restartGeneration) setPhase('unavailable');
     }
   }, [projectId, sessionId]);
 

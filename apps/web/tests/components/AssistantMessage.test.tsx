@@ -16,7 +16,10 @@ import type { ChatMessage, ProjectFile } from '../../src/types';
 import {
   createProjectGitStateStore,
   registerProjectMutationStore,
+  unregisterProjectMutationStore,
 } from '../../src/state/project-git';
+
+let defaultProjectStore: ReturnType<typeof createProjectGitStateStore>;
 
 beforeAll(() => {
   const store = new Map<string, string>();
@@ -31,6 +34,8 @@ beforeAll(() => {
   });
 });
 afterEach(() => {
+  unregisterProjectMutationStore('proj-1', defaultProjectStore);
+  defaultProjectStore.dispose();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -38,6 +43,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  defaultProjectStore = createProjectGitStateStore(projectGitState(1));
+  registerProjectMutationStore('proj-1', defaultProjectStore);
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -205,6 +212,43 @@ describe('AssistantMessage feedback gate', () => {
     expect(disclosure?.classList.contains('open')).toBe(true);
     expect(screen.getByRole('button', { name: 'Create plugin/template' })).toBeTruthy();
   });
+
+  it.each(['loading', 'error', 'write-locked'])(
+    'keeps plugin and feedback mutations inert while project authority is %s',
+    (authorityState) => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const onFeedback = vi.fn();
+      render(
+        <AssistantMessage
+          message={baseMessage({
+            events: [{
+              kind: 'plugin_candidate',
+              candidateId: `candidate-${authorityState}`,
+              title: 'Authority-gated helper',
+              description: 'Create or share a reusable helper.',
+            } as ChatMessage['events'][number]],
+          })}
+          streaming={false}
+          projectId={`project-${authorityState}`}
+          projectMutationDisabled
+          onFeedback={onFeedback}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'View details' }));
+      const draft = screen.getByRole('button', { name: 'Create plugin/template' });
+      const share = screen.getByRole('button', { name: 'Contribute to open-design' });
+      expect(draft).toBeDisabled();
+      expect(share).toBeDisabled();
+      fireEvent.click(draft);
+      fireEvent.click(share);
+
+      expect(screen.queryByRole('group', { name: 'Feedback' })).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(onFeedback).not.toHaveBeenCalled();
+      expect(screen.queryByRole('status')).toBeNull();
+    },
+  );
 
   it('does not continue a plugin draft after its captured project epoch is revoked', async () => {
     const projectId = 'plugin-draft-project';
@@ -691,6 +735,42 @@ describe('AssistantMessage thinking blocks', () => {
 });
 
 describe('AssistantMessage question forms', () => {
+  it('keeps project-owned inline form submission inert without mutation authority', () => {
+    const form = [
+      '<question-form id="authority-gated" title="Quick brief">',
+      JSON.stringify({
+        questions: [{ id: 'audience', label: 'Audience', type: 'text', required: true }],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const onSubmitQuestionForm = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          content: form,
+          events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId="project-inline-readonly"
+        conversationId="conversation-inline-readonly"
+        isLast
+        projectMutationDisabled
+        onSubmitQuestionForm={onSubmitQuestionForm}
+      />,
+    );
+    const input = document.querySelector('.qf-input');
+    if (!(input instanceof HTMLInputElement)) throw new Error('expected inline form input');
+    fireEvent.change(input, { target: { value: 'Product leaders' } });
+    const submit = screen.getByRole('button', { name: 'Send answers' });
+
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmitQuestionForm).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(input).toHaveValue('Product leaders');
+  });
+
   it('renders repeated question forms once as an interactive inline form', () => {
     const firstForm = [
       '<question-form id="discovery" title="Quick brief — tailored">',
@@ -755,7 +835,7 @@ describe('AssistantMessage question forms', () => {
       undefined,
       undefined,
       'discovery',
-      undefined,
+      expect.objectContaining({ expectedProjectRevision: 1 }),
     );
     expect(screen.queryByText('Quick brief — 30 seconds')).toBeNull();
     expect(screen.queryByText('What are we making?')).toBeNull();
@@ -941,7 +1021,7 @@ describe('AssistantMessage question forms', () => {
         },
         undefined,
         'references',
-        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
   });
@@ -1005,7 +1085,7 @@ describe('AssistantMessage question forms', () => {
       expect(deleteProjectFileMock).toHaveBeenCalledWith(
         'proj-1',
         'uploads/mood.png',
-        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
     expect(send.disabled).toBe(false);
@@ -1097,12 +1177,12 @@ describe('AssistantMessage question forms', () => {
         'proj-1',
         [mood, brief],
         undefined,
-        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
       expect(deleteProjectFileMock).toHaveBeenCalledWith(
         'proj-1',
         'uploads/mood.png',
-        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
     expect(onSubmitQuestionForm).not.toHaveBeenCalled();
@@ -1120,7 +1200,7 @@ describe('AssistantMessage question forms', () => {
         expect.any(Object),
         undefined,
         'references',
-        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
     expect(deleteProjectFileMock).toHaveBeenCalledTimes(1);

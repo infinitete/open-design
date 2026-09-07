@@ -134,7 +134,11 @@ import {
   duplicatePluginAsProject,
   patchProject,
 } from './state/projects';
-import { captureProjectMutation, isProjectMutationCurrent } from './state/project-git';
+import {
+  captureProjectMutation,
+  isProjectMutationCurrent,
+  type ProjectMutationContext,
+} from './state/project-git';
 import { useProjectGitAuthoritySet } from './providers/project-git';
 import { useModalWindowDragGuard } from './hooks/useModalWindowDragGuard';
 import { resumeThumbnailLoads, suspendThumbnailLoads } from './lib/thumbnail-load-gate';
@@ -2220,15 +2224,19 @@ function AppInner() {
     navigate({ kind: 'project', projectId, fileName: liveArtifactTabId(artifactId) });
   }, []);
 
-  const handleDeleteProject = useCallback(async (id: string) => {
-    if (!projectGitAuthorities.isReady(id)) return false;
-    const mutationContext = captureProjectMutation(id);
+  const handleDeleteProject = useCallback(async (
+    id: string,
+    suppliedMutationContext?: ProjectMutationContext,
+  ): Promise<import('./state/projects').ProjectDeleteResult> => {
+    if (!suppliedMutationContext && !projectGitAuthorities.isReady(id)) return false;
+    const mutationContext = suppliedMutationContext ?? captureProjectMutation(id);
     if (!mutationContext) return false;
+    if (!isProjectMutationCurrent(id, mutationContext)) return 'stale';
     await deleteProjectApi(id, mutationContext);
     // A restore that wins while the request is in flight is neither a daemon
     // failure nor a successful deletion in this browser epoch. Leave every
     // local projection untouched and let Home close the obsolete intent.
-    if (!isProjectMutationCurrent(id, mutationContext)) return;
+    if (!isProjectMutationCurrent(id, mutationContext)) return 'stale';
     removeProjectFromDisplaySnapshots({ projectId: id });
     clearLocalProject(id, { deleted: true });
     removeWorkspaceProjectTabs(id);
@@ -2968,7 +2976,7 @@ function AppInner() {
           onProjectRenameStarted={handleProjectRenameStarted}
           onProjectRenameSettled={handleProjectRenameSettled}
           onProjectsRefresh={refreshProjects}
-          onDeleteProject={async (id) => (await handleDeleteProject(id)) === true}
+          onDeleteProject={handleDeleteProject}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
           onDesignSystemsRefresh={refreshDesignSystems}
           onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}

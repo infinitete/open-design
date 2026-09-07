@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalViewer } from '../../src/components/workspace/TerminalViewer';
 import { I18nProvider } from '../../src/i18n';
-import { createTerminal, terminalStreamUrl } from '../../src/state/projects';
+import { createTerminal, killTerminal, terminalStreamUrl } from '../../src/state/projects';
 import {
   createProjectGitStateStore,
   registerProjectMutationStore,
@@ -181,6 +181,11 @@ describe('TerminalViewer', () => {
       });
 
       await waitFor(() => expect(screen.getByTestId('terminal-restart')).toBeTruthy());
+      expect(killTerminal).toHaveBeenCalledWith(
+        'project-deferred-terminal',
+        'term-stale-success',
+        { keepalive: true },
+      );
       expect(vi.mocked(terminalStreamUrl).mock.calls).not.toContainEqual([
         'project-deferred-terminal',
         'term-stale-success',

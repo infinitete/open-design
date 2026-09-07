@@ -31,6 +31,7 @@ import {
   isProjectMutationCurrent,
   type ProjectMutationContext,
 } from '../state/project-git';
+import type { ProjectDeleteResult } from '../state/projects';
 import { useDeckPreviewScale } from '../lib/use-deck-preview-scale';
 import { isMacPlatform } from '../utils/platform';
 import {
@@ -302,7 +303,7 @@ interface Props {
   duplicateProjectBusy?: boolean;
   // Delete the backing project (and navigate away) for the design-system project
   // tab's "..." menu. Resolves to handleDeleteProject in App.
-  onDeleteDesignSystemProject?: (id: string) => Promise<boolean> | boolean;
+  onDeleteDesignSystemProject?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDesignSystemNeedsWork?: (
     sectionTitle: string,
     feedback: string,
@@ -3852,7 +3853,10 @@ export function FileWorkspace({
       }
       try {
         const term = await createTerminal(projectId, undefined, mutationContext);
-        if (!isProjectMutationCurrent(projectId, mutationContext)) return null;
+        if (!isProjectMutationCurrent(projectId, mutationContext)) {
+          if (term?.id) void killTerminal(projectId, term.id, { keepalive: true });
+          return null;
+        }
         if (!term) {
           setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
           return null;
@@ -4690,7 +4694,7 @@ function DesignSystemProjectPanel({
   defaultDesignSystemId?: string | null;
   onSetDefaultDesignSystem?: (id: string | null) => Promise<void> | void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
-  onDeleteDesignSystemProject?: (id: string) => Promise<boolean> | boolean;
+  onDeleteDesignSystemProject?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onNeedsWork?: (
     sectionTitle: string,
     feedback: string,
@@ -4946,7 +4950,12 @@ function DesignSystemProjectPanel({
       // list. deleteDesignSystemDraft is a no-op (404 → false) for systems that
       // aren't user-editable; that's fine.
       const deleted = await onDeleteDesignSystemProject(projectId);
-      if (!deleted) {
+      if (deleted === 'stale') {
+        setKitToast(null);
+        setKitActionBusy(null);
+        return;
+      }
+      if (deleted !== true) {
         notifyKit('error', t('ds.actionFailed'));
         setKitActionBusy(null);
         return;

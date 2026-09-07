@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from 'react';
+import { StrictMode, type ComponentProps } from 'react';
 import type { ProjectGitState } from '@open-design/contracts';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -250,6 +250,9 @@ async function waitForReadyChatPaneProps() {
     onShareToOpenDesign?: (assistantMessageId: string) => void;
     shareToOpenDesignBusyMessageId?: string | null;
     onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => Promise<void>;
+    onNewConversation?: () => Promise<void>;
+    activeConversationId?: string | null;
+    error?: string | null;
     initialDraft?: string;
   };
 }
@@ -264,6 +267,76 @@ async function settleTestClock(): Promise<void> {
   for (let step = 0; step < 3; step += 1) {
     await advanceTestClock(0);
   }
+}
+
+function prepareReadyRunProject(projectId: string) {
+  const gitState: ProjectGitState = {
+    enabled: true,
+    phase: 'synced',
+    localHead: 'a'.repeat(40),
+    observedRemoteHead: 'a'.repeat(40),
+    confirmedRemoteHead: 'a'.repeat(40),
+    projectRevision: 1,
+    contentRevision: 1,
+    bindingGeneration: 1,
+    dirty: false,
+    pendingPush: false,
+    autoSync: true,
+    operationId: null,
+    error: null,
+    binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+    dependencies: [],
+  };
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === `/api/projects/${projectId}/git`) {
+      return new Response(JSON.stringify(gitState), { status: 200 });
+    }
+    if (url === `/api/projects/${projectId}`) {
+      return new Response(JSON.stringify({
+        project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+        resolvedDir: '/project',
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  }) as typeof fetch;
+  listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+  listMessages.mockResolvedValue([]);
+  fetchPreviewComments.mockResolvedValue([]);
+  loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+  fetchProjectFiles.mockResolvedValue([]);
+  fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+  fetchLiveArtifacts.mockResolvedValue([]);
+  fetchSkill.mockResolvedValue(null);
+  fetchDesignSystem.mockResolvedValue(null);
+  getTemplate.mockResolvedValue(null);
+  listActiveChatRuns.mockResolvedValue([]);
+  fetchChatRunStatus.mockResolvedValue(null);
+}
+
+function runProjectView(projectId: string) {
+  return (
+    <ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]}
+      designTemplates={[]}
+      designSystems={[]}
+      daemonLive
+      onModeChange={() => {}}
+      onAgentChange={() => {}}
+      onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}}
+      onOpenSettings={() => {}}
+      onBack={() => {}}
+      onClearPendingPrompt={() => {}}
+      onTouchProject={() => {}}
+      onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />
+  );
 }
 
 describe('terminal replay artifact recovery', () => {
@@ -513,6 +586,47 @@ describe('retry target resolution', () => {
 });
 
 describe('ProjectView daemon cleanup', () => {
+  it('threads active project delete authority to FileWorkspace at final invocation', async () => {
+    const projectId = 'project-active-delete-chain';
+    prepareReadyRunProject(projectId);
+    const onDeleteProject = vi.fn(async () => true as const);
+    render(
+      <ProjectView
+        project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+        onDeleteProject={onDeleteProject}
+      />,
+    );
+    await waitForReadyChatPaneProps();
+    const deleteBackingProject = fileWorkspaceSpy.mock.calls.at(-1)?.[0]
+      ?.onDeleteDesignSystemProject as ((id: string) => Promise<unknown>) | undefined;
+    expect(deleteBackingProject).toBeTypeOf('function');
+
+    await expect(deleteBackingProject!(projectId)).resolves.toBe(true);
+    expect(onDeleteProject).toHaveBeenCalledWith(
+      projectId,
+      expect.objectContaining({ expectedProjectRevision: 1 }),
+    );
+
+    expect(onDeleteProject).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     listProjectRuns.mockResolvedValue([]);
     fetchConnectorStatuses.mockResolvedValue({});
@@ -549,6 +663,169 @@ describe('ProjectView daemon cleanup', () => {
     vi.useRealTimers();
     globalThis.fetch = originalFetch;
     window.sessionStorage.clear();
+  });
+
+  it('lets an ordinary successor own the conversation after terminal status and ignores late predecessor done', async () => {
+    const projectId = 'project-normal-successor-done';
+    prepareReadyRunProject(projectId);
+    const runs: Array<{
+      handlers: {
+        onDelta: (delta: string) => void;
+        onDone: (fullText?: string) => void;
+      };
+      onRunCreated?: (runId: string) => void;
+      onRunStatus: (status: 'succeeded') => void;
+    }> = [];
+    streamViaDaemon.mockImplementation(async (options: (typeof runs)[number]) => {
+      runs.push(options);
+      options.onRunCreated?.(`run-${runs.length}`);
+      return new Promise<void>(() => {});
+    });
+
+    render(runProjectView(projectId));
+    const first = await waitForReadyChatPaneProps();
+    await first.onSend?.('first', [], []);
+    await waitFor(() => expect(runs).toHaveLength(1));
+    act(() => runs[0]!.onRunStatus('succeeded'));
+    const successor = await waitForReadyChatPaneProps();
+    await successor.onSend?.('second', [], []);
+    await waitFor(() => expect(runs).toHaveLength(2));
+    saveMessage.mockClear();
+
+    act(() => runs[0]!.handlers.onDone('old completion'));
+    act(() => {
+      runs[1]!.handlers.onDelta('new buffer content');
+      runs[1]!.handlers.onDone('new buffer content');
+    });
+
+    await waitFor(() => expect(saveMessage.mock.calls.some(
+      (call) => call[2]?.runId === 'run-2' && call[2]?.content === 'new buffer content',
+    )).toBe(true));
+    expect(saveMessage.mock.calls.some(
+      (call) => call[2]?.runId === 'run-1' && call[2]?.content === 'old completion',
+    )).toBe(false);
+  });
+
+  it('does not let a predecessor error cancel the ordinary successor text buffer', async () => {
+    const projectId = 'project-normal-successor-error';
+    prepareReadyRunProject(projectId);
+    const runs: Array<{
+      handlers: {
+        onDelta: (delta: string) => void;
+        onDone: (fullText?: string) => void;
+        onError: (error: Error) => Promise<void>;
+      };
+      onRunCreated?: (runId: string) => void;
+      onRunStatus: (status: 'succeeded') => void;
+    }> = [];
+    streamViaDaemon.mockImplementation(async (options: (typeof runs)[number]) => {
+      runs.push(options);
+      options.onRunCreated?.(`run-${runs.length}`);
+      return new Promise<void>(() => {});
+    });
+
+    render(runProjectView(projectId));
+    const first = await waitForReadyChatPaneProps();
+    await first.onSend?.('first', [], []);
+    await waitFor(() => expect(runs).toHaveLength(1));
+    act(() => runs[0]!.onRunStatus('succeeded'));
+    const successor = await waitForReadyChatPaneProps();
+    await successor.onSend?.('second', [], []);
+    await waitFor(() => expect(runs).toHaveLength(2));
+    saveMessage.mockClear();
+
+    await act(async () => runs[0]!.handlers.onError(new Error('late predecessor error')));
+    act(() => {
+      runs[1]!.handlers.onDelta('successor survives');
+      runs[1]!.handlers.onDone('successor survives');
+    });
+
+    await waitFor(() => expect(saveMessage.mock.calls.some(
+      (call) => call[2]?.runId === 'run-2' && call[2]?.content === 'successor survives',
+    )).toBe(true));
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.error).not.toBe('late predecessor error');
+  });
+
+  it('persists a run-status projection once under StrictMode updater replay', async () => {
+    const projectId = 'project-pure-updater-persistence';
+    prepareReadyRunProject(projectId);
+    let status: ((value: 'running') => void) | undefined;
+    streamViaDaemon.mockImplementation(async (options: {
+      onRunCreated?: (runId: string) => void;
+      onRunStatus: (value: 'running') => void;
+    }) => {
+      options.onRunCreated?.('run-strict');
+      status = options.onRunStatus;
+      return new Promise<void>(() => {});
+    });
+
+    render(<StrictMode>{runProjectView(projectId)}</StrictMode>);
+    const props = await waitForReadyChatPaneProps();
+    await props.onSend?.('strict persistence', [], []);
+    await waitFor(() => expect(status).toBeDefined());
+    saveMessage.mockClear();
+
+    act(() => status?.('running'));
+
+    await waitFor(() => expect(saveMessage.mock.calls.filter(
+      (call) => call[2]?.runId === 'run-strict' && call[2]?.runStatus === 'running',
+    )).toHaveLength(1));
+  });
+
+  it('does not publish a deferred manual conversation after revision ownership changes', async () => {
+    const projectId = 'project-stale-manual-conversation';
+    prepareReadyRunProject(projectId);
+    listMessages.mockResolvedValue([{ id: 'user-existing', role: 'user', content: 'existing' }]);
+    let resolveCreate!: (value: { id: string; title: string }) => void;
+    createConversation.mockReturnValue(new Promise((resolve) => { resolveCreate = resolve; }));
+
+    render(runProjectView(projectId));
+    const initial = await waitForReadyChatPaneProps();
+    await waitFor(() => expect(initial.onNewConversation).toBeTypeOf('function'));
+    const creating = initial.onNewConversation?.();
+    await waitFor(() => expect(createConversation).toHaveBeenCalledOnce());
+    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
+      | ((event: ProjectEvent) => void)
+      | undefined;
+    const nextGitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'b'.repeat(40), observedRemoteHead: null,
+      confirmedRemoteHead: null, projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: nextGitState }));
+    resolveCreate({ id: 'conv-stale', title: 'Stale conversation' });
+    await creating;
+
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.activeConversationId).not.toBe('conv-stale');
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.error).not.toBe('Could not create a conversation for this project.');
+  });
+
+  it('does not publish a stale manual conversation creation error after revision ownership changes', async () => {
+    const projectId = 'project-stale-manual-conversation-error';
+    prepareReadyRunProject(projectId);
+    listMessages.mockResolvedValue([{ id: 'user-existing', role: 'user', content: 'existing' }]);
+    let rejectCreate!: (error: Error) => void;
+    createConversation.mockReturnValue(new Promise((_resolve, reject) => { rejectCreate = reject; }));
+
+    render(runProjectView(projectId));
+    const initial = await waitForReadyChatPaneProps();
+    const creating = initial.onNewConversation?.();
+    await waitFor(() => expect(createConversation).toHaveBeenCalledOnce());
+    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
+      | ((event: ProjectEvent) => void)
+      | undefined;
+    const nextGitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'c'.repeat(40), observedRemoteHead: null,
+      confirmedRemoteHead: null, projectRevision: 2, contentRevision: 2, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: nextGitState }));
+    rejectCreate(new Error('stale create failed'));
+    await creating;
+
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.error).not.toBe('stale create failed');
   });
 
   it('ignores a superseded live run status when Send now starts a replacement in the same epoch', async () => {
@@ -794,10 +1071,22 @@ describe('ProjectView daemon cleanup', () => {
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.sendDisabled).toBe(true));
     const props = chatPaneSpy.mock.calls.at(-1)?.[0] as {
       onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => Promise<void>;
+      onAssistantFeedback?: (message: ChatMessage, change: { rating: 'positive' }) => void;
     };
     await props.onSend?.('must stay inert', [], []);
+    props.onAssistantFeedback?.({
+      id: 'assistant-feedback-inert',
+      role: 'assistant',
+      content: 'settled',
+      createdAt: 1,
+      runStatus: 'succeeded',
+      runId: 'run-feedback-inert',
+    }, { rating: 'positive' });
     expect(streamViaDaemon).not.toHaveBeenCalled();
     expect(saveMessage).not.toHaveBeenCalled();
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
+      ([input, init]) => String(input).includes('feedback') || init?.method === 'PUT',
+    )).toBe(false);
   });
 
   it('keeps a queued BYOK draft when its deferred preflight loses authority', async () => {

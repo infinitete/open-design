@@ -14,6 +14,7 @@ const captureProjectMutation = vi.fn((_projectId: string) => mutationContext);
 const isProjectMutationCurrent = vi.fn((_projectId: string, context: typeof mutationContext) => (
   !context.signal.aborted
 ));
+const isProjectMutationReady = vi.fn((_projectId: string) => true);
 
 vi.mock('../../src/i18n', () => ({
   useT: () => ((key: string) => key),
@@ -21,6 +22,7 @@ vi.mock('../../src/i18n', () => ({
 
 vi.mock('../../src/state/project-git', () => ({
   captureProjectMutation: (...args: unknown[]) => captureProjectMutation(...args as [string]),
+  isProjectMutationReady: (...args: unknown[]) => isProjectMutationReady(...args as [string]),
   isProjectMutationCurrent: (...args: unknown[]) => isProjectMutationCurrent(...args as [string, typeof mutationContext]),
 }));
 
@@ -45,9 +47,42 @@ function deferred<T>() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  captureProjectMutation.mockReturnValue(mutationContext);
+  isProjectMutationCurrent.mockImplementation((_projectId, context) => !context.signal.aborted);
+  isProjectMutationReady.mockReturnValue(true);
 });
 
 describe('DesignKitView project mutation capture', () => {
+  it.each(['missing', 'loading', 'error', 'locked'] as const)(
+    'keeps project file and drop uploads inert when authority is %s',
+    (authority) => {
+      if (authority === 'missing') captureProjectMutation.mockReturnValue(undefined as never);
+      else isProjectMutationReady.mockReturnValue(false);
+      const onUploadModule = vi.fn();
+      const onEditClick = vi.fn();
+      const onActionFeedback = vi.fn();
+      const { container } = render(
+        <DesignKitView
+          kit={kit}
+          onUploadModule={onUploadModule}
+          onEditClick={onEditClick}
+          onActionFeedback={onActionFeedback}
+        />,
+      );
+      const file = new File(['image'], 'logo.png', { type: 'image/png' });
+      const input = container.querySelector('input[accept="image/*,.svg"]') as HTMLInputElement;
+
+      fireEvent.change(input, { target: { files: [file] } });
+      fireEvent.drop(screen.getByTestId('design-kit-logo-section'), {
+        dataTransfer: { files: [file] },
+      });
+
+      expect(onUploadModule).not.toHaveBeenCalled();
+      expect(onEditClick).not.toHaveBeenCalled();
+      expect(onActionFeedback).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not publish a pasted project image when authority capture is unavailable', async () => {
     captureProjectMutation.mockReturnValueOnce(undefined as never);
     Object.defineProperty(navigator, 'clipboard', {

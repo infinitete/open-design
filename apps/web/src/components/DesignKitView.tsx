@@ -44,6 +44,7 @@ import {
 import type { KitUploadModule } from '../runtime/kit-upload';
 import {
   captureProjectMutation,
+  isProjectMutationReady,
   isProjectMutationCurrent,
   type ProjectMutationContext,
 } from '../state/project-git';
@@ -662,6 +663,14 @@ function DesignKitViewInner({
     const mutationContext = kit.projectId
       ? captureProjectMutation(kit.projectId)
       : undefined;
+    if (
+      kit.projectId
+      && (
+        !isProjectMutationReady(kit.projectId)
+        || !mutationContext
+        || !isProjectMutationCurrent(kit.projectId, mutationContext)
+      )
+    ) return;
     const file = event.target.files?.[0];
     event.target.value = '';
     if (file && onUploadModule) {
@@ -691,6 +700,14 @@ function DesignKitViewInner({
     const mutationContext = kit.projectId
       ? captureProjectMutation(kit.projectId)
       : undefined;
+    if (
+      kit.projectId
+      && (
+        !isProjectMutationReady(kit.projectId)
+        || !mutationContext
+        || !isProjectMutationCurrent(kit.projectId, mutationContext)
+      )
+    ) return;
     const file = Array.from(event.dataTransfer.files).find((f) =>
       module === 'font'
         ? /\.(otf|ttf|woff2?)$/i.test(f.name)

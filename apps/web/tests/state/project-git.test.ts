@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createProjectGitStateStore,
   createProjectRevisionTracker,
+  isProjectMutationReady,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
 } from '../../src/state/project-git';
 import type { ProjectGitState } from '@open-design/contracts';
 
@@ -44,6 +47,19 @@ describe('project revision tracker', () => {
 });
 
 describe('project Git state store', () => {
+  it('treats a loaded unmanaged project as mutation-ready without a revision header', () => {
+    const unmanaged = { ...state(0), enabled: false };
+    const store = createProjectGitStateStore(unmanaged);
+    registerProjectMutationStore('unmanaged-project', store);
+    try {
+      expect(isProjectMutationReady('unmanaged-project')).toBe(true);
+      expect(store.capture().expectedProjectRevision).toBeUndefined();
+    } finally {
+      unregisterProjectMutationStore('unmanaged-project', store);
+      store.dispose();
+    }
+  });
+
   it('aborts the old browser epoch and locks writes only for a greater project revision', () => {
     const onAdvance = vi.fn();
     const store = createProjectGitStateStore(state(4), { onRevisionAdvance: onAdvance });

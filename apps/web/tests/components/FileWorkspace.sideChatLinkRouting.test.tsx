@@ -7,13 +7,14 @@
 // links can't be classified on this production surface even though the
 // AssistantMessage unit specs pass.
 
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { forwardRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FileWorkspace } from '../../src/components/FileWorkspace';
 import { I18nProvider } from '../../src/i18n';
-import { createTerminal } from '../../src/state/projects';
+import { deleteDesignSystemDraft } from '../../src/providers/registry';
+import { createTerminal, killTerminal } from '../../src/state/projects';
 import {
   createProjectGitStateStore,
   registerProjectMutationStore,
@@ -36,8 +37,39 @@ vi.mock('../../src/providers/registry', async () => {
     writeProjectBase64File: vi.fn(),
     writeProjectTextFile: vi.fn(),
     fetchProjectFolders: vi.fn().mockResolvedValue([]),
+    deleteDesignSystemDraft: vi.fn(),
   };
 });
+
+vi.mock('../../src/runtime/design-kit', async () => {
+  const actual = await vi.importActual<typeof import('../../src/runtime/design-kit')>(
+    '../../src/runtime/design-kit',
+  );
+  return {
+    ...actual,
+    useDesignKit: vi.fn(() => ({ kit: { title: 'Design system' } })),
+  };
+});
+
+vi.mock('../../src/runtime/kit-upload', () => ({
+  useKitModuleUpload: vi.fn(() => ({ uploading: false, uploadModule: vi.fn() })),
+}));
+
+vi.mock('../../src/components/DesignKitView', () => ({
+  DesignKitView: ({ headerMenuActions }: { headerMenuActions?: Array<{ id: string; disabled?: boolean; onClick: () => void }> }) => (
+    <div>
+      {headerMenuActions?.map((action) => (
+        <button key={action.id} type="button" disabled={action.disabled} onClick={action.onClick}>{action.id}</button>
+      ))}
+    </div>
+  ),
+}));
+
+vi.mock('../../src/components/Toast', () => ({
+  Toast: ({ message, tone }: { message: string; tone: string }) => (
+    <div data-testid="kit-toast" data-tone={tone}>{message}</div>
+  ),
+}));
 
 // The composer is not on the link-click path; mocking it keeps this test on
 // the routing chain instead of composer internals.
@@ -75,7 +107,7 @@ vi.mock('../../src/state/projects', async () => {
   const actual = await vi.importActual<typeof import('../../src/state/projects')>(
     '../../src/state/projects',
   );
-  return { ...actual, createTerminal: vi.fn() };
+  return { ...actual, createTerminal: vi.fn(), killTerminal: vi.fn() };
 });
 
 afterEach(() => {
@@ -151,6 +183,28 @@ function renderSideChatWorkspace(messageText: string) {
     </I18nProvider>,
   );
   return { ...utils, onTabsStateChange };
+}
+
+function renderDesignSystemWorkspace(
+  onDeleteDesignSystemProject: () => Promise<true | false | 'stale'>,
+) {
+  return render(
+    <I18nProvider>
+      <FileWorkspace
+        projectId="project-1"
+        projectKind="design_system"
+        files={[]}
+        liveArtifacts={[]}
+        onRefreshFiles={vi.fn()}
+        isDeck={false}
+        tabsState={{ tabs: ['__design_system__'], active: '__design_system__' }}
+        onTabsStateChange={vi.fn()}
+        designSystemProject={{ id: 'system-1', title: 'Design system', status: 'draft' } as never}
+        designSystemEditable
+        onDeleteDesignSystemProject={onDeleteDesignSystemProject}
+      />
+    </I18nProvider>,
+  );
 }
 
 describe('FileWorkspace side-chat file-link routing (host-level)', () => {
@@ -231,9 +285,52 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
       });
 
       await expect(result).resolves.toBeNull();
+      expect(killTerminal).toHaveBeenCalledWith(
+        'project-1',
+        'term-stale-success',
+        { keepalive: true },
+      );
     } finally {
       unregisterProjectMutationStore('project-1', store);
       store.dispose();
+    }
+  });
+
+  it('does not consume a stale backing-project delete as success', async () => {
+    let resolveDelete!: (result: 'stale') => void;
+    const onDeleteDesignSystemProject = vi.fn(() => new Promise<'stale'>((resolve) => {
+      resolveDelete = resolve;
+    }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderDesignSystemWorkspace(onDeleteDesignSystemProject);
+      const deleteButton = await screen.findByRole('button', { name: 'delete' });
+      fireEvent.click(deleteButton);
+
+      await waitFor(() => expect(onDeleteDesignSystemProject).toHaveBeenCalledWith('project-1'));
+      expect(deleteButton).toBeDisabled();
+      resolveDelete('stale');
+      await waitFor(() => expect(deleteButton).toBeEnabled());
+      expect(deleteDesignSystemDraft).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('kit-toast')).not.toBeInTheDocument();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('keeps an ordinary backing-project delete failure actionable', async () => {
+    const onDeleteDesignSystemProject = vi.fn(async () => false as const);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderDesignSystemWorkspace(onDeleteDesignSystemProject);
+      const deleteButton = await screen.findByRole('button', { name: 'delete' });
+      fireEvent.click(deleteButton);
+
+      await waitFor(() => expect(deleteButton).toBeEnabled());
+      expect(deleteDesignSystemDraft).not.toHaveBeenCalled();
+      expect(screen.getByTestId('kit-toast')).toHaveAttribute('data-tone', 'error');
+    } finally {
+      confirm.mockRestore();
     }
   });
 });

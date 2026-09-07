@@ -14,6 +14,7 @@ import { navigate } from "../router";
 import { deleteProjectFile, projectFileUrl, uploadProjectFiles } from "../providers/registry";
 import {
   captureProjectMutation,
+  isProjectMutationReady,
   isProjectMutationCurrent,
   projectMutationBody,
   projectMutationHeaders,
@@ -291,17 +292,19 @@ type SkillPluginCandidateBlock = Extract<Block, { kind: "plugin-candidate" }>;
 function SkillPluginCandidateCard({
   block,
   projectId,
+  projectMutationDisabled,
   onRequestOpenFile,
 }: {
   block: SkillPluginCandidateBlock;
   projectId?: string | null;
+  projectMutationDisabled?: boolean;
   onRequestOpenFile?: (name: string) => void;
 }) {
   const t = useT();
   const [busy, setBusy] = useState<null | "draft" | "contribute">(null);
   const actionGenerationRef = useRef(0);
   const [notice, setNotice] = useState<ActionNotice | null>(null);
-  const disabled = !projectId || busy !== null;
+  const disabled = !projectId || projectMutationDisabled || busy !== null;
   const description =
     block.description === "Reusable skill material detected from a repository link." ||
     block.description === "This repo looks like it could work as a plugin."
@@ -335,7 +338,7 @@ function SkillPluginCandidateCard({
   }
 
   async function createDraft() {
-    if (!projectId) return;
+    if (!projectId || projectMutationDisabled || !isProjectMutationReady(projectId)) return;
     const mutationContext = captureProjectMutation(projectId);
     if (!isProjectMutationCurrent(projectId, mutationContext)) return;
     const actionGeneration = ++actionGenerationRef.current;
@@ -384,7 +387,7 @@ function SkillPluginCandidateCard({
   }
 
   async function share(action: "contribute-open-design") {
-    if (!projectId) return;
+    if (!projectId || projectMutationDisabled || !isProjectMutationReady(projectId)) return;
     const mutationContext = captureProjectMutation(projectId);
     if (!isProjectMutationCurrent(projectId, mutationContext)) return;
     const actionGeneration = ++actionGenerationRef.current;
@@ -511,6 +514,7 @@ interface Props {
   onForkFromMessage?: () => void;
   forking?: boolean;
   onFeedback?: (change: ChatMessageFeedbackChange) => void;
+  projectMutationDisabled?: boolean;
   suppressDirectionForms?: boolean;
   hasDesignSystemContext?: boolean;
   // "Next step" affordance handlers, surfaced under the latest settled
@@ -571,6 +575,7 @@ const ASSISTANT_MESSAGE_COMPARED_PROPS: Array<keyof Props> = [
   'errorCardOwnerId',
   'nextUserContent',
   'questionFormSubmitDisabled',
+  'projectMutationDisabled',
   'forking',
   'shareToOpenDesignBusy',
   'suppressDirectionForms',
@@ -640,6 +645,7 @@ function AssistantMessageImpl({
   nextUserContent,
   onSubmitQuestionForm,
   questionFormSubmitDisabled = false,
+  projectMutationDisabled = false,
   onContinueRemainingTasks,
   onForkFromMessage,
   forking = false,
@@ -897,6 +903,7 @@ function AssistantMessageImpl({
   const copyMarkdown = message.content.trim().length > 0 ? message.content : undefined;
   const showFeedback =
     !!onFeedback &&
+    !projectMutationDisabled &&
     isFeedbackEligible({
       streaming,
       message,
@@ -1054,7 +1061,9 @@ function AssistantMessageImpl({
                 suppressDirectionForms={suppressDirectionForms}
                 onSubmitQuestionForm={onSubmitQuestionForm}
                 questionFormSubmitDisabled={
-                  questionFormSubmitDisabled || strategyBlockedNotice !== null
+                  projectMutationDisabled
+                  || questionFormSubmitDisabled
+                  || strategyBlockedNotice !== null
                 }
                 strategyBlockedNotice={strategyBlockedNotice}
                 visualStyleContext={visualStyleContextForProjectKind(projectKind)}
@@ -1103,6 +1112,7 @@ function AssistantMessageImpl({
                 key={i}
                 block={b}
                 projectId={projectId}
+                projectMutationDisabled={projectMutationDisabled}
                 onRequestOpenFile={onRequestOpenFile}
               />
             );
@@ -2994,7 +3004,13 @@ function FormBlock({
 
   const handleAnswerChange = useCallback(
     (questionId: string, value: string | string[]) => {
-      if (!projectId || typeof value !== "string" || value.length === 0) return;
+      if (
+        submitDisabled
+        || !projectId
+        || !isProjectMutationReady(projectId)
+        || typeof value !== "string"
+        || value.length === 0
+      ) return;
       const element =
         questionId === "taskType"
           ? ("task_type_chip" as const)
@@ -3011,12 +3027,12 @@ function FormBlock({
         project_id: projectId,
       });
     },
-    [analytics.track, form.id, projectId],
+    [analytics.track, form.id, projectId, submitDisabled],
   );
 
   const handleInteraction = useCallback(
     (interaction: QuestionFormInteraction) => {
-      if (!projectId) return;
+      if (submitDisabled || !projectId || !isProjectMutationReady(projectId)) return;
       trackQuestionsFormClick(analytics.track, {
         page_name: "chat_panel",
         area: "questions_form",
@@ -3044,7 +3060,7 @@ function FormBlock({
           : {}),
       });
     },
-    [analytics.track, form.id, projectId],
+    [analytics.track, form.id, projectId, submitDisabled],
   );
 
   const rollbackPendingUploads = useCallback(async (
@@ -3071,8 +3087,14 @@ function FormBlock({
       source: "submit" | "skip" | "auto",
       fileSubmissions: QuestionFormFileSubmission[] = [],
     ) => {
-      if (submittingRef.current) return;
+      if (
+        submittingRef.current
+        || submitDisabled
+        || !projectId
+        || !isProjectMutationReady(projectId)
+      ) return;
       const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
+      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
       // The occurrence is locked the moment the answer leaves the form, not
       // when the host finally settles it. Every await below — rolling back a
       // previous upload, uploading this answer's files, and above all the
@@ -3211,7 +3233,7 @@ function FormBlock({
         () => void rejectSubmission(),
       );
     },
-    [analytics.track, form, formKey, onSubmit, projectId, rollbackPendingUploads, t],
+    [analytics.track, form, formKey, onSubmit, projectId, rollbackPendingUploads, submitDisabled, t],
   );
 
   if (submittedFromHistory) {

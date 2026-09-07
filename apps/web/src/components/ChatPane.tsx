@@ -586,6 +586,8 @@ interface Props {
   // time before the full `tool_use` arrives. Never persisted.
   liveToolInput?: Record<string, { name: string; text: string; seq?: number }>;
   initialDraft?: string;
+  initialDraftSignalId?: string;
+  onInitialDraftRestored?: (signalId: string) => void;
   // Product path of the Home recommendation that started this project. When
   // set (and concrete), the empty-conversation starter cards show that path's
   // starters — one-click composer replacements — instead of the generic set.
@@ -951,6 +953,8 @@ export function ChatPane({
   forceStreamingMessageIds,
   liveToolInput,
   initialDraft,
+  initialDraftSignalId,
+  onInitialDraftRestored,
   onboardingStarterPath = null,
   composerPlaceholder,
   onSubmitQuestionForm,
@@ -1565,14 +1569,27 @@ export function ChatPane({
   // user message after a reload), reach into the composer and clear
   // the textarea so the user does not see the prompt they already
   // submitted.
-  const lastSeenInitialDraftRef = useRef<string | undefined>(initialDraft);
+  const lastSeenInitialDraftRef = useRef<{
+    id: string | undefined;
+    value: string | undefined;
+  }>({ id: initialDraftSignalId, value: initialDraft });
+  const acknowledgedInitialDraftIdsRef = useRef(new Set<string>());
   useEffect(() => {
     const previous = lastSeenInitialDraftRef.current;
-    lastSeenInitialDraftRef.current = initialDraft;
-    if (previous && initialDraft === undefined) {
+    lastSeenInitialDraftRef.current = { id: initialDraftSignalId, value: initialDraft };
+    if (
+      previous.value
+      && initialDraft === undefined
+      && (!previous.id || !acknowledgedInitialDraftIdsRef.current.delete(previous.id))
+    ) {
       composerRef.current?.setDraft('');
     }
-  }, [initialDraft]);
+  }, [initialDraft, initialDraftSignalId]);
+  const acknowledgeInitialDraft = useCallback(() => {
+    if (!initialDraftSignalId) return;
+    acknowledgedInitialDraftIdsRef.current.add(initialDraftSignalId);
+    onInitialDraftRestored?.(initialDraftSignalId);
+  }, [initialDraftSignalId, onInitialDraftRestored]);
 
   // Parent-driven composer prefill (the "Import repo" CTA). Reuse the same
   // imperative setDraft the starter cards use; the nonce guards against
@@ -2194,6 +2211,7 @@ export function ChatPane({
       sendDisabled={sendDisabled}
       inputDisabled={viewerOnly}
       initialDraft={initialDraft}
+      onInitialDraftRestored={acknowledgeInitialDraft}
       composerPlaceholder={composerPlaceholder}
       placeholderScenarios={composerPlaceholderScenarios}
       draftStorageKey={composerDraftStorageKey}
@@ -2553,6 +2571,7 @@ export function ChatPane({
                 t={t}
                 onSubmitQuestionForm={onSubmitQuestionForm}
                 questionFormSubmitDisabled={questionFormSubmitDisabled}
+                projectMutationDisabled={viewerOnly}
                 scrollContainerRef={logRef}
                 highlightedUserMessageId={chatRailHighlightedMessageId}
               />
@@ -3116,6 +3135,7 @@ function ChatRows({
   t,
   onSubmitQuestionForm,
   questionFormSubmitDisabled,
+  projectMutationDisabled,
   scrollContainerRef,
   highlightedUserMessageId,
 }: {
@@ -3176,6 +3196,7 @@ function ChatRows({
   t: TranslateFn;
   onSubmitQuestionForm?: QuestionFormSubmitHandler;
   questionFormSubmitDisabled: boolean;
+  projectMutationDisabled: boolean;
   scrollContainerRef: MutableRefObject<HTMLDivElement | null>;
   highlightedUserMessageId?: string | null;
 }) {
@@ -3334,6 +3355,7 @@ function ChatRows({
             : undefined
         }
         questionFormSubmitDisabled={questionFormSubmitDisabled}
+        projectMutationDisabled={projectMutationDisabled}
         onBrandBrowserAssistConfirm={
           onBrandBrowserAssistConfirm
             ? (card) => assistantCallbacksRef.current.onBrandBrowserAssistConfirm?.(card)

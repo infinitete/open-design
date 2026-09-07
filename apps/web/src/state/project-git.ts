@@ -88,6 +88,16 @@ export function captureProjectMutation(projectId: string): ProjectMutationContex
   return projectMutationStores.get(projectId)?.capture();
 }
 
+export function isProjectMutationReady(projectId: string): boolean {
+  const snapshot = projectMutationStores.get(projectId)?.snapshot();
+  return Boolean(
+    snapshot?.state
+    && !snapshot.loading
+    && !snapshot.error
+    && !snapshot.writeLocked,
+  );
+}
+
 export function isProjectMutationCurrent(
   projectId: string,
   context: ProjectMutationContext | undefined,

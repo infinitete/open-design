@@ -27,6 +27,7 @@ import {
 } from '@open-design/contracts';
 import { projectKindFromMetadataToTracking } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
+import type { ProjectDeleteResult } from '../state/projects';
 import {
   trackCommunityGalleryClick,
   trackHomeChatComposerClick,
@@ -294,7 +295,7 @@ interface Props {
   ) => Promise<boolean | 'blocked' | void> | boolean | 'blocked' | void;
   onOpenProject: (id: string, fileName?: string) => void;
   onViewAllProjects: () => void;
-  onDeleteProject?: (id: string) => Promise<boolean | void> | boolean | void;
+  onDeleteProject?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
   projectMutationReady?: (id: string) => boolean;

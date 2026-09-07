@@ -18,6 +18,7 @@ import {
 } from "../lib/project-cover-cache";
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles, liveArtifactPreviewUrl } from "../providers/registry";
 import { captureProjectMutation, isProjectMutationCurrent } from "../state/project-git";
+import type { ProjectDeleteResult } from "../state/projects";
 import type {
 	DesignSystemSummary,
 	LiveArtifactSummary,
@@ -115,7 +116,7 @@ interface Props {
 	designSystems: DesignSystemSummary[];
 	onOpen: (id: string) => void;
 	onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
-	onDelete: (id: string) => Promise<boolean | void> | boolean | void;
+	onDelete: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
 	onDuplicate?: (id: string) => Promise<void> | void;
 	onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
 	projectMutationReady?: (id: string) => boolean;
@@ -190,7 +191,7 @@ export function DesignsTab({
 		title: string;
 		message: string;
 		confirmLabel: string;
-		onConfirm: () => Promise<boolean | 'stale' | void> | boolean | 'stale' | void;
+		onConfirm: () => Promise<ProjectDeleteResult | void> | ProjectDeleteResult | void;
 	} | null>(null);
 	useEffect(() => {
 		window.dispatchEvent(new CustomEvent("open-design:project-mutation-targets", {
@@ -555,15 +556,15 @@ export function DesignsTab({
 				const results = await Promise.all(
 					ids.map(async (id) => {
 						try {
-							const result = await onDelete(id);
-							return result !== false;
+							return await onDelete(id);
 						} catch {
 							return false;
 						}
 					}),
 				);
-				const deleted = results.filter(Boolean).length;
-				const failed = results.length - deleted;
+				const deleted = results.filter((result) => result === true).length;
+				const failed = results.filter((result) => result === false).length;
+				if (deleted === 0 && failed === 0) return 'stale';
 				exitSelectMode();
 				const message =
 					failed > 0
@@ -582,8 +583,6 @@ export function DesignsTab({
 		artifact: LiveArtifactSummary,
 	) => {
 		if (!projectMutationReady(projectId)) return;
-		const mutationContext = captureProjectMutation(projectId);
-		if (!mutationContext) return;
 		setConfirmError(null);
 		setConfirmTarget({
 			projectIds: [projectId],
@@ -591,6 +590,9 @@ export function DesignsTab({
 			message: `${t("common.delete")} "${artifact.title}"?`,
 			confirmLabel: t("designs.menuDelete"),
 			onConfirm: async () => {
+				if (!projectMutationReady(projectId)) return 'stale';
+				const mutationContext = captureProjectMutation(projectId);
+				if (!mutationContext) return 'stale';
 				const ok = await deleteLiveArtifact(projectId, artifact.id, mutationContext);
 				if (!isProjectMutationCurrent(projectId, mutationContext)) return 'stale';
 				if (!ok) return false;
@@ -612,6 +614,10 @@ export function DesignsTab({
 		setConfirmPending(true);
 		try {
 			const result = await target.onConfirm();
+			if (result === 'stale') {
+				setConfirmError('Project history changed. Reload and confirm this action again.');
+				return;
+			}
 			if (result === false) {
 				setConfirmError(t("ds.actionFailed"));
 				return;

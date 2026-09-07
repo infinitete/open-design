@@ -771,6 +771,37 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
+  it('gates only the dangerous delete action and retains stale intent with reload guidance', async () => {
+    let ready = false;
+    const onDelete = vi.fn(async () => 'stale' as const);
+    const props = {
+      projects: [project({ id: 'project-1', name: 'My project' })],
+      onOpen: () => {},
+      onDelete,
+      projectMutationReady: () => ready,
+    };
+    const view = render(<RecentProjectsStrip {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete' });
+    expect(cancel).not.toBeDisabled();
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(onDelete).not.toHaveBeenCalled();
+
+    ready = true;
+    view.rerender(<RecentProjectsStrip {...props} />);
+    expect(confirm).not.toBeDisabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('alertdialog')).toBe(dialog);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed|reload/i);
+  });
+
   it('submits at most one delete while the request is pending', async () => {
     let resolveDelete!: (value: true) => void;
     const pendingDelete = new Promise<true>((resolve) => {

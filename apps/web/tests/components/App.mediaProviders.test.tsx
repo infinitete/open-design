@@ -103,7 +103,21 @@ vi.mock('../../src/components/EntryView', () => ({
 }));
 
 vi.mock('../../src/components/ProjectView', () => ({
-  ProjectView: () => <div>Project view</div>,
+  ProjectView: ({
+    onDeleteProject,
+  }: {
+    onDeleteProject?: (id: string, context?: typeof projectMutationContext) => Promise<unknown>;
+  }) => (
+    <div>
+      Project view
+      <button
+        type="button"
+        onClick={() => void onDeleteProject?.('project-rename', projectMutationContext)}
+      >
+        Delete active backing project
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../../src/components/SettingsDialog', () => ({
@@ -275,6 +289,53 @@ describe('App media provider sync flows', () => {
 
     expect(mockedListProjects).toHaveBeenCalledTimes(readsBeforeStaleCompletion);
     expect(screen.queryByText('Late stale rename')).toBeNull();
+  });
+
+  it('accepts the active ProjectView authority and sends one exact-revision delete', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === `/api/projects/${project.id}` && init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify({ project, resolvedDir: '/project' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete active backing project' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/projects/${project.id}`,
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-OD-Project-Revision': '7' },
+        signal: projectMutationContext.signal,
+      }),
+    ));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+  });
+
+  it('does not delete when the supplied active-project context is stale', async () => {
+    const project = {
+      id: 'project-rename', name: 'Project view', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    useRouteMock.mockReturnValue({ kind: 'project', projectId: project.id, fileName: null } as never);
+    mockedListProjects.mockResolvedValue([project]);
+    projectAuthorityHarness.current = false;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      new Response(JSON.stringify({ project, resolvedDir: '/project' }), { status: 200 })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete active backing project' }));
+    await act(async () => undefined);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
   });
 
   afterEach(() => {
