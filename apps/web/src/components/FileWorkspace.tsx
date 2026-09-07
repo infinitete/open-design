@@ -3846,8 +3846,13 @@ export function FileWorkspace({
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
       const mutationContext = captureProjectMutation(projectId);
+      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
+        setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
+        return null;
+      }
       try {
         const term = await createTerminal(projectId, undefined, mutationContext);
+        if (!isProjectMutationCurrent(projectId, mutationContext)) return null;
         if (!term) {
           setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
           return null;

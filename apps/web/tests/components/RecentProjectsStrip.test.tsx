@@ -822,4 +822,27 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(onRename).not.toHaveBeenCalled();
   });
+
+  it('keeps the rename draft visible with recovery guidance when authority changes', async () => {
+    const onRename = vi.fn(async () => false);
+    render(
+      <RecentProjectsStrip
+        projects={[project({ id: 'project-1', name: 'My project' })]}
+        onOpen={() => {}}
+        onRename={onRename}
+        projectMutationReady={() => true}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Recovered name' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+
+    await waitFor(() => expect(onRename).toHaveBeenCalledWith('project-1', 'Recovered name'));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(within(dialog).getByRole('textbox')).toHaveValue('Recovered name');
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed/i);
+  });
 });

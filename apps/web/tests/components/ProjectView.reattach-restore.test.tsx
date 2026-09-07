@@ -153,6 +153,19 @@ function renderProjectView(options?: { resolvedDir?: string | null }) {
     skillId: null,
     designSystemId: null,
   } as never;
+  const delegatedFetch = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/projects/project-1/git') {
+      return Promise.resolve(new Response(JSON.stringify({
+        enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+        confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
+        bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+        operationId: null, error: null,
+        binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+      }), { status: 200 }));
+    }
+    return delegatedFetch(input, init);
+  }));
   return render(
     <ProjectView
       project={project}
@@ -491,9 +504,11 @@ describe('same-turn dedup for recovered prose-only artifacts (#4318)', () => {
 });
 
 describe('ProjectView daemon reattach restore', () => {
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     chatPaneHarness.onSend = null;
     chatPaneHarness.onStop = null;
     chatPaneHarness.openRequestNames = [];

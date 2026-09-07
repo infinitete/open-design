@@ -1808,7 +1808,10 @@ export function ProjectView({
     invalidateHtmlSourceSnapshotProject(project.id);
   }, [project.id]);
   const projectRunWorkspaceContextRef = useRef<null>(null);
-  const projectMutationReadOnly = projectGit.loading || projectGit.writeLocked;
+  const projectMutationReadOnly = !projectGit.state
+    || projectGit.loading
+    || Boolean(projectGit.error)
+    || projectGit.writeLocked;
   const projectRunWorkspaceContext = null;
   const projectRunAuthorityKey = project.id;
   const projectDetail = useProjectDetail(
@@ -1906,6 +1909,7 @@ export function ProjectView({
   activeConversationIdRef.current = activeConversationId;
   const [pendingEmptyConversationSeed, setPendingEmptyConversationSeed] =
     useState<{ projectId: string; authorityKey: string } | null>(null);
+  const restoredManualDraftRef = useRef(false);
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
@@ -2510,10 +2514,12 @@ export function ProjectView({
     let cancelled = false;
     (async () => {
       try {
+        const mutationContext = captureProjectMutation(project.id);
+        if (!mutationContext || mutationContext.signal.aborted) return;
         const fresh = await createConversation(project.id, undefined, {
-          mutationContext: captureProjectMutation(project.id),
+          mutationContext,
         });
-        if (cancelled) return;
+        if (cancelled || !isProjectMutationCurrent(project.id, mutationContext)) return;
         if (!fresh) {
           throw new Error('Could not create a conversation for this project.');
         }
@@ -3016,6 +3022,7 @@ export function ProjectView({
       fresh?: boolean;
       signal?: AbortSignal;
       requireAuthoritative?: boolean;
+      mutationContext?: ProjectMutationContext;
     },
     onAcceptedGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
@@ -3035,7 +3042,13 @@ export function ProjectView({
       // refresh helper's historical resolved-list contract for its callers.
       return projectFilesRef.current;
     }
-    if (requestSeq === projectFilesRequestSeqRef.current) {
+    if (
+      requestSeq === projectFilesRequestSeqRef.current
+      && (
+        !options?.mutationContext
+        || isProjectMutationCurrent(project.id, options.mutationContext)
+      )
+    ) {
       const acceptedGeneration = projectFilesGenerationRef.current + 1;
       projectFilesGenerationRef.current = acceptedGeneration;
       projectFilesRef.current = next;
@@ -3122,6 +3135,7 @@ export function ProjectView({
         fresh: options?.freshProjectFiles,
         signal: options?.signal,
         requireAuthoritative: options?.requireAuthoritative,
+        mutationContext: options?.mutationContext,
       }, onAcceptedFilesGeneration),
       refreshLiveArtifacts({
         fresh: options?.freshLiveArtifacts,
@@ -4728,6 +4742,7 @@ export function ProjectView({
               endedAt: prev.endedAt ?? Date.now(),
             }),
             true,
+            { mutationContext },
           );
           continue;
         }
@@ -4744,6 +4759,7 @@ export function ProjectView({
             message.id,
             (prev) => ({ ...prev, runId, runStatus: fallbackRun.status }),
             true,
+            { mutationContext },
           );
         }
 
@@ -4786,6 +4802,7 @@ export function ProjectView({
               message.id,
               (prev) => ({ ...prev, runStatus: 'failed', endedAt: prev.endedAt ?? Date.now() }),
               true,
+              { mutationContext },
             );
             completedReattachRunsRef.current.add(runId);
           }
@@ -4849,6 +4866,7 @@ export function ProjectView({
               ...(settledFields ?? {}),
             }),
             true,
+            { mutationContext },
           );
         }
         // When the daemon authoritative status is 'failed', the run ended in a
@@ -4863,6 +4881,7 @@ export function ProjectView({
               message.id,
               (prev) => ({ ...prev, resumable: status.resumable }),
               true,
+              { mutationContext },
             );
           }
           // Clear stale retry count — this run is authoritatively done.
@@ -4913,6 +4932,7 @@ export function ProjectView({
               ...(status.resumable !== undefined ? { resumable: status.resumable } : {}),
             }),
             true,
+            { mutationContext },
           );
         }
 
@@ -4967,7 +4987,7 @@ export function ProjectView({
               { telemetryFinalized: true, mutationContext },
             );
 
-            let nextFiles = await refreshProjectFiles();
+            let nextFiles = await refreshProjectFiles({ mutationContext });
             if (!recoveryIsCurrent()) return;
             const beforeFileNames = new Set(
               message.preTurnFileNames ?? nextFiles.map((f) => f.name),
@@ -5009,7 +5029,7 @@ export function ProjectView({
                 if (!recoveryIsCurrent()) return;
                 if (persistence.ok) artifactPersistenceSucceeded = true;
                 else artifactPersistenceError = persistence.error;
-                nextFiles = await refreshProjectFiles();
+                nextFiles = await refreshProjectFiles({ mutationContext });
                 if (!recoveryIsCurrent()) return;
               }
             }
@@ -5087,6 +5107,11 @@ export function ProjectView({
 
         const controller = new AbortController();
         const cancelController = new AbortController();
+        const ownsReattachRun = () => Boolean(
+          recoveryIsCurrent()
+          && !controller.signal.aborted
+          && !supersededRunsRef.current.has(controller),
+        );
         const ownedReattachRunIds = new Set<string>();
         const claimReattachRun = (claimedRunId: string) => {
           ownedReattachRunIds.add(claimedRunId);
@@ -5126,6 +5151,7 @@ export function ProjectView({
                 : {}),
             }),
             true,
+            { mutationContext },
           );
         }
         if (!isTerminalRunStatus(status.status)) {
@@ -5174,6 +5200,7 @@ export function ProjectView({
               ...(spuriouslyFailedPending ? { endedAt: undefined } : {}),
             }),
             true,
+            { mutationContext },
           );
           // When the failed-message recovery moves back to running/succeeded,
           // clear any stale "daemon stream disconnected" error banner that the
@@ -5184,15 +5211,15 @@ export function ProjectView({
 
         let persistTimer: ReturnType<typeof setTimeout> | null = null;
         const persistSoon = () => {
-          if (!recoveryIsCurrent()) return;
+          if (!ownsReattachRun()) return;
           if (persistTimer) return;
           persistTimer = scheduleProjectTimeout(() => {
             persistTimer = null;
-            if (recoveryIsCurrent()) persistMessageById(message.id, { mutationContext });
+            if (ownsReattachRun()) persistMessageById(message.id, { mutationContext });
           }, 500);
         };
         const persistNow = (options?: SaveMessageOptions) => {
-          if (!recoveryIsCurrent()) return;
+          if (!ownsReattachRun()) return;
           if (persistTimer) {
             clearProjectTimeout(persistTimer);
             persistTimer = null;
@@ -5217,7 +5244,7 @@ export function ProjectView({
         let latestReattachRunStatus: ChatMessage['runStatus'] = status.status;
         let authoritativeReattachArtifactPaths = status.artifactPaths;
         const applyContentDelta = (delta: string) => {
-          if (!recoveryIsCurrent()) return;
+          if (!ownsReattachRun()) return;
           for (const ev of parser.feed(delta)) {
             if (ev.type === 'artifact:start') {
               liveHtml = '';
@@ -5282,10 +5309,11 @@ export function ProjectView({
           initialLastEventId:
             needsFullReplay || taskRunAdvanced ? null : message.lastRunEventId ?? null,
           onArtifactPaths: (paths) => {
+            if (!ownsReattachRun()) return;
             authoritativeReattachArtifactPaths = paths;
           },
           onStrategyTaskSettled: (strategyTask) => {
-            if (!recoveryIsCurrent()) return;
+            if (!ownsReattachRun()) return;
             const settledFields = strategySettledMessageFields(strategyTask);
             if (!settledFields) return;
             updateMessageById(
@@ -5296,7 +5324,7 @@ export function ProjectView({
             );
           },
           onRunCreated: (nextRunId, strategyTask) => {
-            if (!recoveryIsCurrent()) return;
+            if (!ownsReattachRun()) return;
             activeReattachRunId = nextRunId;
             claimReattachRun(nextRunId);
             textBuffer.flush();
@@ -5319,7 +5347,7 @@ export function ProjectView({
           },
           handlers: {
             onDelta: (delta) => {
-              if (!recoveryIsCurrent()) return;
+              if (!ownsReattachRun()) return;
               // First payload from the resumed stream is real recovery — the daemon is
               // sending data, not just answering REST status probes.  Reset the
               // transient retry budgets so a future disconnect starts from zero, but
@@ -5338,7 +5366,7 @@ export function ProjectView({
               textBuffer.appendContent(delta);
             },
             onAgentEvent: (ev) => {
-              if (!recoveryIsCurrent()) return;
+              if (!ownsReattachRun()) return;
               transientFailedRetriesRef.current.delete(runId);
               if (!(replayingTerminalRun && !(message.producedFiles?.length))) {
                 genericDisconnectRetriesRef.current.delete(runId);
@@ -5348,6 +5376,7 @@ export function ProjectView({
               textBuffer.appendEvent(ev);
             },
             onArtifactCount: (count) => {
+              if (!ownsReattachRun()) return;
               daemonArtifactCount = count;
             },
             onDone: async () => {
@@ -5357,10 +5386,7 @@ export function ProjectView({
               // repainting the artifact preview via setArtifact, re-finalizing
               // the message) — only release this run's bookkeeping. See the
               // streamViaDaemon onDone for the ownership rationale.
-              const runMayFinalize =
-                !supersededRunsRef.current.has(controller)
-                && recoveryIsCurrent();
-              if (runMayFinalize) textBuffer.flush();
+              if (ownsReattachRun()) textBuffer.flush();
               textBuffer.cancel();
               unregisterTextBuffer();
               // Clear stale retry count for successfully recovered run.
@@ -5372,8 +5398,8 @@ export function ProjectView({
               // Clear any stale error banner set by the original onError path
               // (e.g. "daemon stream disconnected") so the chat does not show it
               // after the spuriously-failed message reattaches and succeeds.
-              if (runMayFinalize && spuriouslyFailedPending) setError(null);
-              if (!runMayFinalize) return;
+              if (ownsReattachRun() && spuriouslyFailedPending) setError(null);
+              if (!ownsReattachRun()) return;
               for (const ev of parser.flush()) {
                 if (ev.type === 'artifact:end') {
                   parsedArtifact = parsedArtifact
@@ -5395,7 +5421,7 @@ export function ProjectView({
                 activeReattachRunId,
                 activeReattachRunId === runId ? status : null,
               );
-              if (!recoveryIsCurrent()) return;
+              if (!ownsReattachRun()) return;
               updateMessageById(
                 message.id,
                 (prev) => ({
@@ -5414,8 +5440,8 @@ export function ProjectView({
               if (latestReattachRunStatus === 'canceled') return;
               void (async () => {
                 const preTurn = message.preTurnFileNames;
-                let nextFiles = await refreshProjectFiles();
-                if (!recoveryIsCurrent()) return;
+                let nextFiles = await refreshProjectFiles({ mutationContext });
+                if (!ownsReattachRun()) return;
                 let artifactPersistenceSucceeded = false;
                 let artifactPersistenceError: string | undefined;
                 // Use the turn-start snapshot when available so reload
@@ -5441,7 +5467,7 @@ export function ProjectView({
                       nextFiles,
                       { minMtime: runStartedAt },
                     );
-                  if (!recoveryIsCurrent()) return;
+                  if (!ownsReattachRun()) return;
                   if (recoveredExistingArtifact) {
                     artifactPersistenceSucceeded = true;
                     savedArtifactRef.current = recoveredExistingArtifact.name;
@@ -5454,11 +5480,11 @@ export function ProjectView({
                       replayedContent,
                       { pointerMinMtime: runStartedAt, mutationContext },
                     );
-                    if (!recoveryIsCurrent()) return;
+                    if (!ownsReattachRun()) return;
                     if (persistence.ok) artifactPersistenceSucceeded = true;
                     else artifactPersistenceError = persistence.error;
-                    nextFiles = await refreshProjectFiles();
-                    if (!recoveryIsCurrent()) return;
+                    nextFiles = await refreshProjectFiles({ mutationContext });
+                    if (!ownsReattachRun()) return;
                   }
                 }
                 const diff = computeProducedFiles(
@@ -5534,9 +5560,9 @@ export function ProjectView({
                   setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
                 }
                 if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
-                if (!recoveryIsCurrent()) return;
+                if (!ownsReattachRun()) return;
               })();
-              if (recoveryIsCurrent()) onProjectsRefresh();
+              if (ownsReattachRun()) onProjectsRefresh();
             },
             onError: async (err) => {
               const errorCode = (err as Error & { code?: string }).code;
@@ -5547,13 +5573,10 @@ export function ProjectView({
               const failure = runFailureFieldsFromError(err);
               // A superseded reattached run must not paint a global failure
               // banner or re-finalize its message over the replacement run.
-              const runMayFinalize =
-                !supersededRunsRef.current.has(controller)
-                && recoveryIsCurrent();
-              textBuffer.flush();
+              if (ownsReattachRun()) textBuffer.flush();
               textBuffer.cancel();
               unregisterTextBuffer();
-              if (runMayFinalize) {
+              if (ownsReattachRun()) {
                 setRunError(err.message, message.id);
                 appendAssistantErrorEvent(message.id, err.message, errorCode, failure, mutationContext);
                 updateMessageById(
@@ -5573,13 +5596,13 @@ export function ProjectView({
                     const latestRunStatus = await fetchChatRunStatus(
                       runId,
                     ).catch(() => null);
-                    if (!recoveryIsCurrent()) return;
+                    if (!ownsReattachRun()) return;
                     const artifactToPersist = parsedArtifact?.html
                       ? parsedArtifact
                       : artifactFromStandaloneHtml(replayedContent);
                     if (!artifactToPersist?.html) return;
-                    let nextFiles = await refreshProjectFiles();
-                    if (!recoveryIsCurrent()) return;
+                    let nextFiles = await refreshProjectFiles({ mutationContext });
+                    if (!ownsReattachRun()) return;
                     const beforeFileNames = new Set(
                       message.preTurnFileNames ?? nextFiles.map((f) => f.name),
                     );
@@ -5598,7 +5621,7 @@ export function ProjectView({
                         nextFiles,
                         { minMtime: runStartedAt },
                       );
-                    if (!recoveryIsCurrent()) return;
+                    if (!ownsReattachRun()) return;
                     if (recoveredExistingArtifact) {
                       savedArtifactRef.current = recoveredExistingArtifact.name;
                       requestOpenFile(recoveredExistingArtifact.name);
@@ -5610,9 +5633,9 @@ export function ProjectView({
                         replayedContent,
                         { pointerMinMtime: runStartedAt, mutationContext },
                       );
-                      if (!recoveryIsCurrent()) return;
-                      nextFiles = await refreshProjectFiles();
-                      if (!recoveryIsCurrent()) return;
+                      if (!ownsReattachRun()) return;
+                      nextFiles = await refreshProjectFiles({ mutationContext });
+                      if (!ownsReattachRun()) return;
                       recoveredExistingArtifact = findExistingArtifactProjectFile(
                         artifactToPersist,
                         nextFiles,
@@ -5656,7 +5679,7 @@ export function ProjectView({
                       { telemetryFinalized: true, mutationContext },
                     );
                     if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
-                    if (recoveryIsCurrent()) onProjectsRefresh();
+                    if (ownsReattachRun()) onProjectsRefresh();
                   })();
                 }
               }
@@ -5699,7 +5722,7 @@ export function ProjectView({
                   const latestRunStatus = await fetchChatRunStatus(
                     runId,
                   ).catch(() => null);
-                  if (!recoveryIsCurrent()) return;
+                  if (!ownsReattachRun()) return;
                   if (!latestRunStatus || isActiveRunStatus(latestRunStatus.status)) {
                     // If the backoff elapsed while this probe was still in
                     // flight, its recovery tick already ran while the run was
@@ -5804,7 +5827,7 @@ export function ProjectView({
             },
           },
           onRunStatus: (runStatus) => {
-            if (!recoveryIsCurrent()) return;
+            if (!ownsReattachRun()) return;
             textBuffer.flush();
             updateMessageById(
               message.id,
@@ -5833,7 +5856,7 @@ export function ProjectView({
             }
           },
           onRunEventId: (lastRunEventId) => {
-            if (!recoveryIsCurrent()) return;
+            if (!ownsReattachRun()) return;
             textBuffer.flush();
             updateMessageById(message.id, (prev) => ({ ...prev, lastRunEventId }));
             persistSoon();
@@ -5843,9 +5866,7 @@ export function ProjectView({
             // Skip AbortError (expected on interrupt) and any error from a run
             // that was tagged superseded by a send-now interrupt — it must not
             // surface a global failure over the replacement.
-            const runMayFinalize =
-              !supersededRunsRef.current.has(controller)
-              && recoveryIsCurrent();
+            const runMayFinalize = ownsReattachRun();
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
               setRunError(msg, message.id);
@@ -5859,7 +5880,7 @@ export function ProjectView({
             }
           })
           .finally(() => {
-            textBuffer.flush();
+            if (ownsReattachRun()) textBuffer.flush();
             textBuffer.cancel();
             unregisterTextBuffer();
             if (persistTimer) clearProjectTimeout(persistTimer);
@@ -5974,7 +5995,7 @@ export function ProjectView({
             runId,
           ).catch(() => null);
           if (!recoveryIsCurrent()) return;
-          let nextFiles = await refreshProjectFiles();
+          let nextFiles = await refreshProjectFiles({ mutationContext });
           if (cancelled || !recoveryIsCurrent()) return;
           const beforeFileNames = new Set(
             message.preTurnFileNames ?? nextFiles.map((f) => f.name),
@@ -6007,7 +6028,7 @@ export function ProjectView({
               { pointerMinMtime: runStartedAt, mutationContext },
             );
             if (!recoveryIsCurrent()) return;
-            nextFiles = await refreshProjectFiles();
+            nextFiles = await refreshProjectFiles({ mutationContext });
             if (!recoveryIsCurrent()) return;
             recoveredExistingArtifact = findExistingArtifactProjectFile(
               artifactToPersist,
@@ -6225,7 +6246,8 @@ export function ProjectView({
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
       const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
-      if (mutationContext?.signal.aborted) return false;
+      if (!mutationContext || mutationContext.signal.aborted) return false;
+      restoredManualDraftRef.current = false;
       activeMutationContextRef.current = mutationContext;
       const clientRequestId = meta?.clientRequestId ?? randomUUID();
       meta = {
@@ -6651,7 +6673,7 @@ export function ProjectView({
       let streamedText = '';
 
       const updateAssistant = (updater: (prev: ChatMessage) => ChatMessage) => {
-        if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+        if (!ownsRun()) return;
         setMessages((curr) => {
           let found = false;
           const next = curr.map((m) => {
@@ -6693,13 +6715,16 @@ export function ProjectView({
       };
       let persistTimer: ReturnType<typeof setTimeout> | null = null;
       const persistAssistantSoon = () => {
+        if (!ownsRun()) return;
         if (persistTimer) return;
         persistTimer = scheduleProjectTimeout(() => {
           persistTimer = null;
+          if (!ownsRun()) return;
           persistMessageById(assistantId, { mutationContext });
         }, 500);
       };
       const persistAssistantNowKeepalive = () => {
+        if (!ownsRun()) return;
         if (persistTimer) {
           clearProjectTimeout(persistTimer);
           persistTimer = null;
@@ -6707,7 +6732,7 @@ export function ProjectView({
         persistMessageById(assistantId, { keepalive: true, mutationContext });
       };
       const pushEvent = (ev: AgentEvent) => {
-        if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+        if (!ownsRun()) return;
         textBuffer.flush();
         updateAssistant((prev) => ({
           ...prev,
@@ -6715,8 +6740,8 @@ export function ProjectView({
         }));
         if (ev.kind === 'live_artifact') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
-          void refreshLiveArtifacts().then(() => {
-            if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+          void refreshLiveArtifacts({ mutationContext }).then(() => {
+            if (!ownsRun()) return;
             if (ev.action !== 'deleted') requestOpenFile(liveArtifactTabId(ev.artifactId));
           });
           onProjectsRefresh();
@@ -6724,7 +6749,7 @@ export function ProjectView({
         }
         if (ev.kind === 'live_artifact_refresh') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
-          void refreshLiveArtifacts();
+          void refreshLiveArtifacts({ mutationContext });
           onProjectsRefresh();
           return;
         }
@@ -6787,15 +6812,15 @@ export function ProjectView({
               // Only auto-open if the file actually landed in the project's
               // file list — otherwise an out-of-project Write (e.g. an
               // upstream repo edit) would spawn a permanent placeholder tab.
-              void refreshProjectFiles().then(async (nextFiles) => {
-                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+              void refreshProjectFiles({ mutationContext }).then(async (nextFiles) => {
+                if (!ownsRun()) return;
                 // A .jsx/.tsx loaded by a sibling HTML entry is a module of a
                 // multi-file React prototype, not a standalone page — don't
                 // strand the user on a dead-end preview tab. Issue #2744.
                 const moduleFileNames = /\.(jsx|tsx)$/i.test(filePath)
                   ? await collectReferencedJsxNames(nextFiles, readProjectHtml)
                   : undefined;
-                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+                if (!ownsRun()) return;
                 const decision = decideAutoOpenAfterWrite(filePath, nextFiles, {
                   moduleFileNames,
                 });
@@ -6836,7 +6861,7 @@ export function ProjectView({
       };
 
       const applyContentDelta = (delta: string) => {
-        if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+        if (!ownsRun()) return;
         for (const ev of parser.feed(delta)) {
           if (ev.type === 'artifact:start') {
             liveHtml = '';
@@ -6891,9 +6916,15 @@ export function ProjectView({
       let authoritativeArtifactPaths: string[] | undefined;
       abortRef.current = controller;
       cancelRef.current = cancelController;
+      const ownsRun = () => Boolean(
+        mutationContext
+        && projectGit.isCurrent(mutationContext)
+        && !controller.signal.aborted
+        && !supersededRunsRef.current.has(controller),
+      );
       const handlers = {
         onDelta: (delta: string) => {
-          if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+          if (!ownsRun()) return;
           // See reattach-path comment above for rationale.  PR #4651 round 9.
           if (currentRunId) {
             transientFailedRetriesRef.current.delete(currentRunId);
@@ -6904,7 +6935,7 @@ export function ProjectView({
           textBuffer.appendContent(delta);
         },
         onAgentEvent: (ev: AgentEvent) => {
-          if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+          if (!ownsRun()) return;
           if (currentRunId) {
             transientFailedRetriesRef.current.delete(currentRunId);
             genericDisconnectRetriesRef.current.delete(currentRunId);
@@ -6919,9 +6950,11 @@ export function ProjectView({
           else pushEvent(ev);
         },
         onArtifactCount: (count: number) => {
+          if (!ownsRun()) return;
           daemonArtifactCount = count;
         },
         onToolInputDelta: (id: string, name: string, delta: string) => {
+          if (!ownsRun()) return;
           setLiveToolInput((prev) => ({
             ...prev,
             [id]: {
@@ -6947,11 +6980,7 @@ export function ProjectView({
           // (recorded before handleStop cleared the refs), which is reliable
           // even before the replacement send attaches — unlike abortRef, whose
           // terminal onRunStatus / handleStop churn make it ambiguous here.
-          const runMayFinalize =
-            !supersededRunsRef.current.has(controller)
-            && Boolean(mutationContext)
-            && projectGit.isCurrent(mutationContext!);
-          if (!runMayFinalize) {
+          if (!ownsRun()) {
             textBuffer.cancel();
             cancelSendTextBuffer();
             clearTraceTouchedFilePaths();
@@ -7004,7 +7033,7 @@ export function ProjectView({
               cancelController,
             );
             if (ownsCurrentRun) updateConversationLatestRun('failed', endedAt);
-            void refreshProjectFiles().catch(() => {
+            void refreshProjectFiles({ mutationContext }).catch(() => {
               // Retain the last accepted file list while the daemon recovers.
             });
             onProjectsRefresh();
@@ -7042,8 +7071,8 @@ export function ProjectView({
               // otherwise win the race with the file-change invalidation and
               // make this turn persist an empty producedFiles list. Completion
               // attribution needs a fresh post-run snapshot.
-              let nextFiles = await refreshProjectFiles({ fresh: true });
-              if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+              let nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+              if (!ownsRun()) return;
               let artifactPersistenceSucceeded = false;
               let artifactPersistenceError: string | undefined;
               const finalText = streamedText || fullText;
@@ -7058,7 +7087,7 @@ export function ProjectView({
                     producedFiles: producedBeforeFallback,
                     readProjectText: readProjectHtml,
                   });
-                if (!projectGit.isCurrent(mutationContext)) return;
+                if (!ownsRun()) return;
                 const sameTurnHtmlWrite = sameTurnArtifactWrite
                   ? null
                   : await findSameTurnHtmlWriteForRecoveredArtifact({
@@ -7070,7 +7099,7 @@ export function ProjectView({
                       producedFiles: producedBeforeFallback,
                       readProjectHtml,
                     });
-                if (!projectGit.isCurrent(mutationContext)) return;
+                if (!ownsRun()) return;
                 const sameTurnWrite = sameTurnArtifactWrite ?? sameTurnHtmlWrite;
                 if (sameTurnWrite) {
                   artifactPersistenceSucceeded = true;
@@ -7084,11 +7113,11 @@ export function ProjectView({
                     finalText,
                     { mutationContext },
                   );
-                  if (!projectGit.isCurrent(mutationContext)) return;
+                  if (!ownsRun()) return;
                   if (persistence.ok) artifactPersistenceSucceeded = true;
                   else artifactPersistenceError = persistence.error;
-                  nextFiles = await refreshProjectFiles({ fresh: true });
-                  if (!projectGit.isCurrent(mutationContext)) return;
+                  nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+                  if (!ownsRun()) return;
                 }
               }
               const produced = computeProducedFiles(
@@ -7105,7 +7134,7 @@ export function ProjectView({
               // `succeeded` run that returned only text or a clarifying question
               // does NOT count. Fires once.
               if (
-                ownsCurrentRun &&
+                ownsRun() &&
                 onboardingEntryRef.current &&
                 !hasCompletedFirstOnboardingGeneration(project.id) &&
                 finalRunStatus === 'succeeded' &&
@@ -7184,7 +7213,7 @@ export function ProjectView({
                 deliveryOutcome,
                 artifactPersistenceError,
               );
-              if (!projectGit.isCurrent(mutationContext)) return;
+              if (!ownsRun()) return;
               latestAssistantMsg = finalized;
               // Only the live completion path arms the experience survey. The
               // reattach and artifact-recovery paths below also settle on
@@ -7209,6 +7238,7 @@ export function ProjectView({
                 }
               }
               await auditDesignSystemWorkspaceAfterRun(assistantId, mutationContext);
+              if (!ownsRun()) return;
             } finally {
               clearTraceTouchedFilePaths();
               if (finalizingRunId) finalizingLocalRunIdsRef.current.delete(finalizingRunId);
@@ -7244,10 +7274,6 @@ export function ProjectView({
           // terminal SSE). It must not paint a global failure banner or
           // re-finalize its already-canceled assistant message once it was
           // tagged superseded. See the onDone above for the ownership rationale.
-          const runMayFinalize =
-            !supersededRunsRef.current.has(controller)
-            && Boolean(mutationContext)
-            && projectGit.isCurrent(mutationContext!);
           textBuffer.flush();
           textBuffer.cancel();
           cancelSendTextBuffer();
@@ -7258,7 +7284,7 @@ export function ProjectView({
           // only the duplicate turn itself records why it went nowhere.
           const duplicateEnrichmentRejected =
             errorCode === 'DESIGN_SYSTEM_ENRICHMENT_IN_PROGRESS';
-          if (runMayFinalize) {
+          if (ownsRun()) {
             if (!duplicateEnrichmentRejected) setRunError(err.message, assistantId);
             appendAssistantErrorEvent(assistantId, err.message, errorCode, failure, mutationContext);
             updateAssistant((prev) => ({
@@ -7309,7 +7335,7 @@ export function ProjectView({
                 const latestRunStatus = await fetchChatRunStatus(
                   runIdForGenericDisconnect,
                 ).catch(() => null);
-                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+                if (!ownsRun()) return;
                 if (latestRunStatus?.artifactPaths) {
                   authoritativeArtifactPaths = latestRunStatus.artifactPaths;
                 }
@@ -7320,7 +7346,7 @@ export function ProjectView({
                   // below adopts this same authoritative terminal timestamp,
                   // matching the message row's endedAt set further down.
                   endedAt = latestRunStatus.updatedAt;
-                  if (runMayFinalize) {
+                  if (ownsRun()) {
                     setError(null);
                     updateAssistant((prev) => {
                       const recovered = removeErrorStatusEvent(prev, err.message, errorCode);
@@ -7366,7 +7392,7 @@ export function ProjectView({
                   // Same rationale as the succeeded branch above: keep the
                   // conversation-level stamp in step with the message row.
                   endedAt = latestRunStatus.updatedAt;
-                  if (runMayFinalize) {
+                  if (ownsRun()) {
                     if (latestRunStatus.status === 'canceled') setError(null);
                     updateAssistant((prev) => ({
                       ...prev,
@@ -7404,7 +7430,7 @@ export function ProjectView({
           }
           setMessages((curr) => {
             const finalized = curr.find((m) => m.id === assistantId);
-            if (finalized && runMayFinalize) {
+            if (finalized && ownsRun()) {
               persistMessage(finalized, { telemetryFinalized: true, mutationContext });
             }
             return curr;
@@ -7417,8 +7443,8 @@ export function ProjectView({
             ...(authoritativeArtifactPaths ?? []),
           ];
           void (async () => {
-            const nextFiles = await refreshProjectFiles({ fresh: true });
-            if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
+            const nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+            if (!ownsRun()) return;
             if (authoritativeArtifactPaths === undefined) return;
             const produced = computeProducedFiles(
               beforeFileNames,
@@ -7575,7 +7601,7 @@ export function ProjectView({
             : {}),
           ...(runAnalyticsHints ? { analyticsHints: runAnalyticsHints } : {}),
           onStrategyTaskSettled: (strategyTask) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             const settledFields = strategySettledMessageFields(strategyTask);
             if (!settledFields) return;
             latestAssistantMsg = { ...latestAssistantMsg, ...settledFields };
@@ -7587,7 +7613,7 @@ export function ProjectView({
             );
           },
           onRunCreated: (runId, strategyTask) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             // A successor boundary must include the final predecessor delta
             // and buffered text event even when the 250ms UI batch has not
             // fired yet.
@@ -7640,14 +7666,12 @@ export function ProjectView({
             }));
           },
           onArtifactPaths: (paths) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             authoritativeArtifactPaths = paths;
           },
           onRunStatus: (runStatus) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
-            const runMayFinalize =
-              !supersededRunsRef.current.has(controller);
             updateMessageById(
               assistantId,
               (prev) => ({
@@ -7661,7 +7685,6 @@ export function ProjectView({
                 mutationContext,
               },
             );
-            if (!runMayFinalize) return;
             updateConversationLatestRun(runStatus, endedAt);
             if (isTerminalRunStatus(runStatus)) {
               clearCurrentRunStreamingMarker(runConversationId, controller, cancelController);
@@ -7670,7 +7693,7 @@ export function ProjectView({
             }
           },
           onRunEventId: (lastRunEventId) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             updateMessageById(assistantId, (prev) => ({ ...prev, lastRunEventId }));
             persistAssistantSoon();
           },
@@ -7727,6 +7750,7 @@ export function ProjectView({
             // on the next event.
           }
         }
+        if (!ownsRun()) return false;
         pushEvent({ kind: 'status', label: 'requesting', detail: config.model });
         const byokOpenCodeHistory = await historyWithApiAttachmentContext(
           historyWithCommentAttachmentContext(
@@ -7740,6 +7764,7 @@ export function ProjectView({
             omitNativeImageAttachments: usesAnthropicProxy(config),
           },
         );
+        if (!ownsRun()) return false;
         // Session-dimension hints on the BYOK-OpenCode path too, so
         // run_created / run_finished carry the same session-global and
         // project-scoped run sequence on every runtime (cli / byok).
@@ -7806,7 +7831,7 @@ export function ProjectView({
             recoveryActionInstanceId: taskAnalytics.recoveryActionInstanceId,
           },
           onRunCreated: (runId, strategyTask) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             textBuffer.flush();
             const resolvedTaskAnalytics = {
               ...taskAnalytics,
@@ -7853,9 +7878,8 @@ export function ProjectView({
             }));
           },
           onRunStatus: (runStatus) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
-            const runMayFinalize = !supersededRunsRef.current.has(controller);
             updateMessageById(
               assistantId,
               (prev) => ({
@@ -7869,7 +7893,6 @@ export function ProjectView({
                 mutationContext,
               },
             );
-            if (!runMayFinalize) return;
             updateConversationLatestRun(runStatus, endedAt);
             if (isTerminalRunStatus(runStatus)) {
               clearCurrentRunStreamingMarker(runConversationId, controller, cancelController);
@@ -7877,7 +7900,7 @@ export function ProjectView({
             }
           },
           onRunEventId: (lastRunEventId) => {
-            if (mutationContext && !projectGit.isCurrent(mutationContext)) return;
+            if (!ownsRun()) return;
             updateMessageById(assistantId, (prev) => ({ ...prev, lastRunEventId }));
             persistAssistantSoon();
           },
@@ -8082,7 +8105,6 @@ export function ProjectView({
     void (async () => {
       armSlideNavForQueuedSend(item);
       if (item.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
-        removeQueuedChatSend(id);
         setError('Project history changed. The queued draft was kept in history but was not sent; reload and send it again.');
         return;
       }
@@ -8094,7 +8116,9 @@ export function ProjectView({
         undefined,
         mutationContext,
       );
-      if (started) removeQueuedChatSend(id);
+      if (started && isProjectMutationCurrent(project.id, mutationContext)) {
+        removeQueuedChatSend(id);
+      }
     })();
   }, [armSlideNavForQueuedSend, commitPreviewComments, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, project.id, removeQueuedChatSend, projectRunWorkspaceContext]);
 
@@ -8115,7 +8139,6 @@ export function ProjectView({
     void (async () => {
       const mutationContext = captureProjectMutation(project.id);
       if (next.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
-        removeQueuedChatSend(next.id);
         startingQueuedChatSendIdRef.current = null;
         setError('Project history changed. The queued draft was not sent; reload and send it again.');
         return;
@@ -8129,6 +8152,12 @@ export function ProjectView({
         mutationContext,
       );
       if (!started) {
+        if (startingQueuedChatSendIdRef.current === next.id) {
+          startingQueuedChatSendIdRef.current = null;
+        }
+        return;
+      }
+      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
         if (startingQueuedChatSendIdRef.current === next.id) {
           startingQueuedChatSendIdRef.current = null;
         }
@@ -10369,7 +10398,7 @@ export function ProjectView({
   // to patch the server before the page reloaded). Drop the seed so the
   // textarea does not echo a prompt the user already submitted.
   useEffect(() => {
-    if (initialDraft && messages.length > 0) {
+    if (initialDraft && messages.length > 0 && !restoredManualDraftRef.current) {
       setInitialDraft(undefined);
     }
   }, [initialDraft, messages.length]);
@@ -10518,11 +10547,16 @@ export function ProjectView({
     setActivePluginActionPaths(new Set());
     setHiddenAssistantPluginActionPaths(new Set());
     setForceStreamingPluginMessageIds(new Set());
+    setLiveToolInput({});
+    setStreaming(false);
+    streamingConversationIdRef.current = null;
+    setStreamingConversationId(null);
     if (autoSendFirstMessageRef.current && !autoSentRef.current) {
       const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
       const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
       const context = autoSendContextRef.current ?? readAutoSendContext(project.id);
       if (text.trim() || attachments.length > 0 || context) {
+        restoredManualDraftRef.current = true;
         setInitialDraft(text ? { projectId: project.id, value: text } : undefined);
         setComposerDraftSignal({
           text,
@@ -10573,7 +10607,11 @@ export function ProjectView({
         ?? nextConversations[0]?.id
         ?? null
       );
-      setPendingEmptyConversationSeed(null);
+      setPendingEmptyConversationSeed(
+        selectedConversationId
+          ? null
+          : { projectId: project.id, authorityKey: 'current' },
+      );
       activeConversationIdRef.current = selectedConversationId;
       setActiveConversationId(selectedConversationId);
       if (!selectedConversationId) {

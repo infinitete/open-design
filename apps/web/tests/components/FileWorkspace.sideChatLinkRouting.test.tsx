@@ -7,13 +7,23 @@
 // links can't be classified on this production surface even though the
 // AssistantMessage unit specs pass.
 
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { forwardRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FileWorkspace } from '../../src/components/FileWorkspace';
 import { I18nProvider } from '../../src/i18n';
+import { createTerminal } from '../../src/state/projects';
+import {
+  createProjectGitStateStore,
+  registerProjectMutationStore,
+  unregisterProjectMutationStore,
+} from '../../src/state/project-git';
 import type { AppConfig, ChatMessage, Conversation, ProjectFile } from '../../src/types';
+
+const launcherCapture = vi.hoisted(() => ({ context: null as null | {
+  createTerminal?: () => Promise<string | null>;
+} }));
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -47,6 +57,26 @@ vi.mock('../../src/components/workspace/useConversationChat', () => ({
     onStop: vi.fn(),
   }),
 }));
+
+vi.mock('../../src/components/workspace/tab-launcher', async () => {
+  const actual = await vi.importActual<typeof import('../../src/components/workspace/tab-launcher')>(
+    '../../src/components/workspace/tab-launcher',
+  );
+  return {
+    ...actual,
+    buildLauncherActions: vi.fn((context) => {
+      launcherCapture.context = context;
+      return [];
+    }),
+  };
+});
+
+vi.mock('../../src/state/projects', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/projects')>(
+    '../../src/state/projects',
+  );
+  return { ...actual, createTerminal: vi.fn() };
+});
 
 afterEach(() => {
   cleanup();
@@ -157,5 +187,53 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
     expect(onTabsStateChange).toHaveBeenCalled();
     const lastState = onTabsStateChange.mock.calls.at(-1)?.[0] as { active?: string };
     expect(lastState?.active).toBe('new-file.md');
+  });
+
+  it('returns no terminal id when a deferred successful creation loses project authority', async () => {
+    const state = {
+      enabled: true,
+      phase: 'synced' as const,
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: null,
+      confirmedRemoteHead: null,
+      projectRevision: 1,
+      contentRevision: 1,
+      bindingGeneration: 1,
+      dirty: false,
+      pendingPush: false,
+      autoSync: true,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    };
+    const store = createProjectGitStateStore(state);
+    registerProjectMutationStore('project-1', store);
+    let resolveCreate!: (value: Awaited<ReturnType<typeof createTerminal>>) => void;
+    vi.mocked(createTerminal).mockReturnValue(new Promise<Awaited<ReturnType<typeof createTerminal>>>((resolve) => {
+      resolveCreate = resolve;
+    }));
+    try {
+      renderSideChatWorkspace('No links needed.');
+      const create = launcherCapture.context?.createTerminal;
+      expect(create).toBeTypeOf('function');
+      const result = create!();
+      await waitFor(() => expect(createTerminal).toHaveBeenCalledWith(
+        'project-1',
+        undefined,
+        expect.objectContaining({ expectedProjectRevision: 1 }),
+      ));
+      store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event');
+      resolveCreate({
+        id: 'term-stale-success', projectId: 'project-1', cwd: '/data/projects/project-1',
+        shell: '/bin/sh', cols: 80, rows: 24, status: 'running', createdAt: 1, updatedAt: 1,
+        exitCode: null, signal: null,
+      });
+
+      await expect(result).resolves.toBeNull();
+    } finally {
+      unregisterProjectMutationStore('project-1', store);
+      store.dispose();
+    }
   });
 });

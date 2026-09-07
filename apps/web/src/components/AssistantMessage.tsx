@@ -298,7 +298,8 @@ function SkillPluginCandidateCard({
   onRequestOpenFile?: (name: string) => void;
 }) {
   const t = useT();
-    const [busy, setBusy] = useState<null | "draft" | "contribute">(null);
+  const [busy, setBusy] = useState<null | "draft" | "contribute">(null);
+  const actionGenerationRef = useRef(0);
   const [notice, setNotice] = useState<ActionNotice | null>(null);
   const disabled = !projectId || busy !== null;
   const description =
@@ -337,6 +338,11 @@ function SkillPluginCandidateCard({
     if (!projectId) return;
     const mutationContext = captureProjectMutation(projectId);
     if (!isProjectMutationCurrent(projectId, mutationContext)) return;
+    const actionGeneration = ++actionGenerationRef.current;
+    const releaseBusy = () => {
+      if (actionGenerationRef.current === actionGeneration) setBusy(null);
+    };
+    mutationContext.signal.addEventListener("abort", releaseBusy, { once: true });
     setBusy("draft");
     setNotice(null);
     try {
@@ -372,7 +378,8 @@ function SkillPluginCandidateCard({
       if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       setNotice({ message: err instanceof Error ? err.message : String(err) });
     } finally {
-      if (isProjectMutationCurrent(projectId, mutationContext)) setBusy(null);
+      mutationContext.signal.removeEventListener("abort", releaseBusy);
+      releaseBusy();
     }
   }
 
@@ -380,6 +387,11 @@ function SkillPluginCandidateCard({
     if (!projectId) return;
     const mutationContext = captureProjectMutation(projectId);
     if (!isProjectMutationCurrent(projectId, mutationContext)) return;
+    const actionGeneration = ++actionGenerationRef.current;
+    const releaseBusy = () => {
+      if (actionGenerationRef.current === actionGeneration) setBusy(null);
+    };
+    mutationContext.signal.addEventListener("abort", releaseBusy, { once: true });
     setBusy("contribute");
     setNotice(null);
     try {
@@ -396,7 +408,8 @@ function SkillPluginCandidateCard({
       if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       setNotice({ message: err instanceof Error ? err.message : String(err) });
     } finally {
-      if (isProjectMutationCurrent(projectId, mutationContext)) setBusy(null);
+      mutationContext.signal.removeEventListener("abort", releaseBusy);
+      releaseBusy();
     }
   }
 

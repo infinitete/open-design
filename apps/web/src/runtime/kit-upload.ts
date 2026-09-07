@@ -43,8 +43,10 @@ export function useKitModuleUpload(opts: {
   const uploadModule = useCallback(
     async (module: KitUploadModule, file: File, mutationContext?: ProjectMutationContext) => {
       if (!projectId || uploading) return;
-      const isCurrent = () => !mutationContext
-        || isProjectMutationCurrent(projectId, mutationContext);
+      const isCurrent = () => Boolean(
+        mutationContext && isProjectMutationCurrent(projectId, mutationContext),
+      );
+      if (!isCurrent()) return;
       setUploading(module);
       try {
         const dir = module === 'logo' ? 'logos' : module === 'font' ? 'fonts' : 'imagery';

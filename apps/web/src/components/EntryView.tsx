@@ -129,9 +129,9 @@ interface Props {
     projectTitleHint?: ProjectTitleHint,
   ) => Promise<boolean> | boolean | void;
   onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
-  onDeleteProject: (id: string) => void;
+  onDeleteProject: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicateProject?: (id: string) => Promise<void> | void;
-  onRenameProject: (id: string, name: string) => void;
+  onRenameProject: (id: string, name: string) => Promise<boolean | void> | boolean | void;
   projectMutationReady?: (id: string) => boolean;
   onProjectsRefresh?: () => Promise<void> | void;
   onTeamProjectContentReady?: (

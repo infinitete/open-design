@@ -48,6 +48,27 @@ afterEach(() => {
 });
 
 describe('DesignKitView project mutation capture', () => {
+  it('does not publish a pasted project image when authority capture is unavailable', async () => {
+    captureProjectMutation.mockReturnValueOnce(undefined as never);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        read: vi.fn(async () => [{
+          types: ['image/png'],
+          getType: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
+        }]),
+      },
+    });
+    const onUploadModule = vi.fn();
+    render(<DesignKitView kit={kit} onUploadModule={onUploadModule} />);
+
+    fireEvent.click(within(screen.getByTestId('design-kit-logo-section'))
+      .getByRole('button', { name: 'ds.pasteImage' }));
+    await Promise.resolve();
+
+    expect(onUploadModule).not.toHaveBeenCalled();
+  });
+
   it('captures before clipboard.read and passes the original context to upload', async () => {
     const read = deferred<ClipboardItem[]>();
     Object.defineProperty(navigator, 'clipboard', {

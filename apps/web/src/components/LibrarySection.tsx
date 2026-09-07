@@ -513,6 +513,7 @@ export function LibrarySection({
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const authoritySourceId = useId();
   const [band, setBand] = useState<Band | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -526,6 +527,19 @@ export function LibrarySection({
   const [dsMenuOpen, setDsMenuOpen] = useState(false);
   const [dsList, setDsList] = useState<DesignSystemSummary[]>([]);
   const [dsBusy, setDsBusy] = useState(false);
+  useEffect(() => {
+    const projectIds = dsMenuOpen
+      ? [...new Set(dsList.flatMap((designSystem) => designSystem.projectId ? [designSystem.projectId] : []))]
+      : [];
+    window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
+      detail: { source: `library-section:${authoritySourceId}`, projectIds },
+    }));
+    return () => {
+      window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
+        detail: { source: `library-section:${authoritySourceId}`, projectIds: [] },
+      }));
+    };
+  }, [authoritySourceId, dsList, dsMenuOpen]);
   const dsLoadedRef = useRef(false);
   const dsMenuWrapRef = useRef<HTMLDivElement>(null);
   const [fileDragActive, setFileDragActive] = useState(false);

@@ -235,6 +235,9 @@ describe('AssistantMessage feedback gate', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
 
     store.accept(projectGitState(5), 'event');
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Create plugin/template' }),
+    ).not.toBeDisabled());
     await act(async () => {
       releaseDraft(new Response(JSON.stringify({ draftPath: '.open-design/plugins/deferred' }), {
         status: 200,
@@ -246,6 +249,39 @@ describe('AssistantMessage feedback gate', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
     expect(onRequestOpenFile).not.toHaveBeenCalled();
     expect(screen.queryByText(/Draft created/)).toBeNull();
+  });
+
+  it('re-enables plugin share when a never-resolving request loses authority', async () => {
+    const projectId = 'plugin-share-abort-project';
+    const store = createProjectGitStateStore(projectGitState(8));
+    registerProjectMutationStore(projectId, store);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Promise<Response>(() => {}),
+    );
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          content: '',
+          events: [{
+            kind: 'plugin_candidate',
+            candidateId: 'candidate-share-abort',
+            title: 'Share helper',
+            description: 'Share a reusable helper.',
+          } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId={projectId}
+      />,
+    );
+    const contribute = screen.getByRole('button', { name: 'Contribute to open-design' });
+    fireEvent.click(contribute);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(contribute).toBeDisabled();
+
+    act(() => store.accept(projectGitState(9), 'event'));
+
+    await waitFor(() => expect(contribute).not.toBeDisabled());
+    expect(screen.queryByText(/started for/)).toBeNull();
   });
 
   it('sends plugin share with its captured revision and keeps the stale-state notice', async () => {

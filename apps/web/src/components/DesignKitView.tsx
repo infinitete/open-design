@@ -707,9 +707,9 @@ function DesignKitViewInner({
     const mutationContext = kit.projectId
       ? captureProjectMutation(kit.projectId)
       : undefined;
-    const isCurrent = () => !kit.projectId
-      || !mutationContext
-      || isProjectMutationCurrent(kit.projectId, mutationContext);
+    const isCurrent = () => !kit.projectId || Boolean(
+      mutationContext && isProjectMutationCurrent(kit.projectId, mutationContext),
+    );
     try {
       const items = await navigator.clipboard.read();
       if (!isCurrent()) return;

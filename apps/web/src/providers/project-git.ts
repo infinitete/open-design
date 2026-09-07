@@ -29,7 +29,7 @@ import {
   unregisterProjectMutationStore,
 } from '../state/project-git';
 import { subscribeProjectEvents, type ProjectEvent } from './project-events';
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 export class ProjectGitHttpError extends Error {
   constructor(
@@ -316,6 +316,12 @@ export function createProjectGitHub(
     options?: { fresh?: boolean; generation?: number },
   ): Promise<void> => {
     const entry = getEntry(projectId);
+    if (
+      options?.generation !== undefined
+      && entry.store.snapshot().generation !== options.generation
+    ) {
+      throw new Error('Project Git read generation changed before refresh');
+    }
     const token = entry.store.beginRead();
     if (options?.generation !== undefined && token.generation !== options.generation) {
       throw new Error('Project Git read generation changed before refresh');
@@ -458,8 +464,27 @@ export function useProjectGit(projectId: string | null | undefined) {
  */
 export function useProjectGitAuthoritySet(projectIds: readonly string[]) {
   const projectIdsKey = JSON.stringify([...new Set(projectIds)].sort());
-  const stableProjectIds = useMemo<string[]>(() => JSON.parse(projectIdsKey), [projectIdsKey]);
+  const configuredProjectIds = useMemo<string[]>(() => JSON.parse(projectIdsKey), [projectIdsKey]);
+  const [intentProjectIds, setIntentProjectIds] = useState<string[]>([]);
+  useEffect(() => {
+    const sources = new Map<string, string[]>();
+    const onIntent = (event: Event) => {
+      const detail = (event as CustomEvent<{ source?: unknown; projectIds?: unknown }>).detail;
+      if (typeof detail?.source !== 'string' || !Array.isArray(detail.projectIds)) return;
+      const projectIds = detail.projectIds.filter((id): id is string => typeof id === 'string');
+      if (projectIds.length === 0) sources.delete(detail.source);
+      else sources.set(detail.source, projectIds);
+      setIntentProjectIds([...new Set([...sources.values()].flat())].sort());
+    };
+    window.addEventListener('open-design:project-mutation-targets', onIntent);
+    return () => window.removeEventListener('open-design:project-mutation-targets', onIntent);
+  }, []);
+  const stableProjectIds = useMemo(
+    () => [...new Set([...configuredProjectIds, ...intentProjectIds])].sort(),
+    [configuredProjectIds, intentProjectIds],
+  );
   const [snapshots, setSnapshots] = useState<Record<string, ProjectGitStateSnapshot>>({});
+  const reconcilingRef = useRef(new Set<string>());
 
   useEffect(() => {
     setSnapshots((current) => {
@@ -471,9 +496,34 @@ export function useProjectGitAuthoritySet(projectIds: readonly string[]) {
     });
     const unsubscribes = stableProjectIds.map((projectId) => defaultProjectGitHub.subscribe(
       projectId,
-      (snapshot) => setSnapshots((current) => (
-        current[projectId] === snapshot ? current : { ...current, [projectId]: snapshot }
-      )),
+      (snapshot) => {
+        setSnapshots((current) => (
+          current[projectId] === snapshot ? current : { ...current, [projectId]: snapshot }
+        ));
+        if (!snapshot.writeLocked) return;
+        const reconciliationKey = `${projectId}:${snapshot.generation}`;
+        if (reconcilingRef.current.has(reconciliationKey)) return;
+        reconcilingRef.current.add(reconciliationKey);
+        void defaultProjectGitHub.refresh(projectId, {
+          fresh: true,
+          generation: snapshot.generation,
+        }).then(() => {
+          const current = defaultProjectGitHub.snapshot(projectId);
+          if (
+            current.generation === snapshot.generation
+            && current.state
+            && !current.error
+          ) {
+            defaultProjectGitHub.store(projectId).completeReconciliation({
+              generation: snapshot.generation,
+            });
+          }
+        }).catch(() => {
+          // Fail closed. A later authoritative event/read may retry.
+        }).finally(() => {
+          reconcilingRef.current.delete(reconciliationKey);
+        });
+      },
     ));
     return () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
@@ -484,7 +534,7 @@ export function useProjectGitAuthoritySet(projectIds: readonly string[]) {
     snapshots,
     isReady: (projectId: string) => {
       const snapshot = snapshots[projectId];
-      return Boolean(snapshot?.state && !snapshot.loading && !snapshot.writeLocked);
+      return Boolean(snapshot?.state && !snapshot.loading && !snapshot.error && !snapshot.writeLocked);
     },
   }), [snapshots]);
 }

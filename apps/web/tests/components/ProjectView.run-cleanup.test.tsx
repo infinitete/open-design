@@ -517,6 +517,391 @@ describe('ProjectView daemon cleanup', () => {
     listProjectRuns.mockResolvedValue([]);
     fetchConnectorStatuses.mockResolvedValue({});
     cancelBrandExtraction.mockResolvedValue({ ok: true, status: 'failed' });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/git')) {
+        return new Response(JSON.stringify({
+          enabled: false,
+          phase: 'synced',
+          localHead: null,
+          observedRemoteHead: null,
+          confirmedRemoteHead: null,
+          projectRevision: 0,
+          contentRevision: 0,
+          bindingGeneration: 0,
+          dirty: false,
+          pendingPush: false,
+          autoSync: false,
+          operationId: null,
+          error: null,
+          binding: { remoteConfigured: false, remoteLabel: null, branch: null },
+          dependencies: [],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+  });
+
+  afterEach(async () => {
+    cleanup();
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    else await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    globalThis.fetch = originalFetch;
+    window.sessionStorage.clear();
+  });
+
+  it('ignores a superseded live run status when Send now starts a replacement in the same epoch', async () => {
+    const projectId = 'project-same-epoch-supersession';
+    const gitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40), projectRevision: 1, contentRevision: 1, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) return new Response(JSON.stringify(gitState), { status: 200 });
+      if (url === `/api/projects/${projectId}`) return new Response(JSON.stringify({
+        project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+        resolvedDir: '/project',
+      }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+
+    let oldHandlers: { onRunStatus: (status: 'succeeded') => void } | undefined;
+    let calls = 0;
+    streamViaDaemon.mockImplementation(async (options: {
+      onRunCreated?: (runId: string) => void;
+      onRunStatus: (status: 'succeeded') => void;
+    }) => {
+      calls += 1;
+      options.onRunCreated?.(`run-${calls}`);
+      if (calls === 1) oldHandlers = { onRunStatus: options.onRunStatus };
+      return new Promise<void>(() => {});
+    });
+
+    render(<ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+
+    const firstProps = await waitForReadyChatPaneProps();
+    await firstProps.onSend?.('old run', [], []);
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    const busyProps = chatPaneSpy.mock.calls.at(-1)?.[0] as {
+      onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => Promise<void>;
+      queuedItems?: Array<{ id: string }>;
+      onSendQueuedNow?: (id: string) => void;
+    };
+    await busyProps.onSend?.('replacement run', [], []);
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.queuedItems).toHaveLength(1));
+    const queuedProps = chatPaneSpy.mock.calls.at(-1)?.[0] as {
+      queuedItems: Array<{ id: string }>;
+      onSendQueuedNow: (id: string) => void;
+    };
+    act(() => queuedProps.onSendQueuedNow(queuedProps.queuedItems[0]!.id));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(2));
+    const savesBeforeLateStatus = saveMessage.mock.calls.length;
+
+    act(() => oldHandlers?.onRunStatus('succeeded'));
+
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.streaming).toBe(true));
+    expect(saveMessage.mock.calls.slice(savesBeforeLateStatus).some(
+      (call) => call[2]?.runId === 'run-1' && call[2]?.runStatus === 'succeeded',
+    )).toBe(false);
+  });
+
+  it('clears stale tool-input streaming UI on revision invalidation and ignores the late delta', async () => {
+    const projectId = 'project-tool-input-invalidation';
+    const initialGitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40), projectRevision: 1, contentRevision: 1, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    let gitState = initialGitState;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) return new Response(JSON.stringify(gitState), { status: 200 });
+      if (url === `/api/projects/${projectId}`) return new Response(JSON.stringify({
+        project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+        resolvedDir: '/project',
+      }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+    let handlers: { onToolInputDelta: (id: string, name: string, delta: string) => void } | undefined;
+    streamViaDaemon.mockImplementation(async (options: {
+      onRunCreated?: (runId: string) => void;
+      handlers: { onToolInputDelta: (id: string, name: string, delta: string) => void };
+    }) => {
+      options.onRunCreated?.('run-tool-input');
+      handlers = options.handlers;
+      return new Promise<void>(() => {});
+    });
+
+    render(<ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+
+    const props = await waitForReadyChatPaneProps();
+    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
+      | ((event: ProjectEvent) => void)
+      | undefined;
+    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    await props.onSend?.('stream a tool', [], []);
+    await waitFor(() => expect(handlers).toBeDefined());
+    act(() => handlers?.onToolInputDelta('tool-old', 'Write', '{"path":'));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.liveToolInput).toHaveProperty('tool-old'));
+
+    gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    act(() => handlers?.onToolInputDelta('tool-late', 'Write', '"late"}'));
+
+    await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest?.streaming).toBe(false);
+      expect(latest?.liveToolInput).toEqual({});
+    });
+  });
+
+  it('persists phantom recovery with its captured context instead of borrowing ambient run authority', async () => {
+    const projectId = 'project-recovery-explicit-context';
+    const gitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40), projectRevision: 7, contentRevision: 7, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) return new Response(JSON.stringify(gitState), { status: 200 });
+      if (url === `/api/projects/${projectId}`) return new Response(JSON.stringify({
+        project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+        resolvedDir: '/project',
+      }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([{
+      id: 'assistant-phantom', role: 'assistant', content: '', createdAt: 1, runStatus: 'running',
+    }]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+
+    render(<ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+
+    await waitFor(() => {
+      const recovered = saveMessage.mock.calls.find(
+        (call) => call[2]?.id === 'assistant-phantom' && call[2]?.runStatus === 'failed',
+      );
+      expect(recovered?.[3]?.mutationContext?.expectedProjectRevision).toBe(7);
+      expect(recovered?.[3]?.mutationContext?.signal).toBeInstanceOf(AbortSignal);
+    });
+  });
+
+  it('keeps project mutations disabled when the authoritative Git state read fails', async () => {
+    const projectId = 'project-authority-read-failure';
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) return new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 });
+      if (url === `/api/projects/${projectId}`) return new Response(JSON.stringify({
+        project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+        resolvedDir: '/project',
+      }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+
+    render(<ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.sendDisabled).toBe(true));
+    const props = chatPaneSpy.mock.calls.at(-1)?.[0] as {
+      onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => Promise<void>;
+    };
+    await props.onSend?.('must stay inert', [], []);
+    expect(streamViaDaemon).not.toHaveBeenCalled();
+    expect(saveMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps a queued BYOK draft when its deferred preflight loses authority', async () => {
+    const projectId = 'project-byok-memory-revision';
+    const initialGitState: ProjectGitState = {
+      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40), projectRevision: 1, contentRevision: 1, bindingGeneration: 1,
+      dirty: false, pendingPush: false, autoSync: true, operationId: null, error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [],
+    };
+    let gitState = initialGitState;
+    let resolveMemory!: (response: Response) => void;
+    const memoryResponse = new Promise<Response>((resolve) => { resolveMemory = resolve; });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) {
+        return new Response(JSON.stringify(gitState), { status: 200 });
+      }
+      if (url === `/api/projects/${projectId}`) {
+        return new Response(JSON.stringify({
+          project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+          resolvedDir: '/project',
+        }), { status: 200 });
+      }
+      if (url === '/api/memory/extract') return memoryResponse;
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchConnectorStatuses.mockResolvedValue({});
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+
+    render(<ProjectView
+      project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{
+        mode: 'api', apiProtocol: 'openai', apiKey: 'test-key',
+        baseUrl: 'https://api.example.test', model: 'test-model',
+        agentId: null, skillId: null, designSystemId: null,
+        notifications: undefined, agentModels: {},
+      } as never}
+      agents={[{ id: 'byok-opencode', name: 'BYOK OpenCode', available: true, models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+
+    const props = await waitForReadyChatPaneProps();
+    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
+      | ((event: ProjectEvent) => void)
+      | undefined;
+    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    props.onSend?.('remember this safely', [], []);
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/memory/extract',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.streaming).toBe(true));
+    const busyProps = chatPaneSpy.mock.calls.at(-1)?.[0] as {
+      onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => void;
+    };
+    busyProps.onSend?.('keep this queued draft', [], []);
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.queuedItems).toHaveLength(1));
+    const queuedProps = chatPaneSpy.mock.calls.at(-1)?.[0] as {
+      queuedItems: Array<{ id: string; prompt: string }>;
+      onSendQueuedNow: (id: string) => void;
+    };
+    const queuedId = queuedProps.queuedItems[0]!.id;
+    act(() => queuedProps.onSendQueuedNow(queuedId));
+    await waitFor(() => {
+      const memoryCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => (
+        String(input) === '/api/memory/extract'
+      ));
+      expect(memoryCalls).toHaveLength(2);
+    });
+
+    gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await act(async () => {
+      resolveMemory(new Response(JSON.stringify({ changed: [] }), { status: 200 }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(streamViaDaemon).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.queuedItems).toEqual([
+        expect.objectContaining({ id: queuedId, prompt: 'keep this queued draft' }),
+      ]);
+    });
+    const memoryCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => (
+      String(input) === '/api/memory/extract'
+    ));
+    expect(memoryCalls).toHaveLength(2);
   });
 
   it('clears share busy state when a project revision revokes the owning send', async () => {
@@ -1341,6 +1726,121 @@ describe('ProjectView daemon cleanup', () => {
     );
   });
 
+  it('seeds an empty restored project only from the completed current generation', async () => {
+    const projectId = 'project-empty-conversation-barrier';
+    const initialGitState: ProjectGitState = {
+      enabled: true,
+      phase: 'synced',
+      localHead: 'a'.repeat(40),
+      observedRemoteHead: 'a'.repeat(40),
+      confirmedRemoteHead: 'a'.repeat(40),
+      projectRevision: 1,
+      contentRevision: 1,
+      bindingGeneration: 1,
+      dirty: false,
+      pendingPush: false,
+      autoSync: true,
+      operationId: null,
+      error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
+      dependencies: [],
+    };
+    let gitState = initialGitState;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/projects/${projectId}/git`) {
+        return new Response(JSON.stringify(gitState), { status: 200 });
+      }
+      if (url === `/api/projects/${projectId}`) {
+        return new Response(JSON.stringify({
+          project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
+          resolvedDir: '/project',
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    listConversations
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValue([]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchProjectDesignSystemPackageAudit.mockResolvedValue(null);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchConnectorStatuses.mockResolvedValue({});
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+    let resolveStaleSeed!: (value: { id: string; title: string }) => void;
+    createConversation
+      .mockReturnValueOnce(new Promise((resolve) => { resolveStaleSeed = resolve; }))
+      .mockResolvedValueOnce({ id: 'conv-current', title: 'Current conversation' });
+
+    render(
+      <ProjectView
+        project={{ id: projectId, name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(listConversations).toHaveBeenCalledTimes(1));
+    const listener = subscribeProjectEvents.mock.calls.find(([id]) => id === projectId)?.[1] as
+      | ((event: ProjectEvent) => void)
+      | undefined;
+    act(() => listener?.({ type: 'project-git-state', projectId, state: initialGitState }));
+    gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+    expect(createConversation).toHaveBeenNthCalledWith(
+      1,
+      projectId,
+      undefined,
+      { mutationContext: expect.objectContaining({ expectedProjectRevision: 2, generation: 1 }) },
+    );
+
+    gitState = { ...initialGitState, projectRevision: 3, contentRevision: 3, localHead: 'c'.repeat(40) };
+    act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
+    await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(2));
+    expect(createConversation).toHaveBeenNthCalledWith(
+      2,
+      projectId,
+      undefined,
+      { mutationContext: expect.objectContaining({ expectedProjectRevision: 3, generation: 2 }) },
+    );
+    await act(async () => {
+      resolveStaleSeed({ id: 'conv-stale', title: 'Stale conversation' });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      const props = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(props?.activeConversationId).toBe('conv-current');
+      expect(props?.conversations).toEqual([
+        expect.objectContaining({ id: 'conv-current' }),
+      ]);
+      expect(props?.sendDisabled).toBe(false);
+    });
+  });
+
   it('does not let the initial message list replace the transcript accepted by a revision barrier', async () => {
     const projectId = 'project-revision-message-barrier';
     const initialGitState: ProjectGitState = {
@@ -1630,14 +2130,6 @@ describe('ProjectView daemon cleanup', () => {
     gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
     act(() => listener?.({ type: 'project-git-state', projectId, state: gitState }));
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0]?.initialDraft).toBe('Keep this manual draft'));
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-    vi.useRealTimers();
-    globalThis.fetch = originalFetch;
-    window.sessionStorage.clear();
   });
 
   it('uses the routed conversation as the comment anchor while conversations hydrate', async () => {

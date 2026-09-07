@@ -1,0 +1,137 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { ChatPane } from '../../src/components/ChatPane';
+
+vi.mock('../../src/i18n', () => ({
+  useI18n: () => ({ locale: 'en', setLocale: () => undefined, t: (key: string) => key }),
+  useT: () => (key: string) => key,
+}));
+
+afterEach(() => cleanup());
+
+describe('ChatPane restored manual draft', () => {
+  it('keeps text, attachments, and workspace context editable over a hydrated transcript without sending', async () => {
+    const onSend = vi.fn();
+    render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={[{ id: 'old-user', role: 'user', content: 'Restored history', createdAt: 1 }]}
+        streaming={false}
+        error={null}
+        projectId="project-restored-draft"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-restored-draft'}
+        onSend={onSend}
+        onStop={vi.fn()}
+        conversations={[{
+          id: 'conv-restored',
+          projectId: 'project-restored-draft',
+          title: 'Restored',
+          createdAt: 1,
+          updatedAt: 1,
+        }]}
+        activeConversationId="conv-restored"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={{ kind: 'prototype' }}
+        workspaceContexts={[{
+          id: 'browser:reference-a',
+          kind: 'browser',
+          label: 'Reference A',
+          tabId: 'reference-a',
+          url: 'https://example.com/reference-a',
+        }]}
+        initialWorkspaceContexts={[{
+          id: 'browser:reference-a',
+          kind: 'browser',
+          label: 'Reference A',
+          tabId: 'reference-a',
+          url: 'https://example.com/reference-a',
+        }]}
+        composerDraftSignal={{
+          text: 'Keep this restored draft',
+          attachments: [{ path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 }],
+          meta: {
+            context: {
+              workspaceItems: [{
+                id: 'browser:reference-a',
+                kind: 'browser',
+                label: 'Reference A',
+                tabId: 'reference-a',
+                url: 'https://example.com/reference-a',
+              }],
+            },
+          },
+          nonce: 1,
+        }}
+        />
+    );
+
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Keep this restored draft'));
+    expect(screen.getByText('brief.pdf')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('does not retain restored workspace context after removal, a successful send, or a conversation change', async () => {
+    const onSend = vi.fn();
+    const workspaceItem = {
+      id: 'browser:reference-a',
+      kind: 'browser' as const,
+      label: 'Reference A',
+      tabId: 'reference-a',
+      url: 'https://example.com/reference-a',
+    };
+    const renderPane = (conversationId: string, nonce: number | null) => (
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={[]}
+        streaming={false}
+        error={null}
+        projectId="project-restored-draft"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-restored-draft'}
+        onSend={onSend}
+        onStop={vi.fn()}
+        conversations={[{
+          id: conversationId,
+          projectId: 'project-restored-draft',
+          title: 'Restored',
+          createdAt: 1,
+          updatedAt: 1,
+        }]}
+        activeConversationId={conversationId}
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={{ kind: 'prototype' }}
+        workspaceContexts={[workspaceItem]}
+        initialWorkspaceContexts={[]}
+        composerDraftSignal={nonce === null ? undefined : {
+          text: `Draft ${nonce}`,
+          attachments: [],
+          meta: { context: { workspaceItems: [workspaceItem] } },
+          nonce,
+        }}
+      />
+    );
+    const view = render(renderPane('conv-a', 1));
+
+    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
+    fireEvent.click(screen.getByRole('button', { name: 'chat.removeAria' }));
+    await waitFor(() => expect(screen.queryByTestId('staged-contexts')).toBeNull());
+
+    view.rerender(renderPane('conv-a', 2));
+    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
+    fireEvent.click(screen.getByRole('button', { name: 'chat.send' }));
+    await waitFor(() => expect(screen.queryByTestId('staged-contexts')).toBeNull());
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    view.rerender(renderPane('conv-a', 3));
+    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
+    view.rerender(renderPane('conv-b', null));
+    await waitFor(() => expect(screen.queryByTestId('staged-contexts')).toBeNull());
+  });
+});

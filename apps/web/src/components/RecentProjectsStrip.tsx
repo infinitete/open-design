@@ -113,7 +113,7 @@ interface Props {
   onViewAll?: () => void;
   onDelete?: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicate?: (id: string) => Promise<void> | void;
-  onRename?: (id: string, name: string) => void;
+  onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
   projectMutationReady?: (id: string) => boolean;
   onImportFolder?: (baseDir: string) => Promise<void> | void;
   onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
@@ -493,7 +493,22 @@ export function RecentProjectsStrip({
   const [menuPlacement, setMenuPlacement] = useState<'down' | 'up'>('down');
   const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
   const [renameInput, setRenameInput] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
+  const authoritySourceId = useId();
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
+      detail: {
+        source: `recent-projects:${authoritySourceId}`,
+        projectIds: [...new Set([menuOpenId, renameTarget?.id, confirmTarget?.id].filter((id): id is string => Boolean(id)))],
+      },
+    }));
+    return () => {
+      window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
+        detail: { source: `recent-projects:${authoritySourceId}`, projectIds: [] },
+      }));
+    };
+  }, [authoritySourceId, confirmTarget?.id, menuOpenId, renameTarget?.id]);
   // recvqbh189zBY6: commitDelete used to await onDelete and drop the result on
   // the floor either way — a 403/network failure closed the dialog exactly
   // like a success, leaving the project right where it was with no signal
@@ -1001,18 +1016,29 @@ export function RecentProjectsStrip({
     setMenuOpenId(null);
     setRenameTarget({ id: project.id, original: project.name });
     setRenameInput(project.name);
+    setRenameError(null);
   }
 
   function cancelRename() {
     setRenameTarget(null);
     setRenameInput('');
+    setRenameError(null);
   }
 
-  function commitRename() {
+  async function commitRename() {
     if (!renameTarget || !onRename) return;
     const trimmed = renameInput.trim();
     if (trimmed && trimmed !== renameTarget.original) {
-      onRename(renameTarget.id, trimmed);
+      try {
+        const renamed = await onRename(renameTarget.id, trimmed);
+        if (renamed === false) {
+          setRenameError('Project history changed. Reload and try renaming again.');
+          return;
+        }
+      } catch {
+        setRenameError('Project history changed. Reload and try renaming again.');
+        return;
+      }
     }
     cancelRename();
   }
@@ -1181,8 +1207,7 @@ export function RecentProjectsStrip({
     setDeletePending(true);
     try {
       const result = await onDelete(target.id);
-      // A falsy result (false, or void from a caller that never resolves the
-      // promise either way) means the daemon refused or the request failed —
+      // An explicit false means the daemon refused or the request failed —
       // keep the dialog open with a visible reason instead of closing it as
       // if the project were gone (recvqbh189zBY6).
       if (result === false) {
@@ -2036,7 +2061,7 @@ export function RecentProjectsStrip({
           ariaLabelledBy={renameTitleId}
           onSubmit={(event) => {
             event.preventDefault();
-            commitRename();
+            void commitRename();
           }}
         >
           <DialogTitle id={renameTitleId}>{t('designs.renameTitle')}</DialogTitle>
@@ -2049,6 +2074,7 @@ export function RecentProjectsStrip({
               onChange={(event) => setRenameInput(event.target.value)}
             />
           </label>
+          {renameError ? <p role="alert">{renameError}</p> : null}
           <DialogFooter className="row">
             <button type="button" onClick={cancelRename}>
               {t('designs.renameCancel')}
@@ -2091,7 +2117,7 @@ export function RecentProjectsStrip({
           <DialogFooter className="row">
             <button
               type="button"
-              disabled={deletePending}
+              disabled={deletePending || !projectMutationReady(confirmTarget.id)}
               onClick={() => {
                 setConfirmTarget(null);
                 setDeleteFailed(false);

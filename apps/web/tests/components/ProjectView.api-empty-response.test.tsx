@@ -268,6 +268,22 @@ const project: Project = {
   updatedAt: 1,
 };
 
+function installAuthoritativeUnmanagedGitState(projectId: string) {
+  const delegatedFetch = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === `/api/projects/${projectId}/git`) {
+      return Promise.resolve(new Response(JSON.stringify({
+        enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+        confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
+        bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+        operationId: null, error: null,
+        binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+      }), { status: 200 }));
+    }
+    return delegatedFetch(input, init);
+  }));
+}
+
 function renderProjectView(
   renderProject: Project = project,
   agents: AgentInfo[] = [
@@ -280,6 +296,7 @@ function renderProjectView(
     } as AgentInfo,
   ],
 ) {
+  installAuthoritativeUnmanagedGitState(renderProject.id);
   return render(
     <ProjectView
       project={renderProject}
@@ -331,8 +348,9 @@ describe('ProjectView API empty response handling', () => {
     mockedPlaySound.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });

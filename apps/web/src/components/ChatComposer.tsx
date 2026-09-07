@@ -620,6 +620,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     const [stagedWorkspaceContexts, setStagedWorkspaceContexts] = useState<WorkspaceContextItem[]>(
       () => dedupeWorkspaceContextItems(initialWorkspaceContexts),
     );
+    const restoredWorkspaceContextIdsRef = useRef(
+      new Set(initialWorkspaceContexts.map((item) => item.id)),
+    );
+    const restoredWorkspaceContextScopeRef = useRef(draftStorageKey);
     const [workspaceLinkedDirAdds, setWorkspaceLinkedDirAdds] = useState<Record<string, TrackedWorkspaceLinkedDir>>(
       () => trackedWorkspaceLinkedDirsForContexts(initialWorkspaceContexts, linkedDirs),
     );
@@ -825,6 +829,16 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     useEffect(() => {
       saveComposerDraft(draftStorageKey, draft);
     }, [draftStorageKey, draft]);
+
+    useEffect(() => {
+      if (restoredWorkspaceContextScopeRef.current === draftStorageKey) return;
+      restoredWorkspaceContextScopeRef.current = draftStorageKey;
+      const restoredIds = restoredWorkspaceContextIdsRef.current;
+      restoredWorkspaceContextIdsRef.current = new Set();
+      setStagedWorkspaceContexts((current) => current.filter((item) => (
+        !restoredIds.has(item.id) || Boolean(workspaceLinkedDirAdds[item.id])
+      )));
+    }, [draftStorageKey, workspaceLinkedDirAdds]);
 
     useEffect(() => {
       if (previousWorkspaceContextIdRef.current === activeWorkspaceContextId) return;
@@ -1119,7 +1133,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                   .filter((c): c is ConnectorDetail => Boolean(c))
               : [],
           );
-          setStagedWorkspaceContexts(ctx?.workspaceItems ?? []);
+          const restoredWorkspaceContexts = ctx?.workspaceItems ?? [];
+          restoredWorkspaceContextIdsRef.current = new Set(
+            restoredWorkspaceContexts.map((item) => item.id),
+          );
+          setStagedWorkspaceContexts(restoredWorkspaceContexts);
           const restoredAppliedPlugin = meta?.appliedPluginSnapshot ?? null;
           setActiveAppliedPlugin(restoredAppliedPlugin);
           inlineBackedPluginRef.current = inlineBackedPluginFromRestoredDraft(
@@ -1195,6 +1213,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       setStagedMcpServers([]);
       setStagedConnectors([]);
       setStagedWorkspaceContexts(linkedWorkspaceContexts);
+      restoredWorkspaceContextIdsRef.current = new Set();
       setWorkspaceLinkedDirAdds(nextWorkspaceLinkedDirAdds);
       if (
         promotedWorkspaceContextDir &&
@@ -1802,6 +1821,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         return;
       }
       if (visibleWorkspaceContext?.id === id) setDismissedWorkspaceContextId(id);
+      restoredWorkspaceContextIdsRef.current.delete(id);
       setStagedWorkspaceContexts((prev) => prev.filter((item) => item.id !== id));
       if (!trackedLinkedDir) {
         setWorkspaceLinkedDirAdds((current) => {
@@ -2378,7 +2398,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         prev.filter((c) => set.has(`connector:${c.id}`)),
       );
       setStagedWorkspaceContexts((prev) =>
-        prev.filter((item) => set.has(`workspace:${item.id}`) || Boolean(workspaceLinkedDirAdds[item.id])),
+        prev.filter((item) =>
+          set.has(`workspace:${item.id}`)
+          || restoredWorkspaceContextIdsRef.current.has(item.id)
+          || Boolean(workspaceLinkedDirAdds[item.id]),
+        ),
       );
     }
 

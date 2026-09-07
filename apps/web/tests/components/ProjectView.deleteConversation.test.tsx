@@ -172,6 +172,19 @@ vi.mock('../../src/components/Loading', () => ({
 }));
 
 function renderProjectView(onProjectsRefresh: () => void) {
+  const delegatedFetch = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/projects/project-1/git') {
+      return Promise.resolve(new Response(JSON.stringify({
+        enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
+        confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
+        bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
+        operationId: null, error: null,
+        binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+      }), { status: 200 }));
+    }
+    return delegatedFetch(input, init);
+  }));
   return render(
     <ProjectView
       project={{ id: 'project-1', name: 'Project', skillId: null, designSystemId: null } as never}
@@ -201,9 +214,11 @@ describe('ProjectView conversation delete', () => {
     listProjectRuns.mockResolvedValue([]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     analyticsMocks.newRequestId.mockReturnValue('fork-request-1');
     chatPaneProps.onDeleteConversation = undefined;
     chatPaneProps.onForkFromMessage = undefined;
@@ -499,9 +514,11 @@ describe('ProjectView conversation fork analytics', () => {
     analyticsMocks.track.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     chatPaneProps.onForkFromMessage = undefined;
     chatPaneProps.messages = undefined;
   });

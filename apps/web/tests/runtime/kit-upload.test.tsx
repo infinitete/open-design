@@ -30,6 +30,18 @@ function deferred<T>() {
 afterEach(() => vi.clearAllMocks());
 
 describe('useKitModuleUpload epoch authority', () => {
+  it('does not start a project upload without an authoritative mutation context', async () => {
+    const onUploaded = vi.fn();
+    const { result } = renderHook(() => useKitModuleUpload({ projectId: 'project-kit', onUploaded }));
+
+    await act(async () => {
+      await result.current.uploadModule('logo', new File(['logo'], 'logo.png'));
+    });
+
+    expect(uploadProjectFile).not.toHaveBeenCalled();
+    expect(onUploaded).not.toHaveBeenCalled();
+  });
+
   it('clears busy but emits no stale result when authority is revoked during upload', async () => {
     const upload = deferred<{ name: string } | null>();
     uploadProjectFile.mockReturnValue(upload.promise);

@@ -586,7 +586,7 @@ function AppInner() {
     Record<string, DesignSystemGenerationJob>
   >({});
   const [projects, setProjects] = useState<Project[]>([]);
-  const projectGitAuthorities = useProjectGitAuthoritySet(projects.map((project) => project.id));
+  const projectGitAuthorities = useProjectGitAuthoritySet([]);
   const [pendingProjectCreation, setPendingProjectCreation] =
     useState<PendingProjectCreation | null>(null);
   const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
@@ -2221,7 +2221,14 @@ function AppInner() {
   }, []);
 
   const handleDeleteProject = useCallback(async (id: string) => {
-    await deleteProjectApi(id);
+    if (!projectGitAuthorities.isReady(id)) return false;
+    const mutationContext = captureProjectMutation(id);
+    if (!mutationContext) return false;
+    await deleteProjectApi(id, mutationContext);
+    // A restore that wins while the request is in flight is neither a daemon
+    // failure nor a successful deletion in this browser epoch. Leave every
+    // local projection untouched and let Home close the obsolete intent.
+    if (!isProjectMutationCurrent(id, mutationContext)) return;
     removeProjectFromDisplaySnapshots({ projectId: id });
     clearLocalProject(id, { deleted: true });
     removeWorkspaceProjectTabs(id);
@@ -2231,7 +2238,7 @@ function AppInner() {
       navigate({ kind: 'home', view: 'home' });
     }
     return true;
-  }, [clearLocalProject, iframeKeepAlivePool, route]);
+  }, [clearLocalProject, iframeKeepAlivePool, projectGitAuthorities, route]);
 
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
@@ -2240,100 +2247,25 @@ function AppInner() {
     const mutationContext = captureProjectMutation(id);
     if (!mutationContext) return;
     const previous = projectsRef.current.find((project) => project.id === id) ?? null;
+    if (!previous) return false;
     const renameProjectionKey = JSON.stringify([id]);
-    let renameState = projectRenameStatesRef.current.get(renameProjectionKey);
-    if (!renameState || renameState.pending === 0) {
-      if (!previous) return;
-      renameState = {
-        generation: 0,
-        confirmed: previous,
-        pending: 0,
-        tail: Promise.resolve(),
-      };
-      projectRenameStatesRef.current.set(renameProjectionKey, renameState);
-    }
-    const renameGeneration = ++renameState.generation;
-    renameState.pending += 1;
-    projectListMutationVersionRef.current += 1;
-    const renameMutationVersion = projectListMutationVersionRef.current;
-    const optimistic = { ...(previous ?? renameState.confirmed), name: trimmed };
-    pendingProjectNameProjectionsRef.current.set(renameProjectionKey, {
-      project: optimistic,
-      mutationVersion: renameMutationVersion,
-      confirmed: false,
+    const renameGeneration = (projectRenameStatesRef.current.get(renameProjectionKey)?.generation ?? 0) + 1;
+    projectRenameStatesRef.current.set(renameProjectionKey, {
+      generation: renameGeneration,
+      confirmed: previous,
+      pending: 1,
+      tail: Promise.resolve(),
     });
-    setProjects((curr) =>
-      curr.map((p) => (p.id === id ? { ...p, name: trimmed } : p)),
-    );
+    const persisted = await patchProject(id, { name: trimmed }, mutationContext);
+    if (!isProjectMutationCurrent(id, mutationContext)) return false;
+    if (projectRenameStatesRef.current.get(renameProjectionKey)?.generation !== renameGeneration) return false;
+    if (!persisted) return false;
+    setProjects((current) => current.map((project) => project.id === id ? persisted : project));
     patchProjectDisplaySnapshots({
-      patch: (cachedProjects) => cachedProjects.map((project) =>
-        project.id === id ? { ...project, name: trimmed } : project),
+      patch: (cachedProjects) => cachedProjects.map((project) => project.id === id ? persisted : project),
     });
-    const runRename = async () => {
-      const persisted = await patchProject(id, { name: trimmed }, mutationContext);
-      if (!isProjectMutationCurrent(id, mutationContext)) return;
-      if (persisted) renameState.confirmed = persisted;
-      const isLatestQueuedRename =
-        projectRenameStatesRef.current.get(renameProjectionKey) === renameState
-        && renameState.generation === renameGeneration;
-      if (!isLatestQueuedRename) return;
-      const nextProject = persisted ?? renameState.confirmed;
-      const pendingProjection = pendingProjectNameProjectionsRef.current.get(renameProjectionKey);
-      if (pendingProjection?.mutationVersion === renameMutationVersion) {
-        pendingProjection.project = nextProject;
-        pendingProjection.confirmed = true;
-      }
-      patchProjectDisplaySnapshots({
-        patch: (cachedProjects) => cachedProjects.map((project) =>
-          project.id === id && (persisted || project.name === trimmed)
-            ? {
-                ...project,
-                name: nextProject.name,
-                metadata: nextProject.metadata,
-                updatedAt: nextProject.updatedAt,
-              }
-            : project),
-      });
-      if (!persisted) {
-        setProjects((current) => current.map((project) =>
-          project.id === id && project.name === trimmed
-            ? {
-                ...project,
-                name: nextProject.name,
-                metadata: nextProject.metadata,
-                updatedAt: nextProject.updatedAt,
-              }
-            : project
-        ));
-        if (isProjectMutationCurrent(id, mutationContext)) await refreshProjects();
-        return;
-      }
-      setProjects((current) => current.map((project) =>
-        project.id === id
-          ? {
-              ...project,
-              name: persisted.name,
-              metadata: persisted.metadata,
-              updatedAt: persisted.updatedAt,
-            }
-          : project
-      ));
-      if (isProjectMutationCurrent(id, mutationContext)) await refreshProjects();
-    };
-    const queued = renameState.tail.then(runRename, runRename);
-    renameState.tail = queued.then(
-      () => undefined,
-      () => undefined,
-    ).finally(() => {
-      renameState.pending -= 1;
-      if (
-        renameState.pending === 0
-        && projectRenameStatesRef.current.get(renameProjectionKey) === renameState
-      ) {
-        projectRenameStatesRef.current.delete(renameProjectionKey);
-      }
-    });
-    await queued;
+    await refreshProjects();
+    return true;
   }, [projectGitAuthorities, refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
@@ -3036,7 +2968,7 @@ function AppInner() {
           onProjectRenameStarted={handleProjectRenameStarted}
           onProjectRenameSettled={handleProjectRenameSettled}
           onProjectsRefresh={refreshProjects}
-          onDeleteProject={handleDeleteProject}
+          onDeleteProject={async (id) => (await handleDeleteProject(id)) === true}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
           onDesignSystemsRefresh={refreshDesignSystems}
           onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}

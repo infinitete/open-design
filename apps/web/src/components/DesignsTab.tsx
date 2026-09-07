@@ -117,7 +117,7 @@ interface Props {
 	onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
 	onDelete: (id: string) => Promise<boolean | void> | boolean | void;
 	onDuplicate?: (id: string) => Promise<void> | void;
-	onRename?: (id: string, name: string) => void;
+	onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
 	projectMutationReady?: (id: string) => boolean;
 	onNewProject?: () => void;
 	onImportFolder?: (baseDir: string) => Promise<void> | void;
@@ -144,6 +144,7 @@ export function DesignsTab({
 }: Props) {
 	const renameTitleId = useId();
 	const confirmTitleId = useId();
+	const authoritySourceId = useId();
 	const t = useT();
 	const analytics = useAnalytics();
 	const folderImport = useOpenFolderImport({
@@ -183,12 +184,27 @@ export function DesignsTab({
 	const projectsRefreshInFlightRef = useRef(false);
 	const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
 	const [renameInput, setRenameInput] = useState("");
+	const [renameError, setRenameError] = useState<string | null>(null);
 	const [confirmTarget, setConfirmTarget] = useState<{
+		projectIds: string[];
 		title: string;
 		message: string;
 		confirmLabel: string;
-		onConfirm: () => Promise<boolean | void> | boolean | void;
+		onConfirm: () => Promise<boolean | 'stale' | void> | boolean | 'stale' | void;
 	} | null>(null);
+	useEffect(() => {
+		window.dispatchEvent(new CustomEvent("open-design:project-mutation-targets", {
+			detail: {
+				source: `designs-tab:${authoritySourceId}`,
+				projectIds: [...new Set([...(confirmTarget?.projectIds ?? []), ...(renameTarget ? [renameTarget.id] : []), ...(menuOpenId ? [menuOpenId] : [])])],
+			},
+		}));
+		return () => {
+			window.dispatchEvent(new CustomEvent("open-design:project-mutation-targets", {
+				detail: { source: `designs-tab:${authoritySourceId}`, projectIds: [] },
+			}));
+		};
+	}, [authoritySourceId, confirmTarget, menuOpenId, renameTarget]);
 	const [confirmPending, setConfirmPending] = useState(false);
 	const [confirmError, setConfirmError] = useState<string | null>(null);
 	const [view, setView] = useState<ViewMode>(() => {
@@ -479,23 +495,36 @@ export function DesignsTab({
 		if (!projectMutationReady(project.id)) return;
 		setRenameTarget({ id: project.id, original: project.name });
 		setRenameInput(project.name);
+		setRenameError(null);
 	};
-	const commitRename = () => {
+	const commitRename = async () => {
 		if (!renameTarget || !projectMutationReady(renameTarget.id)) return;
 		const trimmed = renameInput.trim();
 		if (trimmed && trimmed !== renameTarget.original) {
-			onRename?.(renameTarget.id, trimmed);
+			try {
+				const renamed = await onRename?.(renameTarget.id, trimmed);
+				if (renamed === false) {
+					setRenameError("Project history changed. Reload and try renaming again.");
+					return;
+				}
+			} catch {
+				setRenameError("Project history changed. Reload and try renaming again.");
+				return;
+			}
 		}
 		setRenameTarget(null);
 		setRenameInput("");
+		setRenameError(null);
 	};
 	const cancelRename = () => {
 		setRenameTarget(null);
 		setRenameInput("");
+		setRenameError(null);
 	};
 	const handleDeleteProject = (project: Project) => {
 		setConfirmError(null);
 		setConfirmTarget({
+			projectIds: [project.id],
 			title: t("designs.deleteTitle"),
 			message: t("designs.deleteConfirm", { name: project.name }),
 			confirmLabel: t("designs.menuDelete"),
@@ -518,6 +547,7 @@ export function DesignsTab({
 		if (ids.length === 0) return;
 		setConfirmError(null);
 		setConfirmTarget({
+			projectIds: ids,
 			title: t("designs.deleteTitle"),
 			message: t("designs.deleteSelectedConfirm", { n: ids.length }),
 			confirmLabel: t("designs.deleteSelected"),
@@ -556,12 +586,13 @@ export function DesignsTab({
 		if (!mutationContext) return;
 		setConfirmError(null);
 		setConfirmTarget({
+			projectIds: [projectId],
 			title: t("common.delete"),
 			message: `${t("common.delete")} "${artifact.title}"?`,
 			confirmLabel: t("designs.menuDelete"),
 			onConfirm: async () => {
 				const ok = await deleteLiveArtifact(projectId, artifact.id, mutationContext);
-				if (!isProjectMutationCurrent(projectId, mutationContext)) return false;
+				if (!isProjectMutationCurrent(projectId, mutationContext)) return 'stale';
 				if (!ok) return false;
 				setLiveArtifactsByProject((current) => ({
 					...current,
@@ -870,8 +901,8 @@ export function DesignsTab({
 								>
 									<button
 										type="button"
-										disabled={!projectMutationReady(p.id)}
 										className="design-card-close"
+										disabled={!projectMutationReady(p.id)}
 										title={t("common.delete")}
 										aria-label={`${t("common.delete")} ${artifact.title}`}
 										onClick={(e) => {
@@ -1235,7 +1266,7 @@ export function DesignsTab({
 					ariaLabelledBy={renameTitleId}
 					onSubmit={(e) => {
 						e.preventDefault();
-						commitRename();
+							void commitRename();
 					}}
 				>
 					<DialogTitle id={renameTitleId}>{t("designs.renameTitle")}</DialogTitle>
@@ -1248,6 +1279,7 @@ export function DesignsTab({
 							onChange={(e) => setRenameInput(e.target.value)}
 						/>
 					</label>
+					{renameError ? <p role="alert">{renameError}</p> : null}
 					<DialogFooter className="row">
 						<button type="button" onClick={cancelRename}>
 							{t("designs.renameCancel")}
@@ -1300,7 +1332,10 @@ export function DesignsTab({
 							type="button"
 							className="primary danger"
 							autoFocus
-							disabled={confirmPending}
+							disabled={
+								confirmPending
+								|| confirmTarget.projectIds.some((id) => !projectMutationReady(id))
+							}
 							onClick={() => void commitConfirmTarget()}
 						>
 							{confirmTarget.confirmLabel}
