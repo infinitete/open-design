@@ -15,6 +15,11 @@ import type {
   BrandFinalizeResponse,
   BrandSummary,
 } from '@open-design/contracts';
+import {
+  projectMutationBody,
+  projectMutationHeaders,
+  type ProjectMutationContext,
+} from '../state/project-git';
 
 // One-shot cross-route handoff: the design-system id a navigation wants the
 // Design systems tab to preselect when it mounts. ProjectView's "design system
@@ -54,6 +59,7 @@ export type ExtractBrandFromHtmlOutcome =
 export async function finalizeBrandProject(
   brandId: string,
   projectId: string,
+  mutationContext: ProjectMutationContext,
 ): Promise<ExtractBrandFromHtmlOutcome> {
   try {
     const resp = await fetch(`/api/brands/${encodeURIComponent(brandId)}/finalize`, {
@@ -62,8 +68,10 @@ export async function finalizeBrandProject(
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-              },
-      body: JSON.stringify({ projectId }),
+        ...projectMutationHeaders(mutationContext),
+      },
+      body: JSON.stringify(projectMutationBody({ projectId }, mutationContext)),
+      signal: mutationContext.signal,
     });
     if (!resp.ok) {
       let error = `Brand finalize failed (${resp.status})`;

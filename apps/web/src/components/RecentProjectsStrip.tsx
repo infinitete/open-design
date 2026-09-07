@@ -114,6 +114,7 @@ interface Props {
   onDelete?: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicate?: (id: string) => Promise<void> | void;
   onRename?: (id: string, name: string) => void;
+  projectMutationReady?: (id: string) => boolean;
   onImportFolder?: (baseDir: string) => Promise<void> | void;
   onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
   limit?: number;
@@ -346,6 +347,7 @@ export function RecentProjectsStrip({
   onDelete,
   onDuplicate,
   onRename,
+  projectMutationReady = () => true,
   onImportFolder,
   onImportFolderResponse,
   limit,
@@ -991,7 +993,7 @@ export function RecentProjectsStrip({
 
   function startRename(project: Project) {
     const creator = resolveCreator(project.id);
-    if (!creator.ownedBySelf) return;
+    if (!creator.ownedBySelf || !projectMutationReady(project.id)) return;
     trackCollection('rename', {
       project_key: project.id,
       project_relation: 'self',
@@ -1925,7 +1927,7 @@ export function RecentProjectsStrip({
                         <button
                           type="button"
                           role="menuitem"
-                          disabled={!creator.ownedBySelf}
+                          disabled={!creator.ownedBySelf || !projectMutationReady(project.id)}
                           title={creator.ownedBySelf ? undefined : t('recentProjects.ownOnlyMutation')}
                           onClick={() => startRename(project)}
                         >
@@ -2054,7 +2056,11 @@ export function RecentProjectsStrip({
             <button
               type="submit"
               className="primary"
-              disabled={!renameInput.trim() || renameInput.trim() === renameTarget.original}
+              disabled={
+                !projectMutationReady(renameTarget.id)
+                || !renameInput.trim()
+                || renameInput.trim() === renameTarget.original
+              }
             >
               {t('designs.renameSave')}
             </button>

@@ -378,6 +378,7 @@ interface Props {
   onDeleteProject: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject: (id: string, name: string) => void;
+  projectMutationReady?: (id: string) => boolean;
   onProjectsRefresh?: () => Promise<void> | void;
   onTeamProjectContentReady?: (
     projectId: string,
@@ -486,6 +487,7 @@ export function EntryShell({
   onDeleteProject,
   onDuplicateProject,
   onRenameProject,
+  projectMutationReady,
   onProjectsRefresh,
   onTeamProjectContentReady,
   onChangeDefaultDesignSystem,
@@ -1047,6 +1049,7 @@ export function EntryShell({
                 onDeleteProject={onDeleteProject}
                 onDuplicateProject={onDuplicateProject}
                 onRenameProject={onRenameProject}
+                projectMutationReady={projectMutationReady}
                 onBrowseRegistry={() => changeView('plugins')}
                 onOpenIntegrations={() => openIntegrationTab('connectors')}
                 onOpenMcp={() => openIntegrationTab('mcp')}
@@ -1087,6 +1090,7 @@ export function EntryShell({
                     onDelete={onDeleteProject}
                     onDuplicate={onDuplicateProject}
                     onRename={onRenameProject}
+                    projectMutationReady={projectMutationReady}
                     onRefresh={onProjectsRefresh}
                     isActive={view === 'projects'}
                     onNewProject={() => {
@@ -1149,6 +1153,7 @@ export function EntryShell({
               <div data-testid="entry-view-library" data-active={view === 'library' ? 'true' : 'false'} {...inactiveViewProps(view === 'library')}>
                 <LibrarySection
                   active={view === 'library'}
+                  projectMutationReady={projectMutationReady}
                   onOpenProject={(projectId, fileName) =>
                     navigate({ kind: 'project', projectId, conversationId: null, fileName: fileName ?? null })
                   }
@@ -1279,6 +1284,7 @@ export function EntryShell({
                     onViewAll={() => {}}
                     onDelete={onDeleteProject}
                     onRename={onRenameProject}
+                    projectMutationReady={projectMutationReady}
                   />
                 </div>
               )
@@ -1317,6 +1323,7 @@ export function EntryShell({
                     onViewAll={() => {}}
                     onDelete={onDeleteProject}
                     onRename={onRenameProject}
+                    projectMutationReady={projectMutationReady}
                   />
                 </div>
               )

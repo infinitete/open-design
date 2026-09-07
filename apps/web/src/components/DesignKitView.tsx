@@ -42,6 +42,11 @@ import {
   type KitFont,
 } from '../runtime/design-kit';
 import type { KitUploadModule } from '../runtime/kit-upload';
+import {
+  captureProjectMutation,
+  isProjectMutationCurrent,
+  type ProjectMutationContext,
+} from '../state/project-git';
 import { Icon, type IconName } from './Icon';
 import { KitErrorBoundary } from './KitErrorBoundary';
 import styles from './BrandPreviewCard.module.css';
@@ -278,7 +283,11 @@ export interface DesignKitViewProps {
    */
   onPreviewCover?: () => void;
   designMd?: KitDesignMdActions;
-  onUploadModule?: (module: KitUploadModule, file: File) => void;
+  onUploadModule?: (
+    module: KitUploadModule,
+    file: File,
+    mutationContext?: ProjectMutationContext,
+  ) => void;
   onColorChange?: (index: number, hex: string) => void | Promise<void>;
   onColorReset?: (index: number) => void | Promise<void>;
   onDeleteLogo?: (index: number) => void | Promise<void>;
@@ -650,11 +659,14 @@ function DesignKitViewInner({
   }
 
   function handleFile(module: KitUploadModule, event: ChangeEvent<HTMLInputElement>) {
+    const mutationContext = kit.projectId
+      ? captureProjectMutation(kit.projectId)
+      : undefined;
     const file = event.target.files?.[0];
     event.target.value = '';
     if (file && onUploadModule) {
       onActionFeedback?.('loading', t('ds.uploading'));
-      onUploadModule(module, file);
+      onUploadModule(module, file, mutationContext);
     }
   }
 
@@ -676,6 +688,9 @@ function DesignKitViewInner({
   function handleModuleDrop(module: KitUploadModule, event: DragEvent<HTMLElement>) {
     if (!canUpload || !onUploadModule) return;
     event.preventDefault();
+    const mutationContext = kit.projectId
+      ? captureProjectMutation(kit.projectId)
+      : undefined;
     const file = Array.from(event.dataTransfer.files).find((f) =>
       module === 'font'
         ? /\.(otf|ttf|woff2?)$/i.test(f.name)
@@ -683,22 +698,34 @@ function DesignKitViewInner({
     );
     if (file) {
       onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
-      onUploadModule(module, file);
+      onUploadModule(module, file, mutationContext);
     }
   }
 
   async function pasteImage(module: Exclude<KitUploadModule, 'font'>) {
     if (!canUpload || !onUploadModule || !navigator.clipboard?.read) return;
+    const mutationContext = kit.projectId
+      ? captureProjectMutation(kit.projectId)
+      : undefined;
+    const isCurrent = () => !kit.projectId
+      || !mutationContext
+      || isProjectMutationCurrent(kit.projectId, mutationContext);
     try {
       const items = await navigator.clipboard.read();
+      if (!isCurrent()) return;
       for (const item of items) {
         const imageType = item.types.find((type) => type.startsWith('image/'));
         if (!imageType) continue;
         const blob = await item.getType(imageType);
+        if (!isCurrent()) return;
         const ext = imageType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
         onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
         onActionFeedback?.('loading', t('ds.uploading'));
-        onUploadModule(module, new File([blob], `clipboard-${module}-${Date.now()}.${ext}`, { type: imageType }));
+        onUploadModule(
+          module,
+          new File([blob], `clipboard-${module}-${Date.now()}.${ext}`, { type: imageType }),
+          mutationContext,
+        );
         return;
       }
     } catch {

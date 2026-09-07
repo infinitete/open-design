@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,7 +22,38 @@ import {
   fetchPromptTemplates,
   fetchSkills,
 } from '../../src/providers/registry';
-import { listProjects, listTemplates } from '../../src/state/projects';
+import { listProjects, listTemplates, patchProject } from '../../src/state/projects';
+
+const projectAuthorityHarness = vi.hoisted(() => ({ ready: true, current: true }));
+const projectMutationContext = {
+  projectId: 'project-rename',
+  expectedProjectRevision: 7,
+  signal: new AbortController().signal,
+};
+
+vi.mock('../../src/providers/project-git', async () => {
+  const actual = await vi.importActual<typeof import('../../src/providers/project-git')>(
+    '../../src/providers/project-git',
+  );
+  return {
+    ...actual,
+    useProjectGitAuthoritySet: () => ({
+      snapshots: {},
+      isReady: () => projectAuthorityHarness.ready,
+    }),
+  };
+});
+
+vi.mock('../../src/state/project-git', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/project-git')>(
+    '../../src/state/project-git',
+  );
+  return {
+    ...actual,
+    captureProjectMutation: vi.fn(() => projectMutationContext),
+    isProjectMutationCurrent: vi.fn(() => projectAuthorityHarness.current),
+  };
+});
 
 // Settings is now a full-page route (`/settings`): App.openSettings navigates
 // instead of toggling a modal flag, so the router mock must feed navigate()
@@ -50,10 +81,22 @@ vi.mock('../../src/router', () => ({
 }));
 
 vi.mock('../../src/components/EntryView', () => ({
-  EntryView: ({ onOpenSettings }: { onOpenSettings: (section?: 'execution' | 'media') => void }) => (
+  EntryView: ({
+    onOpenSettings,
+    onRenameProject,
+    projects,
+  }: {
+    onOpenSettings: (section?: 'execution' | 'media') => void;
+    onRenameProject: (id: string, name: string) => void;
+    projects: Array<{ id: string; name: string }>;
+  }) => (
     <div>
       <button type="button" onClick={() => onOpenSettings('media')}>
         Open media settings
+      </button>
+      <span>{projects[0]?.name}</span>
+      <button type="button" onClick={() => onRenameProject('project-rename', 'Renamed project')}>
+        Rename Home project
       </button>
     </div>
   ),
@@ -124,6 +167,7 @@ vi.mock('../../src/state/projects', async () => {
     ...actual,
     listProjects: vi.fn(),
     listTemplates: vi.fn(),
+    patchProject: vi.fn(),
   };
 });
 
@@ -150,6 +194,7 @@ const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
+const mockedPatchProject = vi.mocked(patchProject);
 const mockedFetchComposioConfigFromDaemon = vi.mocked(fetchComposioConfigFromDaemon);
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedMergeDaemonConfig = vi.mocked(mergeDaemonConfig);
@@ -177,6 +222,8 @@ const baseConfig: AppConfig = {
 
 describe('App media provider sync flows', () => {
   beforeEach(() => {
+    projectAuthorityHarness.ready = true;
+    projectAuthorityHarness.current = true;
     useRouteMock.mockReturnValue(homeRouteMock);
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgentsStream.mockResolvedValue([]);
@@ -196,6 +243,38 @@ describe('App media provider sync flows', () => {
         json: async () => ({}),
       }),
     );
+  });
+
+  it('keeps Home rename inert until authority is ready and fences a stale completion', async () => {
+    const originalProject = {
+      id: 'project-rename', name: 'Original project', skillId: null, designSystemId: null,
+      createdAt: 1, updatedAt: 2, status: { value: 'not_started' as const },
+    };
+    mockedListProjects.mockResolvedValue([originalProject]);
+    projectAuthorityHarness.ready = false;
+    render(<App />);
+    await screen.findByText('Original project');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Home project' }));
+    expect(mockedPatchProject).not.toHaveBeenCalled();
+
+    projectAuthorityHarness.ready = true;
+    let resolveRename!: (value: typeof originalProject) => void;
+    mockedPatchProject.mockImplementation(() => new Promise((resolve) => {
+      resolveRename = resolve;
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Home project' }));
+    await waitFor(() => expect(mockedPatchProject).toHaveBeenCalledWith(
+      'project-rename',
+      { name: 'Renamed project' },
+      projectMutationContext,
+    ));
+    const readsBeforeStaleCompletion = mockedListProjects.mock.calls.length;
+    projectAuthorityHarness.current = false;
+    await act(async () => resolveRename({ ...originalProject, name: 'Late stale rename' }));
+
+    expect(mockedListProjects).toHaveBeenCalledTimes(readsBeforeStaleCompletion);
+    expect(screen.queryByText('Late stale rename')).toBeNull();
   });
 
   afterEach(() => {

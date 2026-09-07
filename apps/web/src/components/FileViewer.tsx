@@ -39,7 +39,11 @@ import {
   type TrackingDeployProvider,
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
-import { captureProjectMutation, type ProjectMutationContext } from '../state/project-git';
+import {
+  captureProjectMutation,
+  isProjectMutationCurrent,
+  type ProjectMutationContext,
+} from '../state/project-git';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
 import {
@@ -2201,6 +2205,7 @@ export function LiveArtifactViewer({
   async function handleRefresh() {
     if (refreshing) return;
     const mutationContext = captureProjectMutation(projectId);
+    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setRefreshing(true);
     setRefreshError(null);
     setRefreshSuccess(null);
@@ -2211,11 +2216,15 @@ export function LiveArtifactViewer({
         liveArtifact.artifactId,
         mutationContext,
       );
+      if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
       setDetail(result.artifact);
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
-      ).then(setRefreshHistory);
+      ).then((history) => {
+        if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
+        setRefreshHistory(history);
+      });
       setReloadKey((n) => n + 1);
       setRefreshEvents((prev) =>
         appendRefreshEvent(prev, {
@@ -2230,6 +2239,7 @@ export function LiveArtifactViewer({
       }
       await onRefreshArtifacts?.();
     } catch (error) {
+      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       const message = refreshErrorMessage(error, t);
       setRefreshError(message);
       setRefreshEvents((prev) => appendRefreshEvent(prev, { phase: 'failed', error: message }));

@@ -51,6 +51,7 @@ import { useProjectFileEvents, type ProjectEvent } from '../providers/project-ev
 import { useProjectGit } from '../providers/project-git';
 import {
   captureProjectMutation,
+  isProjectMutationCurrent,
   registerProjectEpochInvalidator,
   type ProjectMutationContext,
 } from '../state/project-git';
@@ -2021,6 +2022,7 @@ export function ProjectView({
   const projectFilesRef = useRef<ProjectFile[]>([]);
   const projectFilesRequestSeqRef = useRef(0);
   const [liveArtifacts, setLiveArtifacts] = useState<LiveArtifactSummary[]>([]);
+  const liveArtifactsRequestSeqRef = useRef(0);
   const [liveArtifactEvents, setLiveArtifactEvents] = useState<LiveArtifactEventItem[]>([]);
   const [workspaceFocused, setWorkspaceFocused] = useState(false);
   // Read by `renderPreferredChatPanelWidth` instead of closing over
@@ -2276,6 +2278,10 @@ export function ProjectView({
   // network. Revision invalidation advances it synchronously, so a pre-restore
   // response cannot publish after the reconciliation read has started.
   const messagesRequestGenerationRef = useRef(0);
+  const reconciliationConversationRef = useRef<{
+    generation: number;
+    conversationId: string;
+  } | null>(null);
   const startingQueuedChatSendIdRef = useRef<string | null>(null);
   const [queuedAutoStartTick, setQueuedAutoStartTick] = useState(0);
   // We auto-save the most recent artifact to the project folder. Track the
@@ -2576,6 +2582,12 @@ export function ProjectView({
   // on project mount (after conversations load) and on user-triggered
   // conversation switches.
   useEffect(() => {
+    if (
+      activeConversationId
+      && reconciliationConversationRef.current?.conversationId === activeConversationId
+    ) {
+      return;
+    }
     const messagesRequestGeneration = ++messagesRequestGenerationRef.current;
     if (!activeConversationId) {
       setMessages([]);
@@ -3071,12 +3083,26 @@ export function ProjectView({
   );
 
   const refreshLiveArtifacts = useCallback(async (options?: {
+    fresh?: boolean;
     signal?: AbortSignal;
     requireAuthoritative?: boolean;
+    mutationContext?: ProjectMutationContext;
   }): Promise<LiveArtifactSummary[]> => {
+    const requestSeq = ++liveArtifactsRequestSeqRef.current;
     const next = await fetchLiveArtifacts(project.id, {
-      ...options,
+      fresh: options?.fresh,
+      signal: options?.signal,
+      requireAuthoritative: options?.requireAuthoritative,
     });
+    if (
+      requestSeq !== liveArtifactsRequestSeqRef.current
+      || (options?.mutationContext && !isProjectMutationCurrent(project.id, options.mutationContext))
+    ) {
+      if (options?.requireAuthoritative) {
+        throw new Error('Live artifact refresh authority changed');
+      }
+      return next;
+    }
     setLiveArtifacts(next);
     return next;
   }, [project.id, projectRunAuthorityKey]);
@@ -3084,8 +3110,10 @@ export function ProjectView({
   const refreshWorkspaceItems = useCallback(async (
     options?: {
       freshProjectFiles?: boolean;
+      freshLiveArtifacts?: boolean;
       signal?: AbortSignal;
       requireAuthoritative?: boolean;
+      mutationContext?: ProjectMutationContext;
     },
     onAcceptedFilesGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
@@ -3096,8 +3124,10 @@ export function ProjectView({
         requireAuthoritative: options?.requireAuthoritative,
       }, onAcceptedFilesGeneration),
       refreshLiveArtifacts({
+        fresh: options?.freshLiveArtifacts,
         signal: options?.signal,
         requireAuthoritative: options?.requireAuthoritative,
+        mutationContext: options?.mutationContext,
       }),
     ]);
     return nextFiles;
@@ -4173,19 +4203,23 @@ export function ProjectView({
       message: string,
       code?: string,
       failure?: RunFailureClassificationFields,
+      mutationContext?: ProjectMutationContext,
     ) => {
-      if (!message) return;
+      if (!message || !mutationContext || !projectGit.isCurrent(mutationContext)) return;
       updateMessageById(
         messageId,
         (prev) => appendErrorStatusEvent(prev, message, code, failure),
         true,
+        { mutationContext },
       );
     },
-    [updateMessageById],
+    [projectGit, updateMessageById],
   );
 
   const auditDesignSystemWorkspaceAfterRun = useCallback(
-    async (assistantMessageId: string) => {
+    async (assistantMessageId: string, mutationContext: ProjectMutationContext) => {
+      const isCurrent = () => projectGit.isCurrent(mutationContext);
+      if (!isCurrent()) return;
       const isDesignSystemWorkspace =
         isDesignSystemWorkspaceMetadata(currentProject.metadata) || projectIsDesignSystemProject;
       if (!isDesignSystemWorkspace) return;
@@ -4194,13 +4228,17 @@ export function ProjectView({
           const outcome = await finalizeBrandProject(
             designSystemBrandId,
             project.id,
+            mutationContext,
           );
+          if (!isCurrent()) return;
           if (outcome.ok) {
             await Promise.all([
-              projectDetail.refresh(),
-              Promise.resolve(onDesignSystemsRefresh?.()),
-              refreshWorkspaceItems(),
+              projectDetail.refresh({ signal: mutationContext.signal }),
+              refreshWorkspaceItems({ signal: mutationContext.signal }),
             ]);
+            if (!isCurrent()) return;
+            await Promise.resolve(onDesignSystemsRefresh?.());
+            if (!isCurrent()) return;
             onProjectsRefresh();
             setDesignMdRefreshKey((n) => n + 1);
             updateMessageById(
@@ -4217,7 +4255,7 @@ export function ProjectView({
                 ],
               }),
               true,
-              { telemetryFinalized: true },
+              { telemetryFinalized: true, mutationContext },
             );
           } else {
             updateMessageById(
@@ -4234,14 +4272,14 @@ export function ProjectView({
                 ],
               }),
               true,
-              { telemetryFinalized: true },
+              { telemetryFinalized: true, mutationContext },
             );
           }
         }
         const audit = await fetchProjectDesignSystemPackageAudit(
           project.id,
         );
-        if (!audit) return;
+        if (!isCurrent() || !audit) return;
         const auditSummary = summarizeDesignSystemPackageAudit(audit);
         updateMessageById(
           assistantMessageId,
@@ -4250,10 +4288,11 @@ export function ProjectView({
             events: [...(prev.events ?? []), { kind: 'status', label: 'audit', detail: auditSummary }],
           }),
           true,
-          { telemetryFinalized: true },
+          { telemetryFinalized: true, mutationContext },
         );
         const repairPrompt = buildDesignSystemPackageAuditRepairPrompt(audit);
         if (repairPrompt) {
+          if (!isCurrent()) return;
           if (consumeDesignSystemAuditAutoRepair(project.id)) {
             const seed = { id: `audit-${Date.now()}`, value: repairPrompt };
             setChatSeed(seed);
@@ -4263,6 +4302,7 @@ export function ProjectView({
           clearDesignSystemAuditAutoRepair(project.id);
         }
       } catch (err) {
+        if (!isCurrent()) return;
         const detail = err instanceof Error ? err.message : String(err);
         updateMessageById(
           assistantMessageId,
@@ -4274,7 +4314,7 @@ export function ProjectView({
             ],
           }),
           true,
-          { telemetryFinalized: true },
+          { telemetryFinalized: true, mutationContext },
         );
       }
     },
@@ -4286,6 +4326,7 @@ export function ProjectView({
       project.id,
       projectDetail.refresh,
       projectIsDesignSystemProject,
+      projectGit,
       refreshWorkspaceItems,
       updateMessageById,
     ],
@@ -5033,7 +5074,7 @@ export function ProjectView({
             if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
               setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
             }
-            await auditDesignSystemWorkspaceAfterRun(message.id);
+            if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
             if (!recoveryIsCurrent()) return;
             // Clear stale retry count for successfully recovered run.
             transientFailedRetriesRef.current.delete(runId);
@@ -5492,7 +5533,7 @@ export function ProjectView({
                 if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
                   setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
                 }
-                await auditDesignSystemWorkspaceAfterRun(message.id);
+                if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
                 if (!recoveryIsCurrent()) return;
               })();
               if (recoveryIsCurrent()) onProjectsRefresh();
@@ -5514,7 +5555,7 @@ export function ProjectView({
               unregisterTextBuffer();
               if (runMayFinalize) {
                 setRunError(err.message, message.id);
-                appendAssistantErrorEvent(message.id, err.message, errorCode, failure);
+                appendAssistantErrorEvent(message.id, err.message, errorCode, failure, mutationContext);
                 updateMessageById(
                   message.id,
                   (prev) => ({
@@ -5614,7 +5655,7 @@ export function ProjectView({
                       true,
                       { telemetryFinalized: true, mutationContext },
                     );
-                    await auditDesignSystemWorkspaceAfterRun(message.id);
+                    if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
                     if (recoveryIsCurrent()) onProjectsRefresh();
                   })();
                 }
@@ -5808,7 +5849,7 @@ export function ProjectView({
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
               setRunError(msg, message.id);
-              appendAssistantErrorEvent(message.id, msg);
+              appendAssistantErrorEvent(message.id, msg, undefined, undefined, mutationContext);
               updateMessageById(
                 message.id,
                 (prev) => ({ ...prev, runStatus: 'failed', endedAt: prev.endedAt ?? Date.now() }),
@@ -6009,7 +6050,7 @@ export function ProjectView({
             true,
             { telemetryFinalized: true, mutationContext },
           );
-          await auditDesignSystemWorkspaceAfterRun(message.id);
+          if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
           if (!recoveryIsCurrent()) return;
           scheduleConversationMessageRefresh(activeConversationId);
           onProjectsRefresh();
@@ -6675,6 +6716,7 @@ export function ProjectView({
         if (ev.kind === 'live_artifact') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
           void refreshLiveArtifacts().then(() => {
+            if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
             if (ev.action !== 'deleted') requestOpenFile(liveArtifactTabId(ev.artifactId));
           });
           onProjectsRefresh();
@@ -6746,12 +6788,14 @@ export function ProjectView({
               // file list — otherwise an out-of-project Write (e.g. an
               // upstream repo edit) would spawn a permanent placeholder tab.
               void refreshProjectFiles().then(async (nextFiles) => {
+                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
                 // A .jsx/.tsx loaded by a sibling HTML entry is a module of a
                 // multi-file React prototype, not a standalone page — don't
                 // strand the user on a dead-end preview tab. Issue #2744.
                 const moduleFileNames = /\.(jsx|tsx)$/i.test(filePath)
                   ? await collectReferencedJsxNames(nextFiles, readProjectHtml)
                   : undefined;
+                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
                 const decision = decideAutoOpenAfterWrite(filePath, nextFiles, {
                   moduleFileNames,
                 });
@@ -7164,7 +7208,7 @@ export function ProjectView({
                   void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
                 }
               }
-              await auditDesignSystemWorkspaceAfterRun(assistantId);
+              await auditDesignSystemWorkspaceAfterRun(assistantId, mutationContext);
             } finally {
               clearTraceTouchedFilePaths();
               if (finalizingRunId) finalizingLocalRunIdsRef.current.delete(finalizingRunId);
@@ -7216,7 +7260,7 @@ export function ProjectView({
             errorCode === 'DESIGN_SYSTEM_ENRICHMENT_IN_PROGRESS';
           if (runMayFinalize) {
             if (!duplicateEnrichmentRejected) setRunError(err.message, assistantId);
-            appendAssistantErrorEvent(assistantId, err.message, errorCode, failure);
+            appendAssistantErrorEvent(assistantId, err.message, errorCode, failure, mutationContext);
             updateAssistant((prev) => ({
               ...prev,
               endedAt,
@@ -7265,6 +7309,7 @@ export function ProjectView({
                 const latestRunStatus = await fetchChatRunStatus(
                   runIdForGenericDisconnect,
                 ).catch(() => null);
+                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
                 if (latestRunStatus?.artifactPaths) {
                   authoritativeArtifactPaths = latestRunStatus.artifactPaths;
                 }
@@ -8301,6 +8346,7 @@ export function ProjectView({
     async (relativePath: string, action: PluginFolderAgentAction) => {
       if (currentConversationActionDisabled || !activeConversationId) return;
       const mutationContext = captureProjectMutation(project.id);
+      if (!mutationContext) return;
       const pluginWorkflowWorkspaceContext = projectRunWorkspaceContext;
       setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
       if (action === 'install') {
@@ -8324,6 +8370,7 @@ export function ProjectView({
             return next;
           });
         }
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         if (!outcome.ok) throw new Error(outcome.message);
         return { message: outcome.message };
       }
@@ -8349,7 +8396,21 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         throw error;
+      }
+      if (!isProjectMutationCurrent(project.id, mutationContext)) {
+        setActivePluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        setHiddenAssistantPluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        return;
       }
       const startedAt = taskStart.startedAt;
       const messageId = randomUUID();
@@ -8400,9 +8461,9 @@ export function ProjectView({
             taskStart.taskId,
             since,
             25_000,
-            mutationContext?.signal,
+            mutationContext.signal,
           );
-          if (mutationContext?.signal.aborted) return;
+          if (!isProjectMutationCurrent(project.id, mutationContext)) return;
           since = snapshot.nextSince;
           if (snapshot.progress.length > 0) {
             const newTextEvents = snapshot.progress
@@ -8439,6 +8500,7 @@ export function ProjectView({
             next.delete(relativePath);
             return next;
           });
+          if (!isProjectMutationCurrent(project.id, mutationContext)) return;
           if (snapshot.status === 'done' && snapshot.result) {
             setForceStreamingPluginMessageIds((prev) => {
               const next = new Set(prev);
@@ -8523,7 +8585,7 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        if (mutationContext?.signal.aborted) return;
+        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         replaceConversationMessage(
           conversationId,
           {
@@ -9468,7 +9530,12 @@ export function ProjectView({
   }, [connectRepoNeeded]);
 
   // Signal that pushes a draft into the chat composer (the "Import repo" CTA).
-  const [composerDraftSignal, setComposerDraftSignal] = useState<{ text: string; nonce: number }>();
+  const [composerDraftSignal, setComposerDraftSignal] = useState<{
+    text: string;
+    attachments?: ChatAttachment[];
+    meta?: ProjectChatSendMeta;
+    nonce: number;
+  }>();
   // One handler for both the review banner and the chat CTA. When GitHub is
   // not connected it opens Connectors; once connected it prefills the composer
   // with the import instruction so the user can review and send it.
@@ -10437,6 +10504,7 @@ export function ProjectView({
     messagesRequestGenerationRef.current += 1;
     previewCommentsGenerationRef.current += 1;
     projectFilesRequestSeqRef.current += 1;
+    liveArtifactsRequestSeqRef.current += 1;
     invalidateProjectFilesCache(project.id);
     htmlContentCacheRef.current.clear();
     invalidateHtmlSourceSnapshotProject(project.id);
@@ -10445,6 +10513,25 @@ export function ProjectView({
     startingQueuedChatSendIdRef.current = null;
     blockedRunTaskRef.current = null;
     savedArtifactRef.current = null;
+    shareToOpenDesignBusyMessageIdRef.current = null;
+    setShareToOpenDesignBusyMessageId(null);
+    setActivePluginActionPaths(new Set());
+    setHiddenAssistantPluginActionPaths(new Set());
+    setForceStreamingPluginMessageIds(new Set());
+    if (autoSendFirstMessageRef.current && !autoSentRef.current) {
+      const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
+      const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
+      const context = autoSendContextRef.current ?? readAutoSendContext(project.id);
+      if (text.trim() || attachments.length > 0 || context) {
+        setInitialDraft(text ? { projectId: project.id, value: text } : undefined);
+        setComposerDraftSignal({
+          text,
+          attachments,
+          ...(context ? { meta: { context } } : {}),
+          nonce: Date.now(),
+        });
+      }
+    }
     clearAutoSendSession(project.id);
     autoSendSeedRef.current = '';
     autoSendAttachmentsRef.current = [];
@@ -10460,9 +10547,86 @@ export function ProjectView({
     const generation = projectGit.generation;
     const reconciliationContext = projectGit.capture();
     if (!reconciliationContext) return;
-    const conversationId = activeConversationIdRef.current;
     const conversationsRequestToken = ++conversationsRefreshTokenRef.current;
-    const commentsGeneration = ++previewCommentsGenerationRef.current;
+    const hydrateCurrentConversation = async () => {
+      const nextConversations = await listConversations(project.id, {
+        throwOnError: true,
+        fresh: true,
+        signal: reconciliationContext.signal,
+      });
+      if (
+        projectIdRef.current !== project.id
+        || conversationsRefreshTokenRef.current !== conversationsRequestToken
+        || !projectGit.isCurrent(reconciliationContext)
+      ) return;
+      conversationsLoadedProjectIdRef.current = project.id;
+      setConversations(nextConversations);
+      const retainedConversation = nextConversations.find(
+        (conversation) => conversation.id === activeConversationIdRef.current,
+      );
+      const routedConversation = routeConversationId
+        ? nextConversations.find((conversation) => conversation.id === routeConversationId)
+        : undefined;
+      const selectedConversationId = (
+        retainedConversation?.id
+        ?? routedConversation?.id
+        ?? nextConversations[0]?.id
+        ?? null
+      );
+      setPendingEmptyConversationSeed(null);
+      activeConversationIdRef.current = selectedConversationId;
+      setActiveConversationId(selectedConversationId);
+      if (!selectedConversationId) {
+        messagesRequestGenerationRef.current += 1;
+        setMessages([]);
+        setMessagesInitialized(true);
+        messagesConversationIdRef.current = null;
+        messagesAuthorityKeyRef.current = null;
+        setMessagesConversationId(null);
+        setFailedMessagesConversationId(null);
+        commitPreviewComments([]);
+        setAttachedComments([]);
+        return;
+      }
+
+      const messagesGeneration = ++messagesRequestGenerationRef.current;
+      const commentsGeneration = ++previewCommentsGenerationRef.current;
+      reconciliationConversationRef.current = {
+        generation,
+        conversationId: selectedConversationId,
+      };
+      setMessagesInitialized(false);
+      const [nextMessages, nextComments] = await Promise.all([
+        listMessages(project.id, selectedConversationId, {
+          signal: reconciliationContext.signal,
+        }),
+        fetchPreviewComments(project.id, selectedConversationId, {
+          signal: reconciliationContext.signal,
+          requireAuthoritative: true,
+        }),
+      ]);
+      if (
+        projectIdRef.current !== project.id
+        || messagesRequestGenerationRef.current !== messagesGeneration
+        || previewCommentsGenerationRef.current !== commentsGeneration
+        || reconciliationConversationRef.current?.generation !== generation
+        || reconciliationConversationRef.current.conversationId !== selectedConversationId
+        || !projectGit.isCurrent(reconciliationContext)
+      ) return;
+      setMessages(normalizeConversationMessageOrder(nextMessages));
+      setMessagesInitialized(true);
+      setAttachedComments([]);
+      setArtifact(null);
+      savedArtifactRef.current = null;
+      messagesConversationIdRef.current = selectedConversationId;
+      messagesAuthorityKeyRef.current = projectRunAuthorityKeyRef.current;
+      setMessagesConversationId(selectedConversationId);
+      setFailedMessagesConversationId(null);
+      setPreviewComments(nextComments);
+      setAttachedComments((current) => current
+        .map((attached) => nextComments.find((comment) => comment.id === attached.id))
+        .filter((comment): comment is PreviewComment => Boolean(comment)));
+    };
     void Promise.all([
       projectGit.refresh({ fresh: true, generation }),
       projectDetail.refresh({
@@ -10476,50 +10640,28 @@ export function ProjectView({
       })),
       refreshWorkspaceItems({
         freshProjectFiles: true,
-        signal: reconciliationContext.signal,
-        requireAuthoritative: true,
-      }),
-      listConversations(project.id, {
-        throwOnError: true,
-        fresh: true,
-        signal: reconciliationContext.signal,
-      }).then((next) => {
-        if (
-          projectIdRef.current === project.id
-          && conversationsRefreshTokenRef.current === conversationsRequestToken
-          && projectGit.isCurrent(reconciliationContext)
-        ) {
-          setConversations(next);
-        }
-      }),
-      conversationId ? refreshConversationMessagesFromServer(conversationId, {
+        freshLiveArtifacts: true,
         signal: reconciliationContext.signal,
         requireAuthoritative: true,
         mutationContext: reconciliationContext,
-      }) : Promise.resolve(),
-      conversationId ? fetchPreviewComments(project.id, conversationId, {
-        signal: reconciliationContext.signal,
-        requireAuthoritative: true,
-      }).then((next) => {
-        if (
-          previewCommentsGenerationRef.current !== commentsGeneration
-          || !projectGit.isCurrent(reconciliationContext)
-        ) return;
-        setPreviewComments(next);
-        setAttachedComments((current) => current
-          .map((attached) => next.find((comment) => comment.id === attached.id))
-          .filter((comment): comment is PreviewComment => Boolean(comment)));
-      }) : Promise.resolve(),
+      }),
+      hydrateCurrentConversation(),
       fetchConnectorStatuses({
         signal: reconciliationContext.signal,
         requireAuthoritative: true,
       }),
     ]).then(() => {
       if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
+      if (reconciliationConversationRef.current?.generation === generation) {
+        reconciliationConversationRef.current = null;
+      }
       projectGit.completeReconciliation(generation);
       setError(null);
     }).catch(() => {
       if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
+      if (reconciliationConversationRef.current?.generation === generation) {
+        reconciliationConversationRef.current = null;
+      }
       setError('Project history changed, but the refreshed project could not be fully loaded. Reload to retry safely.');
     });
   }, [

@@ -52,7 +52,7 @@ import { LibraryPreviewModal } from './LibraryPreviewModal';
 import { LibraryUploadModal } from './LibraryUploadModal';
 import styles from './LibrarySection.module.css';
 import { useT } from '../i18n';
-import { captureProjectMutation } from '../state/project-git';
+import { captureProjectMutation, isProjectMutationCurrent } from '../state/project-git';
 
 type Translate = ReturnType<typeof useT>;
 
@@ -60,6 +60,7 @@ interface Props {
   active: boolean;
   /** Open a project, optionally deep-linking to a specific file in the editor. */
   onOpenProject: (projectId: string, fileName?: string) => void;
+  projectMutationReady?: (projectId: string) => boolean;
 }
 
 // `value` is matched against an asset's `badgeKind` (not its raw storage kind),
@@ -494,7 +495,11 @@ const LibraryCard = memo(function LibraryCard({
   );
 });
 
-export function LibrarySection({ active, onOpenProject }: Props) {
+export function LibrarySection({
+  active,
+  onOpenProject,
+  projectMutationReady = () => true,
+}: Props) {
   const t = useT();
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -821,19 +826,12 @@ export function LibrarySection({ active, onOpenProject }: Props) {
     async (ds: DesignSystemSummary) => {
       const chosen = assets.filter((a) => selectedIds.has(a.id));
       if (!chosen.length) return;
+      if (!ds.projectId || !projectMutationReady(ds.projectId)) return;
       setDsBusy(true);
       try {
-        let projectId = ds.projectId;
-        let mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
-        if (!projectId) {
-          const detail = await fetchDesignSystem(ds.id);
-          projectId = detail?.projectId;
-        }
-        if (!projectId) {
-          setDsMenuOpen(false);
-          return;
-        }
-        mutationContext ??= captureProjectMutation(projectId);
+        const projectId = ds.projectId;
+        const mutationContext = captureProjectMutation(projectId);
+        if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
         const attachments: ChatAttachment[] = [];
         for (const a of chosen) {
           const res = await applyLibraryAsset(
@@ -842,6 +840,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
             undefined,
             { includeElement: true, mutationContext },
           );
+          if (!isProjectMutationCurrent(projectId, mutationContext)) return;
           if (res?.relPath) {
             attachments.push({
               path: res.relPath,
@@ -860,6 +859,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
             });
           }
         }
+        if (!isProjectMutationCurrent(projectId, mutationContext)) return;
         const n = chosen.length;
         const text =
           `Use ${n} reference${n > 1 ? 's' : ''} I just added from my Library to refine this design ` +
@@ -872,7 +872,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
         setDsBusy(false);
       }
     },
-    [assets, onOpenProject, selectedIds],
+    [assets, onOpenProject, projectMutationReady, selectedIds],
   );
 
   const toggleOne = useCallback((id: string, index: number) => {
@@ -1289,6 +1289,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
                       type="button"
                       className={styles.dsMenuItem}
                       role="menuitem"
+                      disabled={!ds.projectId || !projectMutationReady(ds.projectId)}
                       onClick={() => void optimizeExistingDesignSystem(ds)}
                     >
                       <span className={styles.dsMenuItemTitle}>{ds.title}</span>

@@ -802,4 +802,24 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     await act(async () => resolveDelete(true));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
   });
+
+  it('keeps Home rename inert until the project mutation authority is ready', () => {
+    const onRename = vi.fn();
+    render(
+      <RecentProjectsStrip
+        projects={[project({ id: 'project-1', name: 'My project' })]}
+        onOpen={() => {}}
+        onRename={onRename}
+        projectMutationReady={() => false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    const rename = screen.getByRole('menuitem', { name: 'Rename' });
+    expect((rename as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(rename);
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onRename).not.toHaveBeenCalled();
+  });
 });

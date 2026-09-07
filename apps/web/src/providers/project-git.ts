@@ -29,7 +29,7 @@ import {
   unregisterProjectMutationStore,
 } from '../state/project-git';
 import { subscribeProjectEvents, type ProjectEvent } from './project-events';
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 export class ProjectGitHttpError extends Error {
   constructor(
@@ -119,7 +119,7 @@ async function waitForPoll(
 }
 
 export function createProjectGitClient(options: ProjectGitClientOptions = {}): ProjectGitClient {
-  const fetchFn = options.fetchFn ?? fetch;
+  const fetchFn: Fetch = options.fetchFn ?? ((...args) => fetch(...args));
   const sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
   const pollIntervalMs = options.pollIntervalMs ?? 500;
 
@@ -262,7 +262,17 @@ export interface ProjectGitHub {
   subscribe(projectId: string, listener: (snapshot: ProjectGitStateSnapshot) => void): () => void;
   refresh(projectId: string, options?: { fresh?: boolean; generation?: number }): Promise<void>;
   store(projectId: string): ProjectGitStateStore;
+  snapshot(projectId: string): ProjectGitStateSnapshot;
+  capture(projectId: string): import('../state/project-git').ProjectMutationContext | undefined;
 }
+
+const EMPTY_PROJECT_GIT_SNAPSHOT: ProjectGitStateSnapshot = {
+  state: null,
+  loading: false,
+  error: null,
+  writeLocked: false,
+  generation: 0,
+};
 
 interface HubEntry {
   listeners: Set<(snapshot: ProjectGitStateSnapshot) => void>;
@@ -306,16 +316,16 @@ export function createProjectGitHub(
     options?: { fresh?: boolean; generation?: number },
   ): Promise<void> => {
     const entry = getEntry(projectId);
+    const token = entry.store.beginRead();
+    if (options?.generation !== undefined && token.generation !== options.generation) {
+      throw new Error('Project Git read generation changed before refresh');
+    }
     if (options?.fresh) {
       entry.readController?.abort();
       entry.readController = null;
       entry.inFlight = null;
     }
     if (entry.inFlight) return entry.inFlight;
-    const token = entry.store.beginRead();
-    if (options?.generation !== undefined && token.generation !== options.generation) {
-      throw new Error('Project Git read generation changed before refresh');
-    }
     const controller = new AbortController();
     entry.readController = controller;
     const pending = client.state(projectId, controller.signal)
@@ -340,7 +350,9 @@ export function createProjectGitHub(
 
   return {
     refresh,
-    store: projectId => getEntry(projectId).store,
+    store: projectId => entries.get(projectId)?.store ?? createProjectGitStateStore(),
+    snapshot: projectId => entries.get(projectId)?.store.snapshot() ?? EMPTY_PROJECT_GIT_SNAPSHOT,
+    capture: projectId => entries.get(projectId)?.store.capture(),
     subscribe(projectId, listener) {
       const entry = getEntry(projectId);
       if (entry.cleanupTimer !== null) {
@@ -383,8 +395,9 @@ export function createProjectGitHub(
           entry.readController?.abort();
           entry.readController = null;
           entry.inFlight = null;
-          entries.delete(projectId);
+          entry.store.dispose();
           unregisterProjectMutationStore(projectId, entry.store);
+          entries.delete(projectId);
         }, 0);
       };
     },
@@ -393,21 +406,13 @@ export function createProjectGitHub(
 
 const defaultProjectGitClient = createProjectGitClient();
 const defaultProjectGitHub = createProjectGitHub(defaultProjectGitClient);
-const EMPTY_PROJECT_GIT_SNAPSHOT: ProjectGitStateSnapshot = {
-  state: null,
-  loading: false,
-  error: null,
-  writeLocked: false,
-  generation: 0,
-};
-
 export function useProjectGit(projectId: string | null | undefined) {
   const subscribe = useCallback((listener: () => void) => {
     if (!projectId) return () => {};
     return defaultProjectGitHub.subscribe(projectId, listener);
   }, [projectId]);
   const getSnapshot = useCallback(() => projectId
-    ? defaultProjectGitHub.store(projectId).snapshot()
+    ? defaultProjectGitHub.snapshot(projectId)
     : EMPTY_PROJECT_GIT_SNAPSHOT, [projectId]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
@@ -416,7 +421,7 @@ export function useProjectGit(projectId: string | null | undefined) {
     refresh: (options?: { fresh?: boolean; generation?: number }) => projectId
       ? defaultProjectGitHub.refresh(projectId, options)
       : Promise.resolve(),
-    capture: () => projectId ? defaultProjectGitHub.store(projectId).capture() : undefined,
+    capture: () => projectId ? defaultProjectGitHub.capture(projectId) : undefined,
     isCurrent: (context: import('../state/project-git').ProjectMutationContext) => projectId
       ? defaultProjectGitHub.store(projectId).isCurrent(context)
       : false,
@@ -444,4 +449,42 @@ export function useProjectGit(projectId: string | null | undefined) {
       );
     },
   }), [projectId, snapshot]);
+}
+
+/**
+ * Keeps a bounded set of project authorities loaded while list-level Home
+ * actions are mounted. The hub still owns connection sharing and last-user
+ * disposal; this hook only mirrors snapshots for action readiness.
+ */
+export function useProjectGitAuthoritySet(projectIds: readonly string[]) {
+  const projectIdsKey = JSON.stringify([...new Set(projectIds)].sort());
+  const stableProjectIds = useMemo<string[]>(() => JSON.parse(projectIdsKey), [projectIdsKey]);
+  const [snapshots, setSnapshots] = useState<Record<string, ProjectGitStateSnapshot>>({});
+
+  useEffect(() => {
+    setSnapshots((current) => {
+      const next: Record<string, ProjectGitStateSnapshot> = {};
+      for (const projectId of stableProjectIds) {
+        if (current[projectId]) next[projectId] = current[projectId];
+      }
+      return next;
+    });
+    const unsubscribes = stableProjectIds.map((projectId) => defaultProjectGitHub.subscribe(
+      projectId,
+      (snapshot) => setSnapshots((current) => (
+        current[projectId] === snapshot ? current : { ...current, [projectId]: snapshot }
+      )),
+    ));
+    return () => {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+    };
+  }, [stableProjectIds]);
+
+  return useMemo(() => ({
+    snapshots,
+    isReady: (projectId: string) => {
+      const snapshot = snapshots[projectId];
+      return Boolean(snapshot?.state && !snapshot.loading && !snapshot.writeLocked);
+    },
+  }), [snapshots]);
 }

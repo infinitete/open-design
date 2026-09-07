@@ -93,4 +93,15 @@ describe('project Git state store', () => {
     expect(store.completeReconciliation(store.reconciliationToken())).toBe(true);
     expect(store.snapshot().writeLocked).toBe(false);
   });
+
+  it('disposes the current epoch signal and rejects later currentness checks', () => {
+    const store = createProjectGitStateStore(state(3));
+    const captured = store.capture();
+
+    store.dispose();
+
+    expect(captured.signal.aborted).toBe(true);
+    expect(store.isCurrent(captured)).toBe(false);
+    expect(store.capture().signal.aborted).toBe(true);
+  });
 });

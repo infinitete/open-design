@@ -685,7 +685,12 @@ interface Props {
   createDesignSystemFromProjectBusy?: boolean;
   // Bumped by the parent to push a draft into the composer (used by the
   // "Import repo" CTA). The nonce lets the same text fire more than once.
-  composerDraftSignal?: { text: string; nonce: number };
+  composerDraftSignal?: {
+    text: string;
+    attachments?: ChatAttachment[];
+    meta?: ChatSendMeta;
+    nonce: number;
+  };
   projectMetadata?: ProjectMetadata;
   // Authoritative post-patch project from the daemon — see ChatComposer's
   // prop of the same name for the recency invariant.
@@ -1577,7 +1582,11 @@ export function ChatPane({
     if (!composerDraftSignal) return;
     if (lastDraftSignalNonceRef.current === composerDraftSignal.nonce) return;
     lastDraftSignalNonceRef.current = composerDraftSignal.nonce;
-    composerRef.current?.setDraft(composerDraftSignal.text);
+    composerRef.current?.restoreDraft({
+      text: composerDraftSignal.text,
+      attachments: composerDraftSignal.attachments,
+      meta: composerDraftSignal.meta,
+    });
   }, [composerDraftSignal]);
 
   // Library "optimize design system" hand-off: when the user pushed selected

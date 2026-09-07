@@ -189,4 +189,22 @@ describe('project mutation transport', () => {
     replies[2]!(new Response(JSON.stringify({ conversations: [{ id: 'later' }] }), { status: 200 }));
     await expect(later).resolves.toEqual([{ id: 'later' }]);
   });
+
+  it('does not turn an aborted upload into ordinary failed attachment rows', async () => {
+    const controller = new AbortController();
+    const mutationContext = {
+      expectedProjectRevision: 12,
+      generation: 3,
+      signal: controller.signal,
+    };
+    const fetchMock = vi.fn().mockRejectedValueOnce(new DOMException('History changed', 'AbortError'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(uploadProjectFiles(
+      'aborted-upload-project',
+      [new File(['old'], 'old.png')],
+      undefined,
+      mutationContext,
+    )).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });

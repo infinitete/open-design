@@ -108,7 +108,11 @@ describe('ChatPane connect-repo CTA', () => {
       composerDraftSignal: { text: 'Pull the linked repo', nonce: 1 },
     });
 
-    expect(composerMocks.setDraft).toHaveBeenCalledWith('Pull the linked repo');
+    expect(composerMocks.restoreDraft).toHaveBeenCalledWith({
+      text: 'Pull the linked repo',
+      attachments: undefined,
+      meta: undefined,
+    });
   });
 
   it('hides the CTA when the project does not need a repo connection', () => {

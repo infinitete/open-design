@@ -22,6 +22,7 @@ import type { ProjectGitState } from '@open-design/contracts';
 import {
   createProjectGitStateStore,
   registerProjectMutationStore,
+  unregisterProjectMutationStore,
 } from '../../src/state/project-git';
 import { composerText, pressEnter, typeAndSettle, typeInComposer } from '../helpers/lexical-composer';
 
@@ -199,11 +200,22 @@ function projectPatchBodies(): Array<{ metadata?: { linkedDirs?: string[] } }> {
     .map(([, init]) => JSON.parse(String(init?.body ?? '{}')));
 }
 
+const projectGitState = (revision: number): ProjectGitState => ({
+  enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+  confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
+  bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
+  operationId: null, error: null,
+  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+});
+let defaultMutationStore = createProjectGitStateStore(projectGitState(1));
+
 // The contenteditable serializes newlines as `<br>`, which jsdom's
 // `.textContent` drops — so use the Lexical-aware `composerText()` helper for
 // every editor-text assertion (it walks the tree and emits real `\n`s).
 
 beforeEach(() => {
+  defaultMutationStore = createProjectGitStateStore(projectGitState(1));
+  registerProjectMutationStore('project-1', defaultMutationStore);
   trackChatPanelClickMock.mockClear();
   plugins = [COMMUNITY_PLUGIN, USER_PLUGIN];
   skills = [SKILL];
@@ -326,20 +338,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unregisterProjectMutationStore('project-1', defaultMutationStore);
   vi.unstubAllGlobals();
   cleanup();
 });
 
 describe('ChatComposer context pickers', () => {
-  it('keeps a linked-folder mutation on the revision captured before the dialog resolves', async () => {
-    const state = (revision: number): ProjectGitState => ({
-      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
-      confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
-      bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
-      operationId: null, error: null,
-      binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-    });
-    const store = createProjectGitStateStore(state(12));
+  it('cancels a linked-folder mutation when the revision captured before the dialog is revoked', async () => {
+    const store = createProjectGitStateStore(projectGitState(12));
     registerProjectMutationStore('project-1', store);
     deferNextFolderDialog = true;
     renderComposer({ projectMetadata: { kind: 'prototype' } });
@@ -348,17 +354,15 @@ describe('ChatComposer context pickers', () => {
     fireEvent.click(screen.getByTestId('chat-plus-trigger'));
     fireEvent.click(await screen.findByText('Link local code'));
     await waitFor(() => expect(resolveDeferredFolderDialog).toBeTruthy());
-    store.accept(state(13), 'event');
+    store.accept(projectGitState(13), 'event');
     await act(async () => {
       resolveDeferredFolderDialog?.();
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(projectPatchBodies()).toHaveLength(1));
-    const patchCall = fetchMock.mock.calls.find(
-      ([url, init]) => url === '/api/projects/project-1' && init?.method === 'PATCH',
-    );
-    expect(new Headers(patchCall?.[1]?.headers).get('X-OD-Project-Revision')).toBe('12');
+    await act(async () => Promise.resolve());
+    expect(projectPatchBodies()).toHaveLength(0);
+    unregisterProjectMutationStore('project-1', store);
   });
 
   it('auto-stages the active workspace context and re-stages after a tab change', async () => {

@@ -50,6 +50,7 @@ export interface ProjectGitStateStore {
   beginRead(): ProjectGitReadToken;
   capture(): ProjectMutationContext;
   completeReconciliation(token: ProjectGitReconciliationToken): boolean;
+  dispose(): void;
   failRead(token: ProjectGitReadToken, error: Error): boolean;
   isCurrent(context: ProjectMutationContext): boolean;
   reconciliationToken(): ProjectGitReconciliationToken;
@@ -149,6 +150,7 @@ export function createProjectGitStateStore(
   let loading = initialState === null;
   let error: Error | null = null;
   let writeLocked = false;
+  let disposed = false;
   let epochController = new AbortController();
   const listeners = new Set<() => void>();
   let cachedSnapshot: ProjectGitStateSnapshot = {
@@ -211,6 +213,7 @@ export function createProjectGitStateStore(
       generation,
     }),
     completeReconciliation(token) {
+      if (disposed) return false;
       if (token.generation !== generation) return false;
       writeLocked = false;
       error = null;
@@ -218,13 +221,15 @@ export function createProjectGitStateStore(
       return true;
     },
     failRead(token, nextError) {
+      if (disposed) return false;
       if (token.generation !== generation || token.sequence !== sequence) return false;
       loading = false;
       error = nextError;
       emit();
       return true;
     },
-    isCurrent: context => context.generation === generation
+    isCurrent: context => !disposed
+      && context.generation === generation
       && !context.signal.aborted
       && (context.expectedProjectRevision === undefined
         || context.expectedProjectRevision === currentState?.projectRevision),
@@ -233,6 +238,12 @@ export function createProjectGitStateStore(
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      epochController.abort();
+      listeners.clear();
     },
   };
 }

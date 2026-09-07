@@ -375,11 +375,19 @@ export function TerminalViewer({
     void killTerminal(projectId, sessionId, {
       keepalive: true,
     });
-    const next = await createTerminal(projectId, undefined, mutationContext);
-    if (next?.id) {
-      lastSizeRef.current = null;
-      setSessionId(next.id);
-    } else {
+    try {
+      const next = await createTerminal(projectId, undefined, mutationContext);
+      if (next?.id) {
+        lastSizeRef.current = null;
+        setSessionId(next.id);
+      } else {
+        setPhase('unavailable');
+      }
+    } catch {
+      // A restored project revokes the launch signal and createTerminal
+      // surfaces PROJECT_STATE_CHANGED. The previous PTY is already detached;
+      // keep the standard actionable Restart/Close state instead of leaving a
+      // rejected promise and an indefinite connecting overlay.
       setPhase('unavailable');
     }
   }, [projectId, sessionId]);

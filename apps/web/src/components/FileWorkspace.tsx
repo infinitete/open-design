@@ -26,7 +26,11 @@ import {
 import { deriveUploadCohort } from '../analytics/upload-tracking';
 import { useI18n, useT, type Locale } from '../i18n';
 import { useStableHandler } from '../lib/use-stable-handler';
-import { captureProjectMutation, type ProjectMutationContext } from '../state/project-git';
+import {
+  captureProjectMutation,
+  isProjectMutationCurrent,
+  type ProjectMutationContext,
+} from '../state/project-git';
 import { useDeckPreviewScale } from '../lib/use-deck-preview-scale';
 import { isMacPlatform } from '../utils/platform';
 import {
@@ -3842,12 +3846,17 @@ export function FileWorkspace({
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
       const mutationContext = captureProjectMutation(projectId);
-      const term = await createTerminal(projectId, undefined, mutationContext);
-      if (!term) {
+      try {
+        const term = await createTerminal(projectId, undefined, mutationContext);
+        if (!term) {
+          setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
+          return null;
+        }
+        return term.id;
+      } catch {
         setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
         return null;
       }
-      return term.id;
     },
   };
   // A read-only viewer gets no launcher edit actions (new file, import, etc.).
@@ -4605,10 +4614,12 @@ export function FileWorkspace({
                   dir,
                   { includeElement: true, mutationContext },
                 );
+                if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
                 if (res?.relPath) lastRelPath = res.relPath;
                 if (res?.elementRelPath) lastRelPath = res.elementRelPath;
               }
               await onRefreshFiles();
+              if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
               if (lastRelPath) openFile(lastRelPath);
             }}
           />
@@ -4760,17 +4771,26 @@ function DesignSystemProjectPanel({
     });
   }
 
-  const refreshKitDependencies = useCallback(async (options?: { finalizeBrand?: boolean }) => {
+  const refreshKitDependencies = useCallback(async (options?: {
+    finalizeBrand?: boolean;
+    mutationContext?: ProjectMutationContext;
+  }) => {
+    const mutationContext = options?.mutationContext ?? captureProjectMutation(projectId);
+    const isCurrent = () => !mutationContext
+      || isProjectMutationCurrent(projectId, mutationContext);
     if (options?.finalizeBrand && brandId) {
-      const outcome = await finalizeBrandProject(brandId, projectId);
+      if (!mutationContext) throw new Error(t('ds.actionFailed'));
+      const outcome = await finalizeBrandProject(brandId, projectId, mutationContext);
+      if (!isCurrent()) return;
       if (!outcome.ok) throw new Error(outcome.error);
     }
+    if (!isCurrent()) return;
     setKitReloadKey((k) => k + 1);
     await Promise.all([
       Promise.resolve(onRefreshFiles()),
       Promise.resolve(onDesignSystemsRefresh?.()),
     ]);
-  }, [brandId, onDesignSystemsRefresh, onRefreshFiles, projectId, workspaceContext]);
+  }, [brandId, onDesignSystemsRefresh, onRefreshFiles, projectId, t, workspaceContext]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4798,10 +4818,10 @@ function DesignSystemProjectPanel({
   const { uploading: kitUploading, uploadModule: kitUploadModule } = useKitModuleUpload({
     projectId,
     title: system.title,
-    onUploaded: (module) => {
+    onUploaded: (module, mutationContext) => {
       setKitActionBusy(`upload:${module}`);
       notifyKit('loading', t('ds.uploading'));
-      void refreshKitDependencies({ finalizeBrand: true })
+      void refreshKitDependencies({ finalizeBrand: true, mutationContext })
         .then(() => notifyKit('success', t('ds.uploadDone')))
         .catch(() => notifyKit('error', t('ds.actionFailed')))
         .finally(() => setKitActionBusy(null));

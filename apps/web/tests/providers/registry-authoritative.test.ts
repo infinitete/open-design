@@ -11,6 +11,27 @@ afterEach(() => {
 });
 
 describe('authoritative reconciliation reads', () => {
+  it('evicts an older coalesced live-artifact read when a fresh read is requested', async () => {
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => { resolveOld = resolve; });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        liveArtifacts: [{ id: 'current-artifact', title: 'Current' }],
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stale = fetchLiveArtifacts('fresh-project');
+    await expect(fetchLiveArtifacts('fresh-project', { fresh: true })).resolves.toEqual([
+      expect.objectContaining({ id: 'current-artifact' }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    resolveOld(new Response(JSON.stringify({
+      liveArtifacts: [{ id: 'stale-artifact', title: 'Stale' }],
+    }), { status: 200 }));
+    await expect(stale).resolves.toEqual([expect.objectContaining({ id: 'stale-artifact' })]);
+  });
+
   it('rejects connector status HTTP failures when the reconciliation barrier opts in', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
 

@@ -297,6 +297,7 @@ interface Props {
   onDeleteProject?: (id: string) => Promise<boolean | void> | boolean | void;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject?: (id: string, name: string) => void;
+  projectMutationReady?: (id: string) => boolean;
   onBrowseRegistry?: () => void;
   onOpenIntegrations?: () => void;
   onOpenMcp?: () => void;
@@ -507,6 +508,7 @@ export function HomeView({
   onDeleteProject,
   onDuplicateProject,
   onRenameProject,
+  projectMutationReady,
   onBrowseRegistry,
   onOpenIntegrations,
   onOpenMcp,
@@ -3263,6 +3265,7 @@ export function HomeView({
         {...(onDeleteProject ? { onDelete: onDeleteProject } : {})}
         {...(onDuplicateProject ? { onDuplicate: onDuplicateProject } : {})}
         {...(onRenameProject ? { onRename: onRenameProject } : {})}
+        projectMutationReady={projectMutationReady}
       />
       )}
 

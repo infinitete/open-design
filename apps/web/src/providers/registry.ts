@@ -1799,6 +1799,7 @@ export async function deleteProjectFolder(
 export async function fetchLiveArtifacts(
   projectId: string,
   options?: {
+    fresh?: boolean;
     signal?: AbortSignal;
     requireAuthoritative?: boolean;
   },
@@ -1830,9 +1831,11 @@ export async function fetchLiveArtifacts(
   // card scans are background work: sharing their promise would let a hidden
   // EntryShell pane pin or abort the ProjectView request that needs to win
   // during a reopen.
-  if (options?.signal) return run();
+  const cacheKey = `live-artifacts:${projectId}`;
+  if (options?.fresh) evictCoalescedGet(cacheKey);
+  if (options?.signal || options?.fresh) return run();
   return coalescedGet(
-    `live-artifacts:${projectId}`,
+    cacheKey,
     run,
   );
 }
@@ -2749,6 +2752,10 @@ export async function uploadProjectFiles(
       }
     } catch (caught) {
       rethrowProjectStateChanged(caught);
+      if (
+        mutationContext?.signal.aborted
+        || (caught instanceof DOMException && caught.name === 'AbortError')
+      ) throw caught;
       error = 'upload request failed';
       for (const f of batch) {
         failed.push({ name: f.name, error });

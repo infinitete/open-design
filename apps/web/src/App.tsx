@@ -134,7 +134,8 @@ import {
   duplicatePluginAsProject,
   patchProject,
 } from './state/projects';
-import { captureProjectMutation } from './state/project-git';
+import { captureProjectMutation, isProjectMutationCurrent } from './state/project-git';
+import { useProjectGitAuthoritySet } from './providers/project-git';
 import { useModalWindowDragGuard } from './hooks/useModalWindowDragGuard';
 import { resumeThumbnailLoads, suspendThumbnailLoads } from './lib/thumbnail-load-gate';
 import type {
@@ -585,6 +586,7 @@ function AppInner() {
     Record<string, DesignSystemGenerationJob>
   >({});
   const [projects, setProjects] = useState<Project[]>([]);
+  const projectGitAuthorities = useProjectGitAuthoritySet(projects.map((project) => project.id));
   const [pendingProjectCreation, setPendingProjectCreation] =
     useState<PendingProjectCreation | null>(null);
   const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
@@ -2234,7 +2236,9 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    if (!projectGitAuthorities.isReady(id)) return;
     const mutationContext = captureProjectMutation(id);
+    if (!mutationContext) return;
     const previous = projectsRef.current.find((project) => project.id === id) ?? null;
     const renameProjectionKey = JSON.stringify([id]);
     let renameState = projectRenameStatesRef.current.get(renameProjectionKey);
@@ -2267,6 +2271,7 @@ function AppInner() {
     });
     const runRename = async () => {
       const persisted = await patchProject(id, { name: trimmed }, mutationContext);
+      if (!isProjectMutationCurrent(id, mutationContext)) return;
       if (persisted) renameState.confirmed = persisted;
       const isLatestQueuedRename =
         projectRenameStatesRef.current.get(renameProjectionKey) === renameState
@@ -2300,7 +2305,7 @@ function AppInner() {
               }
             : project
         ));
-        await refreshProjects();
+        if (isProjectMutationCurrent(id, mutationContext)) await refreshProjects();
         return;
       }
       setProjects((current) => current.map((project) =>
@@ -2313,7 +2318,7 @@ function AppInner() {
             }
           : project
       ));
-      await refreshProjects();
+      if (isProjectMutationCurrent(id, mutationContext)) await refreshProjects();
     };
     const queued = renameState.tail.then(runRename, runRename);
     renameState.tail = queued.then(
@@ -2329,7 +2334,7 @@ function AppInner() {
       }
     });
     await queued;
-  }, [refreshProjects]);
+  }, [projectGitAuthorities, refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
   // depending on browser history here: tab restores and template-create flows
@@ -3086,6 +3091,7 @@ function AppInner() {
         onDeleteProject={handleDeleteProject}
         onDuplicateProject={handleDuplicateProject}
         onRenameProject={handleRenameProject}
+        projectMutationReady={projectGitAuthorities.isReady}
         onProjectsRefresh={refreshProjects}
         onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
         onCreateDesignSystem={() => {

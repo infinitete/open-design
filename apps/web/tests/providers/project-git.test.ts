@@ -200,6 +200,22 @@ describe('shared project Git hub', () => {
     expect(readSignal?.aborted).toBe(true);
   });
 
+  it('revokes captured mutation authority when the true last subscriber is disposed', async () => {
+    vi.useFakeTimers();
+    const client = { state: vi.fn(async () => legalState) };
+    const hub = createProjectGitHub(client, { subscribeEvents: vi.fn(() => vi.fn()) });
+    const unsubscribe = hub.subscribe('revoked-project', vi.fn());
+    await vi.waitFor(() => expect(captureProjectMutation('revoked-project')).toBeDefined());
+    const captured = captureProjectMutation('revoked-project');
+    expect(captured?.signal.aborted).toBe(false);
+
+    unsubscribe();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(captured?.signal.aborted).toBe(true);
+    expect(captureProjectMutation('revoked-project')).toBeUndefined();
+  });
+
   it('reuses one connection when StrictMode resubscribes inside the cleanup grace', async () => {
     vi.useFakeTimers();
     const client = { state: vi.fn(() => new Promise<ProjectGitState>(() => {})) };
@@ -333,5 +349,58 @@ describe('shared project Git hub', () => {
     await generationTwo;
     expect(hub.store('project-never').snapshot().state?.projectRevision).toBe(9);
     unsubscribe();
+  });
+
+  it('rejects a stale fresh generation before touching the current authoritative read', async () => {
+    const reads: Array<{ signal?: AbortSignal; resolve: (state: ProjectGitState) => void }> = [];
+    const client = {
+      state: vi.fn((_projectId: string, signal?: AbortSignal) => new Promise<ProjectGitState>((resolve) => {
+        reads.push({ signal, resolve });
+      })),
+    };
+    let eventListener: ((event: { type: 'project-git-state'; projectId: string; state: ProjectGitState }) => void) | undefined;
+    const hub = createProjectGitHub(client, {
+      subscribeEvents: vi.fn((_projectId, listener) => {
+        eventListener = listener as typeof eventListener;
+        return vi.fn();
+      }),
+    });
+    const unsubscribe = hub.subscribe('generation-order', vi.fn());
+    eventListener?.({ type: 'project-git-state', projectId: 'generation-order', state: legalState });
+    eventListener?.({
+      type: 'project-git-state', projectId: 'generation-order',
+      state: { ...legalState, projectRevision: 8, contentRevision: 10 },
+    });
+    const generationOne = hub.refresh('generation-order', { fresh: true, generation: 1 });
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    eventListener?.({
+      type: 'project-git-state', projectId: 'generation-order',
+      state: { ...legalState, projectRevision: 9, contentRevision: 11 },
+    });
+    void generationOne.catch(() => {});
+    const generationTwo = hub.refresh('generation-order', { fresh: true, generation: 2 });
+    await vi.waitFor(() => expect(reads).toHaveLength(3));
+    const currentSignal = reads[2]!.signal;
+    await expect(hub.refresh('generation-order', { fresh: true, generation: 1 }))
+      .rejects.toThrow(/generation/i);
+    expect(currentSignal?.aborted).toBe(false);
+
+    reads[2]!.resolve({ ...legalState, projectRevision: 9, contentRevision: 11 });
+    await generationTwo;
+    expect(hub.store('generation-order').snapshot().state?.projectRevision).toBe(9);
+    unsubscribe();
+  });
+
+  it('does not register authority for an abandoned store lookup', () => {
+    const client = { state: vi.fn(async () => legalState) };
+    const subscribeEvents = vi.fn(() => vi.fn());
+    const hub = createProjectGitHub(client, { subscribeEvents });
+
+    const abandoned = hub.store('abandoned-project');
+
+    expect(abandoned.snapshot().state).toBeNull();
+    expect(captureProjectMutation('abandoned-project')).toBeUndefined();
+    expect(client.state).not.toHaveBeenCalled();
+    expect(subscribeEvents).not.toHaveBeenCalled();
   });
 });

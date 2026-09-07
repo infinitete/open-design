@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatComposer } from '../../src/components/ChatComposer';
 import { ANNOTATION_EVENT } from '../../src/components/PreviewDrawOverlay';
@@ -18,6 +18,7 @@ import type { ProjectGitState } from '@open-design/contracts';
 import {
   createProjectGitStateStore,
   registerProjectMutationStore,
+  unregisterProjectMutationStore,
 } from '../../src/state/project-git';
 
 vi.mock('../../src/providers/registry', async () => {
@@ -32,22 +33,30 @@ vi.mock('../../src/providers/registry', async () => {
 
 const mockedUploadProjectFiles = vi.mocked(uploadProjectFiles);
 
+const projectGitState = (revision: number): ProjectGitState => ({
+  enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
+  confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
+  bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
+  operationId: null, error: null,
+  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
+});
+let defaultProjectStore = createProjectGitStateStore(projectGitState(1));
+
+beforeEach(() => {
+  defaultProjectStore = createProjectGitStateStore(projectGitState(1));
+  registerProjectMutationStore('project-1', defaultProjectStore);
+});
+
 afterEach(() => {
   cleanup();
+  unregisterProjectMutationStore('project-1', defaultProjectStore);
   vi.clearAllMocks();
 });
 
 describe('ChatComposer /search command', () => {
-  it('captures project authority before awaiting asynchronous clipboard items', async () => {
+  it('does not upload asynchronous clipboard items after their captured authority is revoked', async () => {
     const projectId = 'clipboard-authority-project';
-    const state = (revision: number): ProjectGitState => ({
-      enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
-      confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
-      bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
-      operationId: null, error: null,
-      binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-    });
-    const store = createProjectGitStateStore(state(2));
+    const store = createProjectGitStateStore(projectGitState(2));
     registerProjectMutationStore(projectId, store);
     let releaseClipboard!: (items: ClipboardItem[]) => void;
     const clipboardRead = new Promise<ClipboardItem[]>((resolve) => { releaseClipboard = resolve; });
@@ -72,7 +81,7 @@ describe('ChatComposer /search command', () => {
         clipboardData: { files: [], items: [] },
       });
       await waitFor(() => expect(navigator.clipboard.read).toHaveBeenCalledTimes(1));
-      store.accept(state(3), 'event');
+      store.accept(projectGitState(3), 'event');
       await act(async () => {
         releaseClipboard([{
           types: ['image/png'],
@@ -80,13 +89,12 @@ describe('ChatComposer /search command', () => {
         } as unknown as ClipboardItem]);
         await clipboardRead;
       });
-      await waitFor(() => expect(mockedUploadProjectFiles).toHaveBeenCalledTimes(1));
-      const context = mockedUploadProjectFiles.mock.calls[0]?.[3];
-      expect(context?.expectedProjectRevision).toBe(2);
-      expect(context?.signal.aborted).toBe(true);
+      await act(async () => Promise.resolve());
+      expect(mockedUploadProjectFiles).not.toHaveBeenCalled();
     } finally {
       if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
       else delete (navigator as { clipboard?: Clipboard }).clipboard;
+      unregisterProjectMutationStore(projectId, store);
     }
   });
 
@@ -314,7 +322,7 @@ describe('ChatComposer /search command', () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(mockedUploadProjectFiles).toHaveBeenCalledWith('project-1', [
       expect.any(File),
-    ], undefined, undefined);
+    ], undefined, expect.objectContaining({ expectedProjectRevision: 1 }));
     expect(onSend).toHaveBeenCalledWith(
       'please update this spot',
       [{ path: 'uploads/drawing.png', name: 'drawing.png', kind: 'image', order: 0 }],

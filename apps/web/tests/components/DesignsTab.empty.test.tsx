@@ -4,7 +4,14 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DesignsTab } from '../../src/components/DesignsTab';
-import { fetchLiveArtifacts, fetchProjectFiles } from '../../src/providers/registry';
+import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles } from '../../src/providers/registry';
+
+const mutationContext = { projectId: 'project-live', revision: 'rev-1', signal: new AbortController().signal };
+let mutationCurrent = true;
+vi.mock('../../src/state/project-git', () => ({
+  captureProjectMutation: vi.fn(() => mutationContext),
+  isProjectMutationCurrent: vi.fn(() => mutationCurrent),
+}));
 
 vi.mock('../../src/providers/registry', () => ({
   deleteLiveArtifact: vi.fn(),
@@ -35,6 +42,8 @@ describe('DesignsTab empty state', () => {
     window.localStorage.clear();
     vi.mocked(fetchLiveArtifacts).mockReset().mockResolvedValue([]);
     vi.mocked(fetchProjectFiles).mockReset().mockResolvedValue([]);
+    vi.mocked(deleteLiveArtifact).mockReset().mockResolvedValue(true);
+    mutationCurrent = true;
   });
 
   afterEach(() => {
@@ -87,6 +96,87 @@ describe('DesignsTab empty state', () => {
 
     // Verify CTA Button is NOT present
     expect(screen.queryByRole('button', { name: 'New project' })).toBeNull();
+  });
+
+  it('keeps Home live-artifact delete inert until project authority is ready', async () => {
+    vi.mocked(fetchLiveArtifacts).mockResolvedValue([{
+      schemaVersion: 1,
+      id: 'artifact-1',
+      projectId: 'project-live',
+      title: 'Live report',
+      slug: 'live-report',
+      status: 'active',
+      pinned: false,
+      preview: { type: 'html', entry: 'index.html' },
+      refreshStatus: 'idle',
+      createdAt: '2026-09-07T00:00:00.000Z',
+      updatedAt: '2026-09-07T00:00:00.000Z',
+      hasDocument: true,
+    }]);
+    render(
+      <DesignsTab
+        projects={[{
+          id: 'project-live', name: 'Dashboard', skillId: null, designSystemId: null,
+          createdAt: 1, updatedAt: 2, status: { value: 'not_started' },
+        }]}
+        skills={[]}
+        designSystems={[]}
+        onOpen={vi.fn()}
+        onOpenLiveArtifact={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={vi.fn()}
+        projectMutationReady={() => false}
+      />,
+    );
+
+    const remove = await screen.findByRole('button', { name: 'Delete Live report' });
+    expect((remove as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(remove);
+    expect(deleteLiveArtifact).not.toHaveBeenCalled();
+  });
+
+  it('does not remove a Home live artifact after its epoch advances', async () => {
+    let resolveDelete!: (value: true) => void;
+    vi.mocked(deleteLiveArtifact).mockImplementation(() => new Promise((resolve) => {
+      resolveDelete = resolve;
+    }));
+    vi.mocked(fetchLiveArtifacts).mockResolvedValue([{
+      schemaVersion: 1,
+      id: 'artifact-1',
+      projectId: 'project-live',
+      title: 'Live report',
+      slug: 'live-report',
+      status: 'active',
+      pinned: false,
+      preview: { type: 'html', entry: 'index.html' },
+      refreshStatus: 'idle',
+      createdAt: '2026-09-07T00:00:00.000Z',
+      updatedAt: '2026-09-07T00:00:00.000Z',
+      hasDocument: true,
+    }]);
+    render(
+      <DesignsTab
+        projects={[{
+          id: 'project-live', name: 'Dashboard', skillId: null, designSystemId: null,
+          createdAt: 1, updatedAt: 2, status: { value: 'not_started' },
+        }]}
+        skills={[]}
+        designSystems={[]}
+        onOpen={vi.fn()}
+        onOpenLiveArtifact={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={vi.fn()}
+        projectMutationReady={() => true}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Live report' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(deleteLiveArtifact).toHaveBeenCalledWith('project-live', 'artifact-1', mutationContext);
+    mutationCurrent = false;
+    await act(async () => resolveDelete(true));
+
+    expect(await screen.findByText('Live report')).toBeTruthy();
   });
 
   it('renders No projects match your search when projects exist but query filters them out', () => {
