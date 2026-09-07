@@ -209,9 +209,17 @@ export function registerProjectGitRoutes(app: Express, ctx: RegisterProjectGitRo
       return null;
     }
     if (journal.projectId) {
+      const visibleProject = getProject(ctx.db, journal.projectId);
+      // Initial imports reserve an ID before publication. Keep their creator's
+      // read access after rollback too, using the durable creation provenance.
+      const payload = journal.payload;
+      if (!visibleProject && !write && journal.kind === 'open' && journal.scope === 'import'
+        && journal.actorId === ctx.resolveProjectGitActor(req)
+        && payload && typeof payload === 'object' && !Array.isArray(payload)
+        && payload.reservedProjectId === journal.projectId) return journal;
       if (!await ctx.authorizeProjectRequest(req, res, journal.projectId,
         write ? { mode: 'write', capability: 'writeFiles' } : { mode: 'read' })) return null;
-      if (!getProject(ctx.db, journal.projectId)) {
+      if (!visibleProject) {
         ctx.http.sendApiError(res, 404, 'NOT_FOUND', 'Project Git operation not found.');
         return null;
       }

@@ -335,6 +335,12 @@ describe('project Git route registrar matrix', () => {
       ['background-project', operation('background-project', 'project', 'project-git-background')],
       ['other-import', operation('other-import', null, 'different-actor')],
     ]);
+    for (const status of ['running', 'failed'] as const) journals.set(`hidden-open-${status}`, {
+      ...operation(`hidden-open-${status}`, 'unpublished-project'), kind: 'open', scope: 'import', status,
+      payload: { reservedProjectId: 'unpublished-project', url: 'ssh://git@example.invalid/repo', branch: 'main', cloneId: 'clone', plainRepositoryProjectId: 'repo', createdAt: 1 },
+    });
+    journals.set('forged-open', { ...operation('forged-open', 'unpublished-project'), kind: 'open', scope: 'import', payload: { reservedProjectId: 'another-project' } });
+    journals.set('project-scoped-open', { ...operation('project-scoped-open', 'unpublished-project'), kind: 'open', payload: { reservedProjectId: 'unpublished-project' } });
     const store = { getJournal: (id: string) => journals.get(id) ?? null } as unknown as ProjectGitStore;
     const app = express(); app.use(express.json());
     registerProjectGitRoutes(app, {
@@ -519,5 +525,15 @@ describe('project Git route registrar matrix', () => {
 
     expect((await request('/api/project-git-operations/other-import')).status).toBe(404);
     expect((await request('/api/project-git-operations/other-import/retry', { method: 'POST', body: '{}' })).status).toBe(404);
+  });
+
+  it.each(['running', 'failed'])('keeps an original import creator able to poll a %s operation before project publication', async status => {
+    const path = `/api/project-git-operations/hidden-open-${status}`;
+    expect((await request(path)).status).toBe(200);
+    expect((await request(path, { headers: { 'x-test-actor': 'different-actor' } })).status).toBe(404);
+    expect((await request(`${path}/retry`, { method: 'POST', body: '{}' })).status).toBe(404);
+    expect((await request('/api/project-git-operations/forged-open')).status).toBe(404);
+    expect((await request('/api/project-git-operations/project-scoped-open')).status).toBe(404);
+    expect((await request('/api/project-git-operations/op', { headers: { 'x-deny-project': '1' } })).status).toBe(404);
   });
 });
