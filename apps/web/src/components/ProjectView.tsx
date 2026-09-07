@@ -280,6 +280,10 @@ import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunity
 import { CenteredLoader } from './Loading';
 import type { SettingsSection } from './SettingsDialog';
 import { Toast } from './Toast';
+import { ProjectGitStatus } from './project-git/ProjectGitStatus';
+import { ProjectGitSettings } from './project-git/ProjectGitSettings';
+import { ProjectActionsToolbar } from './ProjectActionsToolbar';
+import { defaultProjectGitClient } from '../providers/project-git';
 import { FirstArtifactHint } from './FirstArtifactHint';
 import {
   consumeOnboardingEntryForProject,
@@ -1776,6 +1780,7 @@ export function ProjectView({
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   const projectGit = useProjectGit(project.id);
+  const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
   // The prompt the recommendation prefilled into the composer. Prefer the seed
@@ -11265,6 +11270,18 @@ export function ProjectView({
         projectId={project.id}
         enabled={critiqueTheaterEnabled}
       />
+      {projectGit.state ? (
+        <ProjectActionsToolbar gitStatus={<>
+          <ProjectGitStatus
+            state={projectGit.state}
+            onHistory={() => window.dispatchEvent(new CustomEvent('open-design:project-git-history', { detail: { projectId: project.id } }))}
+            onSync={() => { void projectGit.execute({ kind: 'sync' }); }}
+            onToggleAutoSync={() => { void projectGit.execute({ kind: projectGit.state?.autoSync ? 'pause' : 'resume' }); }}
+          />
+          <button type="button" onClick={() => setProjectGitSettingsOpen(true)}>{t('projectGit.settings')}</button>
+        </>} />
+      ) : null}
+      {projectGitSettingsOpen ? <ProjectGitSettings projectId={project.id} client={defaultProjectGitClient} onClose={() => setProjectGitSettingsOpen(false)} /> : null}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}
@@ -11453,6 +11470,7 @@ export function ProjectView({
               onDeleteConversation={handleDeleteConversation}
               config={config}
               onOpenSettings={onOpenSettings}
+              onOpenProjectGitSettings={() => setProjectGitSettingsOpen(true)}
               showByokRecoveryAction={
                 config.mode === 'api' &&
                 daemonLive &&

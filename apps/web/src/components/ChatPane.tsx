@@ -635,6 +635,7 @@ interface Props {
   // Composer settings/CLI button forwards to here. The dialog lives in App
   // (it owns the AppConfig lifecycle) so we just pass the open trigger.
   onOpenSettings?: (section?: SettingsSection) => void;
+  onOpenProjectGitSettings?: () => void;
   showByokRecoveryAction?: boolean;
   onSwitchToLocalCli?: () => void;
   // PR #3157: Antigravity's `agy -p` can't complete OAuth on its own,
@@ -983,6 +984,7 @@ export function ChatPane({
   onSelectConversation,
   onDeleteConversation,
   onOpenSettings,
+  onOpenProjectGitSettings,
   showByokRecoveryAction = false,
   onSwitchToLocalCli,
   onLaunchAntigravityOauth,
@@ -2269,6 +2271,7 @@ export function ChatPane({
       }}
       onStop={onStop}
       onOpenSettings={onOpenSettings}
+      onOpenProjectGitSettings={onOpenProjectGitSettings}
       onOpenMcpSettings={onOpenMcpSettings}
       onBrowsePlugins={onBrowsePlugins}
       onOpenConnectors={onOpenConnectors}

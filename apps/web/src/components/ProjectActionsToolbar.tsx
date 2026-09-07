@@ -12,13 +12,15 @@ import { ContinueInCliButton } from './ContinueInCliButton';
 import { FinalizeDesignButton } from './FinalizeDesignButton';
 import type { DesignMdState } from '../hooks/useDesignMdState';
 import type { FinalizeStatus } from '../hooks/useFinalizeProject';
+import type { ReactNode } from 'react';
 
 export interface ProjectActionsToolbarProps {
-  designMdState: Pick<DesignMdState, 'exists' | 'isStale' | 'staleReason'>;
-  finalizeStatus: FinalizeStatus;
-  onFinalize: () => void;
-  onCancelFinalize: () => void;
-  onContinueInCli: () => void | Promise<void>;
+  designMdState?: Pick<DesignMdState, 'exists' | 'isStale' | 'staleReason'>;
+  finalizeStatus?: FinalizeStatus;
+  onFinalize?: () => void;
+  onCancelFinalize?: () => void;
+  onContinueInCli?: () => void | Promise<void>;
+  gitStatus?: ReactNode;
   hidden?: boolean;
 }
 
@@ -28,6 +30,7 @@ export function ProjectActionsToolbar({
   onFinalize,
   onCancelFinalize,
   onContinueInCli,
+  gitStatus,
   hidden,
 }: ProjectActionsToolbarProps) {
   if (hidden) return null;
@@ -37,13 +40,14 @@ export function ProjectActionsToolbar({
       role="toolbar"
       aria-label="Project actions"
     >
-      <FinalizeDesignButton
+      {gitStatus}
+      {designMdState && finalizeStatus && onFinalize && onCancelFinalize ? <FinalizeDesignButton
         designMdState={designMdState}
         status={finalizeStatus}
         onFinalize={onFinalize}
         onCancel={onCancelFinalize}
-      />
-      <ContinueInCliButton designMdState={designMdState} onClick={onContinueInCli} />
+      /> : null}
+      {designMdState && onContinueInCli ? <ContinueInCliButton designMdState={designMdState} onClick={onContinueInCli} /> : null}
     </div>
   );
 }

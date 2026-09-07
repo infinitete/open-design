@@ -270,6 +270,7 @@ interface Props {
   // composer's leading gear icon routes here so users can switch models
   // without leaving the chat.
   onOpenSettings?: () => void;
+  onOpenProjectGitSettings?: () => void;
   // Opens settings on the External MCP tab. Wired from ChatPane → App.
   // The composer's `/mcp` slash command and the MCP picker button route here.
   onOpenMcpSettings?: () => void;
@@ -458,6 +459,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       skills = [],
       onSend,
       onStop,
+      onOpenProjectGitSettings,
       onOpenMcpSettings,
       onBrowsePlugins,
       onStandalonePanelChange,
@@ -3388,6 +3390,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               }}
             />
             {footerAccessory}
+            {projectId && onOpenProjectGitSettings ? <button type="button" className="composer-icon-btn od-tooltip" onClick={onOpenProjectGitSettings} aria-label={t('projectGit.settings')} title={t('projectGit.settings')}><Icon name="settings" size={16} /></button> : null}
             {showStopButton ? (
               <button
                 type="button"

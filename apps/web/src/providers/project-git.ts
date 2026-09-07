@@ -448,7 +448,7 @@ export function createProjectGitHub(
   };
 }
 
-const defaultProjectGitClient = createProjectGitClient();
+export const defaultProjectGitClient = createProjectGitClient();
 const defaultProjectGitHub = createProjectGitHub(defaultProjectGitClient);
 export function withFreshProjectMutation<T>(
   projectId: string,

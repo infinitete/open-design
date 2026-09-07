@@ -139,6 +139,8 @@ import { localizePluginDescription } from './plugins-home/localization';
 import { RecentProjectsStrip } from './RecentProjectsStrip';
 import { useOpenFolderImport } from './useOpenFolderImport';
 import { Icon } from './Icon';
+import { OpenGitProjectDialog } from './project-git/OpenGitProjectDialog';
+import { defaultProjectGitClient } from '../providers/project-git';
 import { Toast } from './Toast';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
@@ -536,6 +538,7 @@ export function HomeView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
+  const [openGitDialog, setOpenGitDialog] = useState(false);
   const folderImport = useOpenFolderImport({
     onImportFolder,
     onImportFolderResponse,
@@ -3224,6 +3227,10 @@ export function HomeView({
           </button>
         </div>
       ) : null}
+      <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+        <button type="button" className="designs-refresh-button" onClick={() => setOpenGitDialog(true)}>{t('projectGit.open')}</button>
+      </div>
+      {openGitDialog ? <OpenGitProjectDialog client={defaultProjectGitClient} onOpened={onOpenProject} onClose={() => setOpenGitDialog(false)} /> : null}
 
       {recentProjectsEmpty ? null : (
       <RecentProjectsStrip

@@ -15,6 +15,11 @@ const daemonRoot = fileURLToPath(new URL('..', import.meta.url));
 const cliEntry = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
 describe('CLI startup boundaries', () => {
+  it('explains the local versioning default without claiming a push', async () => {
+    const result = await execFileAsync(process.execPath, ['--import', 'tsx', cliEntry, 'project', 'help'], { cwd: daemonRoot, env: { ...process.env } });
+    expect(result.stdout).toContain('New projects use local version management by default');
+    expect(result.stdout).toContain('Nothing is pushed until a remote is configured');
+  });
   it.each([
     ['doctor', ['doctor', '--help']],
     ['config', ['config', 'get', 'apiProtocol', '--daemon-url', 'http://127.0.0.1:9']],

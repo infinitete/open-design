@@ -891,6 +891,7 @@ export function NewProjectPanel({
         </button>
       </div>
       <div className="newproj-body">
+        <p className="newproj-versioning-notice">{t('projectGit.newProjectNotice')}</p>
         <h3 className="newproj-title">
           <span className="newproj-title-text">{titleForTab(tab, mediaSurface, t)}</span>
           {tab === 'live-artifact' ? (

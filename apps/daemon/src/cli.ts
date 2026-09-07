@@ -6508,6 +6508,10 @@ async function runProject(args) {
   od project create [--name "<title>"] [--skill <id>] [--design-system <id>]
                     [--plugin <id>] [--inputs <json>] [--metadata-json <path|->]
                     [--mode design|chat|plan]
+                    New projects use local version management by default.
+                    Project files and portable Open Design records are included;
+                    credentials, databases, dependencies, and generated files
+                    are ignored. Nothing is pushed until a remote is configured.
   od project create-design-system <id> [--name "<title>"]
                     [--prompt "<text>" | --prompt-file <path|->] [--json]
                     Duplicate a project as a design-system workspace and seed
