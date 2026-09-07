@@ -280,7 +280,7 @@ import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunity
 import { CenteredLoader } from './Loading';
 import type { SettingsSection } from './SettingsDialog';
 import { Toast } from './Toast';
-import { ProjectGitStatus } from './project-git/ProjectGitStatus';
+import { ProjectGitStatus, useProjectGitStatusActions } from './project-git/ProjectGitStatus';
 import { ProjectGitSettings } from './project-git/ProjectGitSettings';
 import { ProjectActionsToolbar } from './ProjectActionsToolbar';
 import { defaultProjectGitClient } from '../providers/project-git';
@@ -1780,6 +1780,7 @@ export function ProjectView({
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   const projectGit = useProjectGit(project.id);
+  const projectGitActions = useProjectGitStatusActions(projectGit.execute, projectGit.state?.autoSync ?? false);
   const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
@@ -11275,8 +11276,7 @@ export function ProjectView({
           <ProjectGitStatus
             state={projectGit.state}
             onHistory={() => window.dispatchEvent(new CustomEvent('open-design:project-git-history', { detail: { projectId: project.id } }))}
-            onSync={() => { void projectGit.execute({ kind: 'sync' }); }}
-            onToggleAutoSync={() => { void projectGit.execute({ kind: projectGit.state?.autoSync ? 'pause' : 'resume' }); }}
+            {...projectGitActions}
           />
           <button type="button" onClick={() => setProjectGitSettingsOpen(true)}>{t('projectGit.settings')}</button>
         </>} />

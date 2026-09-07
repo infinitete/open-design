@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ProjectGitOperation, ProjectGitState } from '@open-design/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenGitProjectDialog } from '../../src/components/project-git/OpenGitProjectDialog';
 import { ProjectGitSettings } from '../../src/components/project-git/ProjectGitSettings';
-import { ProjectGitStatus } from '../../src/components/project-git/ProjectGitStatus';
+import { ProjectGitStatus, useProjectGitStatusActions } from '../../src/components/project-git/ProjectGitStatus';
 import { I18nProvider } from '../../src/i18n';
 import { ProjectGitHttpError, type ProjectGitClient } from '../../src/providers/project-git';
 
@@ -45,6 +45,31 @@ function client(execute: ProjectGitClient['execute']): ProjectGitClient {
 afterEach(cleanup);
 
 describe('ProjectGitStatus', () => {
+  function Controls({ execute }: { execute: (action: { kind: 'sync' | 'pause' | 'resume' }) => Promise<ProjectGitOperation> }) {
+    const actions = useProjectGitStatusActions(execute, true);
+    return <ProjectGitStatus state={baseState} onHistory={vi.fn()} {...actions} />;
+  }
+
+  it.each(['network', 'stale', 'failed'] as const)('handles %s toolbar failures and blocks repeated actions before daemon updates', async kind => {
+    let finish!: () => void;
+    const execute = vi.fn().mockImplementation(() => new Promise<ProjectGitOperation>((resolve, reject) => {
+      finish = () => kind === 'failed' ? resolve(operation({ kind: 'sync', status: 'failed' })) : reject(kind === 'stale'
+        ? new ProjectGitHttpError(409, { code: 'PROJECT_STATE_CHANGED', message: 'internal revision error' }) : new Error('internal network error'));
+    }));
+    render(<I18nProvider initial="en"><Controls execute={execute} /></I18nProvider>);
+    const sync = screen.getByRole('button', { name: 'Sync now' });
+    const pause = screen.getByRole('button', { name: 'Pause automatic sync' });
+    act(() => { fireEvent.click(sync); fireEvent.click(sync); fireEvent.click(pause); });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(sync).toBeDisabled(); expect(pause).toBeDisabled();
+    await act(async () => finish());
+    expect(screen.getByRole('alert')).toHaveTextContent(kind === 'stale' ? 'preview is stale' : 'Version operation failed');
+    expect(screen.queryByText(/internal .* error/)).not.toBeInTheDocument();
+    expect(sync).not.toBeDisabled();
+    fireEvent.click(pause);
+    expect(execute.mock.calls[1]?.[0]).toEqual({ kind: 'pause' });
+    await act(async () => finish());
+  });
   it('does not infer synced when a local save is waiting to push', () => {
     render(<I18nProvider initial="zh-CN"><ProjectGitStatus state={{ ...baseState, phase: 'pending_push', localHead: 'a'.repeat(40), pendingPush: true }} onHistory={vi.fn()} onSync={vi.fn()} onToggleAutoSync={vi.fn()} /></I18nProvider>);
     expect(screen.getByRole('status')).toHaveTextContent('待推送');
@@ -64,6 +89,35 @@ describe('ProjectGitStatus', () => {
 });
 
 describe('ProjectGitSettings', () => {
+  it('can request a preview when randomUUID is unavailable', async () => {
+    vi.stubGlobal('crypto', {});
+    try {
+      const execute = vi.fn().mockResolvedValue(operation({ result: { preview } }));
+      render(<I18nProvider initial="en"><ProjectGitSettings projectId="project-1" client={client(execute)} onClose={vi.fn()} /></I18nProvider>);
+      fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+      expect(await screen.findByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      expect(execute.mock.calls[0]?.[3].idempotencyKey).toEqual(expect.any(String));
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('gets a fresh revision for a new preview after stale confirmation while preserving each confirmation basis', async () => {
+    const oldPreview = { ...preview, basis: { ...basis, projectRevision: 7 } };
+    const freshPreview = { ...preview, id: 'preview-2', basis: { ...basis, projectRevision: 12 } };
+    const execute = vi.fn().mockResolvedValueOnce(operation({ result: { preview: oldPreview } }))
+      .mockRejectedValueOnce(new ProjectGitHttpError(409, { code: 'PREVIEW_STALE', message: 'stale' }))
+      .mockResolvedValueOnce(operation({ result: { preview: freshPreview } }));
+    const api = client(execute);
+    vi.mocked(api.state).mockResolvedValue({ ...baseState, projectRevision: 4 });
+    render(<I18nProvider initial="en"><ProjectGitSettings projectId="project-1" client={api} onClose={vi.fn()} /></I18nProvider>);
+    await waitFor(() => expect(api.state).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('preview is stale');
+    expect(execute.mock.calls[1]?.[2]).toBe(7);
+    vi.mocked(api.state).mockResolvedValue({ ...baseState, projectRevision: 11 });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await screen.findByRole('button', { name: 'Confirm' });
+    expect(execute.mock.calls[2]?.[2]).toBe(11);
+  });
   it('invalidates rejected confirmation without exposing internal error details', async () => {
     const execute = vi.fn().mockResolvedValueOnce(operation({ result: { preview } })).mockRejectedValueOnce(new ProjectGitHttpError(409, { code: 'PREVIEW_STALE', message: 'internal detail' }));
     render(<I18nProvider initial="en"><ProjectGitSettings projectId="project-1" client={client(execute)} onClose={vi.fn()} /></I18nProvider>);
@@ -92,6 +146,7 @@ describe('ProjectGitSettings', () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(execute).toHaveBeenCalledTimes(3));
     expect(execute.mock.calls[2]?.[1]).toEqual({ kind: 'bind', previewId: 'preview-1', confirmation: { metadataSource: 'remote', paths: [{ path: 'index.html', selectedSide: 'local' }] } });
+    expect(execute.mock.calls[2]?.[2]).toBe(0);
   });
 
   it('shows the in-flight operation and waits for unbind completion', async () => {
@@ -159,6 +214,20 @@ describe('ProjectGitSettings', () => {
 });
 
 describe('OpenGitProjectDialog', () => {
+  it.each(['close', 'escape', 'unmount'] as const)('ignores late import success after %s and stops browser polling', async closeMethod => {
+    let resolve!: (value: ProjectGitOperation) => void;
+    const execute = vi.fn().mockImplementation(() => new Promise<ProjectGitOperation>(done => { resolve = done; }));
+    const onOpened = vi.fn();
+    const view = render(<I18nProvider initial="en"><OpenGitProjectDialog client={client(execute)} onOpened={onOpened} onClose={vi.fn()} /></I18nProvider>);
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/design.git' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open repository' }));
+    if (closeMethod === 'close') fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    else if (closeMethod === 'escape') fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    else view.unmount();
+    await act(async () => resolve(operation({ kind: 'open', result: { projectId: 'late-project' } })));
+    expect(onOpened).not.toHaveBeenCalled();
+    expect(execute.mock.calls[0]?.[3].signal?.aborted).toBe(true);
+  });
   it('keeps failed imports out of navigation and separates missing bytes from runtime dependencies', async () => {
     const execute = vi.fn().mockResolvedValue(operation({ kind: 'open', status: 'failed', error: { code: 'INTERNAL_ERROR', message: 'internal detail' }, result: { projectId: 'must-not-open', dependencies: [
       { kind: 'resource', label: 'image.png', requiredForContent: true, nextStep: null },

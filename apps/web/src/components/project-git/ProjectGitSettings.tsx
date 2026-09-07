@@ -40,7 +40,9 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
     } finally { busy.current = false; setPending(false); }
   };
   const execute = async (action: ProjectGitAction, revision: number | undefined) => {
-    const result = await client.execute(projectId, action, revision, { idempotencyKey: crypto.randomUUID() });
+    const idempotencyKey = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    const result = await client.execute(projectId, action, revision, { idempotencyKey });
     if (result.status !== 'succeeded') {
       const dependencies = result.result?.dependencies;
       if (dependencies) setState(current => current ? { ...current, dependencies } : current);
@@ -50,7 +52,8 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
   };
   const requestPreview = () => run(async () => {
     setPreview(null); setDisconnect(false); setPaths({}); setMetadataSource('');
-    let current = state ?? await client.state(projectId);
+    let current = await client.state(projectId);
+    setState(current);
     if (url.trim() && current.binding.remoteConfigured && current.autoSync) {
       await execute({ kind: 'pause' }, current.projectRevision);
       current = await client.state(projectId);
