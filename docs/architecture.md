@@ -171,6 +171,14 @@ This document intentionally gives no concrete daemon data path. The root
 `AGENTS.md` section **Daemon data directory contract** is the only path
 authority.
 
+Project Git versioning is owned by the daemon's `services/project-git` kernels,
+durable journal/store and project mutation gate. Web and `od git` share typed
+contracts and `/api/projects/:id/git` operations. Tracked `.open-design` records
+carry portable project/chat/resources, while local execution authority stays out
+of Git. Recovery spans filesystem, SQLite and references rather than claiming one
+atomic commit. See [Project Git versioning](project-git.md) for setup, states,
+restore semantics and portability limits.
+
 ### 3.6 Preview renderer
 
 The file workspace previews project files in sandboxed iframes. HTML can load

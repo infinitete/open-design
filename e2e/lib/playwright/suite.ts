@@ -1,4 +1,5 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expect, test as base } from '@playwright/test';
@@ -25,19 +26,24 @@ type TestFixtures = {
 
 type WorkerFixtures = {
   toolsDev: PlaywrightToolsDevSuite;
+  toolsDevExternalDataDir: boolean;
+  toolsDevEnvironment: { setup(root: string): Promise<Record<string, string>> } | null;
 };
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
+  toolsDevExternalDataDir: [false, { scope: 'worker', option: true }],
+  toolsDevEnvironment: [null, { scope: 'worker', option: true }],
   context: async ({ context }, use) => {
     await seedCampaignDismissals(context);
     await use(context);
   },
 
   toolsDev: [
-    async ({}, use, workerInfo) => {
+    async ({ toolsDevExternalDataDir, toolsDevEnvironment }, use, workerInfo) => {
       const suite = await createPlaywrightToolsDevSuite(
         workerInfo.parallelIndex,
         workerInfo.workerIndex,
+        toolsDevExternalDataDir,
       );
       let failed = false;
       const toolsDev: PlaywrightToolsDevSuite = Object.assign(suite, {
@@ -55,6 +61,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         // fake runtime configuration and request headers.
         await toolsDev.startWeb({
           AMR_HOME: join(toolsDev.root, 'scratch', 'amr-home'),
+          ...await toolsDevEnvironment?.setup(toolsDev.root),
         });
         await warmPlaywrightWebRuntime(toolsDev.url.web('/'));
         await warmPlaywrightDaemonRuntime(toolsDev.url.daemon('/api/health'));
@@ -72,6 +79,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         }
         if (!failed) {
           await rm(toolsDev.root, { force: true, recursive: true });
+          if (toolsDevExternalDataDir) await rm(toolsDev.dataDir, { force: true, recursive: true });
         }
         if (stopError != null && useError == null) {
           throw stopError;
@@ -140,6 +148,7 @@ export type { PlaywrightToolsDevSuite };
 async function createPlaywrightToolsDevSuite(
   parallelIndex: number,
   workerIndex: number,
+  externalDataDir = false,
 ): Promise<ToolsDevSuite> {
   const namespace = resolvePlaywrightSlotNamespace(parallelIndex);
   const incarnation = `i${workerIndex}-p${process.pid}`;
@@ -147,7 +156,7 @@ async function createPlaywrightToolsDevSuite(
   const scratchDir = join(root, 'scratch');
   const suite = createToolsDevSuite({
     codexHomeDir: join(scratchDir, 'codex-home'),
-    dataDir: join(scratchDir, 'data'),
+    dataDir: externalDataDir ? await mkdtemp(join(tmpdir(), 'od-playwright-data-')) : join(scratchDir, 'data'),
     namespace,
     ownerPid: process.pid,
     root,
