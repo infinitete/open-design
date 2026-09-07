@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProjectGitConflict, ProjectGitOperation, ProjectGitState } from '@open-design/contracts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../src/i18n';
@@ -23,6 +23,64 @@ it('rejects omitted and repeated turn ids and sends the complete order with orig
   fireEvent.click(submit);
   await waitFor(() => expect(completed).toHaveBeenCalled());
   expect(client.execute).toHaveBeenCalledWith('p', { kind: 'resolve', operationId: 'op', basis, resolutions: [{ conflictId: 'order', kind: 'order', orderedTurnIds: ['c', 'a', 'b'] }] }, 4, expect.any(Object));
+});
+
+it('decodes actual octet-stream text sides and permits editing while retaining binary side selection', async () => {
+  const file = (bytes: string) => ({ kind: 'file' as const, file: { encoding: 'base64' as const, mediaType: 'application/octet-stream', content: btoa(bytes) } });
+  const client = api([
+    { id: 'html', kind: 'file', path: 'index.html', base: file('<h1>Ancestor</h1>'), local: file('<h1>Local</h1>'), remote: file('<h1>Remote</h1>') },
+    { id: 'image', kind: 'file', path: 'image.png', base: { kind: 'missing' }, local: file('\x89PNG\r\n\x1a\n\0'), remote: file('\xff\xfe') },
+  ]);
+  render(<I18nProvider initial="en"><ProjectGitConflicts projectId="p" operationId="op" client={client} onCompleted={vi.fn()} /></I18nProvider>);
+  expect(await screen.findByText('<h1>Ancestor</h1>')).toBeVisible();
+  expect(screen.getByText('<h1>Local</h1>')).toBeVisible(); expect(screen.getByText('<h1>Remote</h1>')).toBeVisible();
+  expect(within(screen.getByLabelText('image.png')).queryByRole('option', { name: 'Edit' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('index.html'), { target: { value: 'edit' } });
+  fireEvent.change(screen.getByLabelText('Edit index.html'), { target: { value: '<h1>合并</h1>' } });
+  fireEvent.change(screen.getByLabelText('image.png'), { target: { value: 'local' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Submit resolution' }));
+  await waitFor(() => expect(client.execute).toHaveBeenCalled());
+  const action = vi.mocked(client.execute).mock.calls[0]![1];
+  expect(action).toMatchObject({ kind: 'resolve', resolutions: [{ conflictId: 'html', kind: 'edit', file: { encoding: 'base64', content: 'PGgxPuWQiOW5tjwvaDE+' } }, { conflictId: 'image', kind: 'select', selectedSide: 'local' }] });
+});
+
+it.each(['delete', 'base', 'local', 'remote', 'edit'] as const)('derives complete turn order from effective %s message proposal', async choice => {
+  const member = (id: string, turnId: string, content = id) => ({ schemaVersion: 1, id, conversationId: 'chat', role: 'user', content, createdAt: 1, predecessorId: null, turnId, terminal: 'historical', resourceRefs: [], displayEvents: [], context: {} });
+  const stable = member('stable', 'stable-turn');
+  const original = member('message', 'old-turn');
+  const localVersion = member('message', 'local-turn', 'edited locally');
+  const changed = member('message', 'remote-turn', 'edited remotely');
+  const client = api([
+    { id: 'message-choice', kind: 'message', recordId: 'message', base: { kind: 'json', value: original }, local: choice === 'delete' ? { kind: 'json', value: localVersion } : { kind: 'missing' }, remote: { kind: 'json', value: changed } },
+    { id: 'order', kind: 'conversation_order', recordId: 'chat', base: { kind: 'json', value: [stable, original] }, local: { kind: 'json', value: choice === 'delete' ? [stable, localVersion] : [stable] }, remote: { kind: 'json', value: [stable, changed] } },
+  ]);
+  render(<I18nProvider initial="en"><ProjectGitConflicts projectId="p" operationId="op" client={client} onCompleted={vi.fn()} /></I18nProvider>);
+  fireEvent.change(await screen.findByLabelText('message'), { target: { value: choice } });
+  if (choice === 'edit') fireEvent.change(screen.getByLabelText('Edit message'), { target: { value: JSON.stringify(member('message', 'custom-turn', 'custom')) } });
+  const ids = choice === 'remote' ? ['remote-turn', 'stable-turn'] : choice === 'edit' ? ['custom-turn', 'stable-turn'] : choice === 'base' ? ['old-turn', 'stable-turn'] : ['stable-turn'];
+  const input = screen.getByLabelText('Complete turn order');
+  fireEvent.change(input, { target: { value: JSON.stringify([...ids, 'old-turn']) } });
+  expect(screen.getByRole('button', { name: 'Submit resolution' })).toBeDisabled();
+  fireEvent.change(input, { target: { value: JSON.stringify(ids) } });
+  expect(screen.getByRole('button', { name: 'Submit resolution' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Submit resolution' }));
+  await waitFor(() => expect(client.execute).toHaveBeenCalled());
+  expect(vi.mocked(client.execute).mock.calls[0]![1]).toMatchObject({ kind: 'resolve', resolutions: [expect.objectContaining({ conflictId: 'message-choice', kind: choice === 'edit' ? 'edit' : choice === 'delete' ? 'delete' : 'select' }), { conflictId: 'order', kind: 'order', orderedTurnIds: ids }] });
+});
+
+it('retains a shared turn after deleting only one of its messages', async () => {
+  const member = (id: string) => ({ schemaVersion: 1, id, conversationId: 'chat', role: 'user', content: id, createdAt: 1, predecessorId: null, turnId: 'shared-turn', terminal: 'historical', resourceRefs: [], displayEvents: [], context: {} });
+  const deleted = member('deleted'); const kept = member('kept');
+  const side = { kind: 'json' as const, value: [deleted, kept] };
+  const client = api([
+    { id: 'message-choice', kind: 'message', recordId: 'deleted', base: { kind: 'json', value: deleted }, local: { kind: 'missing' }, remote: { kind: 'json', value: { ...deleted, content: 'changed' } } },
+    { id: 'order', kind: 'conversation_order', recordId: 'chat', base: side, local: { kind: 'json', value: [kept] }, remote: { kind: 'json', value: [{ ...deleted, content: 'changed' }, kept] } },
+  ]);
+  render(<I18nProvider initial="en"><ProjectGitConflicts projectId="p" operationId="op" client={client} onCompleted={vi.fn()} /></I18nProvider>);
+  fireEvent.change(await screen.findByLabelText('deleted'), { target: { value: 'delete' } });
+  const input = screen.getByLabelText('Complete turn order');
+  fireEvent.change(input, { target: { value: '[]' } }); expect(screen.getByRole('button', { name: 'Submit resolution' })).toBeDisabled();
+  fireEvent.change(input, { target: { value: '["shared-turn"]' } }); expect(screen.getByRole('button', { name: 'Submit resolution' })).toBeEnabled();
 });
 it('shows three sides, permits field edits and requires binary side selection', async () => {
   const client = api([

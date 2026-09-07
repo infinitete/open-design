@@ -1,13 +1,22 @@
 'use client';
 
-import type { ProjectGitConflict, ProjectGitConflictContent, ProjectGitOperation, ProjectGitResolution, ProjectGitState } from '@open-design/contracts';
+import type { JsonValue, ProjectGitConflict, ProjectGitConflictContent, ProjectGitFileResponse, ProjectGitOperation, ProjectGitResolution, ProjectGitState } from '@open-design/contracts';
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import type { ProjectGitClient } from '../../providers/project-git';
 import { subscribeProjectEvents } from '../../providers/project-events';
 import { gitBasisMatches, gitRequestKey } from './ProjectGitRestoreDialog';
-import { decodeGitFile } from './ProjectGitHistory';
 import styles from './ProjectGit.module.css';
+
+function fileText(file: ProjectGitFileResponse): string | null {
+  // The producer labels every blob application/octet-stream. Decode without
+  // replacement characters and reject NUL-bearing bytes, as the merge does.
+  try {
+    const bytes = Uint8Array.from(atob(file.content), char => char.charCodeAt(0));
+    if (bytes.includes(0)) return null;
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch { return null; }
+}
 
 function contentText(content: ProjectGitConflictContent): string {
   switch (content.kind) {
@@ -15,15 +24,15 @@ function contentText(content: ProjectGitConflictContent): string {
     case 'text': return content.content;
     case 'json': return JSON.stringify(content.value, null, 2);
     case 'resource': return content.resourceRef;
-    case 'file': return content.file.mediaType.startsWith('text/') ? decodeGitFile(content.file) : `${content.file.mediaType}\n${content.file.content}`;
+    case 'file': return fileText(content.file) ?? `${content.file.mediaType}\n${content.file.content}`;
   }
 }
 
-function resolution(conflict: ProjectGitConflict, choice: string | undefined, edit: string | undefined): ProjectGitResolution | null {
+function resolution(conflict: ProjectGitConflict, choice: string | undefined, edit: string | undefined, messageSelections: Map<string, JsonValue | undefined>): ProjectGitResolution | null {
   if (conflict.kind === 'conversation_order') {
     try {
       const ids: unknown = JSON.parse(edit ?? '');
-      const retained = retainedTurnIds(conflict);
+      const retained = retainedTurnIds(conflict, messageSelections);
       if (!Array.isArray(ids) || !ids.every((id): id is string => typeof id === 'string') || ids.length !== retained.size || new Set(ids).size !== ids.length || ids.some(id => !retained.has(id))) return null;
       return { conflictId: conflict.id, kind: 'order', orderedTurnIds: ids };
     } catch { return null; }
@@ -37,20 +46,28 @@ function resolution(conflict: ProjectGitConflict, choice: string | undefined, ed
   return null;
 }
 
-function retainedTurnIds(conflict: ProjectGitConflict): Set<string> {
+function retainedTurnIds(conflict: ProjectGitConflict, messageSelections: Map<string, JsonValue | undefined>): Set<string> {
   // Order conflicts carry complete portable message records, not turn-id arrays.
   // A record removed on one side and unchanged on the other is not retained.
   const records = (side: ProjectGitConflictContent) => new Map(side.kind === 'json' && Array.isArray(side.value)
     ? side.value.flatMap(value => value && typeof value === 'object' && !Array.isArray(value) && typeof value.id === 'string' && typeof value.turnId === 'string' ? [[value.id, value.turnId] as const] : []) : []);
   const base = records(conflict.base); const local = records(conflict.local); const remote = records(conflict.remote);
-  const turns = new Set<string>();
+  const retained = new Map<string, string>();
   for (const id of new Set([...local.keys(), ...remote.keys()])) {
     const localTurn = local.get(id); const remoteTurn = remote.get(id);
     if (base.has(id) && (!localTurn || !remoteTurn)) continue;
     const turn = localTurn === base.get(id) ? remoteTurn : localTurn ?? remoteTurn;
-    if (turn) turns.add(turn);
+    if (turn) retained.set(id, turn);
   }
-  return turns;
+  // Message proposals are applied before order validation by the service.
+  // Keep records until after the overlay so deleting one message does not
+  // remove a turn still represented by another retained message.
+  for (const [id, value] of messageSelections) {
+    retained.delete(id);
+    if (value && typeof value === 'object' && !Array.isArray(value)
+      && value.conversationId === conflict.recordId && typeof value.turnId === 'string') retained.set(id, value.turnId);
+  }
+  return new Set(retained.values());
 }
 
 export interface ProjectGitConflictsProps {
@@ -86,7 +103,18 @@ export function ProjectGitConflicts({ projectId, operationId, client, onComplete
   useEffect(() => subscribeProjectEvents(projectId, event => {
     if (event.type === 'project-git-state' && operation && (!gitBasisMatches(operation.basis, event.state) || event.state.operationId !== operationId || event.state.phase !== 'conflict')) setStale(true);
   }), [projectId, operationId, operation]);
-  const proposals = conflicts.map(conflict => resolution(conflict, choices[conflict.id], edits[conflict.id]));
+  const messageSelections = new Map<string, JsonValue | undefined>();
+  for (const conflict of conflicts) {
+    if (conflict.kind !== 'message' || !conflict.recordId) continue;
+    const proposal = resolution(conflict, choices[conflict.id], edits[conflict.id], messageSelections);
+    if (proposal?.kind === 'delete') messageSelections.set(conflict.recordId, undefined);
+    else if (proposal?.kind === 'edit' && 'value' in proposal) messageSelections.set(conflict.recordId, proposal.value);
+    else if (proposal?.kind === 'select') {
+      const side = conflict[proposal.selectedSide];
+      if (side.kind === 'json' || side.kind === 'missing') messageSelections.set(conflict.recordId, side.kind === 'json' ? side.value : undefined);
+    }
+  }
+  const proposals = conflicts.map(conflict => resolution(conflict, choices[conflict.id], edits[conflict.id], messageSelections));
   const submit = async () => {
     if (busy.current || !operation || stale || !proposals.length || proposals.some(item => item === null)) return;
     busy.current = true; setPending(true); setError(false);
@@ -107,10 +135,10 @@ export function ProjectGitConflicts({ projectId, operationId, client, onComplete
     <p>{t('projectGit.conflictEditingNotice')}</p>
     {conflicts.map(conflict => {
       const label = conflict.path ?? conflict.recordId;
-      const binary = conflict.kind === 'resource' || [conflict.base, conflict.local, conflict.remote].some(side => side.kind === 'file' && !side.file.mediaType.startsWith('text/'));
+      const binary = conflict.kind === 'resource' || [conflict.base, conflict.local, conflict.remote].some(side => side.kind === 'file' && fileText(side.file) === null);
       return <fieldset key={conflict.id} disabled={pending || stale} className={styles.preview}><legend>{label}</legend>
         <div className={styles.sides}>{(['base', 'local', 'remote'] as const).map(side => <div key={side}><h3>{t(side === 'base' ? 'projectGit.ancestor' : side === 'local' ? 'projectGit.localSide' : 'projectGit.remoteSide')}</h3><pre>{contentText(conflict[side])}</pre></div>)}</div>
-        {conflict.kind === 'conversation_order' ? <><pre>{JSON.stringify([...retainedTurnIds(conflict)])}</pre><label>{t('projectGit.turnOrder')}<textarea value={edits[conflict.id] ?? ''} onChange={event => setEdits(current => ({ ...current, [conflict.id]: event.target.value }))} /></label></> : <>
+        {conflict.kind === 'conversation_order' ? <><pre>{JSON.stringify([...retainedTurnIds(conflict, messageSelections)])}</pre><label>{t('projectGit.turnOrder')}<textarea value={edits[conflict.id] ?? ''} onChange={event => setEdits(current => ({ ...current, [conflict.id]: event.target.value }))} /></label></> : <>
           <label>{label}<select value={choices[conflict.id] ?? ''} onChange={event => setChoices(current => ({ ...current, [conflict.id]: event.target.value }))}>
             <option value="">{t('projectGit.choose')}</option><option value="base">{t('projectGit.ancestor')}</option><option value="local">{t('projectGit.localSide')}</option><option value="remote">{t('projectGit.remoteSide')}</option><option value="delete">{t('common.delete')}</option>
             {!binary ? <option value="edit">{t('common.edit')}</option> : null}
