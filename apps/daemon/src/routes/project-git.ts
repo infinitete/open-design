@@ -219,7 +219,7 @@ export function registerProjectGitRoutes(app: Express, ctx: RegisterProjectGitRo
         && payload.reservedProjectId === journal.projectId) return journal;
       if (!await ctx.authorizeProjectRequest(req, res, journal.projectId,
         write ? { mode: 'write', capability: 'writeFiles' } : { mode: 'read' })) return null;
-      if (!visibleProject) {
+      if (!getProject(ctx.db, journal.projectId)) {
         ctx.http.sendApiError(res, 404, 'NOT_FOUND', 'Project Git operation not found.');
         return null;
       }

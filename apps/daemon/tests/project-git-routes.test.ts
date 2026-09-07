@@ -334,6 +334,7 @@ describe('project Git route registrar matrix', () => {
       ['other-actor', operation('other-actor', 'project', 'different-actor')],
       ['background-project', operation('background-project', 'project', 'project-git-background')],
       ['other-import', operation('other-import', null, 'different-actor')],
+      ['disappearing-open', { ...operation('disappearing-open', 'disappearing', 'different-actor'), kind: 'open' as const, scope: 'import', payload: { reservedProjectId: 'disappearing' } }],
     ]);
     for (const status of ['running', 'failed'] as const) journals.set(`hidden-open-${status}`, {
       ...operation(`hidden-open-${status}`, 'unpublished-project'), kind: 'open', scope: 'import', status,
@@ -347,6 +348,10 @@ describe('project Git route registrar matrix', () => {
       db, projectGit: service, projectGitStore: store,
       resolveProjectGitActor: req => req.get('x-test-actor') ?? 'route-actor',
       authorizeProjectRequest: async (req, res) => {
+        if (req.get('x-hide-during-auth') === '1') {
+          await Promise.resolve();
+          db.prepare("INSERT INTO project_git_registrations (project_id, hidden, state) VALUES ('disappearing', 1, 'pending')").run();
+        }
         if (req.get('x-deny-project') === '1') {
           sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); return false;
         }
@@ -535,5 +540,16 @@ describe('project Git route registrar matrix', () => {
     expect((await request('/api/project-git-operations/forged-open')).status).toBe(404);
     expect((await request('/api/project-git-operations/project-scoped-open')).status).toBe(404);
     expect((await request('/api/project-git-operations/op', { headers: { 'x-deny-project': '1' } })).status).toBe(404);
+  });
+
+  it('rechecks visibility after asynchronous authorization for a noncreator', async () => {
+    db.prepare("INSERT INTO projects (id, name, created_at, updated_at) VALUES ('disappearing', 'Transient', 1, 1)").run();
+    try {
+      const response = await request('/api/project-git-operations/disappearing-open', { headers: { 'x-hide-during-auth': '1' } });
+      expect(response.status).toBe(404);
+    } finally {
+      db.prepare("DELETE FROM project_git_registrations WHERE project_id = 'disappearing'").run();
+      db.prepare("DELETE FROM projects WHERE id = 'disappearing'").run();
+    }
   });
 });
