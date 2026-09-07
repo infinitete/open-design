@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ProjectGitOperation, ProjectGitState } from '@open-design/contracts';
 import { useLayoutEffect, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProjectView } from '../../src/components/ProjectView';
+import { defaultProjectGitClient, useProjectGit } from '../../src/providers/project-git';
 import { streamViaDaemon } from '../../src/providers/daemon';
 import type { DaemonStreamOptions } from '../../src/providers/daemon';
 import {
@@ -353,6 +355,48 @@ describe('ProjectView API empty response handling', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps the original conflict mounted until its own resolve completes after a state revision update', async () => {
+    const gitProject = { ...project, id: 'git-conflict-completion' };
+    const basis = { projectRevision: 0, contentRevision: 6, bindingGeneration: 2, localHead: 'local', remoteHead: 'remote' };
+    let current: ProjectGitState = { enabled: true, phase: 'conflict', projectRevision: 0, contentRevision: 6,
+      bindingGeneration: 2, localHead: 'local', observedRemoteHead: 'remote', confirmedRemoteHead: 'base',
+      dirty: false, pendingPush: false, autoSync: false, operationId: 'conflict-original', error: null,
+      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [] };
+    const operation: ProjectGitOperation = { id: 'conflict-original', projectId: gitProject.id, kind: 'sync',
+      status: 'waiting', phase: 'conflict', basis, result: null, error: null };
+    let finish!: (operation: ProjectGitOperation) => void;
+    let submittedSignal: AbortSignal | undefined;
+    const spies = [
+      vi.spyOn(defaultProjectGitClient, 'state').mockImplementation(async () => current),
+      vi.spyOn(defaultProjectGitClient, 'operation').mockResolvedValue(operation),
+      vi.spyOn(defaultProjectGitClient, 'conflicts').mockResolvedValue({ conflicts: [{ id: 'name', kind: 'field', recordId: 'name',
+        base: { kind: 'json', value: 'ancestor' }, local: { kind: 'json', value: 'mine' }, remote: { kind: 'json', value: 'theirs' } }] }),
+      vi.spyOn(defaultProjectGitClient, 'execute').mockImplementation(async (_project, _action, _revision, options) => {
+        submittedSignal = options.signal;
+        return new Promise<ProjectGitOperation>(resolve => { finish = resolve; });
+      }),
+    ];
+    try {
+      renderProjectView(gitProject);
+      fireEvent.click(await screen.findByRole('button', { name: 'Conflicts' }));
+      fireEvent.change(await screen.findByLabelText('name'), { target: { value: 'remote' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Submit resolution' }));
+      await waitFor(() => expect(submittedSignal).toBeDefined());
+      current = { ...current, operationId: 'resolve-new', projectRevision: 1, phase: 'pending_push', localHead: 'merged', pendingPush: true };
+      let refresh!: () => Promise<void>;
+      function StateWitness() { const git = useProjectGit(gitProject.id); refresh = () => git.refresh({ fresh: true }); return null; }
+      render(<StateWitness />);
+      await act(async () => { await refresh(); });
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Conflicts' })).toBeNull());
+      expect(submittedSignal!.aborted).toBe(false);
+      await act(async () => { finish({ ...operation, id: 'resolve-new', kind: 'resolve', status: 'succeeded', phase: 'local_saved', result: { head: 'merged' } }); });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    } finally {
+      cleanup();
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it('marks an empty API completion as a soft no-output state instead of succeeded', async () => {

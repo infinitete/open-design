@@ -1787,9 +1787,9 @@ export function ProjectView({
   const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
   const [projectGitHistoryPath, setProjectGitHistoryPath] = useState<string | null>(null);
   const [projectGitRestoreOid, setProjectGitRestoreOid] = useState<string | null>(null);
-  const [projectGitConflictsOpen, setProjectGitConflictsOpen] = useState(false);
+  const [projectGitConflictOperationId, setProjectGitConflictOperationId] = useState<string | null>(null);
   useEffect(() => {
-    setProjectGitHistoryPath(null); setProjectGitRestoreOid(null); setProjectGitConflictsOpen(false);
+    setProjectGitHistoryPath(null); setProjectGitRestoreOid(null); setProjectGitConflictOperationId(null);
     const openHistory = (event: Event) => {
       const detail = (event as CustomEvent<{ projectId?: string; path?: string }>).detail;
       if (detail?.projectId === project.id) setProjectGitHistoryPath(detail.path ?? '');
@@ -11294,7 +11294,7 @@ export function ProjectView({
             {...projectGitActions}
           />
           <button type="button" onClick={() => setProjectGitSettingsOpen(true)}>{t('projectGit.settings')}</button>
-          {projectGit.state.phase === 'conflict' && projectGit.state.operationId ? <button type="button" onClick={() => setProjectGitConflictsOpen(true)}>{t('projectGit.conflicts')}</button> : null}
+          {projectGit.state.phase === 'conflict' && projectGit.state.operationId ? <button type="button" onClick={() => setProjectGitConflictOperationId(projectGit.state!.operationId)}>{t('projectGit.conflicts')}</button> : null}
         </>} />
       ) : null}
       {projectGitSettingsOpen ? <ProjectGitSettings projectId={project.id} client={defaultProjectGitClient} onClose={() => setProjectGitSettingsOpen(false)} /> : null}
@@ -11302,8 +11302,8 @@ export function ProjectView({
         <ProjectGitHistory key={`${project.id}:${projectGitHistoryPath}:${projectGit.generation}`} projectId={project.id} path={projectGitHistoryPath} client={defaultProjectGitClient} onRestore={setProjectGitRestoreOid} restoreDisabled={projectGit.state?.phase === 'conflict' || projectGit.writeLocked} />
       </ProjectGitPanel> : null}
       {projectGitRestoreOid ? <ProjectGitRestoreDialog key={`${project.id}:${projectGitRestoreOid}`} projectId={project.id} targetOid={projectGitRestoreOid} client={defaultProjectGitClient} onClose={() => setProjectGitRestoreOid(null)} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitRestoreOid(null); setProjectGitHistoryPath(null); }} /> : null}
-      {projectGitConflictsOpen && projectGit.state?.operationId ? <ProjectGitPanel title={t('projectGit.conflicts')} onClose={() => setProjectGitConflictsOpen(false)}>
-        <ProjectGitConflicts key={`${project.id}:${projectGit.state.operationId}`} projectId={project.id} operationId={projectGit.state.operationId} client={defaultProjectGitClient} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitConflictsOpen(false); }} />
+      {projectGitConflictOperationId ? <ProjectGitPanel title={t('projectGit.conflicts')} onClose={() => setProjectGitConflictOperationId(null)}>
+        <ProjectGitConflicts key={`${project.id}:${projectGitConflictOperationId}`} projectId={project.id} operationId={projectGitConflictOperationId} client={defaultProjectGitClient} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitConflictOperationId(null); }} />
       </ProjectGitPanel> : null}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
