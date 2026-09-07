@@ -441,6 +441,7 @@ import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
 import { createProjectGitServiceComposition } from './services/project-git/service.js';
+import { createProjectGitOwnedResourceReader } from './services/project-git/owned-resources.js';
 import { GitDomainError } from './services/project-git/errors.js';
 import {
   createRunAnalyticsLifecycle,
@@ -3006,6 +3007,7 @@ export async function startServer({
     store: projectGitStore,
     operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
     instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
+    readOwnedResource: createProjectGitOwnedResourceReader({ db }),
     ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
     ...(projectGitExecutableResolver ? { resolveGitExecutable: projectGitExecutableResolver } : {}),
     requireDefaultEnable: projectId => {

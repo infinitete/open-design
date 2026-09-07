@@ -292,6 +292,21 @@ function inertPluginContent(value: unknown): Uint8Array | null {
   return Buffer.from(canonicalJson(content));
 }
 
+function hasCompleteFrozenAssets(bytes: Uint8Array, paths: string[]): boolean {
+  try {
+    const content = JSON.parse(Buffer.from(bytes).toString('utf8')) as { assets?: Array<{ path?: unknown; encoding?: unknown; content?: unknown; sha256?: unknown }> };
+    if (!Array.isArray(content.assets)) return false;
+    const declared = new Set(paths.map(path => path.startsWith('./') ? path.slice(2) : path));
+    if (content.assets.length !== declared.size) return false;
+    for (const asset of content.assets) {
+      if (typeof asset.path !== 'string' || !declared.delete(asset.path) || asset.encoding !== 'base64' || typeof asset.content !== 'string') return false;
+      const data = Buffer.from(asset.content, 'base64');
+      if (data.toString('base64') !== asset.content || createHash('sha256').update(data).digest('hex') !== asset.sha256) return false;
+    }
+    return declared.size === 0;
+  } catch { return false; }
+}
+
 function displayResourceRefs(context: PortableMessageContext, events: PortableDisplayEvent[]): string[] {
   return [
     ...(context.attachments ?? []).map(item => item.resourceRef),
@@ -366,14 +381,26 @@ export async function exportPortableProject(input: {
     throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Required project content is missing', { paths: [relative ?? `${purpose}:${label}`] });
   };
   const contentResource = async (purpose: PortableResourcePurpose, contentId: string, record: string, frozen?: unknown) => {
-    const frozenBytes = inertPluginContent(frozen);
+    const plugin = frozen as { assetsStaged?: Array<{ path: string }>; resolvedContext?: { items?: Array<{ kind?: string; path?: string }> } } | undefined;
+    const assetPaths = [...(plugin?.assetsStaged ?? []).map(asset => asset.path),
+      ...(plugin?.resolvedContext?.items ?? []).flatMap(item => item.kind === 'asset' && item.path ? [item.path] : [])];
+    const declaredAssets = assetPaths.length > 0;
+    // Prompt fragments alone are not complete when a native snapshot declares
+    // assets. Its scoped reader must preserve those bytes before export.
+    const frozenBytes = declaredAssets ? null : inertPluginContent(frozen);
     if (frozenBytes) return add(frozenBytes, purpose, record, contentId);
     const opaque = `${purpose}:${projectId}:${contentId}`;
     const bytes = await input.readOwnedResource?.(opaque);
     if (bytes) return add(bytes, purpose, record, contentId);
     const previous = previousResources.filter(item => item.references.includes(record)
       && item.locations.some(location => location.purpose === purpose && location.sourceLabel === contentId));
-    if (previous.length === 1) return retain(previous[0]!.digest, record);
+    if (previous.length === 1) {
+      if (!declaredAssets) return retain(previous[0]!.digest, record);
+      for (const location of previous[0]!.locations) {
+        const saved = await readPortableResource(root, location.path);
+        if (saved && createHash('sha256').update(saved).digest('hex') === previous[0]!.digest && hasCompleteFrozenAssets(saved, assetPaths)) return retain(previous[0]!.digest, record);
+      }
+    }
     throw new GitDomainError('PORTABLE_RESOURCE_MISSING', 409, 'Required content snapshot is missing', { paths: [`${purpose}:${contentId}`] });
   };
   const metadata = (projectRow.metadata ?? { kind: 'prototype' }) as ProjectMetadata;

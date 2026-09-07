@@ -67,6 +67,7 @@ export interface CreateProjectGitServiceInput {
   resolveGitExecutable?(): string | Promise<string>;
   requireDefaultEnable?(projectId: string): void | Promise<void>;
   gitEnv?: Record<string, string>;
+  readOwnedResource?(projectId: string, reference: string): Promise<Uint8Array | null>;
   emit(projectId: string, event: ProjectGitEvent): void;
   requireProject?(actorId: string, projectId: string): void | Promise<void>;
   requireCreate?(actorId: string): void | Promise<void>;
@@ -167,6 +168,7 @@ export async function createProjectGitServiceComposition(
       branch,
       gate,
       ...(input.gitEnv ? { gitEnv: input.gitEnv } : {}),
+      ...(input.readOwnedResource ? { readOwnedResource: (reference: string) => input.readOwnedResource!(projectId, reference) } : {}),
       readBasis: () => basis(projectId),
       prepareRegistrationCompletion: operationId => bindingService.prepareRegistrationCompletion(operationId),
     };
