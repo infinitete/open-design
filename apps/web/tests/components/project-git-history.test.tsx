@@ -6,7 +6,8 @@ import { I18nProvider } from '../../src/i18n';
 import type { ProjectGitClient } from '../../src/providers/project-git';
 import type { ProjectEvent } from '../../src/providers/project-events';
 import { ProjectGitRestoreDialog } from '../../src/components/project-git/ProjectGitRestoreDialog';
-import { ProjectGitHistory } from '../../src/components/project-git/ProjectGitHistory';
+import { ProjectGitHistory, ProjectGitPanel } from '../../src/components/project-git/ProjectGitHistory';
+import { ProjectGitSettings } from '../../src/components/project-git/ProjectGitSettings';
 
 const events = vi.hoisted(() => ({ listener: (_event: ProjectEvent) => {} }));
 vi.mock('../../src/providers/project-events', () => ({ subscribeProjectEvents: (_id: string, listener: typeof events.listener) => { events.listener = listener; return () => {}; } }));
@@ -16,6 +17,24 @@ const preview: ProjectGitPreview = { id: 'preview', kind: 'restore', targetOid: 
 const operation = (result: ProjectGitOperation['result'] = null): ProjectGitOperation => ({ id: 'op', kind: result ? 'restore_preview' : 'restore', projectId: 'p', basis, phase: 'local_saved', status: 'succeeded', result, error: null });
 function api(): ProjectGitClient { return { state: vi.fn().mockResolvedValue(state), execute: vi.fn().mockResolvedValue(operation({ preview })), operation: vi.fn(), history: vi.fn(), commit: vi.fn(), file: vi.fn(), conversations: vi.fn().mockResolvedValue(null), conflicts: vi.fn() }; }
 afterEach(cleanup);
+
+it.each(['settings', 'restore', 'panel'])('mounts %s outside project stacking contexts and preserves dialog focus', async kind => {
+  const origin = document.createElement('button'); document.body.append(origin); origin.focus();
+  const close = vi.fn(); const client = api();
+  const view = render(<I18nProvider initial="en"><div data-testid="project-stacking-context" style={{ isolation: 'isolate' }}>
+    {kind === 'settings' ? <ProjectGitSettings projectId="p" client={client} onClose={close} />
+      : kind === 'restore' ? <ProjectGitRestoreDialog projectId="p" targetOid="old" client={client} onCompleted={vi.fn()} onClose={close} />
+        : <ProjectGitPanel title="History" onClose={close}><button type="button">History action</button></ProjectGitPanel>}
+  </div></I18nProvider>);
+  try {
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.closest('[data-testid="project-stacking-context"]')).toBeNull();
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    expect(dialog.querySelector('button')).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(close).toHaveBeenCalledOnce();
+    await act(async () => {});
+  } finally { view.unmount(); expect(origin).toHaveFocus(); origin.remove(); }
+});
 
 it('requires a resolved preview and submits its original id and revision before completion', async () => {
   const client = api(); let resolve!: (value: ProjectGitOperation) => void;

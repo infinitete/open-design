@@ -4,7 +4,7 @@ import type { ProjectGitAction, ProjectGitBindConfirmation, ProjectGitPreview, P
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { ProjectGitHttpError, type ProjectGitClient } from '../../providers/project-git';
-import { ProjectGitDependencies, useGitDialog } from './ProjectGitFeedback';
+import { ProjectGitDependencies, ProjectGitDialogPortal, useGitDialog } from './ProjectGitFeedback';
 import styles from './ProjectGit.module.css';
 
 export interface ProjectGitSettingsProps { projectId: string; client: ProjectGitClient; onClose: () => void }
@@ -88,7 +88,7 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
     (preview.binding.metadataSources.length > 0 && !metadataSource)
     || preview.binding.requiredPaths.some(path => !paths[path])
   ));
-  return <div className={styles.backdrop} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <ProjectGitDialogPortal><div className={styles.backdrop} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section {...dialog} className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="project-git-settings-title">
       <header className={styles.header}><h2 id="project-git-settings-title">{t('projectGit.settings')}</h2><button type="button" onClick={onClose} aria-label={t('common.close')}>×</button></header>
       <p>{t('projectGit.daemonAuthNotice')}</p><p>{t('projectGit.externalEditorNotice')}</p>
@@ -120,5 +120,5 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
       {pending ? <p role="status" aria-live="polite">{t(disconnect ? 'projectGit.waitingUnbind' : 'common.loading')}</p> : null}
       {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     </section>
-  </div>;
+  </div></ProjectGitDialogPortal>;
 }

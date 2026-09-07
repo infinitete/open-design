@@ -5,14 +5,14 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '../../i18n';
 import type { ProjectGitClient } from '../../providers/project-git';
 import styles from './ProjectGit.module.css';
-import { useGitDialog } from './ProjectGitFeedback';
+import { ProjectGitDialogPortal, useGitDialog } from './ProjectGitFeedback';
 
 export function ProjectGitPanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const { t } = useI18n();
   const dialog = useGitDialog(onClose);
-  return <div className={styles.backdrop}><section {...dialog} className={styles.modal} role="dialog" aria-modal="true" aria-label={title}>
+  return <ProjectGitDialogPortal><div className={styles.backdrop}><section {...dialog} className={styles.modal} role="dialog" aria-modal="true" aria-label={title}>
     <header className={styles.header}><h2>{title}</h2><button type="button" aria-label={t('common.close')} onClick={onClose}>×</button></header>{children}
-  </section></div>;
+  </section></div></ProjectGitDialogPortal>;
 }
 
 export function decodeGitFile(file: ProjectGitFileResponse) {

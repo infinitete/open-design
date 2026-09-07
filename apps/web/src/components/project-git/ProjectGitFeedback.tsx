@@ -1,6 +1,12 @@
 import type { ProjectGitDependency } from '@open-design/contracts';
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useI18n } from '../../i18n';
+
+/** Keep Git dialogs above body-portaled chat controls, outside project stacking contexts. */
+export function ProjectGitDialogPortal({ children }: { children: ReactNode }) {
+  return typeof document === 'undefined' ? children : createPortal(children, document.body);
+}
 
 export function useGitDialog(onClose: () => void) {
   const ref = useRef<HTMLElement>(null);

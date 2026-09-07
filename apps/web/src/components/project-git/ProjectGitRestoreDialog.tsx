@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { ProjectGitHttpError, type ProjectGitClient } from '../../providers/project-git';
 import { subscribeProjectEvents } from '../../providers/project-events';
-import { ProjectGitDependencies, useGitDialog } from './ProjectGitFeedback';
+import { ProjectGitDependencies, ProjectGitDialogPortal, useGitDialog } from './ProjectGitFeedback';
 import styles from './ProjectGit.module.css';
 
 export function gitBasisMatches(basis: ProjectGitBasis, state: ProjectGitState) {
@@ -103,7 +103,7 @@ export function ProjectGitRestoreDialog({ projectId, targetOid, client, onComple
     } finally { if (!controller.signal.aborted) setPending(false); }
   };
 
-  return <div className={styles.backdrop}>
+  return <ProjectGitDialogPortal><div className={styles.backdrop}>
     <section {...dialog} role="dialog" aria-modal="true" aria-labelledby="git-restore-title" className={styles.modal}>
       <header className={styles.header}><h2 id="git-restore-title">{t('projectGit.restore')}</h2><button type="button" aria-label={t('common.close')} onClick={onClose}>×</button></header>
       <p>{targetOid}</p><p>{t('projectGit.restoreImpact')}</p><p>{t('projectGit.externalEditorNotice')}</p>
@@ -120,5 +120,5 @@ export function ProjectGitRestoreDialog({ projectId, targetOid, client, onComple
       {pending ? <p role="status">{t('common.loading')}</p> : null}
       {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     </section>
-  </div>;
+  </div></ProjectGitDialogPortal>;
 }
