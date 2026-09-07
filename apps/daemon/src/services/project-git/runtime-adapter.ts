@@ -51,6 +51,7 @@ export interface ProjectGitRuntimeAdapterDeps {
   store: RuntimeStore;
   gateFor(projectId: string): ProjectGate | Promise<ProjectGate>;
   recoveryReady: Promise<void>;
+  checkBeforeUse?(projectId: string): Promise<void>;
   notify(projectId: string): void;
   settled?(projectId: string): void;
   permits: Map<string, ProjectRunPermit>;
@@ -92,6 +93,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
   return {
     async admit(projectId, expectedProjectRevision) {
       await deps.recoveryReady;
+      await deps.checkBeforeUse?.(projectId);
       const release = await (await deps.gateFor(projectId)).beginRun();
       try {
         const binding = deps.store.getBinding(projectId);
@@ -110,6 +112,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
             if (state.released) return;
             state.released = true;
             release();
+            deps.settled?.(projectId);
           },
         });
         admissionStates.set(admission, state);
@@ -121,6 +124,7 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
     },
     async admitSession(projectId, expectedProjectRevision) {
       await deps.recoveryReady;
+      await deps.checkBeforeUse?.(projectId);
       const release = await (await deps.gateFor(projectId)).beginRun();
       try {
         const binding = deps.store.getBinding(projectId);
@@ -129,11 +133,17 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
           binding?.projectRevision ?? 0,
           expectedProjectRevision,
         );
+        let released = false;
         return Object.freeze({
           projectId,
           expectedProjectRevision: binding?.projectRevision ?? 0,
           permit: release.permit,
-          release,
+          release: () => {
+            if (released) return;
+            released = true;
+            release();
+            deps.settled?.(projectId);
+          },
         });
       } catch (error) {
         release();
@@ -214,7 +224,6 @@ export function createProjectGitRuntimeAdapter(deps: ProjectGitRuntimeAdapterDep
       if (!admission) return;
       deps.permits.delete(runId);
       admission.release();
-      deps.settled?.(admission.projectId);
     },
     reconcileTerminal(runId, projectId, bindingGeneration, projectRevision, terminal, executionAttempt) {
       if (deps.store.recordRunTerminal({

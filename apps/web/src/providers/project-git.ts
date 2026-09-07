@@ -59,6 +59,7 @@ export interface ProjectGitExecuteOptions {
 
 export interface ProjectGitClient {
   state(projectId: string, signal?: AbortSignal): Promise<ProjectGitState>;
+  check(projectId: string, signal?: AbortSignal): Promise<ProjectGitState>;
   execute(
     projectId: string | null,
     action: ProjectGitAction,
@@ -168,6 +169,11 @@ export function createProjectGitClient(options: ProjectGitClientOptions = {}): P
     async state(projectId, signal) {
       return parse(ProjectGitStateSchema, await get(projectPath(projectId), signal));
     },
+    async check(projectId, signal) {
+      return parse(ProjectGitStateSchema, await responseJson(await fetchFn(projectPath(projectId, '/check'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal,
+      })));
+    },
     async operation(operationId, signal) {
       return parse(ProjectGitOperationSchema, await get(`/api/project-git-operations/${encodeURIComponent(operationId)}`, signal));
     },
@@ -264,6 +270,7 @@ export interface ProjectGitHubOptions {
 export interface ProjectGitHub {
   subscribe(projectId: string, listener: (snapshot: ProjectGitStateSnapshot) => void): () => void;
   refresh(projectId: string, options?: { fresh?: boolean; generation?: number }): Promise<void>;
+  check(projectId: string): Promise<void>;
   store(projectId: string): ProjectGitStateStore;
   snapshot(projectId: string): ProjectGitStateSnapshot;
   capture(projectId: string): import('../state/project-git').ProjectMutationContext | undefined;
@@ -293,10 +300,11 @@ interface HubEntry {
 }
 
 export function createProjectGitHub(
-  client: Pick<ProjectGitClient, 'state'>,
+  client: Pick<ProjectGitClient, 'state'> & Partial<Pick<ProjectGitClient, 'check'>>,
   options: ProjectGitHubOptions = {},
 ): ProjectGitHub {
   const entries = new Map<string, HubEntry>();
+  const checks = new Map<string, Promise<void>>();
 
   const getEntry = (projectId: string): HubEntry => {
     const existing = entries.get(projectId);
@@ -384,6 +392,21 @@ export function createProjectGitHub(
 
   return {
     refresh,
+    check(projectId) {
+      const existing = checks.get(projectId);
+      if (existing) return existing;
+      const entry = getEntry(projectId);
+      entry.mutationLeases += 1;
+      const pending = Promise.resolve().then(() => client.check?.(projectId))
+        .then(() => refresh(projectId, { fresh: true }))
+        .finally(() => {
+          if (checks.get(projectId) === pending) checks.delete(projectId);
+          entry.mutationLeases -= 1;
+          disposeEntryIfUnused(projectId, entry);
+        });
+      checks.set(projectId, pending);
+      return pending;
+    },
     store: projectId => entries.get(projectId)?.store ?? createProjectGitStateStore(),
     snapshot: projectId => entries.get(projectId)?.store.snapshot() ?? EMPTY_PROJECT_GIT_SNAPSHOT,
     capture: projectId => entries.get(projectId)?.store.capture(),
@@ -456,7 +479,11 @@ export function withFreshProjectMutation<T>(
 ): Promise<T> {
   return defaultProjectGitHub.withFreshMutation(projectId, mutation);
 }
-export function useProjectGit(projectId: string | null | undefined) {
+export function useProjectGit(projectId: string | null | undefined, options?: { opened: boolean }) {
+  const opened = options?.opened === true;
+  useEffect(() => {
+    if (projectId && opened) void defaultProjectGitHub.check(projectId).catch(() => {});
+  }, [projectId, opened]);
   const subscribe = useCallback((listener: () => void) => {
     if (!projectId) return () => {};
     return defaultProjectGitHub.subscribe(projectId, listener);

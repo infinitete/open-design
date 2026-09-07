@@ -67,6 +67,39 @@ async function fixture(options: {
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(value)))).digest('hex');
 
+it('defers parent-child checks until idle, applies a remote commit, and keeps the next caller epoch immutable', async () => {
+  const f = await fixture();
+  await f.service.start(); await f.service.checkRemote('project');
+  const before = await f.service.getState('project');
+  const parent = await f.coordination.runtime.admitSession('project', before.projectRevision);
+  await f.git.git(f.git.b, 'pull', '--ff-only', 'origin', 'main');
+  await writeFile(join(f.git.b, 'index.html'), 'remote-before-next-task');
+  await f.git.git(f.git.b, 'add', 'index.html'); await f.git.git(f.git.b, 'commit', '-m', 'Remote update');
+  await f.git.git(f.git.b, 'push', 'origin', 'main');
+  const remote = await f.git.git(f.git.b, 'rev-parse', 'HEAD');
+  const networkBefore = await readFile(join(f.data, 'network.log'), 'utf8');
+  await f.service.checkRemote('project');
+  const child = await f.coordination.runtime.admit('project', before.projectRevision);
+  f.coordination.runtime.attach('child', 'project', child, 0);
+  expect(await readFile(join(f.data, 'network.log'), 'utf8')).toBe(networkBefore);
+  expect(await readFile(join(f.git.a, 'index.html'), 'utf8')).toBe('initial');
+  f.coordination.runtime.onSettled('child');
+  parent.release();
+  await vi.waitFor(async () => expect((await f.service.getState('project')).localHead).toBe(remote), { timeout: 5_000 });
+  await expect(f.coordination.runtime.admit('project', before.projectRevision)).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED', status: 409 });
+  expect((await f.service.getState('project')).localHead).toBe(remote);
+  expect(await readFile(join(f.git.a, 'index.html'), 'utf8')).toBe('remote-before-next-task');
+});
+
+it.each(['admit', 'admitSession'] as const)('allows offline %s after its check fails without changing the original epoch', async lane => {
+  const f = await fixture(); await f.service.start(); await f.service.checkRemote('project');
+  await rename(f.git.remote, `${f.git.remote}-offline`);
+  const before = await f.service.getState('project');
+  const admitted = await f.coordination.runtime[lane]('project', before.projectRevision);
+  expect((await f.service.getState('project')).projectRevision).toBe(before.projectRevision);
+  admitted.release();
+});
+
 async function terminal(store: ReturnType<typeof createProjectGitStore>, operationId: string) {
   const deadline = Date.now() + 10_000;
   while (true) {

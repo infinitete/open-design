@@ -97,6 +97,22 @@ it('distinguishes equality, ancestry, divergence and remote rewrites', () => {
   expect(chooseSyncAction({ ...input, remote: null, remoteWasRewritten: true })).toBe('remote_rewritten');
 });
 
+it('checks before use despite dirty debounce and a future retry deadline without overriding pause', async () => {
+  const f = await fixture();
+  await writeFile(join(f.b, 'index.html'), 'remote before admission\n'); await f.sync('b');
+  const binding = f.store.getBinding('a')!;
+  f.store.queuePush('a', binding.generation, binding.localHead!);
+  f.store.deferPush('a', binding.generation, binding.localHead!, Number.MAX_SAFE_INTEGER);
+  await writeFile(join(f.a, 'local.txt'), 'dirty before admission');
+  await syncProject({ projectId: 'a', oneShot: false, checkBeforeUse: true, deps: f.deps });
+  expect(await readFile(join(f.a, 'index.html'), 'utf8')).toBe('remote before admission\n');
+  expect(await readFile(join(f.a, 'local.txt'), 'utf8')).toBe('dirty before admission');
+  const before = await readFile(join(f.root, 'network.log'), 'utf8');
+  f.store.saveBinding({ ...f.store.getBinding('a')!, autoSync: false });
+  await syncProject({ projectId: 'a', oneShot: false, checkBeforeUse: true, deps: f.deps });
+  expect(await readFile(join(f.root, 'network.log'), 'utf8')).toBe(before);
+});
+
 it('exposes the same constructor recovery readiness promise without starting another runtime', async () => {
   const f = await fixture(); const ready = f.deps.recoveryReady;
   expect(ready).toBeInstanceOf(Promise); expect(f.deps.recoveryReady).toBe(ready);

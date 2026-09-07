@@ -35,6 +35,38 @@ function boundStore() {
   return { db, store };
 }
 
+it('coalesces explicit checks before the next scheduled timer and preserves paused eligibility', async () => {
+  vi.useFakeTimers(); const { db, store } = boundStore();
+  const calls: Array<{ oneShot: boolean; checkBeforeUse: boolean | undefined }> = [];
+  const scheduler = createProjectGitScheduler({ store, now: Date.now, random: () => 0.5,
+    detect: async () => {}, sync: async (_id, oneShot, checkBeforeUse) => { calls.push({ oneShot, checkBeforeUse }); } });
+  try {
+    scheduler.start(); await vi.advanceTimersByTimeAsync(0); calls.length = 0;
+    await Promise.all([scheduler.checkRemote('project'), scheduler.checkRemote('project')]);
+    expect(calls).toEqual([{ oneShot: false, checkBeforeUse: true }]);
+    store.saveBinding({ ...store.getBinding('project')!, autoSync: false });
+    await scheduler.checkRemote('project'); await scheduler.checkRemote('unmanaged');
+    store.saveBinding({ ...store.getBinding('project')!, autoSync: true, remoteUrl: null });
+    await scheduler.checkRemote('project');
+    expect(calls).toHaveLength(1);
+  } finally { await scheduler.stop(); db.close(); }
+});
+
+it('retains a before-use check across an already admitted binding transition', async () => {
+  const { db, store } = boundStore(); const calls: boolean[] = [];
+  let release!: () => void; const waiting = new Promise<void>(resolve => { release = resolve; });
+  const scheduler = createProjectGitScheduler({ store, now: Date.now, random: () => 0.5, detect: async () => {},
+    sync: async (_id, _oneShot, beforeUse) => { calls.push(beforeUse === true); } });
+  try {
+    scheduler.start();
+    const transition = scheduler.withNetworkPaused('project', async () => { await waiting; });
+    let checked = false; const check = scheduler.checkRemote('project').then(() => { checked = true; });
+    await new Promise(resolve => setImmediate(resolve)); expect(checked).toBe(false);
+    release(); await transition; await check;
+    expect(calls).toEqual([true]);
+  } finally { release(); await scheduler.stop(); db.close(); }
+});
+
 it('drains the admitted network operation and rejects new requests while local detection continues', async () => {
   vi.useFakeTimers(); const { db, store } = boundStore();
   let release!: () => void; const issued = new Promise<void>(resolve => { release = resolve; });
@@ -84,6 +116,9 @@ it('rejects nested network holds without deadlock and releases admission after r
   try {
     await expect(scheduler.withNetworkPaused('project', async () => {
       await scheduler.withNetworkPaused('project', async () => {});
+    })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+    await expect(scheduler.withNetworkPaused('project', async () => {
+      await scheduler.checkRemote('project');
     })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
     expect(await scheduler.withNetworkPaused('project', async () => 'released')).toBe('released');
   } finally { await scheduler.stop(); db.close(); }

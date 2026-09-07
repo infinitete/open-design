@@ -1782,7 +1782,7 @@ export function ProjectView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const projectGit = useProjectGit(project.id);
+  const projectGit = useProjectGit(project.id, { opened: true });
   const projectGitActions = useProjectGitStatusActions(projectGit.execute, projectGit.state?.autoSync ?? false);
   const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
   const [projectGitHistoryPath, setProjectGitHistoryPath] = useState<string | null>(null);

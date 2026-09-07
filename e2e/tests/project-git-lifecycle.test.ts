@@ -9,6 +9,54 @@ import { createProjectGitE2eFixture, gitOperation, mutate, requestJson, runOd, s
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createFakeAgentRuntimes } from '@/fake-agents';
+
+it('[P1] ordinary opens and native admission fetch the second clone before the next scheduled check', async () => {
+  const suite = await createSmokeSuite('project-git-before-use', { dataDir: await mkdtemp(join(tmpdir(), 'od-git-before-use-')) });
+  const fixture = await createProjectGitE2eFixture(suite.scratchDir);
+  const agents = await createFakeAgentRuntimes({ root: join(suite.scratchDir, 'agents'), runtimeIds: ['codex'] });
+  try {
+    await suite.with.toolsDev(async ({ webUrl }) => {
+      const seed = await seedGitHistory(webUrl);
+      const preview = await gitOperation(webUrl, seed.projectId, '/binding-preview', { url: fixture.remoteUrl, branch: 'main' });
+      await gitOperation(webUrl, seed.projectId, '/bind', { previewId: preview.result!.preview!.id });
+      const check = () => requestJson<ProjectGitState>(webUrl, `/api/projects/${seed.projectId}/git/check`, { method: 'POST', body: '{}' });
+      const initial = await check(); expect(initial.status).toBe(200);
+      await fixture.git(fixture.cloneB, 'pull', '--ff-only', 'origin', 'main');
+      const evidence = [];
+      for (const lane of ['http-open', 'cli-open', 'native-admission']) {
+        const before = await state(webUrl, seed.projectId);
+        const started = Date.now();
+        const content = `<html><body>${lane} from clone B</body></html>`;
+        await writeFile(join(fixture.cloneB, 'index.html'), content);
+        await fixture.git(fixture.cloneB, 'add', 'index.html'); await fixture.git(fixture.cloneB, 'commit', '-m', lane);
+        await fixture.git(fixture.cloneB, 'push', 'origin', 'main');
+        const remote = await fixture.git(fixture.cloneB, 'rev-parse', 'HEAD');
+        expect((await state(webUrl, seed.projectId)).localHead).toBe(before.localHead);
+        let response: unknown;
+        if (lane === 'http-open') {
+          const result = await check(); expect(result.status).toBe(200); response = result;
+        } else if (lane === 'cli-open') {
+          const result = await runOd(webUrl, ['git', 'check', '--project', seed.projectId, '--json']);
+          expect(result.code, result.stderr).toBe(0); response = JSON.parse(result.stdout);
+        } else {
+          const result = await requestJson(webUrl, '/api/runs', { method: 'POST', body: JSON.stringify({
+            projectId: seed.projectId, conversationId: seed.conversationId, prompt: 'Read the current design', agentId: 'codex',
+            expectedProjectRevision: before.projectRevision,
+          }) });
+          expect(result.status, JSON.stringify(result)).toBe(409);
+          expect(result.body).toMatchObject({ error: { code: 'PROJECT_STATE_CHANGED' } }); response = result;
+        }
+        const after = await state(webUrl, seed.projectId);
+        expect(after.localHead).toBe(remote); expect(after.projectRevision).toBeGreaterThan(before.projectRevision);
+        expect(await (await fetch(`${webUrl}/api/projects/${seed.projectId}/raw/index.html`)).text()).toBe(content);
+        expect(Date.now() - started).toBeLessThan(48_000);
+        evidence.push({ lane, before, remote, after, response, elapsed: Date.now() - started });
+      }
+      await suite.report.json('before-use-two-clone.json', evidence);
+    }, { env: { ...fixture.env, ...agents.codex.env } });
+  } finally { await fixture.close(); }
+}, T.xlong * 4);
 
 it('[P1] fixture launchers preserve real Git arguments and reject unknown SSH commands', async () => {
   const suite = await createSmokeSuite('project-git-transport');

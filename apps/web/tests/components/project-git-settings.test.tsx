@@ -39,7 +39,7 @@ function operation(overrides: Partial<ProjectGitOperation>): ProjectGitOperation
 }
 
 function client(execute: ProjectGitClient['execute']): ProjectGitClient {
-  return { execute, state: vi.fn().mockResolvedValue(baseState), operation: vi.fn(), history: vi.fn(), commit: vi.fn(), file: vi.fn(), conversations: vi.fn(), conflicts: vi.fn() };
+  return { execute, check: vi.fn().mockResolvedValue(baseState), state: vi.fn().mockResolvedValue(baseState), operation: vi.fn(), history: vi.fn(), commit: vi.fn(), file: vi.fn(), conversations: vi.fn(), conflicts: vi.fn() };
 }
 
 afterEach(cleanup);

@@ -14,6 +14,7 @@ import {
   ProjectGitRestorePreviewRequestSchema,
   ProjectGitRetryRequestSchema,
   ProjectGitSyncRequestSchema,
+  ProjectGitCheckRequestSchema,
   ProjectGitUnbindRequestSchema,
   ProjectGitUpdateRequestSchema,
   parsePortableSnapshot,
@@ -70,6 +71,7 @@ const COMMON_FLAGS = ['json', 'daemon-url'] as const;
 const MUTATION_FLAGS = [...COMMON_FLAGS, 'prompt-file', 'idempotency-key'] as const;
 const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
   status: new Set([...COMMON_FLAGS, 'project']),
+  check: new Set([...MUTATION_FLAGS, 'project']),
   enable: new Set([...MUTATION_FLAGS, 'project', 'preview']),
   'bind-preview': new Set([...MUTATION_FLAGS, 'project', 'url', 'branch']),
   bind: new Set([...MUTATION_FLAGS, 'project', 'preview']),
@@ -200,6 +202,8 @@ export function parseProjectGitCommand(args: string[]): ProjectGitCliRequest {
   switch (parsed.command) {
     case 'status':
       return projectRequest('', { method: 'GET' });
+    case 'check':
+      return projectRequest('/check', { method: 'POST', body: {} });
     case 'enable': {
       const preview = parsed.flags.preview;
       return projectRequest('/enable', {
@@ -698,6 +702,7 @@ function schemaForCommand(command: string): BodySchema {
     case 'pause':
     case 'resume': return ProjectGitUpdateRequestSchema;
     case 'sync': return ProjectGitSyncRequestSchema;
+    case 'check': return ProjectGitCheckRequestSchema;
     case 'open': return ProjectGitOpenRequestSchema;
     case 'restore-preview': return ProjectGitRestorePreviewRequestSchema;
     case 'restore': return ProjectGitRestoreRequestSchema;
@@ -735,7 +740,7 @@ async function prepareMutationBody(
       ...(request.daemonUrl ? { daemonUrl: request.daemonUrl } : {}),
     });
     expectedProjectRevision = operationRevision(prior);
-  } else if (command !== 'open' && command !== 'resolve') {
+  } else if (command !== 'open' && command !== 'resolve' && command !== 'check') {
     const projectId = projectIdFromRequest(request);
     if (!projectId) throw new ProjectGitCliError('BAD_REQUEST', '--project is required', 2);
     // Capture once before reading a long prompt or constructing the final body.
@@ -920,6 +925,7 @@ export async function runProjectGit(args: string[]): Promise<void> {
     if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
       process.stdout.write(`Usage:
   od git status --project <id> [--json]
+  od git check --project <id> [--prompt-file <path|->] [--json]
   od git enable --project <id> [--preview <id>] [--prompt-file <path|->] [--json]
   od git bind-preview --project <id> --url <url> --branch <branch> [--prompt-file <path|->] [--json]
   od git bind --project <id> --preview <id> [--prompt-file <path|->] [--json]
@@ -969,6 +975,10 @@ Common options:
       idempotencyKey: request.idempotencyKey ?? randomUUID(),
     };
     const body = await prepareMutationBody(args[0]!, base, mutationRequest);
+    if (args[0] === 'check') {
+      printResult(await requestJson(base, mutationRequest, body, 200), request.json);
+      return;
+    }
     const accepted = await requestJson(base, mutationRequest, body, 202);
     if (!isRecord(accepted) || typeof accepted.operationId !== 'string' || !accepted.operationId) {
       throw new ProjectGitCliError('INVALID_RESPONSE', 'The daemon did not return an operation id.', 1);

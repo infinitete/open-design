@@ -38,6 +38,15 @@ interface CapturedRequest {
   body: string;
 }
 
+it('sends an explicit ordinary-open check without fetching or replacing a caller mutation epoch', async () => {
+  const stub = await startStub((_request, response) => response.end(JSON.stringify({ enabled: false, phase: 'enable_pending' })));
+  const result = await runCli(['git', 'check', '--project', 'existing', '--daemon-url', stub.baseUrl, '--json', '--prompt-file', '-'], { input: '{}' });
+  expect(result.code, result.stderr).toBe(0);
+  expect(stub.requests.map(request => [request.method, request.url, request.body])).toEqual([
+    ['POST', '/api/projects/existing/git/check', '{}'],
+  ]);
+});
+
 async function runCli(
   args: string[],
   options: { input?: string; env?: NodeJS.ProcessEnv } = {},

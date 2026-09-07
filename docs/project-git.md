@@ -42,6 +42,20 @@ semantic change means no new checkpoint. The daemon checks remotes every sixty
 seconds even with the page closed. Network retries back off through five seconds,
 thirty seconds, two minutes and five minutes, with jitter.
 
+Opening a project and admitting a task also request a shared automatic check,
+without waiting for the next timer. Paused, local-only and unmanaged projects do
+not contact a remote. Existing writers continue uninterrupted: their check intents
+coalesce until the last writer settles, allowing parent and child tasks to finish.
+At an idle task boundary, safe remote application finishes before admission; if it
+advances the project revision, the original task request receives HTTP409 and must
+be submitted again from refreshed content. Offline checks leave local work usable.
+
+`od git check --project PROJECT_ID --json` performs the same opening check as the
+web project view. Its endpoint is `POST /api/projects/PROJECT_ID/git/check` with an
+empty JSON object (also accepted via `--prompt-file <path|->`), returning HTTP200
+with current state. It respects automatic-sync pause and does not enable it.
+Status GET requests and Home project-list subscriptions only read state.
+
 **Pause** stops automatic remote synchronization, not local checkpoints. **Sync
 now** performs one synchronization. Unbinding disconnects the remote; it does not
 erase local history. Authentication/offline errors leave local history available

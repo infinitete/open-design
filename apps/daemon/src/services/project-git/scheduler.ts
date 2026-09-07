@@ -7,6 +7,7 @@ export interface ProjectGitScheduler {
   notify(projectId: string): void;
   /** False means no request was admitted; true includes coalescing with already admitted work. */
   requestSync(projectId: string, oneShot: boolean): boolean;
+  checkRemote(projectId: string): Promise<void>;
   /** Holds are serialized per project. Nested holds are rejected, including cross-project nesting. */
   withNetworkPaused<T>(projectId: string, work: () => Promise<T>): Promise<T>;
   stop(): Promise<void>;
@@ -16,7 +17,7 @@ export function createProjectGitScheduler(input: {
   store: ProjectGitStore; now: () => number; random: () => number;
   /** Remaining quiet time for a coherent dirty observation, otherwise no follow-up. */
   detect(projectId: string): Promise<void | number>;
-  sync(projectId: string, oneShot: boolean): Promise<void>;
+  sync(projectId: string, oneShot: boolean, checkBeforeUse?: boolean): Promise<void>;
 }): ProjectGitScheduler {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running = false;
@@ -24,6 +25,7 @@ export function createProjectGitScheduler(input: {
   const detection = new Map<string, Promise<void>>();
   const detectionPending = new Set<string>();
   const network = new Map<string, Promise<void>>();
+  const checks = new Map<string, Promise<void>>();
   const oneShots = new Set<string>();
   const remoteDue = new Map<string, number>();
   const auditDue = new Map<string, number>();
@@ -61,18 +63,34 @@ export function createProjectGitScheduler(input: {
     }, Math.max(1, delay));
     quiet.unref?.(); quietTimers.set(id, quiet);
   }
-  function requestSync(id: string, oneShot: boolean): boolean {
+  function requestSync(id: string, oneShot: boolean, checkBeforeUse = false): boolean {
     if (!running || holds.has(id)) return false;
     const binding = input.store.getBinding(id);
     if (!binding?.remoteUrl || (!oneShot && !binding.autoSync)) return false;
     if (network.has(id)) { if (oneShot && !oneShots.has(id)) pending.set(id, true); return true; }
     if (oneShot) oneShots.add(id);
-    const work = Promise.resolve().then(() => { if (!holds.has(id)) return input.sync(id, oneShot); }).catch(() => {}).finally(() => {
+    const work = Promise.resolve().then(() => { if (!holds.has(id)) return input.sync(id, oneShot, checkBeforeUse); }).catch(() => {}).finally(() => {
       network.delete(id); oneShots.delete(id); remoteDue.set(id, input.now() + remoteDelay());
       if (pending.has(id)) { const next = pending.get(id)!; pending.delete(id); requestSync(id, next); }
     });
     network.set(id, work);
     return true;
+  }
+  function checkRemote(id: string): Promise<void> {
+    if (transitionContext.getStore()) return Promise.reject(new GitDomainError('PROJECT_BUSY', 409, 'A network transition cannot await its own remote check.'));
+    const existing = checks.get(id);
+    if (existing) return existing;
+    // A scheduled attempt may stop at debounce/backoff; one shared explicit
+    // follow-up must actually use the before-use lane after it settles.
+    const issued = network.get(id);
+    const transition = transitions.get(id);
+    const work = Promise.resolve().then(async () => {
+      await transition;
+      await issued;
+      if (requestSync(id, false, true)) await network.get(id);
+    }).finally(() => { if (checks.get(id) === work) checks.delete(id); });
+    checks.set(id, work);
+    return work;
   }
   function withNetworkPaused<T>(id: string, work: () => Promise<T>): Promise<T> {
     if (stopped) return Promise.reject(new GitDomainError('PROJECT_BUSY', 409, 'The project scheduler is shutting down.'));
@@ -113,13 +131,14 @@ export function createProjectGitScheduler(input: {
       scheduleQuietDetection(projectId, true);
     },
     requestSync,
+    checkRemote,
     withNetworkPaused,
     async stop() {
       stopped = true; running = false; clearInterval(timer); timer = undefined;
       pending.clear(); auditDue.clear(); detectionPending.clear();
       for (const quiet of quietTimers.values()) clearTimeout(quiet);
       quietTimers.clear(); watcherBursts.clear();
-      await Promise.allSettled([...detection.values(), ...network.values(), ...transitions.values()]);
+      await Promise.allSettled([...detection.values(), ...network.values(), ...checks.values(), ...transitions.values()]);
     },
   };
 }

@@ -319,6 +319,7 @@ describe('project Git route registrar matrix', () => {
     `);
     const invalid = () => { throw new GitDomainError('BAD_REQUEST', 400, 'Invalid Git route value.'); };
     service = {
+      checkRemote: vi.fn(async () => ({ enabled: false, phase: 'enable_pending' }) as ProjectGitState),
       getState: vi.fn(async projectId => projectId === 'bad' ? invalid() : ({ enabled: false, phase: 'enable_pending' }) as ProjectGitState),
       execute: vi.fn(async () => ({ operationId: 'accepted' })),
       getOperation: vi.fn(async id => id === 'invalid' ? invalid() : operation(id, 'project')),
@@ -378,6 +379,13 @@ describe('project Git route registrar matrix', () => {
   const request = (path: string, init: RequestInit = {}) => fetch(baseUrl + path, {
     ...init,
     headers: { 'content-type': 'application/json', 'idempotency-key': 'route-key', ...init.headers },
+  });
+
+  it('accepts explicit ordinary-open checks while rejecting content payloads and unauthorized callers', async () => {
+    expect((await request('/api/projects/project/git/check', { method: 'POST', body: '{}' })).status).toBe(200);
+    expect((await request('/api/projects/project/git/check', { method: 'POST', body: '{"expectedProjectRevision":7}' })).status).toBe(400);
+    expect((await request('/api/projects/project/git/check', { method: 'POST', body: '{}', headers: { 'x-deny-project': '1' } })).status).toBe(404);
+    expect((await request('/api/projects/project/git/check', { method: 'POST', body: '{}', headers: { 'x-deny-local': '1' } })).status).toBe(403);
   });
 
   it('maps every successful route to the exact service read or action and trusted context', async () => {

@@ -6,6 +6,21 @@ import {
   type ProjectRunPermit,
 } from '../../../src/services/project-git/runtime-adapter.js';
 
+it.each(['admit', 'admitSession'] as const)('%s checks before taking its own permit and rejects the original epoch after remote application', async lane => {
+  const gate = createProjectGate();
+  const binding = { projectRevision: 7, contentRevision: 0, generation: 2 };
+  const adapter = createProjectGitRuntimeAdapter({
+    recoveryReady: Promise.resolve(), store: { getBinding: () => binding, recordRunTerminal: () => true },
+    gateFor: () => gate, notify: () => {}, permits: new Map(),
+    checkBeforeUse: async () => {
+      expect(gate.activeRuns()).toBe(0);
+      await gate.exclusive(async () => { binding.projectRevision = 8; });
+    },
+  });
+  await expect(adapter[lane]('project', 7)).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED', status: 409 });
+  expect(gate.activeRuns()).toBe(0);
+});
+
 it('holds overlapping run permits until each run settles and bumps from the latest content revision', async () => {
   const gate = createProjectGate();
   const binding = { projectRevision: 7, contentRevision: 0, generation: 2 };

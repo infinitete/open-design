@@ -324,6 +324,14 @@ function renderProjectView(
 }
 
 describe('ProjectView API empty response handling', () => {
+  it('checks the remote on actual project open through the shared Git client', async () => {
+    const check = vi.spyOn(defaultProjectGitClient, 'check').mockImplementation(id => defaultProjectGitClient.state(id));
+    try {
+      renderProjectView({ ...project, id: 'git-open-intent' });
+      await waitFor(() => expect(check).toHaveBeenCalledWith('git-open-intent'));
+      expect(check).toHaveBeenCalledTimes(1);
+    } finally { check.mockRestore(); }
+  });
   beforeEach(() => {
     chatPaneMockState.attachments = [];
     chatPaneMockState.commentAttachments = [];

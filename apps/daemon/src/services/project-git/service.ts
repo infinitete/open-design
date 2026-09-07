@@ -39,6 +39,7 @@ export interface ProjectGitService {
   initializeNewProjectGit(projectId: string): Promise<void>;
   recordEnablePending(projectId: string, error: unknown): Promise<void>;
   getState(projectId: string): Promise<ProjectGitState>;
+  checkRemote(projectId: string): Promise<ProjectGitState>;
   execute(action: ProjectGitAction, context: ProjectGitRequestContext): Promise<ProjectGitAccepted>;
   getOperation(id: string): Promise<ProjectGitOperation>;
   history(projectId: string, cursor?: string, path?: string): Promise<ProjectGitHistoryPage>;
@@ -251,6 +252,7 @@ export async function createProjectGitServiceComposition(
     start: () => scheduler.start(),
     notify: id => scheduler.notify(id),
     requestSync: (id, oneShot) => scheduler.requestSync(id, oneShot),
+    checkRemote: id => scheduler.checkRemote(id),
     withNetworkPaused: (id, work) => scheduler.withNetworkPaused(id, work),
     stop: () => scheduler.stop(),
   };
@@ -316,8 +318,8 @@ export async function createProjectGitServiceComposition(
       await emitState(projectId);
       return syncRuntime.quietDelay(projectId) ?? undefined;
     },
-    sync: async (projectId, oneShot) => {
-      try { await syncProject({ projectId, oneShot, deps: syncRuntime }); }
+    sync: async (projectId, oneShot, checkBeforeUse) => {
+      try { await syncProject({ projectId, oneShot, checkBeforeUse: checkBeforeUse === true, deps: syncRuntime }); }
       finally {
         const operation = input.store.getLatestProjectOperation(projectId);
         if (operation) await emitOperation(operation);
@@ -348,8 +350,18 @@ export async function createProjectGitServiceComposition(
   const notify = (projectId: string) => scheduler.notify(projectId);
   const mutation = createProjectGitMutationAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify });
   const settling = new Map<string, Promise<void>>();
-  const runtime = createProjectGitRuntimeAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify, permits,
-    settled: projectId => {
+  const pendingChecks = new Set<string>();
+  const checkBeforeUse = async (projectId: string): Promise<void> => {
+    const binding = input.store.getBinding(projectId);
+    if (!binding?.autoSync || !binding.remoteUrl) { pendingChecks.delete(projectId); return; }
+    const project = await resolveRuntime(projectId);
+    // Existing writers may await a child admission. Do not queue exclusive
+    // checkpoint work ahead of that child; the final release drains the intent.
+    if (project.gate.activeRuns() > 0) { pendingChecks.add(projectId); return; }
+    pendingChecks.delete(projectId);
+    await scheduler.checkRemote(projectId);
+  };
+  const settled = (projectId: string): void => {
       if (deferredInitializations.has(projectId)) {
         void service.initializeNewProjectGit(projectId).catch(() => {});
         return;
@@ -358,13 +370,20 @@ export async function createProjectGitServiceComposition(
       // The runtime calls this only after terminal messages/files and permit
       // release. Checkpoint admission waits for every other project writer.
       const work = track(Promise.resolve().then(async () => {
+        if (pendingChecks.has(projectId)) await checkBeforeUse(projectId);
+        if (requireRuntime(projectId).gate.activeRuns() > 0) return;
         try { await syncRuntime.checkpoint(projectId); }
         catch { /* The checkpoint retains its durable error; AI status stays authoritative. */ }
         await emitState(projectId);
       }));
       settling.set(projectId, work);
-      void work.finally(() => settling.delete(projectId)).catch(() => {});
-    },
+      void work.finally(() => {
+        settling.delete(projectId);
+        if (pendingChecks.has(projectId) && requireRuntime(projectId).gate.activeRuns() === 0) settled(projectId);
+      }).catch(() => {});
+  };
+  const runtime = createProjectGitRuntimeAdapter({ store: input.store, gateFor: async id => (await resolveRuntime(id)).gate, recoveryReady, notify, permits,
+    checkBeforeUse, settled,
   });
   const coordination: ProjectGitCoordination = { ...mutation, recoveryReady, runtime };
 
@@ -765,6 +784,9 @@ export async function createProjectGitServiceComposition(
     },
     getState(projectId) {
       return admit(() => state(projectId));
+    },
+    checkRemote(projectId) {
+      return admit(async () => { await checkBeforeUse(projectId); return state(projectId); });
     },
     execute(action, context) {
       const requestScope = context.projectId === null ? 'import' : `project:${context.projectId}`;

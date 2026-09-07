@@ -1031,7 +1031,7 @@ function printRootHelp() {
       conversation's context by copying its messages (--seed-from), optionally
       stopping at one message (--fork-after). Mirrors the web chat fork action.
 
-  od git <status|enable|bind|sync|open|log|show|restore|conflicts|resolve|operation|retry> [args]
+  od git <status|check|enable|bind|sync|open|log|show|restore|conflicts|resolve|operation|retry> [args]
       Manage project Git versioning through the same daemon API as the web UI.
       Run \`od git --help\` for the complete command list and mutation options.
 

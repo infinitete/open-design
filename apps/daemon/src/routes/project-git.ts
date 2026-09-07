@@ -10,6 +10,7 @@ import {
   ProjectGitRestoreRequestSchema,
   ProjectGitRetryRequestSchema,
   ProjectGitSyncRequestSchema,
+  ProjectGitCheckRequestSchema,
   ProjectGitUnbindRequestSchema,
   ProjectGitUpdateRequestSchema,
   type ProjectGitAction,
@@ -137,6 +138,12 @@ export function registerProjectGitRoutes(app: Express, ctx: RegisterProjectGitRo
     const projectId = await project(req, res, 'read');
     if (!projectId) return undefined;
     return ctx.projectGit.getState(projectId);
+  }));
+  app.post('/api/projects/:id/git/check', read(async (req, res) => {
+    const projectId = await project(req, res, 'write');
+    if (!projectId) return undefined;
+    parse(ProjectGitCheckRequestSchema, req);
+    return ctx.projectGit.checkRemote(projectId);
   }));
   app.post('/api/projects/:id/git/enable', mutate<ProjectGitEnableRequest>(ProjectGitEnableRequestSchema, body => body.mode === 'preview'
     ? { kind: 'enable_preview' } : { kind: 'enable', previewId: body.previewId }));

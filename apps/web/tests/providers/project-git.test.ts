@@ -25,7 +25,28 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it('keeps authority subscriptions read-only and coalesces explicit project-open checks', async () => {
+  let finish!: () => void;
+  const waiting = new Promise<void>(resolve => { finish = resolve; });
+  let checks = 0;
+  const hub = createProjectGitHub({ state: async () => legalState, check: async () => { checks++; await waiting; return legalState; } }, { subscribeEvents: () => () => {} });
+  const unsubscribe = hub.subscribe('project', () => {});
+  await hub.refresh('project'); expect(checks).toBe(0);
+  const first = hub.check('project'); const second = hub.check('project');
+  await Promise.resolve(); expect(checks).toBe(1);
+  finish(); await Promise.all([first, second]);
+  expect(hub.snapshot('project').state).toEqual(legalState);
+  unsubscribe(); hub.disposeIfUnused('project');
+});
+
 describe('ProjectGitClient', () => {
+  it('uses an explicit POST for ordinary-open checks and leaves status GET read-only', async () => {
+    const fetchFn = vi.fn().mockImplementation(async () => json(legalState));
+    const client = createProjectGitClient({ fetchFn });
+    await client.check('project'); await client.state('project');
+    expect(fetchFn.mock.calls[0]).toMatchObject(['/api/projects/project/git/check', { method: 'POST', body: '{}' }]);
+    expect(fetchFn.mock.calls[1]?.[0]).toBe('/api/projects/project/git');
+  });
   it('validates state and sends the captured revision through the exact mutation transport', async () => {
     const fetchFn = vi.fn()
       .mockResolvedValueOnce(json({ operationId: 'op-1' }, 202))

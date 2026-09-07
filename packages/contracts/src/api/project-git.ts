@@ -270,6 +270,10 @@ export type ProjectGitUpdateResponse = ProjectGitAccepted;
 export interface ProjectGitSyncRequest extends ProjectMutationRevision {}
 export type ProjectGitSyncResponse = ProjectGitAccepted;
 
+/** An automatic check intent; no content or epoch supplied by the caller. */
+export type ProjectGitCheckRequest = Record<string, never>;
+export type ProjectGitCheckResponse = ProjectGitState;
+
 export interface ProjectGitOpenRequest {
   url: string;
   branch: string;
@@ -430,6 +434,7 @@ export const ProjectGitUpdateRequestSchema = z.discriminatedUnion('action', [
 ]);
 
 export const ProjectGitSyncRequestSchema = z.object(projectMutationRevisionSchema).strict();
+export const ProjectGitCheckRequestSchema = z.object({}).strict();
 
 export const ProjectGitOpenRequestSchema = z.object({
   url: z.string().min(1),

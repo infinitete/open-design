@@ -168,14 +168,18 @@ function errorPhase(error: unknown): ProjectGitPhase {
 }
 
 /** A single reconciliation pass. Success requires exact remote confirmation and exact outbox ACK. */
-export function syncProject(input: { projectId: string; oneShot: boolean; deps: ProjectGitSyncDeps }): Promise<void>;
+export function syncProject(input: { projectId: string; oneShot: boolean; checkBeforeUse?: boolean; deps: ProjectGitSyncDeps }): Promise<void>;
 export function syncProject(input: { projectId: string; oneShot: true; deps: ProjectGitSyncDeps;
   request: { actorId: string; idempotencyKey: string; requestDigest: string } }): Promise<ProjectGitOperation>;
-export async function syncProject(input: { projectId: string; oneShot: boolean; deps: ProjectGitSyncDeps;
+export async function syncProject(input: { projectId: string; oneShot: boolean; checkBeforeUse?: boolean; deps: ProjectGitSyncDeps;
   request?: { actorId: string; idempotencyKey: string; requestDigest: string } }): Promise<ProjectGitOperation | null | void> {
   const { projectId, oneShot, deps } = input; const { store } = deps;
+  if (input.checkBeforeUse) {
+    const eligible = store.getBinding(projectId);
+    if (!eligible?.autoSync || !eligible.remoteUrl) return;
+  }
   assertNoRecovery(store, projectId);
-  if (oneShot) await deps.checkpoint(projectId);
+  if (oneShot || input.checkBeforeUse) await deps.checkpoint(projectId);
   else if (!await deps.automaticReady(projectId)) return;
   let binding = store.getBinding(projectId);
   const previous = binding
@@ -208,7 +212,7 @@ export async function syncProject(input: { projectId: string; oneShot: boolean; 
   }
   if (!oneShot && previous.some(op => ['auth_required', 'conflict'].includes(op.phase))) return;
   const queued = store.queuePush(projectId, binding.generation, binding.localHead);
-  if (!oneShot && queued.nextAttemptAt > deps.now()) return;
+  if (!oneShot && !input.checkBeforeUse && queued.nextAttemptAt > deps.now()) return;
   const original = binding; const generation = binding.generation;
   const operation = userOperation ?? store.enqueueOperation({ projectId, actorId, kind: 'sync', basis: basisFor(binding),
     idempotencyKey: randomUUID(), requestDigest: randomUUID(), payload: { lane: 'network' } });
