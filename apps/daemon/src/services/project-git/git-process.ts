@@ -307,6 +307,19 @@ export async function initializeRepository(input: GitInitializationInput): Promi
   } catch (error) {
     if (!(error instanceof GitDomainError) || error.details?.reason !== 'not_repository') throw error;
   }
+  await initializeEmptyRepository({ ...input, root });
+}
+
+/** Allocate an owned scratch repository without discovering a repository above the data root. */
+export async function createPreparationRepository(input: Omit<GitInitializationInput, 'root'> & { preparationRoot: string }): Promise<string> {
+  if (!isAbsolute(input.preparationRoot) || !['sha1', 'sha256'].includes(input.objectFormat)) invalid('Preparation requires an absolute root and supported object format.');
+  const root = await mkdtemp(join(await realpath(input.preparationRoot), 'git-preparation-'));
+  await initializeEmptyRepository({ ...input, root });
+  return root;
+}
+
+async function initializeEmptyRepository(input: GitInitializationInput): Promise<void> {
+  const { root } = input;
   if (!input.initialBranch || input.initialBranch === 'HEAD' || input.initialBranch.includes('@{') || /[\x00-\x20\x7f]/u.test(input.initialBranch)) invalid('Invalid initial branch.');
   await runGit({ ...input, cwd: root, args: ['check-ref-format', '--branch', input.initialBranch] });
   const gitDir = join(root, '.git');

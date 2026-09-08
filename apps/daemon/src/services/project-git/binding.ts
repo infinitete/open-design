@@ -6,7 +6,7 @@ import { GitDomainError } from './errors.js';
 import { lstat, mkdir, mkdtemp, open, readdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { getSystemErrorMap, isDeepStrictEqual } from 'node:util';
-import { assertGitIdentity, initializeRepository, runGit, runGitTransport } from './git-process.js';
+import { assertGitIdentity, createPreparationRepository, runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
 import { computeCheckpointContentDigest, isPrivateProjectGitPath, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
 import { durableDirectory, durableWrite, finishRecovery, gitTree, readBytes, recoveryBarrier, safeFile, sha256, within } from './recovery.js';
@@ -152,8 +152,8 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--cached', '-z'] })).stdout),
         nulPaths((await runGit({ cwd: project.root, args: ['ls-files', '--others', '--exclude-standard', '-z'] })).stdout));
     } else {
-      const scratch = await mkdtemp(join(input.preparationRoot, 'binding-preview-'));
-      await initializeRepository({ root: scratch, initialBranch: localBranch, objectFormat: 'sha1', ...(input.gitEnv ? { env: input.gitEnv } : {}) });
+      const scratch = await createPreparationRepository({ preparationRoot: input.preparationRoot, initialBranch: localBranch,
+        objectFormat: 'sha1', ...(input.gitEnv ? { env: input.gitEnv } : {}) });
       for (const [path, kind] of inventory) {
         if (kind === 'directory') { await mkdir(join(scratch, path), { recursive: true });
           if (isPrivateProjectGitPath(path)) await durableWrite(join(scratch, path, 'od-private-placeholder'), Buffer.alloc(0));

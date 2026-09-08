@@ -97,6 +97,35 @@ it('previews without initializing the user root, then enables the same captured 
   expect(await service.enable('existing', preview.result!.preview!.id, { actorId: 'local', idempotencyKey: 'enable', expectedProjectRevision: 0 })).toEqual(operation);
 });
 
+it('enables an unmanaged project when the preparation directory is inside another repository', async () => {
+  const { f, store, service, existing, configuration } = await serviceFixture(); const root = await existing();
+  await f.git(configuration.data, 'init', '--initial-branch=main');
+  await writeFile(join(configuration.data, 'parent.txt'), 'parent content');
+  await f.git(configuration.data, 'add', 'parent.txt');
+  await f.git(configuration.data, 'commit', '-m', 'parent baseline');
+  await writeFile(join(configuration.data, '.git', 'info', 'exclude'), '*.html\n');
+  const parentHead = await f.git(configuration.data, 'rev-parse', 'HEAD');
+  const parentIndex = await fs.readFile(join(configuration.data, '.git', 'index'));
+  const parentConfig = await fs.readFile(join(configuration.data, '.git', 'config'));
+  await writeFile(join(root, '.gitignore'), 'ignored.txt\n');
+  await writeFile(join(root, 'ignored.txt'), 'ignored content');
+
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'preview' });
+  expect(preview).toMatchObject({ status: 'succeeded', result: { preview: { changes: {
+    addedPaths: expect.arrayContaining(['index.html']), ignoredPaths: ['ignored.txt'],
+  } } } });
+  await expect(access(join(root, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
+  const operation = await service.enable('existing', preview.id, { actorId: 'local', idempotencyKey: 'enable', expectedProjectRevision: 0 });
+  expect(operation).toMatchObject({ status: 'succeeded' });
+  expect(store.getBinding('existing')).toMatchObject({ projectRevision: 0, remoteUrl: null });
+  expect(await f.git(root, 'show', 'HEAD:index.html')).toBe('user file');
+  expect(await f.git(root, 'ls-files', 'ignored.txt')).toBe('');
+  expect(await fs.readFile(join(root, 'ignored.txt'), 'utf8')).toBe('ignored content');
+  expect(await f.git(configuration.data, 'rev-parse', 'HEAD')).toBe(parentHead);
+  expect(await fs.readFile(join(configuration.data, '.git', 'index'))).toEqual(parentIndex);
+  expect(await fs.readFile(join(configuration.data, '.git', 'config'))).toEqual(parentConfig);
+});
+
 it.each([false, true])('archives native history at first enable and restores it from a second clone (distinct root=%s)', async distinct => {
   const { f, db, store, service, registry, existing, configuration } = await serviceFixture(); const root = await existing();
   const version = await createProjectFileVersion(distinct ? configuration.ownedProjectsRoot : f.root, distinct ? 'existing' : 'unmanaged', 'index.html', 'native original', {}, { kind: 'prototype', baseDir: root });
