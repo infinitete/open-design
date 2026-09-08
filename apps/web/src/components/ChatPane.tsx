@@ -636,6 +636,7 @@ interface Props {
   // (it owns the AppConfig lifecycle) so we just pass the open trigger.
   onOpenSettings?: (section?: SettingsSection) => void;
   onOpenProjectGitSettings?: () => void;
+  projectGitMenu?: ReactNode;
   showByokRecoveryAction?: boolean;
   onSwitchToLocalCli?: () => void;
   // PR #3157: Antigravity's `agy -p` can't complete OAuth on its own,
@@ -985,6 +986,7 @@ export function ChatPane({
   onDeleteConversation,
   onOpenSettings,
   onOpenProjectGitSettings,
+  projectGitMenu,
   showByokRecoveryAction = false,
   onSwitchToLocalCli,
   onLaunchAntigravityOauth,
@@ -2272,6 +2274,7 @@ export function ChatPane({
       onStop={onStop}
       onOpenSettings={onOpenSettings}
       onOpenProjectGitSettings={onOpenProjectGitSettings}
+      projectGitMenu={projectGitMenu}
       onOpenMcpSettings={onOpenMcpSettings}
       onBrowsePlugins={onBrowsePlugins}
       onOpenConnectors={onOpenConnectors}

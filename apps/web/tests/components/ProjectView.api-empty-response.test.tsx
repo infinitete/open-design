@@ -169,6 +169,7 @@ vi.mock('../../src/components/ChatPane', () => ({
     onRetry,
     error,
     projectHeader,
+    projectGitMenu,
     onCollapse,
     collapseControlLifted,
   }: {
@@ -181,6 +182,7 @@ vi.mock('../../src/components/ChatPane', () => ({
     onRetry?: (assistantMessage: ChatMessage) => void;
     error?: string | null;
     projectHeader?: ReactNode;
+    projectGitMenu?: ReactNode;
     onCollapse?: () => void;
     collapseControlLifted?: boolean;
   }) => {
@@ -197,6 +199,7 @@ vi.mock('../../src/components/ChatPane', () => ({
     return (
       <div>
         {projectHeader}
+        {projectGitMenu}
         {error ? <div>{error}</div> : null}
         {error && retryMessage && onRetry ? (
           <button type="button" onClick={() => onRetry(retryMessage)}>
@@ -388,7 +391,9 @@ describe('ProjectView API empty response handling', () => {
     ];
     try {
       renderProjectView(gitProject);
-      fireEvent.click(await screen.findByRole('button', { name: 'Conflicts' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Version settings' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Conflicts need resolution' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Conflicts' }));
       fireEvent.change(await screen.findByLabelText('name'), { target: { value: 'remote' } });
       fireEvent.click(screen.getByRole('button', { name: 'Submit resolution' }));
       await waitFor(() => expect(submittedSignal).toBeDefined());
@@ -397,7 +402,7 @@ describe('ProjectView API empty response handling', () => {
       function StateWitness() { const git = useProjectGit(gitProject.id); refresh = () => git.refresh({ fresh: true }); return null; }
       render(<StateWitness />);
       await act(async () => { await refresh(); });
-      await waitFor(() => expect(screen.queryByRole('button', { name: 'Conflicts' })).toBeNull());
+      await waitFor(() => expect(screen.getByRole('dialog', { name: 'Conflicts' })).toBeInTheDocument());
       expect(submittedSignal!.aborted).toBe(false);
       await act(async () => { finish({ ...operation, id: 'resolve-new', kind: 'resolve', status: 'succeeded', phase: 'local_saved', result: { head: 'merged' } }); });
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());

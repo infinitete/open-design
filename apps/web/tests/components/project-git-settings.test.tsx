@@ -5,7 +5,7 @@ import type { ProjectGitOperation, ProjectGitState } from '@open-design/contract
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenGitProjectDialog } from '../../src/components/project-git/OpenGitProjectDialog';
 import { ProjectGitSettings } from '../../src/components/project-git/ProjectGitSettings';
-import { ProjectGitStatus, useProjectGitStatusActions } from '../../src/components/project-git/ProjectGitStatus';
+import { ProjectGitMenu, ProjectGitStatus, useProjectGitStatusActions } from '../../src/components/project-git/ProjectGitStatus';
 import { I18nProvider } from '../../src/i18n';
 import { ProjectGitHttpError, type ProjectGitClient } from '../../src/providers/project-git';
 
@@ -85,6 +85,35 @@ describe('ProjectGitStatus', () => {
     render(<I18nProvider initial="en"><ProjectGitStatus state={{ ...baseState, phase }} onHistory={vi.fn()} onSync={vi.fn()} onToggleAutoSync={vi.fn()} /></I18nProvider>);
     expect(screen.getByRole('status')).toHaveTextContent(label);
     cleanup();
+  });
+});
+
+describe('ProjectGitMenu', () => {
+  it('keeps version actions behind the current status submenu', () => {
+    const onHistory = vi.fn(); const onSync = vi.fn(); const onToggleAutoSync = vi.fn(); const onSettings = vi.fn();
+    render(<I18nProvider initial="en"><ProjectGitMenu state={baseState} onHistory={onHistory} onSync={onSync} onToggleAutoSync={onToggleAutoSync} onSettings={onSettings} /></I18nProvider>);
+
+    expect(screen.queryByRole('button', { name: 'History' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Version settings' }));
+    expect(screen.getByRole('menuitem', { name: 'Synced' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'History' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Synced' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sync now' }));
+    expect(onSync).toHaveBeenCalledOnce();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pause automatic sync' }));
+    expect(onToggleAutoSync).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'History' }));
+    expect(onHistory).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Version settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Synced' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Version settings' }));
+    expect(onSettings).toHaveBeenCalledOnce();
   });
 });
 

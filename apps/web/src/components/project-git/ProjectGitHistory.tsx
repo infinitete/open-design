@@ -7,10 +7,10 @@ import type { ProjectGitClient } from '../../providers/project-git';
 import styles from './ProjectGit.module.css';
 import { ProjectGitDialogPortal, useGitDialog } from './ProjectGitFeedback';
 
-export function ProjectGitPanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function ProjectGitPanel({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const { t } = useI18n();
   const dialog = useGitDialog(onClose);
-  return <ProjectGitDialogPortal><div className={styles.backdrop}><section {...dialog} className={styles.modal} role="dialog" aria-modal="true" aria-label={title}>
+  return <ProjectGitDialogPortal><div className={styles.backdrop}><section {...dialog} className={`${styles.modal} ${wide ? styles.wideModal : ''}`} role="dialog" aria-modal="true" aria-label={title}>
     <header className={styles.header}><h2>{title}</h2><button type="button" aria-label={t('common.close')} onClick={onClose}>×</button></header>{children}
   </section></div></ProjectGitDialogPortal>;
 }

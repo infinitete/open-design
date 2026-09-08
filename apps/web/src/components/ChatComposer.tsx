@@ -320,6 +320,7 @@ interface Props {
   // ChatPane). Pass `null` (or omit) to render the full rail.
   pinnedPluginId?: string | null;
   footerAccessory?: ReactNode;
+  projectGitMenu?: ReactNode;
   // Slot rendered in the composer's bottom toolbar, immediately right of the
   // "+" menu. Hosts the working-directory pill so the folder selector sits by
   // the composer (mirroring the home input) instead of the file-panel header.
@@ -483,6 +484,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       onProjectSkillChange,
       pinnedPluginId = null,
       footerAccessory,
+      projectGitMenu,
       leadingAccessory,
       designSystemPicker,
       onShowToast,
@@ -3390,7 +3392,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               }}
             />
             {footerAccessory}
-            {projectId && onOpenProjectGitSettings ? <button type="button" className="composer-icon-btn od-tooltip" onClick={onOpenProjectGitSettings} aria-label={t('projectGit.settings')} title={t('projectGit.settings')}><Icon name="settings" size={16} /></button> : null}
+            {projectGitMenu ?? (projectId && onOpenProjectGitSettings ? <button type="button" className="composer-icon-btn od-tooltip" onClick={onOpenProjectGitSettings} aria-label={t('projectGit.settings')} title={t('projectGit.settings')}><Icon name="settings" size={16} /></button> : null)}
             {showStopButton ? (
               <button
                 type="button"

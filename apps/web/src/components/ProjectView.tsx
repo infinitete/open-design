@@ -280,12 +280,11 @@ import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunity
 import { CenteredLoader } from './Loading';
 import type { SettingsSection } from './SettingsDialog';
 import { Toast } from './Toast';
-import { ProjectGitStatus, useProjectGitStatusActions } from './project-git/ProjectGitStatus';
+import { ProjectGitMenu, useProjectGitStatusActions } from './project-git/ProjectGitStatus';
 import { ProjectGitSettings } from './project-git/ProjectGitSettings';
 import { ProjectGitHistory, ProjectGitPanel } from './project-git/ProjectGitHistory';
 import { ProjectGitRestoreDialog } from './project-git/ProjectGitRestoreDialog';
 import { ProjectGitConflicts } from './project-git/ProjectGitConflicts';
-import { ProjectActionsToolbar } from './ProjectActionsToolbar';
 import { defaultProjectGitClient } from '../providers/project-git';
 import { FirstArtifactHint } from './FirstArtifactHint';
 import {
@@ -11286,19 +11285,8 @@ export function ProjectView({
         projectId={project.id}
         enabled={critiqueTheaterEnabled}
       />
-      {projectGit.state ? (
-        <ProjectActionsToolbar gitStatus={<>
-          <ProjectGitStatus
-            state={projectGit.state}
-            onHistory={() => setProjectGitHistoryPath('')}
-            {...projectGitActions}
-          />
-          <button type="button" onClick={() => setProjectGitSettingsOpen(true)}>{t('projectGit.settings')}</button>
-          {projectGit.state.phase === 'conflict' && projectGit.state.operationId ? <button type="button" onClick={() => setProjectGitConflictOperationId(projectGit.state!.operationId)}>{t('projectGit.conflicts')}</button> : null}
-        </>} />
-      ) : null}
       {projectGitSettingsOpen ? <ProjectGitSettings projectId={project.id} client={defaultProjectGitClient} onClose={() => setProjectGitSettingsOpen(false)} /> : null}
-      {projectGitHistoryPath !== null && !projectGitRestoreOid ? <ProjectGitPanel title={t('projectGit.history')} onClose={() => setProjectGitHistoryPath(null)}>
+      {projectGitHistoryPath !== null && !projectGitRestoreOid ? <ProjectGitPanel wide title={t('projectGit.history')} onClose={() => setProjectGitHistoryPath(null)}>
         <ProjectGitHistory key={`${project.id}:${projectGitHistoryPath}:${projectGit.generation}`} projectId={project.id} path={projectGitHistoryPath} client={defaultProjectGitClient} onRestore={setProjectGitRestoreOid} restoreDisabled={projectGit.state?.phase === 'conflict' || projectGit.writeLocked} />
       </ProjectGitPanel> : null}
       {projectGitRestoreOid ? <ProjectGitRestoreDialog key={`${project.id}:${projectGitRestoreOid}`} projectId={project.id} targetOid={projectGitRestoreOid} client={defaultProjectGitClient} onClose={() => setProjectGitRestoreOid(null)} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitRestoreOid(null); setProjectGitHistoryPath(null); }} /> : null}
@@ -11494,6 +11482,15 @@ export function ProjectView({
               config={config}
               onOpenSettings={onOpenSettings}
               onOpenProjectGitSettings={() => setProjectGitSettingsOpen(true)}
+              projectGitMenu={projectGit.state ? <ProjectGitMenu
+                state={projectGit.state}
+                onHistory={() => setProjectGitHistoryPath('')}
+                onSettings={() => setProjectGitSettingsOpen(true)}
+                onConflict={projectGit.state.phase === 'conflict' && projectGit.state.operationId
+                  ? () => setProjectGitConflictOperationId(projectGit.state!.operationId)
+                  : undefined}
+                {...projectGitActions}
+              /> : null}
               showByokRecoveryAction={
                 config.mode === 'api' &&
                 daemonLive &&
