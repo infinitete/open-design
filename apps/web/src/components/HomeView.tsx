@@ -3206,6 +3206,9 @@ export function HomeView({
         recommendationSlot={artifactUpgradeSlot}
       />
 
+      <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+        <button type="button" className="designs-refresh-button" onClick={() => setOpenGitDialog(true)}>{t('projectGit.open')}</button>
+      </div>
       {recentProjectsEmpty && folderImport.available ? (
         <div
           data-testid="home-empty-import-row"
@@ -3227,9 +3230,6 @@ export function HomeView({
           </button>
         </div>
       ) : null}
-      <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
-        <button type="button" className="designs-refresh-button" onClick={() => setOpenGitDialog(true)}>{t('projectGit.open')}</button>
-      </div>
       {openGitDialog ? <OpenGitProjectDialog client={defaultProjectGitClient} onOpened={onOpenProject} onClose={() => setOpenGitDialog(false)} /> : null}
 
       {recentProjectsEmpty ? null : (

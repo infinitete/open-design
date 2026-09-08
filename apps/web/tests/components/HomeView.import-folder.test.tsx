@@ -142,6 +142,15 @@ describe('HomeView empty-state folder import', () => {
     expect(screen.queryByTestId('home-import-folder')).toBeNull();
   });
 
+  it('places opening a repository before opening a folder', async () => {
+    stubHomeFetch();
+    renderHome([], vi.fn());
+
+    const repository = await screen.findByRole('button', { name: 'Open repository' });
+    const folder = await screen.findByRole('button', { name: 'Open folder' });
+    expect(repository.compareDocumentPosition(folder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('hides the empty-state import row without import callbacks', async () => {
     stubHomeFetch();
     renderHome([]);
