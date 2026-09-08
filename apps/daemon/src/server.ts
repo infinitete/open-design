@@ -3007,7 +3007,9 @@ export async function startServer({
     store: projectGitStore,
     operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
     instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
-    readOwnedResource: createProjectGitOwnedResourceReader({ db }),
+    readOwnedResource: createProjectGitOwnedResourceReader({ db,
+      designSystemRoots: { builtIn: DESIGN_SYSTEMS_DIR, user: USER_DESIGN_SYSTEMS_DIR },
+      skillRoots: { builtIn: SKILLS_DIR, user: USER_SKILLS_DIR } }),
     ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
     ...(projectGitExecutableResolver ? { resolveGitExecutable: projectGitExecutableResolver } : {}),
     requireDefaultEnable: projectId => {

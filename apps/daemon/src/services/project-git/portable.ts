@@ -279,9 +279,11 @@ function inertPluginContent(value: unknown): Uint8Array | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const plugin = value as Record<string, unknown>;
   const context = plugin.resolvedContext as { promptFragments?: unknown } | undefined;
-  if (!context?.promptFragments || typeof context.promptFragments !== 'object') return null;
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
+  const promptFragments = context.promptFragments ?? {};
+  if (typeof promptFragments !== 'object' || Array.isArray(promptFragments)) return null;
   const fragments: Record<string, JsonValue> = {};
-  for (const [key, fragment] of Object.entries(context.promptFragments)) {
+  for (const [key, fragment] of Object.entries(promptFragments)) {
     if (typeof fragment !== 'string') throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Invalid frozen plugin content');
     fragments[key] = fragment;
   }

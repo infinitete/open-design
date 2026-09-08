@@ -59,7 +59,7 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
       current = await client.state(projectId);
       setState(current);
     }
-    const result = await execute(url.trim() ? { kind: 'binding_preview', url: url.trim(), branch: branch.trim() } : { kind: 'enable_preview' }, current.projectRevision);
+    const result = await execute(current.enabled && url.trim() ? { kind: 'binding_preview', url: url.trim(), branch: branch.trim() } : { kind: 'enable_preview' }, current.projectRevision);
     const next = result.result?.preview;
     if (!next) throw new Error('Missing preview');
     if (next.expiresAt <= Date.now()) { setError(t('projectGit.stalePreview')); return; }
@@ -93,10 +93,11 @@ export function ProjectGitSettings({ projectId, client, onClose }: ProjectGitSet
       <header className={styles.header}><h2 id="project-git-settings-title">{t('projectGit.settings')}</h2><button type="button" onClick={onClose} aria-label={t('common.close')}>×</button></header>
       <p>{t('projectGit.daemonAuthNotice')}</p><p>{t('projectGit.externalEditorNotice')}</p>
       <ProjectGitDependencies dependencies={state?.dependencies ?? []} />
+      {state && !state.enabled ? <p>{t('projectGit.phase.enable_pending')}</p> : null}
       {state?.binding.remoteConfigured ? <p>{t('projectGit.rebindNotice')}</p> : null}
       <label>{t('projectGit.url')}<input disabled={pending} value={url} onChange={event => { setUrl(event.target.value); setPreview(null); }} /></label>
       <label>{t('projectGit.branch')}<input disabled={pending} value={branch} onChange={event => { setBranch(event.target.value); setPreview(null); }} /></label>
-      <button type="button" disabled={pending || (Boolean(url.trim()) && !branch.trim())} onClick={() => void requestPreview()}>{t(url.trim() ? 'projectGit.testConnection' : 'projectGit.preview')}</button>
+      <button type="button" disabled={pending || (Boolean(state?.enabled && url.trim()) && !branch.trim())} onClick={() => void requestPreview()}>{t(state?.enabled && url.trim() ? 'projectGit.testConnection' : 'projectGit.preview')}</button>
       {state?.binding.remoteConfigured ? <button type="button" disabled={pending} onClick={() => { setDisconnect(true); setPreview(null); }}>{t('projectGit.unbind')}</button> : null}
       {preview ? <div className={styles.preview}>
         <p>{t('projectGit.fileOnlyWarning')}</p>

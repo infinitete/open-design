@@ -252,6 +252,7 @@ export interface ProjectGitStore {
   mapId(repositoryProjectId: string, cloneId: string, kind: ProjectGitIdKind, portableId: string): string;
   attachId(repositoryProjectId: string, cloneId: string, kind: ProjectGitIdKind, portableId: string, localId: string): string;
   getPortableId(repositoryProjectId: string, cloneId: string, kind: ProjectGitIdKind, localId: string): string | null;
+  getProjectIdentity(projectId: string): { repositoryProjectId: string; cloneId: string } | null;
   enqueueOperation(input: ProjectGitOperationInput): ProjectGitOperation;
   enqueueCheckpoint(input: ProjectGitCheckpointInput): ProjectGitJournalRecord;
   getOperation(id: string): ProjectGitOperation | null;
@@ -863,6 +864,11 @@ export function createProjectGitStore(db: Database.Database): ProjectGitStore {
     assertDatabase: database => { if (database !== db) throw recoveryRequired(); },
     mapId: (repository, clone, kind, portable) => attachId(repository, clone, kind, portable),
     attachId,
+    getProjectIdentity: projectId => {
+      const row = db.prepare("SELECT repository_project_id, clone_id FROM project_git_id_map WHERE kind = 'project' AND local_id = ?")
+        .get(projectId) as { repository_project_id: string; clone_id: string } | undefined;
+      return row ? { repositoryProjectId: row.repository_project_id, cloneId: row.clone_id } : null;
+    },
     getPortableId: (repository, clone, kind, local) => (db.prepare('SELECT portable_id FROM project_git_id_map WHERE repository_project_id = ? AND clone_id = ? AND kind = ? AND local_id = ?')
       .get(repository, clone, kind, local) as { portable_id: string } | undefined)?.portable_id ?? null,
     getOpenRemote: id => {

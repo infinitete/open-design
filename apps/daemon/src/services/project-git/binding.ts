@@ -187,8 +187,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
       const file = await safeFile(project.root, path); if (!file.bytes) throw stateChanged(); reservedEntries.set(path, file.bytes);
     }
     const diskSnapshot = reserved.length ? parsePortableEntries(reservedEntries) : null;
-    const repositoryProjectId = identity?.repositoryProjectId ?? store.getBinding(id)?.repositoryProjectId ?? diskSnapshot?.manifest.repositoryProjectId ?? input.newId();
-    const cloneId = identity?.cloneId ?? store.getBinding(id)?.cloneId ?? input.newId();
+    const retainedIdentity = store.getProjectIdentity(id);
+    const repositoryProjectId = identity?.repositoryProjectId ?? store.getBinding(id)?.repositoryProjectId ?? diskSnapshot?.manifest.repositoryProjectId ?? retainedIdentity?.repositoryProjectId ?? input.newId();
+    const cloneId = identity?.cloneId ?? store.getBinding(id)?.cloneId ?? retainedIdentity?.cloneId ?? input.newId();
     const exported = await exportPortableProject({ db, store, projectId: id, repositoryProjectId, cloneId, root: project.root, nativeLegacyRoot,
       ...(project.readOwnedResource ? { readOwnedResource: project.readOwnedResource } : {}) });
     const sourceDigests: Record<string, string> = {}; const sourceModes: Record<string, string> = {};

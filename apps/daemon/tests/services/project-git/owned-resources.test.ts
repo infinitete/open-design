@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { closeDatabase, insertProject, openDatabase } from '../../../src/db.js';
+import { closeDatabase, insertConversation, insertProject, openDatabase, upsertMessage } from '../../../src/db.js';
 import { createSnapshot } from '../../../src/plugins/snapshots.js';
 import { createProjectGitStore, type ProjectGitRecoveryData } from '../../../src/storage/project-git.js';
 import { canonicalJson, exportPortableProject, parsePortableEntries, portableImportMarker, serializePortableMetadata } from '../../../src/services/project-git/portable.js';
@@ -64,6 +64,55 @@ it('freezes every declared asset as inert bytes, including mixed prompt-fragment
   ]);
   expect(resource.digest).toBe(createHash('sha256').update(blob).digest('hex'));
   for (const forbidden of ['PRIVATE_INPUT', 'PRIVATE_GRANT', 'PRIVATE_EXECUTION', 'resolvedSource', f.pluginRoot, 'capabilities', 'pipeline']) expect(blob.toString()).not.toContain(forbidden);
+});
+
+it('captures the bound user design system with assets and excludes registry-private files', async () => {
+  const f = await fixture();
+  const designs = join(f.root, 'design-systems'); const brand = join(designs, 'brand');
+  await mkdir(join(brand, 'assets'), { recursive: true });
+  await writeFile(join(brand, 'DESIGN.md'), '# Brand');
+  await writeFile(join(brand, 'tokens.css'), ':root { --brand: red; }');
+  await writeFile(join(brand, 'assets', 'logo.bin'), f.assetBytes);
+  await writeFile(join(brand, 'metadata.json'), 'PRIVATE_REGISTRY');
+  await writeFile(join(brand, '.env'), 'PRIVATE_CREDENTIAL');
+  f.db.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?').run('user:brand', 'project');
+  const reader = createProjectGitOwnedResourceReader({ db: f.db, designSystemRoots: { builtIn: designs, user: designs } });
+  const bytes = await reader('project', 'design-system:project:user:brand');
+  expect(bytes).not.toBeNull();
+  const content = JSON.parse(Buffer.from(bytes!).toString());
+  expect(content.assets.map((asset: { path: string }) => asset.path)).toEqual(['DESIGN.md', 'assets/logo.bin', 'tokens.css']);
+  expect(content.assets[1].content).toBe(f.assetBytes.toString('base64'));
+  expect(Buffer.from(bytes!).toString()).not.toContain('PRIVATE_');
+  expect(await reader('other', 'design-system:project:user:brand')).toBeNull();
+  expect(await reader('project', 'design-system:project:user:other')).toBeNull();
+  await symlink(join(brand, 'DESIGN.md'), join(brand, 'linked.md'));
+  expect(await reader('project', 'design-system:project:user:brand')).toBeNull();
+});
+
+it('reads a skill referenced by project history without granting other projects access', async () => {
+  const f = await fixture(); const skills = join(f.root, 'skills');
+  await mkdir(join(skills, 'polish'), { recursive: true });
+  await writeFile(join(skills, 'polish', 'SKILL.md'), 'Polish the design');
+  insertConversation(f.db, { id: 'c', projectId: 'project', title: 'History', createdAt: 1, updatedAt: 1 });
+  upsertMessage(f.db, 'c', { id: 'm', role: 'assistant', content: 'Done', position: 0, createdAt: 1,
+    runContext: { skillIds: ['polish'] } });
+  const reader = createProjectGitOwnedResourceReader({ db: f.db, skillRoots: { builtIn: skills, user: skills } });
+  const bytes = await reader('project', 'skill:project:polish');
+  expect(bytes).not.toBeNull();
+  expect(JSON.parse(Buffer.from(bytes!).toString()).assets[0].path).toBe('SKILL.md');
+  expect(await reader('other', 'skill:other:polish')).toBeNull();
+  expect(await reader('project', 'skill:project:../polish')).toBeNull();
+});
+
+it('exports a default scenario snapshot with no prompt fragments or assets', async () => {
+  const f = await fixture();
+  f.db.prepare('UPDATE applied_plugin_snapshots SET resolved_context_json = ?, assets_staged_json = ? WHERE id = ?')
+    .run(JSON.stringify({ items: [] }), '[]', f.snapshot.snapshotId);
+  const result = await f.exportProject();
+  const resource = result.snapshot.manifest.resources[0]!;
+  const content = JSON.parse(Buffer.from(result.entries.get(resource.locations[0]!.path)!).toString());
+  expect(content.promptFragments).toEqual({});
+  expect(content.pluginId).toBe('example');
 });
 
 it('uses native project and snapshot ownership instead of parsing opaque reference IDs', async () => {

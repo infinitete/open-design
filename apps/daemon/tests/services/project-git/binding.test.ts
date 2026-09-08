@@ -68,6 +68,22 @@ async function serviceFixture(transport: 'writable' | 'readonly' | 'denied' = 'w
     configuration: { data, operationRoot, preparationRoot, ownedProjectsRoot, ownership, gitEnv } };
 }
 
+it('can retry local setup after a missing resource has left identity mappings', async () => {
+  const { db, store, service, registry, existing } = await serviceFixture(); await existing();
+  db.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?').run('user:brand', 'existing');
+  await expect(service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'missing' }))
+    .rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING' });
+  const identities = db.prepare('SELECT * FROM project_git_id_map').all();
+  registry.set('existing', { ...registry.get('existing')!, readOwnedResource: async () => Buffer.from('Brand content') });
+  const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'retry' });
+  expect(preview.status).toBe('succeeded');
+  const refreshed = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'refresh' });
+  expect(refreshed.status).toBe('succeeded');
+  expect(db.prepare('SELECT * FROM project_git_id_map').all()).toEqual(identities);
+  expect((await service.enable('existing', refreshed.id, { actorId: 'local', idempotencyKey: 'enable' })).status).toBe('succeeded');
+  expect(store.getBinding('existing')).not.toBeNull();
+});
+
 it('previews without initializing the user root, then enables the same captured DB and files without a baseline advance', async () => {
   const { f, db, store, service, existing } = await serviceFixture(); const root = await existing();
   const preview = await service.previewEnable('existing', { actorId: 'local', idempotencyKey: 'preview' });

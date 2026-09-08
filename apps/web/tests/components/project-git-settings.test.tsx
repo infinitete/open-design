@@ -89,6 +89,33 @@ describe('ProjectGitStatus', () => {
 });
 
 describe('ProjectGitSettings', () => {
+  it('previews and confirms local setup before testing a remote for a legacy project', async () => {
+    const execute = vi.fn().mockResolvedValueOnce(operation({ result: { preview } }))
+      .mockResolvedValueOnce(operation({ kind: 'enable', phase: 'local_saved' }))
+      .mockResolvedValueOnce(operation({ kind: 'binding_preview', result: { preview: { ...preview, kind: 'bind' } } }));
+    const api = client(execute);
+    vi.mocked(api.state).mockResolvedValue({ ...baseState, enabled: false, autoSync: false, phase: 'enable_pending' });
+    render(<I18nProvider initial="en"><ProjectGitSettings projectId="project-1" client={api} onClose={vi.fn()} /></I18nProvider>);
+    await waitFor(() => expect(api.state).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'git@git.kuaikan.art:one2one/admin-web-design.git' } });
+    fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'master' } });
+    expect(screen.getByText('Versioning needs setup')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    const confirm = await screen.findByRole('button', { name: 'Confirm' });
+    expect(execute.mock.calls[0]?.[1]).toEqual({ kind: 'enable_preview' });
+    expect(execute).toHaveBeenCalledTimes(1);
+    vi.mocked(api.state).mockResolvedValue({ ...baseState, projectRevision: 1 });
+    fireEvent.click(confirm);
+    const connect = await screen.findByRole('button', { name: 'Test connection' });
+    expect(execute.mock.calls[1]?.[1]).toEqual({ kind: 'enable', previewId: 'preview-1' });
+    expect(screen.getByLabelText('Repository URL')).toHaveValue('git@git.kuaikan.art:one2one/admin-web-design.git');
+    expect(screen.getByLabelText('Branch')).toHaveValue('master');
+    fireEvent.click(connect);
+    await screen.findByRole('button', { name: 'Confirm' });
+    expect(execute.mock.calls[2]?.slice(1, 3)).toEqual([{ kind: 'binding_preview', url: 'git@git.kuaikan.art:one2one/admin-web-design.git', branch: 'master' }, 1]);
+  });
+
   it('can request a preview when randomUUID is unavailable', async () => {
     vi.stubGlobal('crypto', {});
     try {
