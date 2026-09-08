@@ -345,6 +345,33 @@ it('admits identical concurrent opens before allocating exactly one owned root',
   expect(store.listBindings()).toHaveLength(1);
 });
 
+it.each(['empty', 'plain', 'portable'])('opens a %s remote when owned projects are inside another repository', async kind => {
+  const { f, db, service, configuration, store } = await serviceFixture();
+  await f.git(configuration.data, 'init', '--initial-branch=main');
+  await writeFile(join(configuration.data, 'parent.txt'), 'parent content');
+  await f.git(configuration.data, 'add', 'parent.txt'); await f.git(configuration.data, 'commit', '-m', 'parent');
+  const parentHead = await f.git(configuration.data, 'rev-parse', 'HEAD');
+  const parentIndex = await fs.readFile(join(configuration.data, '.git', 'index'));
+  const parentConfig = await fs.readFile(join(configuration.data, '.git', 'config'));
+  if (kind !== 'empty') {
+    if (kind === 'portable') await writeFixtureEntries(f.a, serializePortableMetadata(portableSnapshot('Imported')));
+    await writeFile(join(f.a, 'index.html'), 'remote source');
+    await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'remote'); await f.git(f.a, 'push', 'origin', 'HEAD:main');
+  }
+  const request = { actorId: 'local', idempotencyKey: 'nested-open', url: 'ssh://git@example.invalid/repo', branch: 'main' };
+  const results = await Promise.all([service.openRepository(request), service.openRepository(request)]);
+  expect(results[0]).toMatchObject({ kind: 'open', status: 'succeeded' });
+  expect(results[1]).toEqual(results[0]);
+  const binding = store.getBinding(results[0]!.result!.projectId!)!;
+  expect(await f.git(binding.canonicalRoot, 'rev-parse', '--show-toplevel')).toBe(binding.canonicalRoot);
+  if (kind !== 'empty') expect(await fs.readFile(join(binding.canonicalRoot, 'index.html'), 'utf8')).toBe('remote source');
+  expect(listProjects(db)).toHaveLength(1);
+  expect(await service.openRepository(request)).toEqual(results[0]);
+  expect(await f.git(configuration.data, 'rev-parse', 'HEAD')).toBe(parentHead);
+  expect(await fs.readFile(join(configuration.data, '.git', 'index'))).toEqual(parentIndex);
+  expect(await fs.readFile(join(configuration.data, '.git', 'config'))).toEqual(parentConfig);
+});
+
 it.each(['plain', 'empty'])('freezes the %s open identity and candidate across pre-registration retries', async mode => {
   const { f, service, store } = await serviceFixture();
   if (mode === 'plain') { await writeFile(join(f.a, 'index.html'), 'plain'); await f.git(f.a, 'add', '.'); await f.git(f.a, 'commit', '-m', 'plain'); await f.git(f.a, 'push', 'origin', 'HEAD:main'); }

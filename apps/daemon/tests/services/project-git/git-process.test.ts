@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createGitFixture } from '../../helpers/project-git.js';
-import { assertGitIdentity, initializeRepository, mergeGitText, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
+import { assertGitIdentity, initializeOwnedRepository, initializeRepository, mergeGitText, runGit, runGitTransport } from '../../../src/services/project-git/git-process.js';
 import { discoverObjectStore, discoverRepository, redactGitText, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from '../../../src/services/project-git/repository.js';
 
 const fixtures: Awaited<ReturnType<typeof createGitFixture>>[] = [];
@@ -348,6 +348,17 @@ describe('controlled project Git', () => {
     expect(await readFile(join(repo, 'existing.txt'), 'utf8')).toBe('preserved\n');
     await expect(runGit({ cwd: repo, args: ['init', `--template=${template}`] })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     await expect(runGit({ cwd: repo, args: ['init', `--separate-git-dir=${join(f.root, 'elsewhere')}`] })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it.each(['outside', 'replaced', 'nonempty'])('refuses an %s reserved root without initializing or overwriting it', async kind => {
+    const f = await fixture(); const root = join(f.root, 'reserved'); await mkdir(root);
+    const info = await lstat(root); const receipt = { dev: String(info.dev), ino: String(info.ino) };
+    if (kind === 'replaced') { await rename(root, join(f.root, 'original')); await mkdir(root); }
+    if (kind === 'nonempty') await writeFile(join(root, 'user.txt'), 'preserved');
+    await expect(initializeOwnedRepository({ root, ownedProjectsRoot: kind === 'outside' ? f.a : f.root,
+      receipt, initialBranch: 'main', objectFormat: 'sha1' })).rejects.toMatchObject({ code: 'PROJECT_STATE_CHANGED' });
+    expect(existsSync(join(root, '.git'))).toBe(false);
+    if (kind === 'nonempty') expect(await readFile(join(root, 'user.txt'), 'utf8')).toBe('preserved');
   });
 
   it('preserves existing and unrecognized Git targets and refuses parent repositories during initialization', async () => {

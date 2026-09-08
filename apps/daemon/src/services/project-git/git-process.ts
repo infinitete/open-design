@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { GitDomainError } from './errors.js';
 import { discoverObjectStore, redactGitText, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
@@ -316,6 +316,22 @@ export async function createPreparationRepository(input: Omit<GitInitializationI
   const root = await mkdtemp(join(await realpath(input.preparationRoot), 'git-preparation-'));
   await initializeEmptyRepository({ ...input, root });
   return root;
+}
+
+/** Only the empty directory allocated and receipted by an open operation may use this lane. */
+export async function initializeOwnedRepository(input: GitInitializationInput & {
+  ownedProjectsRoot: string;
+  receipt: { dev: string; ino: string };
+}): Promise<void> {
+  if (!isAbsolute(input.root) || !isAbsolute(input.ownedProjectsRoot) || !['sha1', 'sha256'].includes(input.objectFormat)) invalid('Owned initialization requires absolute roots and a supported object format.');
+  const root = await realpath(input.root); const info = await lstat(input.root);
+  if (root !== input.root || !info.isDirectory() || info.isSymbolicLink()
+    || dirname(root) !== await realpath(input.ownedProjectsRoot)
+    || String(info.dev) !== input.receipt.dev || String(info.ino) !== input.receipt.ino
+    || (await readdir(root)).length !== 0) {
+    throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'The reserved project directory changed.');
+  }
+  await initializeEmptyRepository({ ...input, root });
 }
 
 async function initializeEmptyRepository(input: GitInitializationInput): Promise<void> {

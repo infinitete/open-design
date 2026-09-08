@@ -6,7 +6,7 @@ import { GitDomainError } from './errors.js';
 import { lstat, mkdir, mkdtemp, open, readdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { getSystemErrorMap, isDeepStrictEqual } from 'node:util';
-import { assertGitIdentity, createPreparationRepository, runGit, runGitTransport } from './git-process.js';
+import { assertGitIdentity, createPreparationRepository, initializeOwnedRepository, runGit, runGitTransport } from './git-process.js';
 import { discoverObjectStore, discoverRepository, resolveCommit, validateBranch, validateRemote, validateTreeEntries } from './repository.js';
 import { computeCheckpointContentDigest, isPrivateProjectGitPath, prepareCheckpoint, publishCheckpoint } from './checkpoint.js';
 import { durableDirectory, durableWrite, finishRecovery, gitTree, readBytes, recoveryBarrier, safeFile, sha256, within } from './recovery.js';
@@ -15,7 +15,7 @@ import { getProject } from '../../db.js';
 import type { ProjectGitBindingRecord, ProjectGitJournalRecord, ProjectGitRegistrationIntent, ProjectGitStore } from '../../storage/project-git.js';
 import type { ProjectGitScheduler } from './scheduler.js';
 import type { ProjectGitSyncProject } from './sync.js';
-import { getProjectGate, getUnmanagedProjectGate, initializeProjectRepository, resumeInitializedProjectGate, type ProjectGate } from './gate.js';
+import { getProjectGate, initializeProjectRepository, resumeInitializedProjectGate, type ProjectGate } from './gate.js';
 import type { RepositoryLeaseInput } from './repository-lease.js';
 import { bindingOwnerRef, createProjectGitRegistration } from './registration.js';
 import { materializeProject } from './materialize.js';
@@ -707,9 +707,9 @@ export function createProjectGitBindingService(input: ProjectGitBindingServiceIn
         let gate: ProjectGate;
         try { await lstat(join(root, '.git')); gate = await getProjectGate({ root, ...input.ownership }); }
         catch (error) { if (!absent(error)) throw error;
-          gate = await getUnmanagedProjectGate({ root, ...input.ownership });
-          await initializeProjectRepository({ root, ...input.ownership, initialBranch: branch, objectFormat: remote.objectFormat,
-            ...(input.gitEnv ? { env: input.gitEnv } : {}) }, async () => {});
+          await initializeOwnedRepository({ root, ownedProjectsRoot: input.ownedProjectsRoot, receipt,
+            initialBranch: branch, objectFormat: remote.objectFormat, ...(input.gitEnv ? { env: input.gitEnv } : {}) });
+          gate = await getProjectGate({ root, ...input.ownership });
         }
         const objectStore = await discoverObjectStore(root);
         let tip: string | null = null;
