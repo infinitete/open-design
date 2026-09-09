@@ -1,11 +1,9 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps } from 'react';
-import type { ProjectGitState } from '@open-design/contracts';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../../src/components/ProjectView';
-import { withFreshProjectMutation } from '../../src/providers/project-git';
 
 const chatPaneSpy = vi.hoisted(() => vi.fn());
 const listConversations = vi.hoisted(() => vi.fn());
@@ -128,15 +126,13 @@ vi.mock('../../src/components/ChatPane', async (importOriginal) => {
 describe('ProjectView restored Home draft', () => {
   afterEach(async () => {
     cleanup();
-    await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
     globalThis.fetch = originalFetch;
     window.sessionStorage.clear();
   });
 
-  it('keeps the complete draft in the real composer across restored project epochs and BYOK rejection', async () => {
+  it('keeps the complete draft in the real composer across a BYOK rejection', async () => {
     const projectId = 'project-real-composer-restored-draft';
     const attachment = { path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 };
     const workspaceItem = {
@@ -146,29 +142,8 @@ describe('ProjectView restored Home draft', () => {
       tabId: 'reference-a',
       url: 'https://example.com/reference-a',
     };
-    const initialGitState: ProjectGitState = {
-      enabled: true,
-      phase: 'synced',
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: 'a'.repeat(40),
-      confirmedRemoteHead: 'a'.repeat(40),
-      projectRevision: 1,
-      contentRevision: 1,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    let gitState = initialGitState;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === `/api/projects/${projectId}/git`) {
-        return new Response(JSON.stringify(gitState), { status: 200 });
-      }
       if (url === `/api/projects/${projectId}`) {
         return new Response(JSON.stringify({
           project: { id: projectId, name: 'Project', skillId: null, designSystemId: null },
@@ -234,40 +209,12 @@ describe('ProjectView restored Home draft', () => {
     await waitFor(() => expect(screen.getByText('brief.pdf')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
     await waitFor(() => expect(screen.getByText('chat.runError.title.generic')).toBeTruthy());
-    const generationZeroSignal = chatPaneSpy.mock.calls
+    const restoredSignal = chatPaneSpy.mock.calls
       .map(([props]) => props.composerDraftSignal)
-      .find((signal) => signal?.generation === 0);
-    expect(generationZeroSignal).toMatchObject({ source: 'auto-send' });
+      .find((signal) => signal?.source === 'auto-send');
+    expect(restoredSignal).toMatchObject({ source: 'auto-send' });
     expect(onClearPendingPrompt).not.toHaveBeenCalled();
     expect(streamViaDaemon).not.toHaveBeenCalled();
-
-    await withFreshProjectMutation(projectId, () => undefined);
-    gitState = { ...initialGitState, projectRevision: 2, contentRevision: 2, localHead: 'b'.repeat(40) };
-    await expect(withFreshProjectMutation(projectId, () => undefined)).rejects.toThrow(/authority unavailable/i);
-
-    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Keep the complete Home draft'));
-    await waitFor(() => expect(screen.getByText('brief.pdf')).toBeTruthy());
-    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
-    await waitFor(() => expect(screen.getByText('chat.runError.title.generic')).toBeTruthy());
-    const generationOneSignal = chatPaneSpy.mock.calls
-      .map(([props]) => props.composerDraftSignal)
-      .find((signal) => signal?.generation === 1);
-    expect(generationOneSignal).toMatchObject({ source: 'auto-send' });
-    expect(generationOneSignal?.id).not.toBe(generationZeroSignal?.id);
-    expect(onClearPendingPrompt).not.toHaveBeenCalled();
-    expect(streamViaDaemon).not.toHaveBeenCalled();
-
-    gitState = { ...gitState, projectRevision: 3, contentRevision: 3, localHead: 'c'.repeat(40) };
-    await expect(withFreshProjectMutation(projectId, () => undefined)).rejects.toThrow(/authority unavailable/i);
-
-    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Keep the complete Home draft'));
-    await waitFor(() => expect(screen.getByText('brief.pdf')).toBeTruthy());
-    await waitFor(() => expect(screen.getByTestId('staged-contexts')).toHaveTextContent('Reference A'));
-    const generationTwoSignal = chatPaneSpy.mock.calls
-      .map(([props]) => props.composerDraftSignal)
-      .find((signal) => signal?.generation === 2);
-    expect(generationTwoSignal?.id).not.toBe(generationOneSignal?.id);
-    expect(onClearPendingPrompt).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBe('1');
   });
 });

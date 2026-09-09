@@ -56,7 +56,7 @@ import { brandFromMaterial } from './provisional.js';
 import { prefetchBrand, prefetchFromHtml, type PrefetchResult } from './prefetch.js';
 import { BRAND_KIT_FILE, writeBrandKitPreview, type BrandKitStatus } from './kit-render.js';
 import { normalizeBrandKitLocale } from './kit-i18n.js';
-import type { ProjectGitMutationAdapter } from '../services/project-git/mutation-adapter.js';
+import type { ProjectMutationAdapter } from '../services/project-mutation.js';
 import { selfHostGoogleFonts } from './fonts.js';
 import { adoptExistingLogos, ensureLogoFallback, type LogoFallbackFn, type LogoSlot } from './logo-fallback.js';
 import { ensureImageryFallback, type ImageryFallbackFn, type ImagerySlot } from './imagery-fallback.js';
@@ -103,7 +103,7 @@ export interface StartBrandExtractionOptions {
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
   /** Stable project mutation domain supplied by the daemon composition root. */
-  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  coordinateProjectMutation: ProjectMutationAdapter['withProjectMutation'];
   randomId?: () => string;
   /** Override the deterministic logo harvester (tests inject a no-op / stub to
    *  avoid real network calls). Defaults to the live icon-fetching fallback. */
@@ -176,7 +176,7 @@ export interface ContinueBrandExtractionOptions {
   projectsRoot: string;
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
-  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  coordinateProjectMutation: ProjectMutationAdapter['withProjectMutation'];
   expectedProjectRevision?: number;
   userDesignSystemsRoot: string;
   dataDir?: string;
@@ -1643,7 +1643,7 @@ export interface RunProgrammaticExtractionOptions {
   projectsRoot: string;
   skillsRoot: string;
   db: Parameters<typeof insertProject>[0];
-  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  coordinateProjectMutation: ProjectMutationAdapter['withProjectMutation'];
   expectedProjectRevision?: number;
   dataDir?: string;
   description?: string;

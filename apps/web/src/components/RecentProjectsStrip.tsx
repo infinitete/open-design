@@ -115,7 +115,6 @@ interface Props {
   onDelete?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicate?: (id: string) => Promise<void> | void;
   onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
-  projectMutationReady?: (id: string) => boolean;
   onImportFolder?: (baseDir: string) => Promise<void> | void;
   onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
   limit?: number;
@@ -348,7 +347,6 @@ export function RecentProjectsStrip({
   onDelete,
   onDuplicate,
   onRename,
-  projectMutationReady = () => true,
   onImportFolder,
   onImportFolderResponse,
   limit,
@@ -502,25 +500,6 @@ export function RecentProjectsStrip({
   const renamePendingRef = useRef(false);
   const [renamePending, setRenamePending] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
-  const authoritySourceId = useId();
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
-      detail: {
-        source: `recent-projects:${authoritySourceId}`,
-        projectIds: [...new Set([
-          menuOpenId,
-          renameTarget?.id,
-          confirmTarget?.id,
-          ...bulkDeleteTargetIds,
-        ].filter((id): id is string => Boolean(id)))],
-      },
-    }));
-    return () => {
-      window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
-        detail: { source: `recent-projects:${authoritySourceId}`, projectIds: [] },
-      }));
-    };
-  }, [authoritySourceId, bulkDeleteTargetIds, confirmTarget?.id, menuOpenId, renameTarget?.id]);
   // recvqbh189zBY6: commitDelete used to await onDelete and drop the result on
   // the floor either way — a 403/network failure closed the dialog exactly
   // like a success, leaving the project right where it was with no signal
@@ -1020,7 +999,7 @@ export function RecentProjectsStrip({
 
   function startRename(project: Project) {
     const creator = resolveCreator(project.id);
-    if (!creator.ownedBySelf || !projectMutationReady(project.id)) return;
+    if (!creator.ownedBySelf) return;
     trackCollection('rename', {
       project_key: project.id,
       project_relation: 'self',
@@ -1388,7 +1367,7 @@ export function RecentProjectsStrip({
   async function commitBulkDelete() {
     if (bulkDeletePending || !onDelete) return;
     const ids = [...bulkDeleteTargetIds];
-    if (ids.length === 0 || ids.some((id) => !projectMutationReady(id))) return;
+    if (ids.length === 0) return;
     const startedAt = performance.now();
     setBulkDeletePending(true);
     setBulkDeleteError(null);
@@ -2012,7 +1991,7 @@ export function RecentProjectsStrip({
                         <button
                           type="button"
                           role="menuitem"
-                          disabled={!creator.ownedBySelf || !projectMutationReady(project.id)}
+                          disabled={!creator.ownedBySelf}
                           title={creator.ownedBySelf ? undefined : t('recentProjects.ownOnlyMutation')}
                           onClick={() => startRename(project)}
                         >
@@ -2144,8 +2123,6 @@ export function RecentProjectsStrip({
               className="primary"
               disabled={
                 renamePending
-                ||
-                !projectMutationReady(renameTarget.id)
                 || !renameInput.trim()
                 || renameInput.trim() === renameTarget.original
               }
@@ -2190,7 +2167,7 @@ export function RecentProjectsStrip({
             <button
               type="button"
               className="primary danger"
-              disabled={deletePending || !projectMutationReady(confirmTarget.id)}
+              disabled={deletePending}
               onClick={() => void commitDelete()}
             >
               {t('designs.menuDelete')}
@@ -2297,8 +2274,7 @@ export function RecentProjectsStrip({
               type="button"
               className="primary danger"
               disabled={bulkDeletePending
-                || bulkDeleteTargetIds.length === 0
-                || bulkDeleteTargetIds.some((id) => !projectMutationReady(id))}
+                || bulkDeleteTargetIds.length === 0}
               onClick={() => void commitBulkDelete()}
             >
               {t('designs.deleteSelected')}

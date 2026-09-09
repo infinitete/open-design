@@ -12,8 +12,7 @@ import type {
 } from '../design-systems/index.js';
 import type { DesignTokenContractRebuildPreparation } from '../design-systems/token-contract-rebuild.js';
 import { workspaceTeamDesignSystemBindingResourceId } from '../design-systems/workspace-team-binding.js';
-import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 import { sendApiError } from '../http/api-errors.js';
 
 // Collab team-resource-materialization removed - stub
@@ -104,7 +103,6 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
         exactTeam?: boolean;
         projectMutation?: {
           source: string;
-          expectedProjectRevision?: number;
         };
       },
     ) => Promise<DesignSystemWorkspaceProject | null>;
@@ -819,10 +817,6 @@ export function registerDesignSystemRoutes(
       const workspaceId = headerValue(req, 'x-od-workspace-id') ?? null;
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id') ?? null;
       const storage = resolveDesignSystemStorage(req, req.params.id);
-      const expectedProjectRevision = expectedProjectRevisionFromTransport({
-        body: req.body?.expectedProjectRevision,
-        header: req.get('X-OD-Project-Revision'),
-      });
       const workspace = await ensureUserDesignSystemWorkspaceProject(
         db,
         req.params.id,
@@ -832,7 +826,6 @@ export function registerDesignSystemRoutes(
             : {}),
           projectMutation: {
             source: 'design-system-workspace-route',
-            ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
           },
         },
       );
@@ -841,7 +834,7 @@ export function registerDesignSystemRoutes(
       }
       res.status(201).json(workspace);
     } catch (err) {
-      if (err instanceof GitDomainError) {
+      if (err instanceof ProjectDomainError) {
         return sendApiError(res, err.status, err.code, err.message);
       }
       res.status(400).json({ error: String(err) });

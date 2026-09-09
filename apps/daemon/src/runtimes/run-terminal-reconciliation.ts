@@ -29,7 +29,7 @@ import {
   type RunTelemetryDeliveryResult,
   type RunTelemetryDeliveryStateV1,
 } from '../observability/delivery-state.js';
-import type { RecoveredProjectTerminals } from '../services/project-git/runtime-adapter.js';
+import type { RecoveredProjectTerminals } from '../services/project-mutation.js';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
 const RECONCILED_STATUS_MESSAGE = 'Run terminal state reconciled after daemon restart.';
@@ -45,8 +45,6 @@ interface DurableRunState extends RestartRecoverableDurableRunState {
   schemaVersion: 1;
   id: string;
   projectId: string | null;
-  expectedProjectRevision?: number;
-  projectGitBindingGeneration?: number;
   manualResumeAttemptCount?: number;
   pendingManualResumeAttemptCount?: number;
   conversationId: string | null;
@@ -112,10 +110,6 @@ interface ReconciliationOptions {
     group: RecoveredProjectTerminals,
     repair: () => Promise<void>,
   ) => Promise<void>;
-  currentProjectEpoch?: (projectId: string) => {
-    bindingGeneration: number;
-    projectRevision: number;
-  } | null;
   onLocalReady?: (result: RunTerminalReconciliationResult) => void;
 }
 
@@ -321,7 +315,7 @@ async function reconcileProjectTerminalLocals(
   now: number,
 ): Promise<void> {
   const reconcile = options.reconcileTerminalsWithLocalRepair;
-  if (!reconcile || !options.currentProjectEpoch) {
+  if (!reconcile) {
     const statesByRunId = new Map(states.map(entry => [entry.state.id, entry.state]));
     result.messagesReconciled = reconcileMessages(options.db, statesByRunId, now);
     for (const { state } of states) {
@@ -353,10 +347,6 @@ async function reconcileProjectTerminalLocals(
   for (const entry of states.filter(({ state }) => TERMINAL_STATUSES.has(state.status))) {
     const { filePath, state } = entry;
     if (!state.projectId) continue;
-    const bindingGeneration = Number.isSafeInteger(state.projectGitBindingGeneration)
-      ? state.projectGitBindingGeneration! : 0;
-    const projectRevision = Number.isSafeInteger(state.expectedProjectRevision)
-      ? state.expectedProjectRevision! : 0;
     const completedExecutionAttempt = Number.isSafeInteger(state.manualResumeAttemptCount)
       && state.manualResumeAttemptCount! >= 0
       ? state.manualResumeAttemptCount! : 0;
@@ -385,9 +375,9 @@ async function reconcileProjectTerminalLocals(
     const executionAttempt = pendingClaimActive
       ? pendingExecutionAttempt!
       : completedExecutionAttempt;
-    const key = JSON.stringify([state.projectId, bindingGeneration, projectRevision]);
+    const key = JSON.stringify([state.projectId]);
     const current = groups.get(key) ?? {
-      group: { projectId: state.projectId, bindingGeneration, projectRevision, terminals: [] },
+      group: { projectId: state.projectId, terminals: [] },
       states: [],
     };
     current.states.push({
@@ -437,12 +427,9 @@ async function reconcileProjectTerminalLocals(
   }>();
   for (const row of activeMessageRows(options.db)) {
     if (!row.projectId || (row.runId && durableRunIds.has(row.runId))) continue;
-    const epoch = options.currentProjectEpoch(row.projectId);
-    const bindingGeneration = epoch?.bindingGeneration ?? 0;
-    const projectRevision = epoch?.projectRevision ?? 0;
-    const key = JSON.stringify([row.projectId, bindingGeneration, projectRevision]);
+    const key = JSON.stringify([row.projectId]);
     const current = orphanGroups.get(key) ?? {
-      group: { projectId: row.projectId, bindingGeneration, projectRevision, terminals: [] },
+      group: { projectId: row.projectId, terminals: [] },
       rows: [],
     };
     const runId = row.runId || `orphan-message:${row.id}`;

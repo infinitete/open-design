@@ -3,9 +3,7 @@ import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems/index.js';
 import type { RoutineRoutesService } from './routes/routine.js';
 import type { OpenDesignPublicMetadataService } from './services/open-design-public-metadata.js';
-import type { ProjectGitCoordination } from './services/project-git/mutation-adapter.js';
-import type { ProjectGitService } from './services/project-git/service.js';
-import type { ProjectGitStore } from './storage/project-git.js';
+import type { ProjectMutationCoordination } from './services/project-mutation.js';
 type ResourceHubPrincipal = Record<string, never>;
 type AuthorizeProjectRequest = (...args: any[]) => any;
 type AuthorizeProjectToolRequest = (...args: any[]) => any;
@@ -159,10 +157,7 @@ export interface TelemetryDeps {
 
 export interface ServerContext {
   db: any;
-  projectGitStore: ProjectGitStore;
-  projectGit: ProjectGitService;
-  resolveProjectGitActor(req: any): string;
-  projectGitCoordination: ProjectGitCoordination;
+  projectGitCoordination: ProjectMutationCoordination;
   internalRuns: any;
   design: any;
   http: HttpDeps;

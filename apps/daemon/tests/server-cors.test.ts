@@ -12,7 +12,7 @@ function makeTestApp() {
     if (req.headers.origin === 'null') {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, X-OD-Project-Revision');
+      res.header('Access-Control-Allow-Headers', 'Content-Type');
     }
     res.sendStatus(204);
   });
@@ -81,7 +81,6 @@ describe('raw file endpoint CORS', () => {
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
     expect(res.headers.get('access-control-allow-methods')).toBe('GET');
-    expect(res.headers.get('access-control-allow-headers')).toContain('X-OD-Project-Revision');
   });
 
   it('rejects OPTIONS preflight from a real cross-origin site', async () => {
@@ -117,7 +116,6 @@ describe('local daemon mutation revision CORS', () => {
 
     expect(nextCalled).toBe(true);
     expect(headers.get('access-control-allow-methods')).toContain('PATCH');
-    expect(headers.get('access-control-allow-headers')).toContain('X-OD-Project-Revision');
     expect(headers.get('access-control-allow-headers')).toContain('Idempotency-Key');
   });
 });

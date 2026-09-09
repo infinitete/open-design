@@ -1,4 +1,4 @@
-import type { ProjectGitMutationAdapter, ProjectMutationInput } from '../services/project-git/mutation-adapter.js';
+import type { ProjectMutationAdapter, ProjectMutationInput } from '../services/project-mutation.js';
 import {
   probeStaleLiveArtifactRefreshesForProject,
   recoverStaleLiveArtifactRefreshesForProject,
@@ -10,15 +10,13 @@ import {
 export interface StartupLiveArtifactProject {
   id: string;
   projectMetadata?: unknown;
-  expectedProjectRevision?: number | undefined;
 }
 
-type StartupRecoveryCoordination = Pick<ProjectGitMutationAdapter, 'withProjectRead' | 'withProjectMutation'>;
+type StartupRecoveryCoordination = Pick<ProjectMutationAdapter, 'withProjectRead' | 'withProjectMutation'>;
 
 export interface RecoverLiveArtifactsAtStartupOptions {
   projectsRoot: string;
   projects: readonly StartupLiveArtifactProject[];
-  recoveryReady: Promise<void>;
   coordination: StartupRecoveryCoordination;
   probe?: (location: LiveArtifactProjectLocation) => Promise<LiveArtifactRefreshRecoveryCandidate[]>;
   recover?: (location: LiveArtifactProjectLocation) => Promise<LiveArtifactRefreshRecoveryResult[]>;
@@ -27,10 +25,8 @@ export interface RecoverLiveArtifactsAtStartupOptions {
 
 /**
  * Coordinates daemon-startup repair without scanning arbitrary filesystem roots.
- * Task 13 supplies the real recoveryReady and shared coordination runtime.
  */
 export async function recoverLiveArtifactsAtStartup(options: RecoverLiveArtifactsAtStartupOptions): Promise<void> {
-  await options.recoveryReady;
   const probe = options.probe ?? probeStaleLiveArtifactRefreshesForProject;
   const recover = options.recover ?? recoverStaleLiveArtifactRefreshesForProject;
   for (const project of options.projects) {
@@ -45,7 +41,6 @@ export async function recoverLiveArtifactsAtStartup(options: RecoverLiveArtifact
       const mutation: ProjectMutationInput = {
         projectId: project.id,
         source: 'live-artifact.startup-recovery',
-        ...(project.expectedProjectRevision === undefined ? {} : { expectedProjectRevision: project.expectedProjectRevision }),
       };
       await options.coordination.withProjectMutation(mutation, async () => {
         if ((await probe(location)).length === 0) return [];

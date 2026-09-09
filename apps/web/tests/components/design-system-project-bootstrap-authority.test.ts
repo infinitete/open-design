@@ -22,30 +22,22 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-describe('design-system post-create project bootstrap authority', () => {
-  it('loads fresh authority and patches the generated prompt with the exact revision', async () => {
+describe('design-system post-create project bootstrap', () => {
+  it('refetches the generated project and patches the generated prompt onto it', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push({ url, init });
-      if (url === '/api/projects/design-system-new/git') {
-        return new Response(JSON.stringify({
-          enabled: true,
-          phase: 'synced',
-          localHead: 'c'.repeat(40),
-          observedRemoteHead: 'c'.repeat(40),
-          confirmedRemoteHead: 'c'.repeat(40),
-          projectRevision: 53,
-          contentRevision: 53,
-          bindingGeneration: 3,
-          dirty: false,
-          pendingPush: false,
-          autoSync: true,
-          operationId: null,
-          error: null,
-          binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-          dependencies: [],
-        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/projects/design-system-new' && !init?.method) {
+        return new Response(JSON.stringify({ project: {
+          id: 'design-system-new',
+          name: 'Design system project',
+          skillId: null,
+          designSystemId: 'user:design-system',
+          createdAt: 1,
+          updatedAt: 1,
+          status: { value: 'not_started' },
+        } }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (url === '/api/projects/design-system-new' && init?.method === 'PATCH') {
         return new Response(JSON.stringify({ project: {
@@ -97,10 +89,19 @@ describe('design-system post-create project bootstrap authority', () => {
     });
 
     expect(registryMocks.writeProjectTextFile).toHaveBeenCalledOnce();
-    const patch = requests.find((request) => (
+    const freshRead = requests.findIndex((request) => (
+      request.url === '/api/projects/design-system-new' && !request.init?.method
+    ));
+    const patchIndex = requests.findIndex((request) => (
       request.url === '/api/projects/design-system-new' && request.init?.method === 'PATCH'
     ));
-    expect(patch?.init?.headers).toMatchObject({ 'X-OD-Project-Revision': '53' });
+    expect(freshRead).toBeGreaterThanOrEqual(0);
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    // The prompt patch must land on a freshly-read project row, never a stale one.
+    expect(freshRead).toBeLessThan(patchIndex);
+    expect(JSON.parse(String(requests[patchIndex]?.init?.body))).toMatchObject({
+      pendingPrompt: expect.any(String),
+    });
     expect(onProjectPrepared).toHaveBeenCalledOnce();
   });
 });

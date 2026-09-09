@@ -39,8 +39,7 @@ import { googleStreamGenerateContentUrl } from '../integrations/google-models.js
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
 import { authorizeReasoningEgress, sendReasoningEgressDenial } from '../reasoning-egress.js';
 import { InvalidAppConfigValueError } from '../app-config.js';
-import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 import {
   agentNetworkPolicyForAgent,
   resolveAgentNetworkTestPolicy,
@@ -1651,22 +1650,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       projectId,
       project.metadata,
     );
-    let mutationSession;
-    try {
-      const expectedProjectRevision = expectedProjectRevisionFromTransport({
-        body: proxyBody.expectedProjectRevision,
-        header: req.get('X-OD-Project-Revision'),
-      });
-      mutationSession = await ctx.projectGitCoordination.runtime.admitSession(
-        projectId,
-        expectedProjectRevision,
-      );
-    } catch (error) {
-      if (error instanceof GitDomainError) {
-        return sendApiError(res, error.status, error.code, error.message);
-      }
-      throw error;
-    }
+    const mutationSession = await ctx.projectGitCoordination.runtime.admitSession(projectId);
 
     try {
 
@@ -1895,18 +1879,14 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       if (fnName === 'generate_image') {
         const result = await ctx.projectGitCoordination.withProjectMutation({
           projectId,
-          expectedProjectRevision: mutationSession.expectedProjectRevision,
           source: 'byok-generate-image',
-          ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
         }, () => opts.runImage(args, toolCtx));
         return { ...result, kind: 'image' };
       }
       if (fnName === 'generate_speech') {
         const result = await ctx.projectGitCoordination.withProjectMutation({
           projectId,
-          expectedProjectRevision: mutationSession.expectedProjectRevision,
           source: 'byok-generate-speech',
-          ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
         }, () => opts.runSpeech(args, toolCtx));
         return { ...result, kind: 'speech' };
       }
@@ -1918,9 +1898,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       }
       const result = await ctx.projectGitCoordination.withProjectMutation({
         projectId,
-        expectedProjectRevision: mutationSession.expectedProjectRevision,
         source: 'byok-generate-video',
-        ...(mutationSession.permit ? { permit: mutationSession.permit } : {}),
       }, () => opts.runVideo!(args, toolCtx));
       return { ...result, kind: 'video' };
     };

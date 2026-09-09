@@ -13,47 +13,11 @@ vi.mock('../../src/i18n', () => ({
 afterEach(() => cleanup());
 
 describe('ChatPane restored manual draft', () => {
-  it('does not apply or acknowledge a draft from another project generation', async () => {
-    const acknowledged = vi.fn();
-    render(
-      <ChatPane
-        projectKindForTracking="prototype"
-        messages={[]}
-        streaming={false}
-        error={null}
-        projectId="project-restored-draft"
-        {...({ projectGeneration: 8 } as Record<string, unknown>)}
-        projectFiles={[]}
-        onEnsureProject={async () => 'project-restored-draft'}
-        onSend={vi.fn()}
-        onStop={vi.fn()}
-        conversations={[{ id: 'conv-restored', projectId: 'project-restored-draft', title: 'Restored', createdAt: 1, updatedAt: 1 }]}
-        activeConversationId="conv-restored"
-        onSelectConversation={vi.fn()}
-        onDeleteConversation={vi.fn()}
-        projectMetadata={{ kind: 'prototype' }}
-        composerDraftSignal={{
-          id: 'draft-old-generation',
-          projectId: 'project-restored-draft',
-          generation: 7,
-          conversationId: 'conv-restored',
-          text: 'Never restore this old draft',
-        }}
-        onComposerDraftRestored={acknowledged}
-      />,
-    );
-
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(screen.getByRole('combobox')).not.toHaveTextContent('Never restore this old draft');
-    expect(acknowledged).not.toHaveBeenCalled();
-  });
-
   it('acknowledges one scoped payload only after an async arrival is applied', async () => {
     const acknowledged = vi.fn();
     const pane = (draft?: {
       id: string;
       projectId: string;
-      generation: number;
       conversationId: string;
       text: string;
     }) => (
@@ -84,7 +48,6 @@ describe('ChatPane restored manual draft', () => {
     view.rerender(pane({
       id: 'draft-1',
       projectId: 'project-restored-draft',
-      generation: 7,
       conversationId: 'conv-restored',
       text: 'Async scoped draft',
     }));
@@ -97,7 +60,6 @@ describe('ChatPane restored manual draft', () => {
     view.rerender(pane({
       id: 'draft-2',
       projectId: 'project-restored-draft',
-      generation: 7,
       conversationId: 'conv-restored',
       text: 'Async scoped draft',
     }));
@@ -146,7 +108,6 @@ describe('ChatPane restored manual draft', () => {
         composerDraftSignal={{
           id: 'draft-complete',
           projectId: 'project-restored-draft',
-          generation: 1,
           conversationId: 'conv-restored',
           text: 'Keep this restored draft',
           attachments: [{ path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 }],
@@ -207,7 +168,6 @@ describe('ChatPane restored manual draft', () => {
         composerDraftSignal={nonce === null ? undefined : {
           id: `draft-${nonce}`,
           projectId: 'project-restored-draft',
-          generation: 1,
           conversationId,
           text: `Draft ${nonce}`,
           attachments: [],
@@ -297,7 +257,6 @@ describe('ChatPane restored manual draft', () => {
         composerDraftSignal={{
           id: 'draft-rejected',
           projectId: 'project-restored-draft',
-          generation: 1,
           conversationId: 'conv-rejected',
           text: 'Keep rejected draft',
           attachments: [{ path: 'brief.pdf', name: 'brief.pdf', kind: 'file', size: 5 }],

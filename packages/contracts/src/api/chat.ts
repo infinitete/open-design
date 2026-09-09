@@ -30,7 +30,6 @@ import type {
 } from '../analytics/events.js';
 import type { StrategyTaskProjectionV2 } from '../plugins/strategy-v2.js';
 import type { OdNextRolloutDecision } from './strategy-rollout.js';
-import type { ProjectMutationRevision } from './project-git.js';
 
 // The daemon's run-failure taxonomy, re-exported under product-facing names so
 // the run-status/error surface can carry the specific cause the daemon already
@@ -78,7 +77,7 @@ export interface ByokMediaDefaults {
   speechVoice?: string;
 }
 
-export interface ChatRequest extends ProjectMutationRevision {
+export interface ChatRequest {
   agentId: string;
   message: string;
   /**
@@ -357,7 +356,7 @@ export interface ChatRunCreateRequest extends ChatRequest {
  * the daemon mints the pin and seeds the user message when the conversation
  * is bound and owned by `projectId`.
  */
-export interface McpRunCreateRequest extends ProjectMutationRevision {
+export interface McpRunCreateRequest {
   projectId: string;
   /** Optional bound conversation; when set without assistantMessageId the daemon mints a pin. */
   conversationId?: string;
@@ -417,56 +416,6 @@ export interface ChatMessageFeedback {
   updatedAt?: number;
 }
 
-export interface RestoredPresentationResource {
-  url: string;
-  name: string;
-}
-
-export type RestoredPresentationEvent =
-  | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string; unavailable?: boolean }
-  | { kind: 'conversation_title'; title: string }
-  | { kind: 'status'; text: string; status?: 'succeeded' | 'failed' | 'canceled' | 'historical' }
-  | { kind: 'tool_summary'; label: string; status: 'succeeded' | 'failed' | 'canceled' | 'historical'; unavailable?: boolean }
-  | { kind: 'result'; text?: string; resources?: RestoredPresentationResource[]; unavailable?: boolean }
-  | { kind: 'history-form'; title: string; summary?: string; status: 'succeeded' | 'failed' | 'canceled' | 'historical' };
-
-export interface RestoredPresentationAttachment {
-  url: string;
-  name: string;
-  kind: 'image' | 'file';
-  size?: number;
-  order?: number;
-}
-
-export interface RestoredPresentationCommentSelection {
-  order: number;
-  label: string;
-  comment: string;
-  currentText: string;
-  selectionKind?: ChatCommentSelectionKind;
-  memberCount?: number;
-  slideIndex?: number;
-  screenshotUrl?: string;
-  imageAttachments?: RestoredPresentationResource[];
-  unavailable?: boolean;
-}
-
-/** Display-only provenance for a message imported from portable Git history. */
-export interface RestoredMessagePresentation {
-  portableId: string;
-  turnId: string;
-  terminal: 'succeeded' | 'failed' | 'cancelled' | 'historical';
-  displayEvents: RestoredPresentationEvent[];
-  contextItems: Array<{
-    kind: 'skill' | 'design-system' | 'plugin' | 'scenario' | 'workspace';
-    label: string;
-    unavailable?: boolean;
-  }>;
-  attachments: RestoredPresentationAttachment[];
-  commentSelections: RestoredPresentationCommentSelection[];
-  feedback?: ChatMessageFeedback;
-}
 
 /**
  * POST /api/runs/:runId/feedback — relays the user's assistant-turn rating
@@ -1014,8 +963,6 @@ export interface ChatMessage {
   // Diff baseline so reattach can rebuild producedFiles after reload.
   preTurnFileNames?: string[];
   feedback?: ChatMessageFeedback;
-  /** Inert history imported from a portable Git snapshot; never runtime authority. */
-  restoredPresentation?: RestoredMessagePresentation;
   /**
    * Request-only marker for the final assistant-message persistence pass.
    * The daemon does not store or return this field; it only uses it to

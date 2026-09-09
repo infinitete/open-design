@@ -771,31 +771,20 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
-  it('gates only the dangerous delete action and retains stale intent with reload guidance', async () => {
-    let ready = false;
+  it('retains stale intent with reload guidance when the delete comes back stale', async () => {
     const onDelete = vi.fn(async () => 'stale' as const);
-    const props = {
-      projects: [project({ id: 'project-1', name: 'My project' })],
-      onOpen: () => {},
-      onDelete,
-      projectMutationReady: () => ready,
-    };
-    const view = render(<RecentProjectsStrip {...props} />);
+    render(
+      <RecentProjectsStrip
+        projects={[project({ id: 'project-1', name: 'My project' })]}
+        onOpen={() => {}}
+        onDelete={onDelete}
+      />,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     const dialog = await screen.findByRole('alertdialog');
-    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
-    const confirm = within(dialog).getByRole('button', { name: 'Delete' });
-    expect(cancel).not.toBeDisabled();
-    expect(confirm).toBeDisabled();
-    fireEvent.click(confirm);
-    expect(onDelete).not.toHaveBeenCalled();
-
-    ready = true;
-    view.rerender(<RecentProjectsStrip {...props} />);
-    expect(confirm).not.toBeDisabled();
-    fireEvent.click(confirm);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
     expect(screen.getByRole('alertdialog')).toBe(dialog);
@@ -834,47 +823,6 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
   });
 
-  it('freezes bulk delete authority targets and waits until every target is ready', async () => {
-    const ready = new Map([['project-1', true], ['project-2', false]]);
-    const targetEvents: string[][] = [];
-    const onTargets = (event: Event) => {
-      const detail = (event as CustomEvent<{ projectIds?: string[] }>).detail;
-      if (detail.projectIds) targetEvents.push(detail.projectIds);
-    };
-    window.addEventListener('open-design:project-mutation-targets', onTargets);
-    try {
-      const props = {
-        projects: projects(2),
-        heading: 'All projects',
-        onOpen: () => {},
-        onDelete: vi.fn(async () => true as const),
-        canManageProjectCollection: true,
-        projectMutationReady: (id: string) => ready.get(id) === true,
-      };
-      const view = render(<RecentProjectsStrip {...props} />);
-
-      fireEvent.click(screen.getByRole('button', { name: 'Multi-select' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Project 1' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Project 2' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
-      const dialog = await screen.findByRole('alertdialog');
-      const confirm = within(dialog).getByRole('button', { name: 'Delete selected' });
-      expect(confirm).toBeDisabled();
-      expect(within(dialog).getByRole('button', { name: 'Cancel' })).not.toBeDisabled();
-      expect(targetEvents.some((ids) => ids.length === 2
-        && ids.includes('project-1') && ids.includes('project-2'))).toBe(true);
-
-      ready.set('project-2', true);
-      view.rerender(<RecentProjectsStrip {...props} />);
-      expect(confirm).not.toBeDisabled();
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-      await waitFor(() => expect(targetEvents.at(-1)).toEqual([]));
-      expect(screen.queryByRole('alertdialog')).toBeNull();
-    } finally {
-      window.removeEventListener('open-design:project-mutation-targets', onTargets);
-    }
-  });
-
   it('retains only stale intent after a mixed bulk delete settlement', async () => {
     const onDelete = vi.fn(async (id: string) =>
       id === 'project-1' ? true as const : 'stale' as const
@@ -886,7 +834,6 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
         onOpen={() => {}}
         onDelete={onDelete}
         canManageProjectCollection
-        projectMutationReady={() => true}
       />,
     );
 
@@ -905,34 +852,13 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
     expect(screen.getByRole('button', { name: 'Project 2' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('keeps Home rename inert until the project mutation authority is ready', () => {
-    const onRename = vi.fn();
-    render(
-      <RecentProjectsStrip
-        projects={[project({ id: 'project-1', name: 'My project' })]}
-        onOpen={() => {}}
-        onRename={onRename}
-        projectMutationReady={() => false}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
-    const rename = screen.getByRole('menuitem', { name: 'Rename' });
-    expect((rename as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(rename);
-
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(onRename).not.toHaveBeenCalled();
-  });
-
-  it('keeps the rename draft visible with recovery guidance when authority changes', async () => {
+  it('keeps the rename draft visible with recovery guidance when the rename fails', async () => {
     const onRename = vi.fn(async () => false);
     render(
       <RecentProjectsStrip
         projects={[project({ id: 'project-1', name: 'My project' })]}
         onOpen={() => {}}
         onRename={onRename}
-        projectMutationReady={() => true}
       />,
     );
 
@@ -959,7 +885,6 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
         projects={[project({ id: 'project-1', name: 'My project' })]}
         onOpen={() => {}}
         onRename={onRename}
-        projectMutationReady={() => true}
       />,
     );
 

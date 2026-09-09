@@ -1,8 +1,6 @@
 import type { Request, Response } from 'express';
-import type { ProjectGitCoordination } from '../services/project-git/mutation-adapter.js';
-import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
-import { GitDomainError } from '../services/project-git/errors.js';
-import type { ProjectRunMutationContext } from '../services/project-git/runtime-adapter.js';
+import type { ProjectMutationCoordination } from '../services/project-mutation.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 
 type SendApiError = (
   res: Response,
@@ -15,7 +13,7 @@ interface AuthorizedProjectOperation<T> {
   req: Request;
   res: Response;
   projectId: string;
-  coordination: ProjectGitCoordination;
+  coordination: ProjectMutationCoordination;
   sendApiError: SendApiError;
   authorize(): Promise<boolean>;
   work(): Promise<T>;
@@ -65,7 +63,7 @@ export async function coordinateAuthorizedProjectRead<T>(
       return result;
     });
   } catch (error) {
-    if (error instanceof GitDomainError && !input.res.headersSent) {
+    if (error instanceof ProjectDomainError && !input.res.headersSent) {
       input.sendApiError(input.res, error.status, error.code, error.message);
       return undefined;
     }
@@ -76,62 +74,25 @@ export async function coordinateAuthorizedProjectRead<T>(
 export async function coordinateAuthorizedProjectMutation<T>(
   input: AuthorizedProjectOperation<T> & {
     source: string;
-    trustedMutationContext?: ProjectRunMutationContext | null;
   },
 ): Promise<T | unknown | undefined> {
   if (!await input.authorize()) return undefined;
   try {
     return await input.coordination.withProjectMutation(
-      projectMutationScope(input),
+      { projectId: input.projectId, source: input.source },
       input.work,
     );
   } catch (error) {
-    if (error instanceof GitDomainError && !input.res.headersSent) {
+    if (error instanceof ProjectDomainError && !input.res.headersSent) {
       return input.sendApiError(input.res, error.status, error.code, error.message);
     }
     throw error;
   }
 }
 
-function projectMutationScope(input: {
-  req: Request;
-  projectId: string;
-  source: string;
-  trustedMutationContext?: ProjectRunMutationContext | null;
-}) {
-  const requiresTrustedMutationContext = Object.prototype.hasOwnProperty.call(
-    input,
-    'trustedMutationContext',
-  );
-  const transportedProjectRevision = expectedProjectRevisionFromTransport({
-    body: input.req.body?.expectedProjectRevision,
-    header: input.req.get('X-OD-Project-Revision'),
-  });
-  if (
-    requiresTrustedMutationContext
-    && input.trustedMutationContext
-    && transportedProjectRevision !== undefined
-    && transportedProjectRevision !== input.trustedMutationContext.expectedProjectRevision
-  ) {
-    throw new GitDomainError('BAD_REQUEST', 400, 'Invalid project revision.');
-  }
-  const expectedProjectRevision = requiresTrustedMutationContext
-    ? input.trustedMutationContext?.expectedProjectRevision
-    : transportedProjectRevision;
-  return {
-    projectId: input.projectId,
-    ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
-    source: input.source,
-    ...(input.trustedMutationContext
-      ? { permit: input.trustedMutationContext.permit }
-      : {}),
-  };
-}
-
 export async function coordinateAuthorizedProjectMutationStart<T>(
   input: Omit<AuthorizedProjectOperation<never>, 'work'> & {
     source: string;
-    trustedMutationContext?: ProjectRunMutationContext | null;
     start(): Promise<{ accepted: T; settled: Promise<unknown> }>;
     onSettledError(error: unknown): void;
   },
@@ -146,7 +107,7 @@ export async function coordinateAuthorizedProjectMutationStart<T>(
       rejectAccepted = reject;
     });
     const settled = input.coordination.withProjectMutation(
-      projectMutationScope(input),
+      { projectId: input.projectId, source: input.source },
       async () => {
         const mutation = await input.start();
         started = true;
@@ -162,7 +123,7 @@ export async function coordinateAuthorizedProjectMutationStart<T>(
     });
     return await accepted;
   } catch (error) {
-    if (error instanceof GitDomainError && !input.res.headersSent) {
+    if (error instanceof ProjectDomainError && !input.res.headersSent) {
       input.sendApiError(input.res, error.status, error.code, error.message);
       return undefined;
     }
@@ -199,7 +160,7 @@ export async function coordinateAuthorizedProjectReadStart<T>(
     });
     return await accepted;
   } catch (error) {
-    if (error instanceof GitDomainError && !input.res.headersSent) {
+    if (error instanceof ProjectDomainError && !input.res.headersSent) {
       input.sendApiError(input.res, error.status, error.code, error.message);
       return undefined;
     }

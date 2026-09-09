@@ -4,11 +4,6 @@
 
 Run the full product locally.
 
-For user-project history, remote synchronization and opening a project on another
-computer, see [Project Git versioning](docs/project-git.md). New supported projects
-start local versioning when Git and author identity are available; existing
-projects can enable it through Version settings.
-
 ## Environment requirements
 
 - **Node.js:** `~24` (Node 24.x). The repo enforces this through `package.json#engines`.

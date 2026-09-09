@@ -1,12 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { BackoffController } from '../lib/backoff';
 import {
-  ProjectGitOperationSchema,
-  ProjectGitStateSchema,
   type LiveArtifactRefreshSsePayload,
   type LiveArtifactSsePayload,
   type ProjectConversationCreatedSsePayload,
-  type ProjectGitEvent,
 } from '@open-design/contracts';
 export interface ProjectFileChangeEvent {
   type: 'file-changed';
@@ -25,8 +22,7 @@ export type ProjectLiveArtifactEvent = LiveArtifactSsePayload | LiveArtifactRefr
 export type ProjectEvent =
   | ProjectFileChangeEvent
   | ProjectConversationCreatedEvent
-  | ProjectLiveArtifactEvent
-  | ProjectGitEvent;
+  | ProjectLiveArtifactEvent;
 
 export interface ProjectEventsConnectionOptions {
   /** Test seam: substitute a mock EventSource constructor. */
@@ -155,40 +151,6 @@ export function createProjectEventsConnection(
         }
       }
     });
-    es.addEventListener('project-git-state', (evt) => {
-      try {
-        const envelope = JSON.parse((evt as MessageEvent).data) as unknown;
-        if (!envelope || typeof envelope !== 'object'
-          || (envelope as { type?: unknown }).type !== 'project-git-state'
-          || (envelope as { projectId?: unknown }).projectId !== projectId) return;
-        const parsed = ProjectGitStateSchema.safeParse((envelope as { state?: unknown }).state);
-        if (!parsed.success) return;
-        onChange({
-          type: 'project-git-state',
-          projectId: (envelope as { projectId: string }).projectId,
-          state: parsed.data,
-        });
-      } catch {
-        // A malformed event is not allowed to poison the shared stream.
-      }
-    });
-    es.addEventListener('project-git-operation', (evt) => {
-      try {
-        const envelope = JSON.parse((evt as MessageEvent).data) as unknown;
-        if (!envelope || typeof envelope !== 'object'
-          || (envelope as { type?: unknown }).type !== 'project-git-operation'
-          || (envelope as { projectId?: unknown }).projectId !== projectId) return;
-        const parsed = ProjectGitOperationSchema.safeParse((envelope as { operation?: unknown }).operation);
-        if (!parsed.success) return;
-        onChange({
-          type: 'project-git-operation',
-          projectId: (envelope as { projectId: string }).projectId,
-          operation: parsed.data,
-        });
-      } catch {
-        // A malformed event is not allowed to poison the shared stream.
-      }
-    });
     es.addEventListener('error', () => {
       if (cancelled) return;
       options.onConnectedChange?.(false);
@@ -220,7 +182,7 @@ const sharedProjectEvents = new Map<string, SharedProjectEventsEntry>();
 
 /**
  * Process-wide, ref-counted subscription for a project event stream. File,
- * conversation, artifact, and Git consumers all attach to this one transport.
+ * conversation, and artifact consumers all attach to this one transport.
  */
 export function subscribeProjectEvents(
   projectId: string,

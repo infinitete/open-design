@@ -164,22 +164,6 @@ test('an unrenderable question-form marker does not latch awaiting input', () =>
   assert.equal(listConversationsAwaitingInput(db).has(conversationId), false);
 });
 
-test('restored portable forms are inert in both project and conversation awaiting-input views', () => {
-  const db = createDb();
-  const conversationId = seedProject(db, 'project-restored-form');
-  addMessage(db, conversationId, 'restored-form-message', 'assistant', form('restored'));
-  db.prepare(`INSERT INTO project_git_portable_records
-    (project_id, kind, local_id, record_json, ordinal, snapshot_digest)
-    VALUES (?, 'message', ?, '{}', 0, NULL)`).run('another-project', 'restored-form-message');
-  assert.equal(listProjectsAwaitingInput(db).has('project-restored-form'), true);
-  assert.equal(listConversationsAwaitingInput(db).has(conversationId), true);
-
-  db.prepare('UPDATE project_git_portable_records SET project_id = ? WHERE local_id = ?')
-    .run('project-restored-form', 'restored-form-message');
-  assert.equal(listProjectsAwaitingInput(db).has('project-restored-form'), false);
-  assert.equal(listConversationsAwaitingInput(db).has(conversationId), false);
-});
-
 test('a closed question-form block with a prose body does not latch awaiting input', () => {
   const db = createDb();
   const conversationId = seedProject(db, 'project-prose-body');

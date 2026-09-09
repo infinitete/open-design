@@ -48,15 +48,6 @@ import {
   writeProjectTextFile,
 } from '../providers/registry';
 import { useProjectFileEvents, type ProjectEvent } from '../providers/project-events';
-import { useProjectGit } from '../providers/project-git';
-import {
-  captureProjectMutation,
-  isProjectMutationReady,
-  isProjectMutationCurrent,
-  ProjectStateChangedError,
-  registerProjectEpochInvalidator,
-  type ProjectMutationContext,
-} from '../state/project-git';
 import { claimProjectTurnIndex, claimRunTurnIndex } from '../analytics/identity';
 import {
   buildInitialTaskAnalytics,
@@ -280,12 +271,6 @@ import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunity
 import { CenteredLoader } from './Loading';
 import type { SettingsSection } from './SettingsDialog';
 import { Toast } from './Toast';
-import { ProjectGitMenu, useProjectGitStatusActions } from './project-git/ProjectGitStatus';
-import { ProjectGitSettings } from './project-git/ProjectGitSettings';
-import { ProjectGitHistory, ProjectGitPanel } from './project-git/ProjectGitHistory';
-import { ProjectGitRestoreDialog } from './project-git/ProjectGitRestoreDialog';
-import { ProjectGitConflicts } from './project-git/ProjectGitConflicts';
-import { defaultProjectGitClient } from '../providers/project-git';
 import { FirstArtifactHint } from './FirstArtifactHint';
 import {
   consumeOnboardingEntryForProject,
@@ -621,9 +606,7 @@ interface Props {
   onBrowsePlugins?: () => void;
   onOpenConnectors?: () => void;
   onBack: () => void;
-  onClearPendingPrompt: (
-    mutationContext: ProjectMutationContext,
-  ) => Promise<boolean | void> | boolean | void;
+  onClearPendingPrompt: () => Promise<boolean | void> | boolean | void;
   onTouchProject: () => void;
   onProjectChange: (next: Project) => void;
   onProjectRenameStarted?: (optimistic: Project) => ProjectRenameFenceToken | null;
@@ -638,7 +621,6 @@ interface Props {
   }) => Promise<void> | void;
   onDeleteProject?: (
     id: string,
-    mutationContext?: ProjectMutationContext,
   ) => Promise<import('../state/projects').ProjectDeleteResult> | import('../state/projects').ProjectDeleteResult;
   onChangeDefaultDesignSystem?: (designSystemId: string | null) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
@@ -669,7 +651,6 @@ interface QueuedChatSend {
   commentAttachments: ChatCommentAttachment[];
   meta?: ProjectChatSendMeta;
   createdAt: number;
-  expectedProjectRevision?: number;
 }
 
 interface QueuedChatSendUpdate {
@@ -1781,21 +1762,6 @@ export function ProjectView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const projectGit = useProjectGit(project.id, { opened: true });
-  const projectGitActions = useProjectGitStatusActions(projectGit.execute, projectGit.state?.autoSync ?? false);
-  const [projectGitSettingsOpen, setProjectGitSettingsOpen] = useState(false);
-  const [projectGitHistoryPath, setProjectGitHistoryPath] = useState<string | null>(null);
-  const [projectGitRestoreOid, setProjectGitRestoreOid] = useState<string | null>(null);
-  const [projectGitConflictOperationId, setProjectGitConflictOperationId] = useState<string | null>(null);
-  useEffect(() => {
-    setProjectGitHistoryPath(null); setProjectGitRestoreOid(null); setProjectGitConflictOperationId(null);
-    const openHistory = (event: Event) => {
-      const detail = (event as CustomEvent<{ projectId?: string; path?: string }>).detail;
-      if (detail?.projectId === project.id) setProjectGitHistoryPath(detail.path ?? '');
-    };
-    window.addEventListener('open-design:project-git-history', openHistory);
-    return () => window.removeEventListener('open-design:project-git-history', openHistory);
-  }, [project.id]);
   const onboardingEntryInitRef = useRef(false);
   const onboardingEntryRef = useRef<OnboardingEntry | null>(null);
   // The prompt the recommendation prefilled into the composer. Prefer the seed
@@ -1836,10 +1802,6 @@ export function ProjectView({
     invalidateHtmlSourceSnapshotProject(project.id);
   }, [project.id]);
   const projectRunWorkspaceContextRef = useRef<null>(null);
-  const projectMutationReadOnly = !projectGit.state
-    || projectGit.loading
-    || Boolean(projectGit.error)
-    || projectGit.writeLocked;
   const projectRunWorkspaceContext = null;
   const projectRunAuthorityKey = project.id;
   const projectDetail = useProjectDetail(
@@ -1853,7 +1815,6 @@ export function ProjectView({
     null,
   );
   let projectTitleTooltip = currentProject.name;
-  if (projectMutationReadOnly) projectTitleTooltip = t('workspace.readonlyNotice');
   const resolvedProjectDesignSystemId = resolveProjectDesignSystemId(currentProject);
   const projectDesignSystemId = resolvedProjectDesignSystemId;
   const runtimeDesignSystemId =
@@ -2259,34 +2220,22 @@ export function ProjectView({
   >(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
-  const activeMutationContextRef = useRef<ProjectMutationContext | undefined>(undefined);
   const conversationOperationSequenceRef = useRef(0);
   // Keep the latest issued token even after an operation is no longer active.
   // This prevents a late callback from regaining authority merely because its
   // successor finished and released the active slot.
   const conversationOperationsRef = useRef<Map<string, number>>(new Map());
   const activeConversationOperationsRef = useRef<Map<string, number>>(new Map());
-  const conversationOperationContextsRef = useRef<Map<string, {
-    token: number;
-    mutationContext: ProjectMutationContext;
-  }>>(new Map());
-  const claimConversationOperation = useCallback((
-    conversationId: string,
-    mutationContext: ProjectMutationContext,
-  ) => {
+  const claimConversationOperation = useCallback((conversationId: string) => {
     const token = conversationOperationSequenceRef.current + 1;
     conversationOperationSequenceRef.current = token;
     conversationOperationsRef.current.set(conversationId, token);
     activeConversationOperationsRef.current.set(conversationId, token);
-    conversationOperationContextsRef.current.set(conversationId, { token, mutationContext });
     return token;
   }, []);
   const releaseConversationOperation = useCallback((conversationId: string, token: number) => {
     if (activeConversationOperationsRef.current.get(conversationId) === token) {
       activeConversationOperationsRef.current.delete(conversationId);
-    }
-    if (conversationOperationContextsRef.current.get(conversationId)?.token === token) {
-      conversationOperationContextsRef.current.delete(conversationId);
     }
   }, []);
   const supersedeConversationOperation = useCallback((conversationId: string) => {
@@ -2294,7 +2243,6 @@ export function ProjectView({
     conversationOperationSequenceRef.current = token;
     conversationOperationsRef.current.set(conversationId, token);
     activeConversationOperationsRef.current.delete(conversationId);
-    conversationOperationContextsRef.current.delete(conversationId);
   }, []);
   // Runs explicitly superseded by a "send now" interrupt. Their abort
   // controller is recorded here synchronously — before handleStop() clears the
@@ -2346,10 +2294,6 @@ export function ProjectView({
   // network. Revision invalidation advances it synchronously, so a pre-restore
   // response cannot publish after the reconciliation read has started.
   const messagesRequestGenerationRef = useRef(0);
-  const reconciliationConversationRef = useRef<{
-    generation: number;
-    conversationId: string;
-  } | null>(null);
   const startingQueuedChatSendIdRef = useRef<string | null>(null);
   const [queuedAutoStartTick, setQueuedAutoStartTick] = useState(0);
   // We auto-save the most recent artifact to the project folder. Track the
@@ -2366,7 +2310,6 @@ export function ProjectView({
     projectId: string;
     authorityGeneration: number;
     creationGeneration: number;
-    mutationContext: ProjectMutationContext;
     result: Promise<Conversation | null>;
   } | null>(null);
   // Last conversation id this view pushed into the URL. Lets the
@@ -2447,13 +2390,11 @@ export function ProjectView({
     currentConversationHasActiveRun
     && !currentConversationStreaming
     && !currentConversationHasProgrammaticBrandExtractionRun;
-  const currentConversationSendDisabled = projectMutationReadOnly
-    || currentConversationLoading
+  const currentConversationSendDisabled = currentConversationLoading
     || failedMessagesConversationId === activeConversationId
     || currentConversationAwaitingActiveRunAttach;
   const currentConversationActionDisabled = currentConversationBusy || currentConversationSendDisabled;
-  const currentConversationQueueDisabled = projectMutationReadOnly
-    || currentConversationLoading
+  const currentConversationQueueDisabled = currentConversationLoading
     || failedMessagesConversationId === activeConversationId;
 
   const currentConversationQueuedItems = activeConversationId
@@ -2470,7 +2411,7 @@ export function ProjectView({
           return { ...queuedItem, meta: item.meta };
         })
     : [];
-  const newConversationDisabled = creatingConversation || projectMutationReadOnly;
+  const newConversationDisabled = creatingConversation;
   const activeCompletionNotificationRunsRef = useRef<Set<string>>(new Set());
   const completedNotificationRunsRef = useRef<Set<string>>(new Set());
 
@@ -2580,11 +2521,10 @@ export function ProjectView({
     if (
       pendingEmptyConversationSeedProjectId !== project.id
       || pendingEmptyConversationSeedAuthorityKey !== 'current'
-      || projectMutationReadOnly
     ) {
       return;
     }
-    const authorityGeneration = projectGit.generation;
+    const authorityGeneration = 0;
     let cancelled = false;
     (async () => {
       let flight = emptyConversationSeedFlightRef.current;
@@ -2596,14 +2536,11 @@ export function ProjectView({
       ) {
         const creationGeneration = conversationCreationGenerationRef.current + 1;
         conversationCreationGenerationRef.current = creationGeneration;
-        const mutationContext = captureProjectMutation(project.id);
-        if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
         flight = {
           projectId: project.id,
           authorityGeneration,
           creationGeneration,
-          mutationContext,
-          result: createConversation(project.id, undefined, { mutationContext }),
+          result: createConversation(project.id),
         };
         emptyConversationSeedFlightRef.current = flight;
       }
@@ -2611,7 +2548,6 @@ export function ProjectView({
         !cancelled
         && emptyConversationSeedFlightRef.current === flight
         && conversationCreationGenerationRef.current === flight.creationGeneration
-        && isProjectMutationCurrent(project.id, flight.mutationContext)
       );
       try {
         if (!ownsCreation()) return;
@@ -2643,8 +2579,6 @@ export function ProjectView({
     pendingEmptyConversationSeedAuthorityKey,
     pendingEmptyConversationSeedProjectId,
     project.id,
-    projectGit.generation,
-    projectMutationReadOnly,
   ]);
 
   // Issue #1505: when the URL changes the routed conversation id while
@@ -2689,12 +2623,6 @@ export function ProjectView({
   // on project mount (after conversations load) and on user-triggered
   // conversation switches.
   useEffect(() => {
-    if (
-      activeConversationId
-      && reconciliationConversationRef.current?.conversationId === activeConversationId
-    ) {
-      return;
-    }
     const messagesRequestGeneration = ++messagesRequestGenerationRef.current;
     if (!activeConversationId) {
       setMessages([]);
@@ -2870,7 +2798,6 @@ export function ProjectView({
     return () => {
       conversationOperationsRef.current.clear();
       activeConversationOperationsRef.current.clear();
-      conversationOperationContextsRef.current.clear();
       sendTextBufferRef.current?.cancel();
       sendTextBufferRef.current = null;
       // Unmounts / conversation switches should only detach local stream
@@ -3038,7 +2965,6 @@ export function ProjectView({
   const pendingDaemonTabsRef = useRef<{
     projectId: string;
     state: OpenTabsState;
-    mutationContext?: ProjectMutationContext;
   } | null>(null);
   const flushTabsDaemonSave = useCallback(() => {
     if (tabsDaemonSaveTimerRef.current != null) {
@@ -3051,7 +2977,6 @@ export function ProjectView({
       void persistTabsToDaemonNow(
         pending.projectId,
         pending.state,
-        pending.mutationContext,
       );
     }
   }, []);
@@ -3068,7 +2993,6 @@ export function ProjectView({
       pendingDaemonTabsRef.current = {
         projectId: project.id,
         state: stamped,
-        mutationContext: captureProjectMutation(project.id),
       };
       if (tabsDaemonSaveTimerRef.current != null) {
         clearTimeout(tabsDaemonSaveTimerRef.current);
@@ -3081,7 +3005,6 @@ export function ProjectView({
           void persistTabsToDaemonNow(
             pending.projectId,
             pending.state,
-            pending.mutationContext,
           );
         }
       }, TAB_PERSIST_DEBOUNCE_MS);
@@ -3126,7 +3049,6 @@ export function ProjectView({
       fresh?: boolean;
       signal?: AbortSignal;
       requireAuthoritative?: boolean;
-      mutationContext?: ProjectMutationContext;
     },
     onAcceptedGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
@@ -3146,13 +3068,7 @@ export function ProjectView({
       // refresh helper's historical resolved-list contract for its callers.
       return projectFilesRef.current;
     }
-    if (
-      requestSeq === projectFilesRequestSeqRef.current
-      && (
-        !options?.mutationContext
-        || isProjectMutationCurrent(project.id, options.mutationContext)
-      )
-    ) {
+    if (requestSeq === projectFilesRequestSeqRef.current) {
       const acceptedGeneration = projectFilesGenerationRef.current + 1;
       projectFilesGenerationRef.current = acceptedGeneration;
       projectFilesRef.current = next;
@@ -3203,7 +3119,6 @@ export function ProjectView({
     fresh?: boolean;
     signal?: AbortSignal;
     requireAuthoritative?: boolean;
-    mutationContext?: ProjectMutationContext;
   }): Promise<LiveArtifactSummary[]> => {
     const requestSeq = ++liveArtifactsRequestSeqRef.current;
     const next = await fetchLiveArtifacts(project.id, {
@@ -3211,10 +3126,7 @@ export function ProjectView({
       signal: options?.signal,
       requireAuthoritative: options?.requireAuthoritative,
     });
-    if (
-      requestSeq !== liveArtifactsRequestSeqRef.current
-      || (options?.mutationContext && !isProjectMutationCurrent(project.id, options.mutationContext))
-    ) {
+    if (requestSeq !== liveArtifactsRequestSeqRef.current) {
       if (options?.requireAuthoritative) {
         throw new Error('Live artifact refresh authority changed');
       }
@@ -3230,7 +3142,6 @@ export function ProjectView({
       freshLiveArtifacts?: boolean;
       signal?: AbortSignal;
       requireAuthoritative?: boolean;
-      mutationContext?: ProjectMutationContext;
     },
     onAcceptedFilesGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
@@ -3239,13 +3150,11 @@ export function ProjectView({
         fresh: options?.freshProjectFiles,
         signal: options?.signal,
         requireAuthoritative: options?.requireAuthoritative,
-        mutationContext: options?.mutationContext,
       }, onAcceptedFilesGeneration),
       refreshLiveArtifacts({
         fresh: options?.freshLiveArtifacts,
         signal: options?.signal,
         requireAuthoritative: options?.requireAuthoritative,
-        mutationContext: options?.mutationContext,
       }),
     ]);
     return nextFiles;
@@ -3346,11 +3255,8 @@ export function ProjectView({
       art: Artifact,
       projectFilesSnapshot?: ProjectFile[],
       sourceText?: string,
-      options: { pointerMinMtime?: number; mutationContext?: ProjectMutationContext } = {},
+      options: { pointerMinMtime?: number } = {},
     ) => {
-      if (options.mutationContext && !projectGit.isCurrent(options.mutationContext)) {
-        return { ok: false as const, error: 'Project history changed before artifact persistence.' };
-      }
       const persistedHtml = resolvePersistedArtifactHtml({
         artifactHtml: art.html,
         identifier: art.identifier,
@@ -3441,11 +3347,7 @@ export function ProjectView({
             });
       const file = await writeProjectTextFile(project.id, fileName, artifactToPersist.html, {
         artifactManifest: manifest ?? undefined,
-        mutationContext: options.mutationContext,
       });
-      if (options.mutationContext && !projectGit.isCurrent(options.mutationContext)) {
-        return { ok: false as const, error: 'Project history changed during artifact persistence.' };
-      }
       if (file) {
         savedArtifactRef.current = file.name;
         bumpFilesRefresh();
@@ -3480,7 +3382,7 @@ export function ProjectView({
         return { ok: false as const, error: message };
       }
     },
-    [project.id, projectDesignSystemId, project.skillId, projectGit, requestOpenFile],
+    [project.id, projectDesignSystemId, project.skillId, requestOpenFile],
   );
 
   const artifactFromStandaloneHtml = useCallback(
@@ -3803,10 +3705,7 @@ export function ProjectView({
       // a runId — or the run finishes terminally — this guard lets the row
       // through normally.
       if (isPhantomDaemonRunMessage(m)) return;
-      void saveMessage(project.id, activeConversationId, m, {
-        ...options,
-        mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
-      });
+      void saveMessage(project.id, activeConversationId, m, options);
     },
     [project.id, activeConversationId, projectRunWorkspaceContext],
   );
@@ -3816,10 +3715,7 @@ export function ProjectView({
       if (!activeConversationId) return;
       const found = messagesRef.current.find((message) => message.id === messageId);
       if (!found || isPhantomDaemonRunMessage(found)) return;
-      void saveMessage(project.id, activeConversationId, found, {
-        ...options,
-        mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
-      });
+      void saveMessage(project.id, activeConversationId, found, options);
     },
     [project.id, activeConversationId, projectRunWorkspaceContext],
   );
@@ -3845,10 +3741,7 @@ export function ProjectView({
       // the same snapshot published to state, so StrictMode replay cannot
       // duplicate the write.
       if (persist && activeConversationId && !isPhantomDaemonRunMessage(saved)) {
-        void saveMessage(project.id, activeConversationId, saved, {
-          ...persistOptions,
-          mutationContext: persistOptions?.mutationContext ?? activeMutationContextRef.current,
-        });
+        void saveMessage(project.id, activeConversationId, saved, persistOptions);
       }
     },
     [project.id, activeConversationId, projectRunWorkspaceContext],
@@ -3868,10 +3761,7 @@ export function ProjectView({
         setMessages((curr) => [...curr, message]);
       }
       if (persist) {
-        void saveMessage(project.id, conversationId, message, {
-          ...options,
-          mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
-        });
+        void saveMessage(project.id, conversationId, message, options);
       }
     },
     [activeConversationId, project.id, projectRunWorkspaceContext],
@@ -4140,10 +4030,7 @@ export function ProjectView({
         setMessages((curr) => curr.map((item) => (item.id === message.id ? message : item)));
       }
       if (persist) {
-        void saveMessage(project.id, conversationId, message, {
-          ...options,
-          mutationContext: options?.mutationContext ?? activeMutationContextRef.current,
-        });
+        void saveMessage(project.id, conversationId, message, options);
       }
     },
     [activeConversationId, project.id, projectRunWorkspaceContext],
@@ -4153,7 +4040,6 @@ export function ProjectView({
     async (conversationId: string, options?: {
       signal?: AbortSignal;
       requireAuthoritative?: boolean;
-      mutationContext?: ProjectMutationContext;
     }) => {
       const requestGeneration = ++messagesRequestGenerationRef.current;
       if (messagesConversationIdRef.current !== conversationId) return;
@@ -4163,7 +4049,6 @@ export function ProjectView({
           conversationId,
           { signal: options?.signal },
         );
-        if (options?.mutationContext && !projectGit.isCurrent(options.mutationContext)) return;
         if (
           messagesConversationIdRef.current !== conversationId
           || messagesRequestGenerationRef.current !== requestGeneration
@@ -4173,7 +4058,6 @@ export function ProjectView({
         setMessagesConversationId(conversationId);
         setFailedMessagesConversationId(null);
       } catch (err) {
-        if (options?.mutationContext && !projectGit.isCurrent(options.mutationContext)) return;
         if (messagesRequestGenerationRef.current !== requestGeneration) return;
         if (options?.requireAuthoritative) throw err;
         console.warn('Failed to refresh conversation messages after run completion', err);
@@ -4264,9 +4148,6 @@ export function ProjectView({
 
   const handleAssistantFeedback = useCallback(
     (assistantMessage: ChatMessage, change: ChatMessageFeedbackChange) => {
-      if (projectMutationReadOnly || !isProjectMutationReady(project.id)) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
       const now = Date.now();
       updateMessageById(
         assistantMessage.id,
@@ -4291,7 +4172,6 @@ export function ProjectView({
                 feedback: undefined,
               },
         true,
-        { mutationContext },
       );
       // Forward affirmative ratings to the daemon → Langfuse `score-create`.
       // Clears (change=null) are skipped — Langfuse scores are append-only,
@@ -4308,7 +4188,7 @@ export function ProjectView({
         });
       }
     },
-    [updateMessageById, activeConversationId, project.id, projectMutationReadOnly],
+    [updateMessageById, activeConversationId],
   );
 
   // `code` is the structured API error code (e.g. AGENT_AUTH_REQUIRED); it
@@ -4320,23 +4200,19 @@ export function ProjectView({
       message: string,
       code?: string,
       failure?: RunFailureClassificationFields,
-      mutationContext?: ProjectMutationContext,
     ) => {
-      if (!message || !mutationContext || !projectGit.isCurrent(mutationContext)) return;
+      if (!message) return;
       updateMessageById(
         messageId,
         (prev) => appendErrorStatusEvent(prev, message, code, failure),
         true,
-        { mutationContext },
       );
     },
-    [projectGit, updateMessageById],
+    [updateMessageById],
   );
 
   const auditDesignSystemWorkspaceAfterRun = useCallback(
-    async (assistantMessageId: string, mutationContext: ProjectMutationContext) => {
-      const isCurrent = () => projectGit.isCurrent(mutationContext);
-      if (!isCurrent()) return;
+    async (assistantMessageId: string) => {
       const isDesignSystemWorkspace =
         isDesignSystemWorkspaceMetadata(currentProject.metadata) || projectIsDesignSystemProject;
       if (!isDesignSystemWorkspace) return;
@@ -4345,17 +4221,13 @@ export function ProjectView({
           const outcome = await finalizeBrandProject(
             designSystemBrandId,
             project.id,
-            mutationContext,
           );
-          if (!isCurrent()) return;
           if (outcome.ok) {
             await Promise.all([
-              projectDetail.refresh({ signal: mutationContext.signal }),
-              refreshWorkspaceItems({ signal: mutationContext.signal }),
+              projectDetail.refresh(),
+              refreshWorkspaceItems(),
             ]);
-            if (!isCurrent()) return;
             await Promise.resolve(onDesignSystemsRefresh?.());
-            if (!isCurrent()) return;
             onProjectsRefresh();
             setDesignMdRefreshKey((n) => n + 1);
             updateMessageById(
@@ -4372,7 +4244,7 @@ export function ProjectView({
                 ],
               }),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
           } else {
             updateMessageById(
@@ -4389,14 +4261,14 @@ export function ProjectView({
                 ],
               }),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
           }
         }
         const audit = await fetchProjectDesignSystemPackageAudit(
           project.id,
         );
-        if (!isCurrent() || !audit) return;
+        if (!audit) return;
         const auditSummary = summarizeDesignSystemPackageAudit(audit);
         updateMessageById(
           assistantMessageId,
@@ -4405,11 +4277,10 @@ export function ProjectView({
             events: [...(prev.events ?? []), { kind: 'status', label: 'audit', detail: auditSummary }],
           }),
           true,
-          { telemetryFinalized: true, mutationContext },
+          { telemetryFinalized: true },
         );
         const repairPrompt = buildDesignSystemPackageAuditRepairPrompt(audit);
         if (repairPrompt) {
-          if (!isCurrent()) return;
           if (consumeDesignSystemAuditAutoRepair(project.id)) {
             const seed = { id: `audit-${Date.now()}`, value: repairPrompt };
             setChatSeed(seed);
@@ -4419,7 +4290,6 @@ export function ProjectView({
           clearDesignSystemAuditAutoRepair(project.id);
         }
       } catch (err) {
-        if (!isCurrent()) return;
         const detail = err instanceof Error ? err.message : String(err);
         updateMessageById(
           assistantMessageId,
@@ -4431,7 +4301,7 @@ export function ProjectView({
             ],
           }),
           true,
-          { telemetryFinalized: true, mutationContext },
+          { telemetryFinalized: true },
         );
       }
     },
@@ -4443,7 +4313,6 @@ export function ProjectView({
       project.id,
       projectDetail.refresh,
       projectIsDesignSystemProject,
-      projectGit,
       refreshWorkspaceItems,
       updateMessageById,
     ],
@@ -4506,8 +4375,6 @@ export function ProjectView({
       images: File[] = [],
       commentId?: string,
     ) => {
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return null;
       const commentConversationId = activeConversationId ?? routeConversationId;
       if (!commentConversationId) {
         setProjectActionsToast({
@@ -4527,7 +4394,6 @@ export function ProjectView({
           project.id,
           images,
           undefined,
-          mutationContext,
         );
         if (result.uploaded.length !== images.length) {
           setProjectActionsToast({
@@ -4553,7 +4419,6 @@ export function ProjectView({
           note,
           ...(attachments.length > 0 ? { attachments } : {}),
         },
-        mutationContext,
       );
       if (!saved) {
         // Do not fail silently (recvq5BVsolIxi follow-up): a missing/expired
@@ -4687,7 +4552,6 @@ export function ProjectView({
     async (
       attachments: ChatCommentAttachment[],
       status: PreviewComment['status'],
-      mutationContext?: ProjectMutationContext,
     ) => {
       if (!activeConversationId || attachments.length === 0) return;
       const persistedAttachments = attachments.filter(
@@ -4708,7 +4572,6 @@ export function ProjectView({
             activeConversationId,
             attachment.id,
             status,
-            mutationContext,
           ),
         ),
       );
@@ -4747,16 +4610,13 @@ export function ProjectView({
 
     const attachRecoverableRuns = async () => {
       if (activeConversationOperationsRef.current.has(reattachConversationId)) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !projectGit.isCurrent(mutationContext)) return;
-      const activeOperationToken = claimConversationOperation(reattachConversationId, mutationContext);
+      const activeOperationToken = claimConversationOperation(reattachConversationId);
       let operationTransferred = false;
       const releaseActiveOperation = () => {
         releaseConversationOperation(reattachConversationId, activeOperationToken);
       };
       const recoveryIsCurrent = () => Boolean(
-        projectGit.isCurrent(mutationContext)
-        && conversationOperationsRef.current.get(reattachConversationId) === activeOperationToken,
+        conversationOperationsRef.current.get(reattachConversationId) === activeOperationToken,
       );
       try {
         const missingRunIdMessages = messages.filter((m) => {
@@ -4854,7 +4714,6 @@ export function ProjectView({
               endedAt: prev.endedAt ?? Date.now(),
             }),
             true,
-            { mutationContext },
           );
           continue;
         }
@@ -4870,7 +4729,6 @@ export function ProjectView({
             message.id,
             (prev) => ({ ...prev, runId, runStatus: fallbackRun.status }),
             true,
-            { mutationContext },
           );
         }
 
@@ -4916,7 +4774,6 @@ export function ProjectView({
               message.id,
               (prev) => ({ ...prev, runStatus: 'failed', endedAt: prev.endedAt ?? Date.now() }),
               true,
-              { mutationContext },
             );
             completedReattachRunsRef.current.add(runId);
           }
@@ -4983,7 +4840,6 @@ export function ProjectView({
               ...(settledFields ?? {}),
             }),
             true,
-            { mutationContext },
           );
         }
         // When the daemon authoritative status is 'failed', the run ended in a
@@ -4998,7 +4854,6 @@ export function ProjectView({
               message.id,
               (prev) => ({ ...prev, resumable: status.resumable }),
               true,
-              { mutationContext },
             );
           }
           // Clear stale retry count — this run is authoritatively done.
@@ -5030,7 +4885,6 @@ export function ProjectView({
               ...(status.resumable !== undefined ? { resumable: status.resumable } : {}),
               }),
               true,
-              { mutationContext },
             );
           transientFailedRetriesRef.current.delete(runId);
           genericDisconnectRetriesRef.current.delete(runId);
@@ -5054,7 +4908,6 @@ export function ProjectView({
               ...(status.resumable !== undefined ? { resumable: status.resumable } : {}),
             }),
             true,
-            { mutationContext },
           );
         }
 
@@ -5109,10 +4962,10 @@ export function ProjectView({
                 endedAt: prev.endedAt ?? legacyReplayEndedAt,
               }),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
 
-            let nextFiles = await refreshProjectFiles({ mutationContext });
+            let nextFiles = await refreshProjectFiles();
             if (!recoveryIsCurrent()) {
               releaseActiveOperation();
               return;
@@ -5155,7 +5008,7 @@ export function ProjectView({
                   artifactToPersist,
                   nextFiles,
                   replayedContent,
-                  { pointerMinMtime: runStartedAt, mutationContext },
+                  { pointerMinMtime: runStartedAt },
                 );
                 if (!recoveryIsCurrent()) {
                   releaseActiveOperation();
@@ -5163,7 +5016,7 @@ export function ProjectView({
                 }
                 if (persistence.ok) artifactPersistenceSucceeded = true;
                 else artifactPersistenceError = persistence.error;
-                nextFiles = await refreshProjectFiles({ mutationContext });
+                nextFiles = await refreshProjectFiles();
                 if (!recoveryIsCurrent()) {
                   releaseActiveOperation();
                   return;
@@ -5226,12 +5079,12 @@ export function ProjectView({
                   artifactPersistenceError,
                 ),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
             if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
               setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
             }
-            if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
+            await auditDesignSystemWorkspaceAfterRun(message.id);
             if (!recoveryIsCurrent()) {
               releaseActiveOperation();
               return;
@@ -5250,9 +5103,7 @@ export function ProjectView({
         const cancelController = new AbortController();
         const reattachOperationToken = activeOperationToken;
         const ownsReattachRun = () => Boolean(
-          mutationContext
-          && projectGit.isCurrent(mutationContext)
-          && reattachOperationToken !== null
+          reattachOperationToken !== null
           && conversationOperationsRef.current.get(reattachConversationId) === reattachOperationToken
           && !controller.signal.aborted
           && !supersededRunsRef.current.has(controller),
@@ -5296,7 +5147,6 @@ export function ProjectView({
                 : {}),
             }),
             true,
-            { mutationContext },
           );
         }
         if (!isTerminalRunStatus(status.status)) {
@@ -5345,7 +5195,6 @@ export function ProjectView({
               ...(spuriouslyFailedPending ? { endedAt: undefined } : {}),
             }),
             true,
-            { mutationContext },
           );
           // When the failed-message recovery moves back to running/succeeded,
           // clear any stale "daemon stream disconnected" error banner that the
@@ -5360,7 +5209,7 @@ export function ProjectView({
           if (persistTimer) return;
           persistTimer = scheduleProjectTimeout(() => {
             persistTimer = null;
-            if (ownsReattachRun()) persistMessageById(message.id, { mutationContext });
+            if (ownsReattachRun()) persistMessageById(message.id);
           }, 500);
         };
         const persistNow = (options?: SaveMessageOptions) => {
@@ -5370,7 +5219,7 @@ export function ProjectView({
             persistTimer = null;
           }
           textBuffer.flush();
-          persistMessageById(message.id, { ...options, mutationContext });
+          persistMessageById(message.id, { ...options });
         };
         const parser = createArtifactParser();
         let parsedArtifact: Artifact | null = null;
@@ -5466,7 +5315,6 @@ export function ProjectView({
               message.id,
               (prev) => ({ ...prev, ...settledFields }),
               true,
-              { mutationContext },
             );
           },
           onRunCreated: (nextRunId, strategyTask) => {
@@ -5488,7 +5336,6 @@ export function ProjectView({
                   : {}),
               }),
               true,
-              { mutationContext },
             );
           },
           handlers: {
@@ -5580,13 +5427,13 @@ export function ProjectView({
                 }),
                 true,
                 latestReattachRunStatus === 'canceled'
-                  ? { telemetryFinalized: true, mutationContext }
-                  : { mutationContext },
+                  ? { telemetryFinalized: true }
+                  : undefined,
               );
               if (latestReattachRunStatus === 'canceled') return;
               void (async () => {
                 const preTurn = message.preTurnFileNames;
-                let nextFiles = await refreshProjectFiles({ mutationContext });
+                let nextFiles = await refreshProjectFiles();
                 if (!ownsReattachRun()) return;
                 let artifactPersistenceSucceeded = false;
                 let artifactPersistenceError: string | undefined;
@@ -5624,12 +5471,12 @@ export function ProjectView({
                       artifactToPersist,
                       nextFiles,
                       replayedContent,
-                      { pointerMinMtime: runStartedAt, mutationContext },
+                      { pointerMinMtime: runStartedAt },
                     );
                     if (!ownsReattachRun()) return;
                     if (persistence.ok) artifactPersistenceSucceeded = true;
                     else artifactPersistenceError = persistence.error;
-                    nextFiles = await refreshProjectFiles({ mutationContext });
+                    nextFiles = await refreshProjectFiles();
                     if (!ownsReattachRun()) return;
                   }
                 }
@@ -5700,12 +5547,12 @@ export function ProjectView({
                       artifactPersistenceError,
                     ),
                   true,
-                  { telemetryFinalized: true, mutationContext },
+                  { telemetryFinalized: true },
                 );
                 if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
                   setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
                 }
-                if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
+                await auditDesignSystemWorkspaceAfterRun(message.id);
                 if (!ownsReattachRun()) return;
               })();
               if (ownsReattachRun()) onProjectsRefresh();
@@ -5724,7 +5571,7 @@ export function ProjectView({
               unregisterTextBuffer();
               if (ownsReattachRun()) {
                 setRunError(err.message, message.id);
-                appendAssistantErrorEvent(message.id, err.message, errorCode, failure, mutationContext);
+                appendAssistantErrorEvent(message.id, err.message, errorCode, failure);
                 updateMessageById(
                   message.id,
                   (prev) => ({
@@ -5734,7 +5581,6 @@ export function ProjectView({
                     resumable,
                   }),
                   true,
-                  { mutationContext },
                 );
                 if (!genericDisconnect && artifactFromRecoverableSourceText(replayedContent)) {
                   void (async () => {
@@ -5747,7 +5593,7 @@ export function ProjectView({
                       ? parsedArtifact
                       : artifactFromStandaloneHtml(replayedContent);
                     if (!artifactToPersist?.html) return;
-                    let nextFiles = await refreshProjectFiles({ mutationContext });
+                    let nextFiles = await refreshProjectFiles();
                     if (!ownsReattachRun()) return;
                     const beforeFileNames = new Set(
                       message.preTurnFileNames ?? nextFiles.map((f) => f.name),
@@ -5777,10 +5623,10 @@ export function ProjectView({
                         artifactToPersist,
                         nextFiles,
                         replayedContent,
-                        { pointerMinMtime: runStartedAt, mutationContext },
+                        { pointerMinMtime: runStartedAt },
                       );
                       if (!ownsReattachRun()) return;
-                      nextFiles = await refreshProjectFiles({ mutationContext });
+                      nextFiles = await refreshProjectFiles();
                       if (!ownsReattachRun()) return;
                       recoveredExistingArtifact = findExistingArtifactProjectFile(
                         artifactToPersist,
@@ -5822,9 +5668,9 @@ export function ProjectView({
                             : prev.endedAt,
                       }),
                       true,
-                      { telemetryFinalized: true, mutationContext },
+                      { telemetryFinalized: true },
                     );
-                    if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
+                    await auditDesignSystemWorkspaceAfterRun(message.id);
                     if (ownsReattachRun()) onProjectsRefresh();
                   })();
                 }
@@ -5909,7 +5755,7 @@ export function ProjectView({
                             : {}),
                         }),
                         true,
-                        { telemetryFinalized: true, mutationContext },
+                        { telemetryFinalized: true },
                       );
                       retryFullReplayAfterCleanup = true;
                     } else {
@@ -5924,7 +5770,7 @@ export function ProjectView({
                             : {}),
                         }),
                         true,
-                        { telemetryFinalized: true, mutationContext },
+                        { telemetryFinalized: true },
                       );
                     }
                     skipFinalPersistNow = true;
@@ -5944,7 +5790,7 @@ export function ProjectView({
                           : {}),
                       }),
                       true,
-                      { telemetryFinalized: true, mutationContext },
+                      { telemetryFinalized: true },
                     );
                     skipFinalPersistNow = true;
                     completeReattachRuns();
@@ -5987,7 +5833,6 @@ export function ProjectView({
                 endedAt: isTerminalRunStatus(runStatus) ? prev.endedAt ?? Date.now() : prev.endedAt,
               }),
               true,
-              { mutationContext },
             );
             latestReattachRunStatus = runStatus;
             if (runStatus === 'canceled') {
@@ -6020,12 +5865,12 @@ export function ProjectView({
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
               setRunError(msg, message.id);
-              appendAssistantErrorEvent(message.id, msg, undefined, undefined, mutationContext);
+              appendAssistantErrorEvent(message.id, msg, undefined, undefined);
               updateMessageById(
                 message.id,
                 (prev) => ({ ...prev, runStatus: 'failed', endedAt: prev.endedAt ?? Date.now() }),
                 true,
-                { telemetryFinalized: true, mutationContext },
+                { telemetryFinalized: true },
               );
             }
           })
@@ -6095,15 +5940,9 @@ export function ProjectView({
       if (recovering) return;
       if (activeConversationOperationsRef.current.has(activeConversationId)) return;
       recovering = true;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !projectGit.isCurrent(mutationContext)) {
-        recovering = false;
-        return;
-      }
-      const activeOperationToken = claimConversationOperation(activeConversationId, mutationContext);
+      const activeOperationToken = claimConversationOperation(activeConversationId);
       const recoveryIsCurrent = () => Boolean(
-        projectGit.isCurrent(mutationContext)
-        && conversationOperationsRef.current.get(activeConversationId) === activeOperationToken,
+        conversationOperationsRef.current.get(activeConversationId) === activeOperationToken,
       );
       try {
         if (!recoveryIsCurrent()) return;
@@ -6160,7 +5999,7 @@ export function ProjectView({
             runId,
           ).catch(() => null);
           if (!recoveryIsCurrent()) return;
-          let nextFiles = await refreshProjectFiles({ mutationContext });
+          let nextFiles = await refreshProjectFiles();
           if (cancelled || !recoveryIsCurrent()) return;
           const beforeFileNames = new Set(
             message.preTurnFileNames ?? nextFiles.map((f) => f.name),
@@ -6190,10 +6029,10 @@ export function ProjectView({
               artifactToPersist,
               nextFiles,
               sourceText,
-              { pointerMinMtime: runStartedAt, mutationContext },
+              { pointerMinMtime: runStartedAt },
             );
             if (!recoveryIsCurrent()) return;
-            nextFiles = await refreshProjectFiles({ mutationContext });
+            nextFiles = await refreshProjectFiles();
             if (!recoveryIsCurrent()) return;
             recoveredExistingArtifact = findExistingArtifactProjectFile(
               artifactToPersist,
@@ -6234,9 +6073,9 @@ export function ProjectView({
               endedAt: prev.endedAt ?? recoveredArtifactEndedAt,
             }),
             true,
-            { telemetryFinalized: true, mutationContext },
+            { telemetryFinalized: true },
           );
-          if (mutationContext) await auditDesignSystemWorkspaceAfterRun(message.id, mutationContext);
+          await auditDesignSystemWorkspaceAfterRun(message.id);
           if (!recoveryIsCurrent()) return;
           scheduleConversationMessageRefresh(activeConversationId);
           onProjectsRefresh();
@@ -6348,8 +6187,6 @@ export function ProjectView({
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return false;
     const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
     const queuedMeta = stripQueueOnlyFromMeta({
       ...(input.meta ?? {}),
@@ -6363,9 +6200,6 @@ export function ProjectView({
       commentAttachments: input.commentAttachments,
       ...(queuedMeta === undefined ? {} : { meta: queuedMeta }),
       createdAt: Date.now(),
-      ...(mutationContext?.expectedProjectRevision === undefined
-        ? {}
-        : { expectedProjectRevision: mutationContext.expectedProjectRevision }),
     });
     if (!enqueued) return false;
     if (input.commentAttachments.length > 0) {
@@ -6392,7 +6226,6 @@ export function ProjectView({
               input.conversationId,
               commentId,
               'applying',
-              mutationContext,
             ),
           ),
         ).catch(() => {});
@@ -6408,15 +6241,10 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[] = commentsToAttachments(attachedComments),
       meta?: ProjectChatSendMeta,
       baseMessages?: ChatMessage[],
-      suppliedMutationContext?: ProjectMutationContext,
     ) => {
-      if (projectMutationReadOnly) return false;
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
-      const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
-      if (!mutationContext || mutationContext.signal.aborted) return false;
       restoredManualDraftRef.current = false;
-      activeMutationContextRef.current = mutationContext;
       const clientRequestId = meta?.clientRequestId ?? randomUUID();
       meta = {
         ...(meta ?? {}),
@@ -6667,7 +6495,7 @@ export function ProjectView({
       const nextVisibleMessages = retryTarget
         ? [...nextHistory, ...retryTarget.preservedAttempts, assistantMsg]
         : [...nextHistory, assistantMsg];
-      const operationToken = claimConversationOperation(runConversationId, mutationContext);
+      const operationToken = claimConversationOperation(runConversationId);
       messagesRef.current = nextVisibleMessages;
       setMessages(nextVisibleMessages);
       markStreamingConversation(runConversationId);
@@ -6684,7 +6512,6 @@ export function ProjectView({
           void Promise.resolve(
             saveMessage(project.id, runConversationId, userMsg, {
               createOnly: true,
-              mutationContext,
             }),
           ).then((stored) => {
             if (!stored || stored.content === userMsg.content) return;
@@ -6695,7 +6522,7 @@ export function ProjectView({
             );
           });
         } else {
-          persistMessage(userMsg, { mutationContext });
+          persistMessage(userMsg);
         }
       }
       // Intentionally do NOT persist `assistantMsg` here. In daemon mode it
@@ -6704,9 +6531,9 @@ export function ProjectView({
       // `onRunCreated` (below) once POST /api/runs returns a runId. In API
       // mode there is no runStatus, and the buffered text path will persist
       // as soon as the first delta lands.
-      persistMessage(assistantMsg, { mutationContext });
+      persistMessage(assistantMsg);
       if (runCommentAttachments.length > 0) {
-        void patchAttachedStatuses(runCommentAttachments, 'applying', mutationContext);
+        void patchAttachedStatuses(runCommentAttachments, 'applying');
         const consumedCommentIds = new Set(runCommentAttachments.map((attachment) => attachment.id));
         setAttachedComments((current) =>
           current.filter((comment) => !consumedCommentIds.has(comment.id)),
@@ -6732,7 +6559,6 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title },
-            mutationContext,
           );
         }
         const projectName = fallbackProjectName;
@@ -6754,7 +6580,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: projectName,
             ...(metadata ? { metadata } : {}),
-          }, mutationContext);
+          });
         }
       }
       const canReplaceConversationTitle = (title: string | null | undefined) => {
@@ -6785,7 +6611,6 @@ export function ProjectView({
             project.id,
             runConversationId,
             { title: agentTitle },
-            mutationContext,
           );
         }
         if (
@@ -6805,7 +6630,7 @@ export function ProjectView({
           void patchProject(project.id, {
             name: agentTitle,
             ...(metadata ? { metadata } : {}),
-          }, mutationContext);
+          });
         }
       };
 
@@ -6892,7 +6717,7 @@ export function ProjectView({
         persistTimer = scheduleProjectTimeout(() => {
           persistTimer = null;
           if (!ownsRun()) return;
-          persistMessageById(assistantId, { mutationContext });
+          persistMessageById(assistantId);
         }, 500);
       };
       const persistAssistantNowKeepalive = () => {
@@ -6901,7 +6726,7 @@ export function ProjectView({
           clearProjectTimeout(persistTimer);
           persistTimer = null;
         }
-        persistMessageById(assistantId, { keepalive: true, mutationContext });
+        persistMessageById(assistantId, { keepalive: true });
       };
       const pushEvent = (ev: AgentEvent) => {
         if (!ownsRun()) return;
@@ -6912,7 +6737,7 @@ export function ProjectView({
         }));
         if (ev.kind === 'live_artifact') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
-          void refreshLiveArtifacts({ mutationContext }).then(() => {
+          void refreshLiveArtifacts().then(() => {
             if (!ownsRun()) return;
             if (ev.action !== 'deleted') requestOpenFile(liveArtifactTabId(ev.artifactId));
           });
@@ -6921,7 +6746,7 @@ export function ProjectView({
         }
         if (ev.kind === 'live_artifact_refresh') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
-          void refreshLiveArtifacts({ mutationContext });
+          void refreshLiveArtifacts();
           onProjectsRefresh();
           return;
         }
@@ -6984,7 +6809,7 @@ export function ProjectView({
               // Only auto-open if the file actually landed in the project's
               // file list — otherwise an out-of-project Write (e.g. an
               // upstream repo edit) would spawn a permanent placeholder tab.
-              void refreshProjectFiles({ mutationContext }).then(async (nextFiles) => {
+              void refreshProjectFiles().then(async (nextFiles) => {
                 if (!ownsRun()) return;
                 // A .jsx/.tsx loaded by a sibling HTML entry is a module of a
                 // multi-file React prototype, not a standalone page — don't
@@ -7089,9 +6914,7 @@ export function ProjectView({
       abortRef.current = controller;
       cancelRef.current = cancelController;
       const ownsRun = () => Boolean(
-        mutationContext
-        && projectGit.isCurrent(mutationContext)
-        && !controller.signal.aborted
+        !controller.signal.aborted
         && !supersededRunsRef.current.has(controller)
         && conversationOperationsRef.current.get(runConversationId) === operationToken
       );
@@ -7197,10 +7020,10 @@ export function ProjectView({
                 ],
               }),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
             if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
+              void patchAttachedStatuses(runCommentAttachments, 'failed');
             }
             const ownsCurrentRun = clearCurrentRunStreamingMarker(
               runConversationId,
@@ -7208,7 +7031,7 @@ export function ProjectView({
               cancelController,
             );
             if (ownsCurrentRun) updateConversationLatestRun('failed', endedAt);
-            void refreshProjectFiles({ mutationContext }).catch(() => {
+            void refreshProjectFiles().catch(() => {
               // Retain the last accepted file list while the daemon recovers.
             });
             onProjectsRefresh();
@@ -7229,7 +7052,7 @@ export function ProjectView({
           const finalizingRunId = currentRunId;
           if (finalizingRunId) finalizingLocalRunIdsRef.current.add(finalizingRunId);
           if (runCommentAttachments.length > 0) {
-            void patchAttachedStatuses(runCommentAttachments, 'needs_review', mutationContext);
+            void patchAttachedStatuses(runCommentAttachments, 'needs_review');
           }
           const ownsCurrentRun = clearCurrentRunStreamingMarker(
             runConversationId,
@@ -7247,7 +7070,7 @@ export function ProjectView({
               // otherwise win the race with the file-change invalidation and
               // make this turn persist an empty producedFiles list. Completion
               // attribution needs a fresh post-run snapshot.
-              let nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+              let nextFiles = await refreshProjectFiles({ fresh: true });
               if (!ownsRun()) return;
               let artifactPersistenceSucceeded = false;
               let artifactPersistenceError: string | undefined;
@@ -7287,12 +7110,11 @@ export function ProjectView({
                     artifactToPersist,
                     nextFiles,
                     finalText,
-                    { mutationContext },
                   );
                   if (!ownsRun()) return;
                   if (persistence.ok) artifactPersistenceSucceeded = true;
                   else artifactPersistenceError = persistence.error;
-                  nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+                  nextFiles = await refreshProjectFiles({ fresh: true });
                   if (!ownsRun()) return;
                 }
               }
@@ -7404,14 +7226,14 @@ export function ProjectView({
               setMessages((current) => current.map((message) =>
                 message.id === assistantId ? finalized : message
               ));
-              persistMessage(finalized, { telemetryFinalized: true, mutationContext });
+              persistMessage(finalized, { telemetryFinalized: true });
               if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
                 setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
                 if (runCommentAttachments.length > 0) {
-                  void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
+                  void patchAttachedStatuses(runCommentAttachments, 'failed');
                 }
               }
-              await auditDesignSystemWorkspaceAfterRun(assistantId, mutationContext);
+              await auditDesignSystemWorkspaceAfterRun(assistantId);
               if (!ownsRun()) return;
             } finally {
               clearTraceTouchedFilePaths();
@@ -7459,7 +7281,7 @@ export function ProjectView({
             errorCode === 'DESIGN_SYSTEM_ENRICHMENT_IN_PROGRESS';
           if (ownsRun()) {
             if (!duplicateEnrichmentRejected) setRunError(err.message, assistantId);
-            appendAssistantErrorEvent(assistantId, err.message, errorCode, failure, mutationContext);
+            appendAssistantErrorEvent(assistantId, err.message, errorCode, failure);
             updateAssistant((prev) => ({
               ...prev,
               endedAt,
@@ -7469,7 +7291,7 @@ export function ProjectView({
               resumable,
             }));
             if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed', mutationContext);
+              void patchAttachedStatuses(runCommentAttachments, 'failed');
             }
           }
           // Mark the run as completed in the reattach registry so that
@@ -7556,7 +7378,7 @@ export function ProjectView({
                     conversationFinalizedInline = true;
                   }
                   if (runCommentAttachments.length > 0) {
-                    void patchAttachedStatuses(runCommentAttachments, 'needs_review', mutationContext);
+                    void patchAttachedStatuses(runCommentAttachments, 'needs_review');
                   }
                   finalRunStatusAfterError = 'succeeded';
                   refreshConversationAfterError = true;
@@ -7608,7 +7430,7 @@ export function ProjectView({
           }
           const finalized = messagesRef.current.find((message) => message.id === assistantId);
           if (finalized && ownsRun()) {
-            persistMessage(finalized, { telemetryFinalized: true, mutationContext });
+            persistMessage(finalized, { telemetryFinalized: true });
           }
           if (refreshConversationAfterError) {
             scheduleConversationMessageRefresh(runConversationId);
@@ -7618,7 +7440,7 @@ export function ProjectView({
             ...(authoritativeArtifactPaths ?? []),
           ];
           void (async () => {
-            const nextFiles = await refreshProjectFiles({ fresh: true, mutationContext });
+            const nextFiles = await refreshProjectFiles({ fresh: true });
             if (!ownsRun()) return;
             if (authoritativeArtifactPaths === undefined) return;
             const produced = computeProducedFiles(
@@ -7639,7 +7461,7 @@ export function ProjectView({
               assistantId,
               (prev) => ({ ...prev, producedFiles: produced, traceObjectFiles }),
               true,
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
           })().catch(() => {
             // Retain the last accepted file list while the daemon recovers.
@@ -7734,7 +7556,6 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           handlers,
           projectId: project.id,
-          mutationContext,
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
@@ -7785,7 +7606,6 @@ export function ProjectView({
               assistantId,
               (prev) => ({ ...prev, ...settledFields }),
               true,
-              { mutationContext },
             );
           },
           onRunCreated: (runId, strategyTask) => {
@@ -7824,7 +7644,6 @@ export function ProjectView({
             // The view may already be on a different project/conversation;
             // pin the daemon run to the original row so returning can reattach.
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
-              mutationContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -7858,7 +7677,6 @@ export function ProjectView({
               true,
               {
                 ...(runStatus === 'canceled' ? { telemetryFinalized: true } : {}),
-                mutationContext,
               },
             );
             updateConversationLatestRun(runStatus, endedAt);
@@ -7956,7 +7774,6 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           handlers,
           projectId: project.id,
-          mutationContext,
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
@@ -8036,7 +7853,6 @@ export function ProjectView({
             };
             latestAssistantMsg = pinnedAssistant;
             void saveMessage(project.id, runConversationId, pinnedAssistant, {
-              mutationContext,
             });
             updateMessageById(assistantId, (prev) => ({
               ...prev,
@@ -8066,7 +7882,6 @@ export function ProjectView({
               true,
               {
                 ...(runStatus === 'canceled' ? { telemetryFinalized: true } : {}),
-                mutationContext,
               },
             );
             updateConversationLatestRun(runStatus, endedAt);
@@ -8125,7 +7940,6 @@ export function ProjectView({
       byokImageModelOptionsPV,
       byokVideoModelOptionsPV,
       byokSpeechModelOptionsPV,
-      projectMutationReadOnly,
     ],
   );
 
@@ -8150,12 +7964,6 @@ export function ProjectView({
   const handleStop = useCallback(() => {
     const stoppedAt = Date.now();
     const stoppedConversationId = streamingConversationIdRef.current ?? activeConversationId;
-    const stoppedOperation = stoppedConversationId
-      ? conversationOperationContextsRef.current.get(stoppedConversationId)
-      : undefined;
-    const stoppedMutationContext = stoppedOperation?.mutationContext
-      ?? activeMutationContextRef.current
-      ?? captureProjectMutation(project.id);
     const programmaticBrandId = isProgrammaticBrandExtractionProject(currentProject.metadata)
       ? currentProject.metadata?.brandId?.trim() || ''
       : '';
@@ -8203,11 +8011,10 @@ export function ProjectView({
     const stopProjection = finalizeActiveAssistantMessagesOnStop(messagesRef.current, stoppedAt);
     messagesRef.current = stopProjection.messages;
     setMessages(stopProjection.messages);
-    if (stoppedConversationId && stoppedMutationContext) {
+    if (stoppedConversationId) {
       for (const message of stopProjection.finalized) {
         void saveMessage(project.id, stoppedConversationId, message, {
           telemetryFinalized: true,
-          mutationContext: stoppedMutationContext,
         });
       }
     }
@@ -8238,8 +8045,6 @@ export function ProjectView({
   const sendQueuedChatSendNow = useCallback((id: string) => {
     const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (currentConversationBusy) {
       // "Send now" while the agent is still working: the user has explicitly
       // chosen this turn over the in-flight one, so interrupt the running run
@@ -8287,7 +8092,6 @@ export function ProjectView({
               comment.conversationId,
               comment.id,
               'open',
-              mutationContext,
             ),
           ),
         ).catch(() => {});
@@ -8298,19 +8102,14 @@ export function ProjectView({
     }
     void (async () => {
       armSlideNavForQueuedSend(item);
-      if (item.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
-        setError('Project history changed. The queued draft was kept in history but was not sent; reload and send it again.');
-        return;
-      }
       const started = await handleSend(
         item.prompt,
         item.attachments,
         item.commentAttachments,
         { ...(item.meta ?? {}), queueDrain: true },
         undefined,
-        mutationContext,
       );
-      if (started && isProjectMutationCurrent(project.id, mutationContext)) {
+      if (started) {
         removeQueuedChatSend(id);
       }
     })();
@@ -8331,27 +8130,14 @@ export function ProjectView({
     startingQueuedChatSendIdRef.current = next.id;
     armSlideNavForQueuedSend(next);
     void (async () => {
-      const mutationContext = captureProjectMutation(project.id);
-      if (next.expectedProjectRevision !== mutationContext?.expectedProjectRevision) {
-        startingQueuedChatSendIdRef.current = null;
-        setError('Project history changed. The queued draft was not sent; reload and send it again.');
-        return;
-      }
       const started = await handleSend(
         next.prompt,
         next.attachments,
         next.commentAttachments,
         { ...(next.meta ?? {}), queueDrain: true },
         undefined,
-        mutationContext,
       );
       if (!started) {
-        if (startingQueuedChatSendIdRef.current === next.id) {
-          startingQueuedChatSendIdRef.current = null;
-        }
-        return;
-      }
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
         if (startingQueuedChatSendIdRef.current === next.id) {
           startingQueuedChatSendIdRef.current = null;
         }
@@ -8463,10 +8249,6 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       images: File[] = [],
     ): Promise<CommentSendResult> => {
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
-        return { status: 'rejected', commentIds: [] };
-      }
       if (currentConversationQueueDisabled) {
         return { status: 'rejected', commentIds: [] };
       }
@@ -8484,7 +8266,6 @@ export function ProjectView({
           project.id,
           images,
           undefined,
-          mutationContext,
         );
         if (result.uploaded.length !== images.length) {
           return { status: 'rejected', commentIds: [] };
@@ -8493,7 +8274,7 @@ export function ProjectView({
       }
       if (commentAttachments.length === 0) {
         const queued = uploaded.length > 0
-          ? await handleSend('', uploaded, [], { queueOnly: true, entryFrom: 'comment' }, undefined, mutationContext)
+          ? await handleSend('', uploaded, [], { queueOnly: true, entryFrom: 'comment' })
           : false;
         return {
           status: queued ? 'queued' : 'rejected',
@@ -8513,7 +8294,6 @@ export function ProjectView({
           [commentTaskContextAttachment(commentAttachment)],
           { queueOnly: true, entryFrom: 'comment' },
           undefined,
-          mutationContext,
         );
         if (!queued) {
           return { status: 'rejected', commentIds: queuedCommentIds };
@@ -8574,10 +8354,6 @@ export function ProjectView({
       action: PluginFolderAgentAction,
     ): Promise<PluginFolderAgentActionResult> => {
       if (currentConversationActionDisabled || !activeConversationId) return { status: 'stale' };
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) {
-        return { status: 'stale' };
-      }
       const pluginWorkflowWorkspaceContext = projectRunWorkspaceContext;
       setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
       if (action === 'install') {
@@ -8587,14 +8363,9 @@ export function ProjectView({
           outcome = await installGeneratedPluginFolder(
             project.id,
             relativePath,
-            mutationContext,
           );
         } catch (error) {
-          if (
-            error instanceof ProjectStateChangedError
-            || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
-            || !isProjectMutationCurrent(project.id, mutationContext)
-          ) {
+          if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') {
             return { status: 'stale' };
           }
           throw error;
@@ -8610,7 +8381,6 @@ export function ProjectView({
             return next;
           });
         }
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return { status: 'stale' };
         if (!outcome.ok) throw new Error(outcome.message);
         return { status: 'success', message: outcome.message };
       }
@@ -8623,7 +8393,6 @@ export function ProjectView({
           project.id,
           relativePath,
           shareAction,
-          mutationContext,
         );
       } catch (error) {
         setActivePluginActionPaths((prev) => {
@@ -8636,25 +8405,10 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        if (
-          error instanceof ProjectStateChangedError
-          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
-          || !isProjectMutationCurrent(project.id, mutationContext)
-        ) return { status: 'stale' };
+        if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') {
+          return { status: 'stale' };
+        }
         throw error;
-      }
-      if (!isProjectMutationCurrent(project.id, mutationContext)) {
-        setActivePluginActionPaths((prev) => {
-          const next = new Set(prev);
-          next.delete(relativePath);
-          return next;
-        });
-        setHiddenAssistantPluginActionPaths((prev) => {
-          const next = new Set(prev);
-          next.delete(relativePath);
-          return next;
-        });
-        return { status: 'stale' };
       }
       const startedAt = taskStart.startedAt;
       const messageId = randomUUID();
@@ -8705,9 +8459,7 @@ export function ProjectView({
             taskStart.taskId,
             since,
             25_000,
-            mutationContext.signal,
           );
-          if (!isProjectMutationCurrent(project.id, mutationContext)) return;
           since = snapshot.nextSince;
           if (snapshot.progress.length > 0) {
             const newTextEvents = snapshot.progress
@@ -8744,7 +8496,6 @@ export function ProjectView({
             next.delete(relativePath);
             return next;
           });
-          if (!isProjectMutationCurrent(project.id, mutationContext)) return;
           if (snapshot.status === 'done' && snapshot.result) {
             setForceStreamingPluginMessageIds((prev) => {
               const next = new Set(prev);
@@ -8774,7 +8525,7 @@ export function ProjectView({
                 endedAt,
                 runStatus: 'succeeded',
               },
-              { telemetryFinalized: true, mutationContext },
+              { telemetryFinalized: true },
             );
             updateConversationLatestRun('succeeded', endedAt);
             return;
@@ -8807,7 +8558,7 @@ export function ProjectView({
               endedAt,
               runStatus: 'failed',
             },
-            { telemetryFinalized: true, mutationContext },
+            { telemetryFinalized: true },
           );
           updateConversationLatestRun('failed', endedAt);
           return;
@@ -8829,7 +8580,6 @@ export function ProjectView({
           next.delete(relativePath);
           return next;
         });
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         replaceConversationMessage(
           conversationId,
           {
@@ -8850,7 +8600,7 @@ export function ProjectView({
             endedAt,
             runStatus: 'failed',
           },
-          { telemetryFinalized: true, mutationContext },
+          { telemetryFinalized: true },
         );
         updateConversationLatestRun('failed', endedAt);
       });
@@ -8898,10 +8648,7 @@ export function ProjectView({
   const persistDesignSystemReviewEntry = useCallback((
     sectionTitle: string,
     entry: DesignSystemReviewEntry,
-    suppliedMutationContext?: ProjectMutationContext,
   ): boolean => {
-    const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return false;
     const baseMetadata: ProjectMetadata = {
       kind: project.metadata?.kind ?? 'other',
       ...project.metadata,
@@ -8914,7 +8661,7 @@ export function ProjectView({
       },
     };
     onProjectChange({ ...project, metadata });
-    void patchProject(project.id, { metadata }, mutationContext);
+    void patchProject(project.id, { metadata });
     return true;
   }, [onProjectChange, project, projectRunWorkspaceContext]);
 
@@ -8922,9 +8669,7 @@ export function ProjectView({
     sectionTitle: string,
     feedback: string,
     sectionFiles: string[],
-    suppliedMutationContext: ProjectMutationContext,
   ): DesignSystemReviewAgentTask | void => {
-    if (!isProjectMutationCurrent(project.id, suppliedMutationContext)) return;
     const cleanFeedback = feedback.trim();
     if (!cleanFeedback) return;
     const prompt = designSystemNeedsWorkPrompt(sectionTitle, cleanFeedback, sectionFiles);
@@ -8947,9 +8692,6 @@ export function ProjectView({
       prompt,
       designSystemFeedbackAttachments(projectFiles, sectionFiles),
       [],
-      undefined,
-      undefined,
-      suppliedMutationContext,
     );
     return task;
   }, [
@@ -8964,10 +8706,7 @@ export function ProjectView({
     sectionTitle: string,
     decision: DesignSystemReviewEntry['decision'],
     details?: DesignSystemReviewDetails,
-    suppliedMutationContext?: ProjectMutationContext,
   ) => {
-    const mutationContext = suppliedMutationContext ?? captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     const entry: DesignSystemReviewEntry = {
       decision,
       updatedAt: new Date().toISOString(),
@@ -8975,7 +8714,7 @@ export function ProjectView({
     if (details?.feedback) entry.feedback = details.feedback;
     if (details?.files) entry.files = details.files;
     if (details?.agentTask) entry.agentTask = details.agentTask;
-    persistDesignSystemReviewEntry(sectionTitle, entry, mutationContext);
+    persistDesignSystemReviewEntry(sectionTitle, entry);
   }, [persistDesignSystemReviewEntry, project.id]);
 
   useEffect(() => {
@@ -9021,7 +8760,6 @@ export function ProjectView({
   ]);
 
   const handleNewConversation = useCallback(async () => {
-    if (projectMutationReadOnly) return;
     if (creatingConversationRef.current) return;
     // Only block if we're sure the current conversation is empty:
     // messages must be loaded AND match the active conversation.
@@ -9033,18 +8771,12 @@ export function ProjectView({
     }
     const creationGeneration = conversationCreationGenerationRef.current + 1;
     conversationCreationGenerationRef.current = creationGeneration;
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
-    const ownsCreation = () => Boolean(
-      conversationCreationGenerationRef.current === creationGeneration
-      && isProjectMutationCurrent(project.id, mutationContext)
-    );
+    const ownsCreation = () => conversationCreationGenerationRef.current === creationGeneration;
     creatingConversationRef.current = true;
     setCreatingConversation(true);
     setConversationLoadError(null);
     try {
       const fresh = await createConversation(project.id, undefined, {
-        mutationContext,
       });
       if (!ownsCreation()) return;
       if (!fresh) throw new Error('Could not create a conversation for this project.');
@@ -9097,7 +8829,6 @@ export function ProjectView({
     navigate,
     openTabsState.active,
     projectRunAuthorityKey,
-    projectMutationReadOnly,
   ]);
 
   const handleSelectConversation = useCallback((id: string) => {
@@ -9159,19 +8890,12 @@ export function ProjectView({
 
   const handleDeleteConversation = useCallback(
     async (id: string) => {
-      if (projectMutationReadOnly) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
-      const operationToken = claimConversationOperation(id, mutationContext);
-      const ownsDelete = () => Boolean(
-        isProjectMutationCurrent(project.id, mutationContext)
-        && conversationOperationsRef.current.get(id) === operationToken
-      );
+      const operationToken = claimConversationOperation(id);
+      const ownsDelete = () => conversationOperationsRef.current.get(id) === operationToken;
       try {
         const ok = await deleteConversationApi(
           project.id,
           id,
-          mutationContext,
         );
         if (!ok || !ownsDelete()) return;
         // The deleted conversation may have owned an unanswered
@@ -9188,7 +8912,6 @@ export function ProjectView({
           // to write into. Keep the create outside a React updater and under
           // the delete operation's original authority/token.
           const fresh = await createConversation(project.id, undefined, {
-            mutationContext,
           });
           if (!fresh || !ownsDelete()) return;
           conversationsRef.current = [fresh];
@@ -9206,16 +8929,12 @@ export function ProjectView({
       activeConversationId,
       claimConversationOperation,
       onProjectsRefresh,
-      projectMutationReadOnly,
       releaseConversationOperation,
     ],
   );
 
   const handleRenameConversation = useCallback(
     async (id: string, title: string) => {
-      if (projectMutationReadOnly) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const trimmed = title.trim() || null;
       setConversations((curr) =>
         curr.map((c) => (c.id === id ? { ...c, title: trimmed } : c)),
@@ -9224,17 +8943,13 @@ export function ProjectView({
         project.id,
         id,
         { title: trimmed },
-        mutationContext,
       );
     },
-    [project.id, projectMutationReadOnly],
+    [project.id],
   );
 
   const handleConversationSessionModeChange = useCallback(
     async (id: string, sessionMode: ChatSessionMode) => {
-      if (projectMutationReadOnly) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       setConversations((curr) =>
         curr.map((conversation) =>
           conversation.id === id ? { ...conversation, sessionMode } : conversation,
@@ -9244,7 +8959,6 @@ export function ProjectView({
         project.id,
         id,
         { sessionMode },
-        mutationContext,
       );
       if (updated) {
         setConversations((curr) =>
@@ -9254,7 +8968,7 @@ export function ProjectView({
         );
       }
     },
-    [project.id, projectMutationReadOnly],
+    [project.id],
   );
 
   const handleActiveConversationSessionModeChange = useCallback(
@@ -9267,9 +8981,7 @@ export function ProjectView({
 
   const handleForkFromMessage = useCallback(
     async (assistantMessage: ChatMessage) => {
-      if (!activeConversationId || forkingMessageId || projectMutationReadOnly) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
+      if (!activeConversationId || forkingMessageId) return;
       const requestId = analytics.newRequestId();
       const startedAt = Date.now();
       const forkIndex = messages.findIndex((message) => message.id === assistantMessage.id);
@@ -9311,13 +9023,11 @@ export function ProjectView({
             forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
           forkFallbackPredecessorMessageId,
           throwOnError: true,
-          mutationContext,
         });
         if (!fresh) {
           emptyResponse = true;
           throw new Error(t('chat.forkConversationFailed'));
         }
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         trackConversationForkResult(
           analytics.track,
           {
@@ -9353,7 +9063,6 @@ export function ProjectView({
         onProjectsRefresh();
         setError(null);
       } catch (err) {
-        if (!isProjectMutationCurrent(project.id, mutationContext)) return;
         trackConversationForkResult(
           analytics.track,
           {
@@ -9385,7 +9094,6 @@ export function ProjectView({
       openTabsState.active,
       project.id,
       project.metadata,
-      projectMutationReadOnly,
       t,
     ],
   );
@@ -9399,12 +9107,9 @@ export function ProjectView({
   }>>(new Map());
   const handleProjectRename = useCallback(
     (newName: string) => {
-      if (projectMutationReadOnly) return;
       const trimmed = newName.trim();
       if (!trimmed || trimmed === project.name) return;
       const previousName = project.name;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       const renameKey = JSON.stringify([project.id]);
       let renameState = projectRenameStatesRef.current.get(renameKey);
       if (!renameState || renameState.pending === 0) {
@@ -9434,7 +9139,7 @@ export function ProjectView({
         const persisted = await patchProject(project.id, {
           name: trimmed,
           ...(metadata ? { metadata } : {}),
-        }, mutationContext);
+        });
         if (persisted) renameState.confirmed = persisted;
         const isLatestQueuedRename =
           projectRenameStatesRef.current.get(renameKey) !== renameState
@@ -9502,7 +9207,6 @@ export function ProjectView({
       onProjectRenameStarted,
       onProjectsRefresh,
       project,
-      projectMutationReadOnly,
     ],
   );
 
@@ -9553,9 +9257,6 @@ export function ProjectView({
 
   const handleChangeDesignSystemId = useCallback(
     (nextId: string | null) => {
-      if (projectMutationReadOnly) return;
-      const mutationContext = captureProjectMutation(project.id);
-      if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
       if ((projectDesignSystemId ?? null) === nextId) return;
       // `design_system_apply_result` studio variant. The existing
       // NewProjectPanel picker fires the same event under
@@ -9627,7 +9328,7 @@ export function ProjectView({
         updatedAt: Date.now(),
       };
       onProjectChange(updated);
-      void patchProject(project.id, { designSystemId: nextId }, mutationContext);
+      void patchProject(project.id, { designSystemId: nextId });
     },
     [
       project,
@@ -9635,7 +9336,6 @@ export function ProjectView({
       onProjectChange,
       designSystems,
       analytics.track,
-      projectMutationReadOnly,
     ],
   );
 
@@ -9707,7 +9407,6 @@ export function ProjectView({
   // `teamSynced`, i.e. the caller's own system or a built-in preset) reads as
   // editable, matching every other consumer of this field.
   const designSystemEditable =
-    !projectMutationReadOnly &&
     designSystemProject?.canMutate !== false &&
     (
       !projectIsProgrammaticBrandExtraction ||
@@ -9826,7 +9525,6 @@ export function ProjectView({
   const [composerDraftSignal, setComposerDraftSignal] = useState<{
     id: string;
     projectId: string;
-    generation: number;
     conversationId: string;
     text: string;
     attachments?: ChatAttachment[];
@@ -9859,7 +9557,6 @@ export function ProjectView({
       setComposerDraftSignal({
         id: randomUUID(),
         projectId: project.id,
-        generation: projectGit.generation,
         conversationId: activeConversationId,
         text: buildRepoImportPrompt(designSystemProject, projectFiles.map((file) => file.name)),
         source: 'connect-repo',
@@ -9867,7 +9564,7 @@ export function ProjectView({
     } else {
       onOpenSettings('composio');
     }
-  }, [activeConversationId, githubConnected, onOpenSettings, designSystemProject, project.id, projectFiles, projectGit.generation]);
+  }, [activeConversationId, githubConnected, onOpenSettings, designSystemProject, project.id, projectFiles]);
 
   // "Next step" affordance handlers (shown under the last assistant message
   // once it produced a previewable HTML artifact). Share reuses the preview
@@ -9896,12 +9593,11 @@ export function ProjectView({
     setComposerDraftSignal({
       id: randomUUID(),
       projectId: project.id,
-      generation: projectGit.generation,
       conversationId: activeConversationId,
       text,
       source: 'browser',
     });
-  }, [activeConversationId, project.id, projectGit.generation]);
+  }, [activeConversationId, project.id]);
 
   const isDeck = useMemo(
     () =>
@@ -10213,7 +9909,6 @@ export function ProjectView({
     if (!activeConversationId) return;
     const pendingKey = [
       project.id,
-      projectGit.generation,
       activeConversationId,
       pendingPrompt,
     ].join('\u0000');
@@ -10225,7 +9920,6 @@ export function ProjectView({
     const nextDraft = {
       id: occurrence.id,
       projectId: project.id,
-      generation: projectGit.generation,
       conversationId: activeConversationId,
       text: pendingPrompt,
       source: 'pending-prompt' as const,
@@ -10234,18 +9928,17 @@ export function ProjectView({
       if (current?.id === nextDraft.id) return current;
       return nextDraft;
     });
-  }, [activeConversationId, project.id, project.pendingPrompt, projectGit.generation]);
+  }, [activeConversationId, project.id, project.pendingPrompt]);
   useEffect(() => {
     if (!composerDraftSignal) return;
     if (
       composerDraftSignal.projectId !== project.id
-      || composerDraftSignal.generation !== projectGit.generation
       || composerDraftSignal.conversationId !== activeConversationId
     ) {
       const invalidatedSignalId = composerDraftSignal.id;
       setComposerDraftSignal((current) => current?.id === invalidatedSignalId ? undefined : current);
     }
-  }, [activeConversationId, composerDraftSignal, project.id, projectGit.generation]);
+  }, [activeConversationId, composerDraftSignal, project.id]);
   const chatInitialDraft = chatSeed?.value;
   // Home → Studio handoff confirmation (spec §11.1 onboarding_prompt_prefilled):
   // the recommendation's first request actually reached this composer. Fires
@@ -10287,9 +9980,7 @@ export function ProjectView({
     if (brandProgrammaticContinueStartingRef.current) return;
     const brandId = currentProject.metadata?.brandId?.trim();
     if (!projectIsProgrammaticBrandExtraction || !brandId) return;
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
-    const ownsContinuation = () => isProjectMutationCurrent(project.id, mutationContext);
+    const ownsContinuation = () => projectIdRef.current === project.id;
     brandProgrammaticContinueStartingRef.current = true;
     setBrandProgrammaticContinueStarting(true);
     setBrandExtractionStatusOverride({ brandId, status: 'extracting' });
@@ -10516,8 +10207,6 @@ export function ProjectView({
   ]);
 
   const handleBrandAgentExtraction = useCallback(() => {
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (brandAgentExtractionStarting) return;
     const brandId = currentProject.metadata?.brandId?.trim();
     if (brandId) setBrandExtractionStatusOverride({ brandId, status: 'extracting' });
@@ -10534,7 +10223,6 @@ export function ProjectView({
       [],
       undefined,
       undefined,
-      mutationContext,
     ).finally(() => setBrandAgentExtractionStarting(false));
   }, [
     brandAgentExtractionStarting,
@@ -10555,8 +10243,6 @@ export function ProjectView({
   // stops a double trigger: `brandEnrichmentStarting` only updates after a
   // re-render, so it cannot reject a second call inside the same tick.
   const startBrandEnrichment = useCallback(() => {
-    const mutationContext = captureProjectMutation(project.id);
-    if (!mutationContext || !isProjectMutationCurrent(project.id, mutationContext)) return;
     if (config.mode !== 'daemon') return;
     const system = designSystemProject ?? activeDesignSystemSummary;
     const skillIds = installedBrandEnrichmentSkillIds(skills);
@@ -10579,7 +10265,6 @@ export function ProjectView({
       [],
       { ...(skillIds.length > 0 ? { skillIds } : {}), dsEnrichment: true },
       undefined,
-      mutationContext,
     ).finally(() => setBrandEnrichmentStarting(false));
   }, [
     activeDesignSystemSummary,
@@ -10857,222 +10542,6 @@ export function ProjectView({
   const autoSentRef = useRef(false);
   const autoSendInFlightRef = useRef(false);
 
-  useEffect(() => registerProjectEpochInvalidator(project.id, (advancedGeneration) => {
-    // Detach browser work synchronously with the epoch transition. Deliberately
-    // leave cancelRef/cancel controllers alone: those map to the daemon's
-    // user-visible run cancellation endpoint, while a restore only revokes
-    // this browser's stale authority.
-    for (const timer of trackedTimeoutsRef.current) clearTimeout(timer);
-    trackedTimeoutsRef.current.clear();
-    if (tabsDaemonSaveTimerRef.current !== null) clearTimeout(tabsDaemonSaveTimerRef.current);
-    tabsDaemonSaveTimerRef.current = null;
-    pendingDaemonTabsRef.current = null;
-    sendTextBufferRef.current?.cancel();
-    sendTextBufferRef.current = null;
-    conversationOperationsRef.current.clear();
-    activeConversationOperationsRef.current.clear();
-    conversationOperationContextsRef.current.clear();
-    for (const buffer of reattachTextBuffersRef.current) buffer.cancel();
-    reattachTextBuffersRef.current.clear();
-    abortRef.current?.abort();
-    abortRef.current = null;
-    for (const controller of reattachControllersRef.current.values()) controller.abort();
-    reattachControllersRef.current.clear();
-    conversationsRefreshTokenRef.current += 1;
-    conversationCreationGenerationRef.current += 1;
-    creatingConversationRef.current = false;
-    setCreatingConversation(false);
-    messagesRequestGenerationRef.current += 1;
-    previewCommentsGenerationRef.current += 1;
-    projectFilesRequestSeqRef.current += 1;
-    liveArtifactsRequestSeqRef.current += 1;
-    invalidateProjectFilesCache(project.id);
-    htmlContentCacheRef.current.clear();
-    invalidateHtmlSourceSnapshotProject(project.id);
-    iframeKeepAlivePool.evictProject(project.id, { includeActive: true });
-    activeMutationContextRef.current = undefined;
-    startingQueuedChatSendIdRef.current = null;
-    blockedRunTaskRef.current = null;
-    savedArtifactRef.current = null;
-    shareToOpenDesignBusyMessageIdRef.current = null;
-    setShareToOpenDesignBusyMessageId(null);
-    setActivePluginActionPaths(new Set());
-    setHiddenAssistantPluginActionPaths(new Set());
-    setForceStreamingPluginMessageIds(new Set());
-    setLiveToolInput({});
-    setStreaming(false);
-    streamingConversationIdRef.current = null;
-    setStreamingConversationId(null);
-    // Draft payloads are exact-epoch values. Never retag an old payload into
-    // a new generation; an already-applied editor draft remains local.
-    // A pending prompt remains a durable, unapplied occurrence. Keep its old
-    // payload in state until the generation-scoped effect replaces it; the
-    // render boundary above withholds the stale generation from ChatPane.
-    if (composerDraftSignalRef.current?.source !== 'pending-prompt') {
-      setComposerDraftSignal(undefined);
-    }
-    if (autoSendFirstMessageRef.current && !autoSentRef.current) {
-      const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
-      const attachments = autoSendAttachmentsRef.current ?? readAutoSendAttachments(project.id);
-      const context = autoSendContextRef.current ?? readAutoSendContext(project.id);
-      const conversationId = activeConversationIdRef.current;
-      if (conversationId && (text.trim() || attachments.length > 0 || context)) {
-        restoredManualDraftRef.current = true;
-        setComposerDraftSignal({
-          id: randomUUID(),
-          projectId: project.id,
-          generation: advancedGeneration,
-          conversationId,
-          text,
-          attachments,
-          ...(context ? { meta: { context } } : {}),
-          source: 'auto-send',
-        });
-      }
-    }
-    // Keep the durable Home handoff until the send boundary accepts it.
-    autoSendInFlightRef.current = false;
-    setError('Project history changed. Reloaded content is being reconciled; your manual draft is preserved.');
-  }), [iframeKeepAlivePool, project.id, setError]);
-
-  useEffect(() => {
-    if (!projectGit.writeLocked) return;
-    const generation = projectGit.generation;
-    const reconciliationContext = projectGit.capture();
-    if (!reconciliationContext) return;
-    const conversationsRequestToken = ++conversationsRefreshTokenRef.current;
-    const hydrateCurrentConversation = async () => {
-      const nextConversations = await listConversations(project.id, {
-        throwOnError: true,
-        fresh: true,
-        signal: reconciliationContext.signal,
-      });
-      if (
-        projectIdRef.current !== project.id
-        || conversationsRefreshTokenRef.current !== conversationsRequestToken
-        || !projectGit.isCurrent(reconciliationContext)
-      ) return;
-      conversationsLoadedProjectIdRef.current = project.id;
-      setConversations(nextConversations);
-      const retainedConversation = nextConversations.find(
-        (conversation) => conversation.id === activeConversationIdRef.current,
-      );
-      const routedConversation = routeConversationId
-        ? nextConversations.find((conversation) => conversation.id === routeConversationId)
-        : undefined;
-      const selectedConversationId = (
-        retainedConversation?.id
-        ?? routedConversation?.id
-        ?? nextConversations[0]?.id
-        ?? null
-      );
-      setPendingEmptyConversationSeed(
-        selectedConversationId
-          ? null
-          : { projectId: project.id, authorityKey: 'current' },
-      );
-      activeConversationIdRef.current = selectedConversationId;
-      setActiveConversationId(selectedConversationId);
-      if (!selectedConversationId) {
-        messagesRequestGenerationRef.current += 1;
-        setMessages([]);
-        setMessagesInitialized(true);
-        messagesConversationIdRef.current = null;
-        messagesAuthorityKeyRef.current = null;
-        setMessagesConversationId(null);
-        setFailedMessagesConversationId(null);
-        commitPreviewComments([]);
-        setAttachedComments([]);
-        return;
-      }
-
-      const messagesGeneration = ++messagesRequestGenerationRef.current;
-      const commentsGeneration = ++previewCommentsGenerationRef.current;
-      reconciliationConversationRef.current = {
-        generation,
-        conversationId: selectedConversationId,
-      };
-      setMessagesInitialized(false);
-      const [nextMessages, nextComments] = await Promise.all([
-        listMessages(project.id, selectedConversationId, {
-          signal: reconciliationContext.signal,
-        }),
-        fetchPreviewComments(project.id, selectedConversationId, {
-          signal: reconciliationContext.signal,
-          requireAuthoritative: true,
-        }),
-      ]);
-      if (
-        projectIdRef.current !== project.id
-        || messagesRequestGenerationRef.current !== messagesGeneration
-        || previewCommentsGenerationRef.current !== commentsGeneration
-        || reconciliationConversationRef.current?.generation !== generation
-        || reconciliationConversationRef.current.conversationId !== selectedConversationId
-        || !projectGit.isCurrent(reconciliationContext)
-      ) return;
-      setMessages(normalizeConversationMessageOrder(nextMessages));
-      setMessagesInitialized(true);
-      setAttachedComments([]);
-      setArtifact(null);
-      savedArtifactRef.current = null;
-      messagesConversationIdRef.current = selectedConversationId;
-      messagesAuthorityKeyRef.current = projectRunAuthorityKeyRef.current;
-      setMessagesConversationId(selectedConversationId);
-      setFailedMessagesConversationId(null);
-      setPreviewComments(nextComments);
-      setAttachedComments((current) => current
-        .map((attached) => nextComments.find((comment) => comment.id === attached.id))
-        .filter((comment): comment is PreviewComment => Boolean(comment)));
-    };
-    void Promise.all([
-      projectGit.refresh({ fresh: true, generation }),
-      projectDetail.refresh({
-        signal: reconciliationContext.signal,
-        throwOnError: true,
-      }),
-      Promise.resolve(onProjectsRefresh({
-        throwOnError: true,
-        fresh: true,
-        signal: reconciliationContext.signal,
-      })),
-      refreshWorkspaceItems({
-        freshProjectFiles: true,
-        freshLiveArtifacts: true,
-        signal: reconciliationContext.signal,
-        requireAuthoritative: true,
-        mutationContext: reconciliationContext,
-      }),
-      hydrateCurrentConversation(),
-      fetchConnectorStatuses({
-        signal: reconciliationContext.signal,
-        requireAuthoritative: true,
-      }),
-    ]).then(() => {
-      if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
-      if (reconciliationConversationRef.current?.generation === generation) {
-        reconciliationConversationRef.current = null;
-      }
-      projectGit.completeReconciliation(generation);
-      setError(null);
-    }).catch(() => {
-      if (projectIdRef.current !== project.id || !projectGit.isCurrent(reconciliationContext)) return;
-      if (reconciliationConversationRef.current?.generation === generation) {
-        reconciliationConversationRef.current = null;
-      }
-      setError('Project history changed, but the refreshed project could not be fully loaded. Reload to retry safely.');
-    });
-  }, [
-    onProjectsRefresh,
-    project.id,
-    projectDetail.refresh,
-    projectGit.generation,
-    projectGit.writeLocked,
-    refreshConversationMessagesFromServer,
-    refreshLiveArtifacts,
-    refreshProjectFiles,
-    refreshWorkspaceItems,
-    setError,
-  ]);
 
   useEffect(() => {
     if (autoSentRef.current) return;
@@ -11083,7 +10552,6 @@ export function ProjectView({
       if (
         !currentDraft
         || currentDraft.projectId !== project.id
-        || currentDraft.generation !== projectGit.generation
         || currentDraft.conversationId !== activeConversationId
       ) {
         const text = autoSendSeedRef.current ?? readAutoSendPrompt(project.id) ?? '';
@@ -11093,7 +10561,6 @@ export function ProjectView({
           setComposerDraftSignal({
             id: randomUUID(),
             projectId: project.id,
-            generation: projectGit.generation,
             conversationId: activeConversationId,
             text,
             attachments,
@@ -11162,12 +10629,7 @@ export function ProjectView({
           return;
         }
         autoSentRef.current = true;
-        const clearContext = captureProjectMutation(project.id);
-        const pendingPromptCleared = Boolean(
-          clearContext
-          && await onClearPendingPrompt(clearContext)
-          && isProjectMutationCurrent(project.id, clearContext),
-        );
+        const pendingPromptCleared = Boolean(await onClearPendingPrompt());
         if (!pendingPromptCleared) {
           // The accepted user turn is durable, but the project seed was not
           // safely cleared. Retain the complete composer payload and session
@@ -11195,7 +10657,6 @@ export function ProjectView({
     streaming,
     messages.length,
     project.id,
-    projectGit.generation,
     projectIsProgrammaticBrandExtraction,
     project.metadata,
     composerDraftSignal,
@@ -11285,14 +10746,6 @@ export function ProjectView({
         projectId={project.id}
         enabled={critiqueTheaterEnabled}
       />
-      {projectGitSettingsOpen ? <ProjectGitSettings projectId={project.id} client={defaultProjectGitClient} onClose={() => setProjectGitSettingsOpen(false)} /> : null}
-      {projectGitHistoryPath !== null && !projectGitRestoreOid ? <ProjectGitPanel wide title={t('projectGit.history')} onClose={() => setProjectGitHistoryPath(null)}>
-        <ProjectGitHistory key={`${project.id}:${projectGitHistoryPath}:${projectGit.generation}`} projectId={project.id} path={projectGitHistoryPath} client={defaultProjectGitClient} onRestore={setProjectGitRestoreOid} restoreDisabled={projectGit.state?.phase === 'conflict' || projectGit.writeLocked} />
-      </ProjectGitPanel> : null}
-      {projectGitRestoreOid ? <ProjectGitRestoreDialog key={`${project.id}:${projectGitRestoreOid}`} projectId={project.id} targetOid={projectGitRestoreOid} client={defaultProjectGitClient} onClose={() => setProjectGitRestoreOid(null)} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitRestoreOid(null); setProjectGitHistoryPath(null); }} /> : null}
-      {projectGitConflictOperationId ? <ProjectGitPanel title={t('projectGit.conflicts')} onClose={() => setProjectGitConflictOperationId(null)}>
-        <ProjectGitConflicts key={`${project.id}:${projectGitConflictOperationId}`} projectId={project.id} operationId={projectGitConflictOperationId} client={defaultProjectGitClient} onCompleted={async () => { await projectGit.refresh({ fresh: true }); setProjectGitConflictOperationId(null); }} />
-      </ProjectGitPanel> : null}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}
@@ -11351,20 +10804,15 @@ export function ProjectView({
               loading={currentConversationLoading}
               // A read-only viewer of a team-shared project cannot drive artifact
               // changes through chat (comments go through the separate overlay).
-              sendDisabled={currentConversationSendDisabled || projectMutationReadOnly}
-              viewerOnly={projectMutationReadOnly}
-              composerPlaceholder={
-                projectMutationReadOnly
-                  ? t('workspace.readonlyNotice')
-                  : undefined
-              }
+              sendDisabled={currentConversationSendDisabled}
+              viewerOnly={false}
+              composerPlaceholder={undefined}
               queuedItems={currentConversationQueuedItems}
               error={conversationLoadError ?? error}
               errorSourceAssistantId={
                 conversationLoadError ? null : errorSourceAssistantId
               }
               projectId={project.id}
-              projectGeneration={projectGit.generation}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}
               projectKindForTracking={projectKindFromMetadataToTracking(currentProject.metadata)}
@@ -11401,7 +10849,7 @@ export function ProjectView({
               initialDraft={chatInitialDraft}
               onboardingStarterPath={onboardingEntryRef.current?.productType ?? null}
               questionFormSubmitDisabled={currentConversationActionDisabled}
-              onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId, mutationContext) => {
+              onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId) => {
                 if (currentConversationActionDisabled) return false;
                 let sourceAssistant = sourceAssistantMessageId
                   ? messages.find((message) => message.id === sourceAssistantMessageId)
@@ -11462,14 +10910,14 @@ export function ProjectView({
                   ...(strategyTaskExecutionId
                     ? { strategyTaskExecutionId }
                     : {}),
-                }, undefined, mutationContext);
+                });
               }}
               onContinueRemainingTasks={handleContinueRemainingTasks}
               onAssistantFeedback={handleAssistantFeedback}
               onArtifactShare={handleArtifactShare}
               onArtifactDownload={handleArtifactDownload}
               onForkFromMessage={
-                projectMutationReadOnly ? undefined : handleForkFromMessage
+                handleForkFromMessage
               }
               forkingMessageId={forkingMessageId}
               onNewConversation={handleNewConversation}
@@ -11481,16 +10929,6 @@ export function ProjectView({
               onDeleteConversation={handleDeleteConversation}
               config={config}
               onOpenSettings={onOpenSettings}
-              onOpenProjectGitSettings={() => setProjectGitSettingsOpen(true)}
-              projectGitMenu={projectGit.state ? <ProjectGitMenu
-                state={projectGit.state}
-                onHistory={() => setProjectGitHistoryPath('')}
-                onSettings={() => setProjectGitSettingsOpen(true)}
-                onConflict={projectGit.state.phase === 'conflict' && projectGit.state.operationId
-                  ? () => setProjectGitConflictOperationId(projectGit.state!.operationId)
-                  : undefined}
-                {...projectGitActions}
-              /> : null}
               showByokRecoveryAction={
                 config.mode === 'api' &&
                 daemonLive &&
@@ -11535,7 +10973,6 @@ export function ProjectView({
               }
               composerDraftSignal={
                 composerDraftSignal?.projectId === project.id
-                && composerDraftSignal.generation === projectGit.generation
                 && composerDraftSignal.conversationId === activeConversationId
                   ? composerDraftSignal
                   : undefined
@@ -11544,14 +10981,9 @@ export function ProjectView({
                 void (async () => {
                   const currentDraft = composerDraftSignalRef.current;
                   if (currentDraft?.id !== signalId) return;
-                  const currentContext = captureProjectMutation(project.id);
                   if (
                     currentDraft.projectId !== project.id
-                    || currentDraft.generation !== projectGit.generation
                     || currentDraft.conversationId !== activeConversationIdRef.current
-                    || !currentContext
-                    || currentContext.generation !== currentDraft.generation
-                    || !isProjectMutationCurrent(project.id, currentContext)
                   ) return;
                   if (currentDraft.source === 'auto-send') {
                     // Application into the editor is not durable acceptance.
@@ -11561,12 +10993,11 @@ export function ProjectView({
                   }
                   if (
                     currentDraft.source === 'pending-prompt'
-                    && !await onClearPendingPrompt(currentContext)
+                    && !await onClearPendingPrompt()
                   ) return;
                   if (
                     composerDraftSignalRef.current?.id !== signalId
                     || activeConversationIdRef.current !== currentDraft.conversationId
-                    || !isProjectMutationCurrent(project.id, currentContext)
                   ) return;
                   setComposerDraftSignal((candidate) => candidate?.id === signalId ? undefined : candidate);
                 })();
@@ -11606,15 +11037,14 @@ export function ProjectView({
               projectHeader={(
                 <span className="chat-project-title-line">
                   <span
-                    className={`title${projectMutationReadOnly ? ' readonly' : ' editable'}`}
+                    className="title editable"
                     data-testid="project-title"
                     title={projectTitleTooltip}
-                    tabIndex={projectMutationReadOnly ? -1 : 0}
-                    role={projectMutationReadOnly ? undefined : 'textbox'}
+                    tabIndex={0}
+                    role="textbox"
                     suppressContentEditableWarning
-                    contentEditable={!projectMutationReadOnly}
+                    contentEditable
                     onBlur={(e) => {
-                      if (projectMutationReadOnly) return;
                       handleProjectRename(e.currentTarget.textContent ?? '');
                     }}
                     onKeyDown={(e) => {
@@ -11636,7 +11066,6 @@ export function ProjectView({
                   variant="icon"
                   designSystems={designSystems}
                   selectedId={projectDesignSystemId ?? null}
-                  disabled={projectMutationReadOnly}
                   onChange={handleChangeDesignSystemId}
                 />
               )}
@@ -11679,9 +11108,9 @@ export function ProjectView({
         <FileWorkspace
           projectId={project.id}
           projectName={currentProject.name}
-          viewerOnly={projectMutationReadOnly}
+          viewerOnly={false}
           readonlyNotice={
-            projectMutationReadOnly ? t('workspace.readonlyNotice') : undefined
+            undefined
           }
           projectKind={projectKindFromMetadataToTrackingOrLegacyDefault(currentProject.metadata)}
           rootDirName={(() => {
@@ -11737,10 +11166,8 @@ export function ProjectView({
           duplicateProjectBusy={projectDuplicateStarting}
           onDeleteDesignSystemProject={onDeleteProject
             ? async (id) => {
-                if (id !== project.id || projectMutationReadOnly) return false;
-                const mutationContext = captureProjectMutation(id);
-                if (!mutationContext || !projectGit.isCurrent(mutationContext)) return false;
-                return onDeleteProject(id, mutationContext);
+                if (id !== project.id) return false;
+                return onDeleteProject(id);
               }
             : undefined}
           onDesignSystemNeedsWork={sendDesignSystemFeedback}
@@ -12261,9 +11688,7 @@ function isQueuedChatSend(value: unknown): value is QueuedChatSend {
     typeof record.prompt === 'string' &&
     Array.isArray(record.attachments) &&
     Array.isArray(record.commentAttachments) &&
-    typeof record.createdAt === 'number' &&
-    (record.expectedProjectRevision === undefined
-      || (Number.isSafeInteger(record.expectedProjectRevision) && record.expectedProjectRevision >= 0))
+    typeof record.createdAt === 'number'
   );
 }
 

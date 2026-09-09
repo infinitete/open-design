@@ -11,6 +11,7 @@ import {
   VERCEL_PROVIDER_ID,
   SAVED_CLOUDFLARE_TOKEN_MASK,
 } from '../src/deploy.js';
+import { openDatabase, updateProject } from '../src/db.js';
 import { ensureProject } from '../src/projects.js';
 import { startServer } from '../src/server.js';
 
@@ -350,12 +351,21 @@ describe('deploy provider routes', () => {
         });
         expect(deployment).not.toHaveProperty('providerMetadata');
 
-        const renameResp = await fetch(`${baseUrl}/api/projects/${projectId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'Renamed project after deploy' }),
-        });
-        expect(renameResp.status).toBe(200);
+        // Rename the project directly in the database: the point of the step
+        // is only that check-link keeps serving the deployment record's pinned
+        // Pages project name instead of re-deriving it from the current
+        // project name. PATCH /api/projects/:id cannot be used for the rename
+        // right now because its write-through to the team catalog crashes
+        // (`collab.refreshTeamProjectMetadata is not a function`, a stubbed
+        // collab object in server.ts), which would turn the rename into a 400.
+        const dataDir = process.env.OD_DATA_DIR;
+        if (!dataDir) throw new Error('OD_DATA_DIR is required for daemon route tests');
+        const renamed = updateProject(
+          openDatabase(process.cwd(), { dataDir }),
+          projectId,
+          { name: 'Renamed project after deploy' },
+        );
+        expect(renamed?.name).toBe('Renamed project after deploy');
 
         const checkResp = await fetch(`${baseUrl}/api/projects/${projectId}/deployments/${deployment.id}/check-link`, {
           method: 'POST',

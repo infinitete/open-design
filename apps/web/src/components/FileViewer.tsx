@@ -7,8 +7,6 @@ import {
   type OpenDesignHostPreviewNavigationFailure,
 } from '@open-design/host';
 import { CenteredLoader } from './Loading';
-import { defaultProjectGitClient } from '../providers/project-git';
-import { subscribeProjectEvents } from '../providers/project-events';
 import { APP_CHROME_FILE_ACTIONS_ID, APP_CHROME_FILE_ACTIONS_SELECTOR } from './AppChromeHeader';
 import {
   commentSendCompleted,
@@ -41,11 +39,6 @@ import {
   type TrackingDeployProvider,
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
-import {
-  captureProjectMutation,
-  isProjectMutationCurrent,
-  type ProjectMutationContext,
-} from '../state/project-git';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
 import {
@@ -2206,8 +2199,6 @@ export function LiveArtifactViewer({
 
   async function handleRefresh() {
     if (refreshing) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setRefreshing(true);
     setRefreshError(null);
     setRefreshSuccess(null);
@@ -2216,15 +2207,12 @@ export function LiveArtifactViewer({
       const result = await refreshLiveArtifact(
         projectId,
         liveArtifact.artifactId,
-        mutationContext,
       );
-      if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
       setDetail(result.artifact);
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
       ).then((history) => {
-        if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
         setRefreshHistory(history);
       });
       setReloadKey((n) => n + 1);
@@ -2241,7 +2229,6 @@ export function LiveArtifactViewer({
       }
       await onRefreshArtifacts?.();
     } catch (error) {
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       const message = refreshErrorMessage(error, t);
       setRefreshError(message);
       setRefreshEvents((prev) => appendRefreshEvent(prev, { phase: 'failed', error: message }));
@@ -3901,8 +3888,6 @@ function FileVersionManagerModal({
 
   async function restoreVersion() {
     if (restoreDisabled || !selectedVersion || !selectedContentMatchesVersion || !selectedContent) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setRestoring(true);
     setError(null);
     let closingAfterRestore = false;
@@ -3930,7 +3915,6 @@ function FileVersionManagerModal({
         projectId,
         file.name,
         selectedVersion,
-        mutationContext,
       );
       if (!result) {
         fireRestoreResult('failed', 'restore_request_failed');
@@ -7367,20 +7351,6 @@ function HtmlViewer({
   // them while retained so the hidden document is already current when its tab
   // becomes visible.
   const appliedFilesRefreshKeyRef = useRef(filesRefreshKey);
-  const [fileGitEnabled, setFileGitEnabled] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController(); let receivedState = false;
-    setFileGitEnabled(false);
-    // This entry is a read-only capability indicator. ProjectView owns mutation
-    // authority and recovery reconciliation; mounting a viewer must not replace it.
-    const unsubscribe = subscribeProjectEvents(projectId, event => {
-      if (event.type === 'project-git-state') { receivedState = true; setFileGitEnabled(event.state.enabled); }
-    });
-    void defaultProjectGitClient.state(projectId, controller.signal).then(state => {
-      if (!controller.signal.aborted && !receivedState) setFileGitEnabled(state.enabled);
-    }).catch(() => {});
-    return () => { controller.abort(); unsubscribe(); };
-  }, [projectId]);
   const workspaceActiveRef = useRef(workspaceActive);
   workspaceActiveRef.current = workspaceActive;
   const filesRefreshPending = filesRefreshKey !== 0
@@ -13126,8 +13096,6 @@ function HtmlViewer({
 
   async function applyManualEdit(patch: ManualEditPatch, label: string): Promise<boolean> {
     const startedAt = performance.now();
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13177,7 +13145,6 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: label,
         ...(parentVersionId ? { parentVersionId } : {}),
-        mutationContext,
       });
       if (!saved.ok) {
         const status = 'status' in saved ? saved.status : undefined;
@@ -13296,8 +13263,6 @@ function HtmlViewer({
     const [latest, ...rest] = manualEditHistory;
     if (!latest) return;
     const startedAt = performance.now();
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13327,7 +13292,6 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Undo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
-        mutationContext,
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the undo result', saved));
@@ -13363,8 +13327,6 @@ function HtmlViewer({
     const [latest, ...rest] = manualEditUndone;
     if (!latest) return;
     const startedAt = performance.now();
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     let resultTracked = false;
     const finish = (
       result: ArtifactEditResultProps['result'],
@@ -13394,7 +13356,6 @@ function HtmlViewer({
         versionSource: 'manual',
         versionLabel: `Redo ${latest.label}`,
         ...(parentVersionId ? { parentVersionId } : {}),
-        mutationContext,
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the redo result', saved));
@@ -13539,8 +13500,6 @@ function HtmlViewer({
     nextNotes: readonly string[],
     options?: { editSurface?: 'preview' | 'presenter' },
   ) {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     const editSurface = options?.editSurface ?? 'preview';
     const currentSource = sourceRef.current ?? source;
     if (!currentSource) return false;
@@ -13554,7 +13513,6 @@ function HtmlViewer({
     try {
       const saved = await writeProjectTextFile(projectId, file.name, nextSource, {
         artifactManifest: file.artifactManifest,
-        mutationContext,
       });
       if (!saved) throw new Error('speaker_notes_save_failed');
       setSource(nextSource);
@@ -13702,8 +13660,6 @@ function HtmlViewer({
   // writeProjectFile (multipart-or-JSON; we use JSON).
   async function saveInspectToSource() {
     if (!source) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setSavingInspect(true);
     setInspectError(null);
     try {
@@ -13712,7 +13668,6 @@ function HtmlViewer({
       const saved = await writeProjectTextFileDetailed(projectId, file.name, next, {
         versionSource: 'manual',
         versionLabel: t('fileViewer.edit'),
-        mutationContext,
       });
       if (!saved.ok) {
         throw new Error(saved.message || `Save failed (${saved.status ?? ''})`);
@@ -15795,9 +15750,7 @@ function HtmlViewer({
         : { top: 12, right: 12, width: 320 }}
       onFloatingPositionChange={selectedManualEditTarget ? setManualEditPanelPosition : undefined}
       onPickImage={async (pickedFile) => {
-        const mutationContext = captureProjectMutation(projectId);
-        if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return null;
-        const result = await uploadProjectFiles(projectId, [pickedFile], undefined, mutationContext);
+        const result = await uploadProjectFiles(projectId, [pickedFile], undefined);
         const uploaded = result.uploaded[0];
         if (!uploaded?.path) {
           setManualEditError(result.error ?? t('manualEdit.uploadImageFailed'));
@@ -16624,7 +16577,6 @@ function HtmlViewer({
               ) : null}
             </div>
           ) : null}
-          {fileGitEnabled && !viewerOnly ? <button type="button" className="chrome-action chrome-action-secondary" aria-label={t('projectGit.gitPathHistory')} onClick={() => window.dispatchEvent(new CustomEvent('open-design:project-git-history', { detail: { projectId, path: file.path || file.name } }))}>{t('projectGit.gitPathHistory')}</button> : null}
           {versioningAvailable && (rawCanShare || rawCanDownload) ? (
             <button
               type="button"
@@ -16639,7 +16591,7 @@ function HtmlViewer({
               // which had un-gated the entry on the reasoning that browsing
               // history is a read action.
               disabled={source === null || viewerOnly}
-              aria-label={fileGitEnabled ? t('projectGit.legacyHistory') : t('fileViewer.versions.entry')}
+              aria-label={t('fileViewer.versions.entry')}
               aria-expanded={Boolean(versionModalOpen)}
               data-tooltip={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.versions.entryFull')}
               data-tooltip-placement="bottom"
@@ -19064,7 +19016,6 @@ type MarkdownScrollPane = 'editor' | 'preview';
 type MarkdownSaveOptions = {
   refreshFiles?: boolean;
   showSaving?: boolean;
-  mutationContext?: ProjectMutationContext;
 };
 
 function markdownScrollRange(element: HTMLElement): number {
@@ -19085,7 +19036,6 @@ function mergeMarkdownSaveOptions(a: MarkdownSaveOptions, b: MarkdownSaveOptions
   return {
     refreshFiles: a.refreshFiles !== false || b.refreshFiles !== false,
     showSaving: a.showSaving !== false || b.showSaving !== false,
-    mutationContext: b.mutationContext ?? a.mutationContext,
   };
 }
 
@@ -19219,11 +19169,6 @@ function MarkdownViewer({
   const saveMarkdownText = useCallback(
     (value: string, options: MarkdownSaveOptions = {}) => {
       if (viewerOnly) return;
-      options = {
-        ...options,
-        mutationContext: options.mutationContext ?? captureProjectMutation(projectId),
-      };
-      if (!options.mutationContext || !isProjectMutationCurrent(projectId, options.mutationContext)) return;
       const run = async (nextValue: string, saveOptions: MarkdownSaveOptions): Promise<void> => {
         if (lastSavedTextRef.current === nextValue) {
           const showSaving = saveOptions.showSaving !== false;
@@ -19243,9 +19188,7 @@ function MarkdownViewer({
         const showSaving = saveOptions.showSaving !== false;
         if (showSaving) setSaveState('saving');
         try {
-          const saved = await writeProjectTextFile(projectId, file.name, nextValue, {
-            mutationContext: saveOptions.mutationContext,
-          });
+          const saved = await writeProjectTextFile(projectId, file.name, nextValue);
           if (!saved) throw new Error('write failed');
           lastSavedTextRef.current = nextValue;
           bumpSavedRevision((n) => n + 1);
@@ -19306,14 +19249,11 @@ function MarkdownViewer({
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return undefined;
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       saveMarkdownText(textRef.current, {
         refreshFiles: false,
         showSaving: false,
-        mutationContext,
       });
     }, 700);
     return () => {
@@ -19369,10 +19309,8 @@ function MarkdownViewer({
       if (viewerOnly) return false;
       const images = files.filter((item) => isMarkdownImageFile(item));
       if (images.length === 0) return false;
-      const mutationContext = captureProjectMutation(projectId);
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
       const targetDir = markdownDirectory(file.name);
-      const result = await uploadProjectFiles(projectId, images, targetDir, mutationContext);
+      const result = await uploadProjectFiles(projectId, images, targetDir);
       if (result.uploaded.length > 0) {
         await onFileSaved?.();
         const snippet = result.uploaded

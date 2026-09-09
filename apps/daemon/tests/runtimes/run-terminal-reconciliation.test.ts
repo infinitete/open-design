@@ -8,10 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinAssistantMessageOnRunCreate } from '../../src/runtimes/chat-run-messages.js';
 import { beginDurableRunTerminalReconciliation, reconcileDurableRunTerminals } from '../../src/runtimes/run-terminal-reconciliation.js';
 import { createChatRunService } from '../../src/runtimes/runs.js';
-import { createProjectGate } from '../../src/services/project-git/gate.js';
-import { createProjectGitRuntimeAdapter } from '../../src/services/project-git/runtime-adapter.js';
-import { migrateProjectGit } from '../../src/storage/project-git-migrations.js';
-import { createProjectGitStore } from '../../src/storage/project-git.js';
 
 describe('durable run terminal reconciliation', () => {
   let tmpDir: string;
@@ -40,23 +36,9 @@ describe('durable run terminal reconciliation', () => {
         events_json TEXT
       )
     `);
-    migrateProjectGit(db);
   });
 
   function seedReservedRunWithCleanAttemptZero() {
-    const store = createProjectGitStore(db);
-    const binding = store.saveBinding({
-      projectId: 'p1', cloneId: 'clone-1', repositoryProjectId: 'repo-1',
-      canonicalRoot: path.join(tmpDir, 'project'), commonDir: path.join(tmpDir, 'project', '.git'),
-      branch: 'main', remoteUrl: 'https://private.invalid/project.git', generation: 0,
-      autoSync: true, localHead: null, observedRemoteHead: null, confirmedRemoteHead: null,
-      projectRevision: 0, contentRevision: 0, exportedContentRevision: 0,
-      materializedHead: null, dirty: false,
-    });
-    const epoch = {
-      bindingGeneration: binding.generation,
-      projectRevision: binding.projectRevision,
-    };
     const runs = createChatRunService({
       createSseResponse: () => ({ send: vi.fn(() => true), end: vi.fn(), cleanup: vi.fn() }),
       createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
@@ -65,56 +47,33 @@ describe('durable run terminal reconciliation', () => {
     const run = runs.create({
       projectId: 'p1', conversationId: 'c-resume', assistantMessageId: 'm-resume', agentId: 'codex',
     });
-    (run as any).projectGitBindingGeneration = epoch.bindingGeneration;
-    run.expectedProjectRevision = epoch.projectRevision;
     runs.persistState(run);
     runs.finish(run, 'failed', 1, null);
-    expect(store.recordRunTerminal({
-      runId: run.id, executionAttempt: 0, projectId: 'p1',
-      bindingGeneration: binding.generation, projectRevision: binding.projectRevision,
-      terminal: 'failed',
-    })).toBe(true);
-    const dirty = store.getBinding('p1')!;
-    store.markExported('p1', {
-      bindingGeneration: dirty.generation,
-      projectRevision: dirty.projectRevision,
-    }, dirty.contentRevision);
-    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
     expect(runs.reserveRestartAttempt(run, 1)).toBe(true);
     db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c-resume', 'p1')").run();
     db.prepare(`INSERT INTO messages
       (id, conversation_id, run_id, run_status, ended_at, events_json)
       VALUES ('m-resume', 'c-resume', ?, 'failed', 2, '[]')`).run(run.id);
-    return { epoch, run, statePath: run.statePath as string, store };
+    return { run, statePath: run.statePath as string };
   }
 
-  it('repairs a committed same-id resume claim with its reserved next receipt identity', async () => {
-    const { epoch, run, statePath, store } = seedReservedRunWithCleanAttemptZero();
+  it('repairs a committed same-id resume claim and promotes its reserved execution attempt', async () => {
+    const { run, statePath } = seedReservedRunWithCleanAttemptZero();
     expect(pinAssistantMessageOnRunCreate(db, run, { status: 'queued' })).toEqual({ ok: true });
     expect(db.prepare("SELECT run_status AS status, ended_at AS endedAt FROM messages WHERE id = 'm-resume'").get())
       .toEqual({ status: 'queued', endedAt: null });
 
-    const gate = createProjectGate();
-    const notify = vi.fn();
-    const runtime = createProjectGitRuntimeAdapter({
-      recoveryReady: Promise.resolve(), store, gateFor: () => gate, notify, permits: new Map(),
-    });
     const reconcile = () => beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => epoch,
-      reconcileTerminalsWithLocalRepair: runtime.reconcileTerminalsWithLocalRepair,
+      reconcileTerminalsWithLocalRepair: async (_group, repair) => {
+        await repair();
+      },
       reportLangfuse: vi.fn(),
     }).localReady;
 
     await reconcile();
     expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
       .toEqual({ status: 'failed' });
-    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 2, dirty: true });
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
-      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
-      { attempt: 0 }, { attempt: 1 },
-    ]);
     expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
       manualResumeAttemptCount: 1,
     });
@@ -122,27 +81,24 @@ describe('durable run terminal reconciliation', () => {
       .not.toHaveProperty('pendingManualResumeAttemptCount');
 
     await reconcile();
-    expect(store.getBinding('p1')?.contentRevision).toBe(2);
-    expect(notify).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'failed' });
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      manualResumeAttemptCount: 1,
+    });
   });
 
   it('defers an unknown resumed-run claim without consuming its pending attempt', async () => {
-    const { epoch, run, statePath, store } = seedReservedRunWithCleanAttemptZero();
+    const { run, statePath } = seedReservedRunWithCleanAttemptZero();
     expect(pinAssistantMessageOnRunCreate(db, run, { status: 'queued' })).toEqual({ ok: true });
     const messageBeforeRecovery = db.prepare(`SELECT run_status AS status, ended_at AS endedAt,
       events_json AS eventsJson FROM messages WHERE id = 'm-resume'`).get();
 
-    const gate = createProjectGate();
-    const notify = vi.fn();
-    const runtime = createProjectGitRuntimeAdapter({
-      recoveryReady: Promise.resolve(), store, gateFor: () => gate, notify, permits: new Map(),
-    });
-    const reconcileGroups = vi.fn(async (...args: Parameters<typeof runtime.reconcileTerminalsWithLocalRepair>) => {
-      await runtime.reconcileTerminalsWithLocalRepair(...args);
+    const reconcileGroups = vi.fn(async (_group: unknown, repair: () => Promise<void>) => {
+      await repair();
     });
     const reconcile = () => beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => epoch,
       reconcileTerminalsWithLocalRepair: reconcileGroups,
       reportLangfuse: vi.fn(),
     }).localReady;
@@ -162,24 +118,15 @@ describe('durable run terminal reconciliation', () => {
     expect(db.prepare(`SELECT run_status AS status, ended_at AS endedAt,
       events_json AS eventsJson FROM messages WHERE id = 'm-resume'`).get())
       .toEqual(messageBeforeRecovery);
-    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
-    expect(notify).not.toHaveBeenCalled();
-    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
-      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([{ attempt: 0 }]);
     expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
       pendingManualResumeAttemptCount: 1,
     });
 
     const second = await reconcile();
     expect(second.messagesReconciled).toBe(1);
+    expect(reconcileGroups).toHaveBeenCalledTimes(1);
     expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
       .toEqual({ status: 'failed' });
-    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 2, dirty: true });
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
-      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
-      { attempt: 0 }, { attempt: 1 },
-    ]);
     expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
       manualResumeAttemptCount: 1,
     });
@@ -188,12 +135,11 @@ describe('durable run terminal reconciliation', () => {
 
     const third = await reconcile();
     expect(third.messagesReconciled).toBe(0);
-    expect(store.getBinding('p1')?.contentRevision).toBe(2);
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(db.prepare(`SELECT execution_attempt AS attempt FROM project_git_run_terminals
-      WHERE run_id = ? ORDER BY execution_attempt`).all(run.id)).toEqual([
-      { attempt: 0 }, { attempt: 1 },
-    ]);
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'failed' });
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      manualResumeAttemptCount: 1,
+    });
   });
 
   it('continues other durable runs while one pending claim remains unknown', async () => {
@@ -214,8 +160,6 @@ describe('durable run terminal reconciliation', () => {
         status: 'failed',
         createdAt: 1,
         updatedAt: 2,
-        expectedProjectRevision: 7,
-        projectGitBindingGeneration: 3,
         ...(state.pendingAttempt === undefined
           ? {}
           : { pendingManualResumeAttemptCount: state.pendingAttempt }),
@@ -238,7 +182,6 @@ describe('durable run terminal reconciliation', () => {
 
     const result = await beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => ({ bindingGeneration: 3, projectRevision: 7 }),
       reconcileTerminalsWithLocalRepair: async (group, repair) => {
         groups.push(group.terminals.map(terminal => terminal.runId));
         await repair();
@@ -254,32 +197,32 @@ describe('durable run terminal reconciliation', () => {
     ]);
   });
 
-  it('ignores a pre-claim attempt reservation without an active exact message', async () => {
-    const { epoch, statePath, store } = seedReservedRunWithCleanAttemptZero();
-    const notify = vi.fn();
-    const runtime = createProjectGitRuntimeAdapter({
-      recoveryReady: Promise.resolve(), store, gateFor: () => createProjectGate(),
-      notify, permits: new Map(),
+  it('drops a pre-claim attempt reservation without an active exact message', async () => {
+    const { statePath } = seedReservedRunWithCleanAttemptZero();
+    const reconcileGroups = vi.fn(async (_group: unknown, repair: () => Promise<void>) => {
+      await repair();
     });
 
     await beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => epoch,
-      reconcileTerminalsWithLocalRepair: runtime.reconcileTerminalsWithLocalRepair,
+      reconcileTerminalsWithLocalRepair: reconcileGroups,
       reportLangfuse: vi.fn(),
     }).localReady;
 
-    expect(store.getBinding('p1')).toMatchObject({ contentRevision: 1, dirty: false });
-    expect(notify).not.toHaveBeenCalled();
+    expect(reconcileGroups).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm-resume'").get())
+      .toEqual({ status: 'failed' });
     expect(JSON.parse(fs.readFileSync(statePath, 'utf8')))
       .not.toHaveProperty('pendingManualResumeAttemptCount');
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')))
+      .toMatchObject({ manualResumeAttemptCount: 0 });
   });
 
-  it('groups durable local repairs by exact project epoch and detaches delivery only after local ready', async () => {
+  it('groups durable local repairs by project and detaches delivery only after local ready', async () => {
     const states = [
-      { id: 'run-a', projectId: 'p1', messageId: 'm-a', generation: 3, revision: 7 },
-      { id: 'run-b', projectId: 'p1', messageId: 'm-b', generation: 3, revision: 7, attempt: 2 },
-      { id: 'run-c', projectId: 'p2', messageId: 'm-c', generation: 5, revision: 9 },
+      { id: 'run-a', projectId: 'p1', messageId: 'm-a' },
+      { id: 'run-b', projectId: 'p1', messageId: 'm-b', attempt: 2 },
+      { id: 'run-c', projectId: 'p2', messageId: 'm-c' },
     ];
     for (const state of states) {
       const runDir = path.join(tmpDir, state.id); fs.mkdirSync(runDir, { recursive: true });
@@ -287,8 +230,6 @@ describe('durable run terminal reconciliation', () => {
         schemaVersion: 1, id: state.id, projectId: state.projectId,
         conversationId: `c-${state.id}`, assistantMessageId: state.messageId,
         agentId: 'codex', status: 'failed', createdAt: 1, updatedAt: 2,
-        expectedProjectRevision: state.revision,
-        projectGitBindingGeneration: state.generation,
         ...(state.attempt === undefined ? {} : { manualResumeAttemptCount: state.attempt }),
       }));
       db.prepare('INSERT INTO conversations (id, project_id) VALUES (?, ?)').run(`c-${state.id}`, state.projectId);
@@ -297,16 +238,14 @@ describe('durable run terminal reconciliation', () => {
     }
     let releaseDelivery!: () => void;
     const deliveryBarrier = new Promise<void>(resolve => { releaseDelivery = resolve; });
-    const groups: Array<{ projectId: string; generation: number; revision: number; runs: string[] }> = [];
+    const groups: Array<{ projectId: string; runs: string[] }> = [];
     const reconciliation = beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: projectId => projectId === 'p1'
-        ? { bindingGeneration: 3, projectRevision: 7 }
-        : { bindingGeneration: 5, projectRevision: 9 },
       reconcileTerminalsWithLocalRepair: async (group, repair) => {
-        groups.push({ projectId: group.projectId, generation: group.bindingGeneration,
-          revision: group.projectRevision,
-          runs: group.terminals.map(item => `${item.runId}:${item.executionAttempt}`).sort() });
+        groups.push({
+          projectId: group.projectId,
+          runs: group.terminals.map(item => `${item.runId}:${item.executionAttempt}`).sort(),
+        });
         await repair();
       },
       reportLangfuse: vi.fn(async () => {
@@ -321,8 +260,8 @@ describe('durable run terminal reconciliation', () => {
     expect(local.messagesReconciled).toBe(3);
     expect(deliverySettled).toBe(false);
     expect(groups.sort((a, b) => a.projectId.localeCompare(b.projectId))).toEqual([
-      { projectId: 'p1', generation: 3, revision: 7, runs: ['run-a:0', 'run-b:2'] },
-      { projectId: 'p2', generation: 5, revision: 9, runs: ['run-c:0'] },
+      { projectId: 'p1', runs: ['run-a:0', 'run-b:2'] },
+      { projectId: 'p2', runs: ['run-c:0'] },
     ]);
     expect(db.prepare('SELECT run_status AS status FROM messages ORDER BY id').all())
       .toEqual([{ status: 'failed' }, { status: 'failed' }, { status: 'failed' }]);
@@ -330,37 +269,12 @@ describe('durable run terminal reconciliation', () => {
     await reconciliation.delivery;
   });
 
-  it('isolates a stale durable generation before local message or strategy effects', async () => {
-    const runDir = path.join(tmpDir, 'stale'); fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
-      schemaVersion: 1, id: 'stale', projectId: 'p1', conversationId: 'c1', assistantMessageId: 'm1',
-      agentId: 'codex', status: 'failed', createdAt: 1, updatedAt: 2,
-      expectedProjectRevision: 7, projectGitBindingGeneration: 2,
-      langfuseCompletedAt: 2,
-    }));
-    db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c1', 'p1')").run();
-    db.prepare("INSERT INTO messages (id, conversation_id, run_id, run_status, events_json) VALUES ('m1', 'c1', 'stale', 'running', '[]')").run();
-    const localRepair = vi.fn(async () => undefined);
-    const reconciliation = beginDurableRunTerminalReconciliation({
-      analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => ({ bindingGeneration: 3, projectRevision: 7 }),
-      reconcileTerminalsWithLocalRepair: async () => { throw new Error('stale generation'); },
-      reportLangfuse: vi.fn(),
-    });
-    await reconciliation.localReady;
-    await reconciliation.delivery;
-    expect(localRepair).not.toHaveBeenCalled();
-    expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm1'").get())
-      .toEqual({ status: 'running' });
-  });
-
-  it('groups orphan messages by persisted conversation project and captured boot epoch', async () => {
+  it('groups orphan messages by persisted conversation project', async () => {
     db.prepare("INSERT INTO conversations (id, project_id) VALUES ('c1', 'p1')").run();
     db.prepare("INSERT INTO messages (id, conversation_id, run_id, run_status, events_json) VALUES ('m1', 'c1', 'orphan-run', 'running', '[]')").run();
     const groups: unknown[] = [];
     const reconciliation = beginDurableRunTerminalReconciliation({
       analytics: { capture: vi.fn() }, appVersion: '0.1.0', db, runsLogDir: tmpDir,
-      currentProjectEpoch: () => ({ bindingGeneration: 4, projectRevision: 11 }),
       reconcileTerminalsWithLocalRepair: async (group, repair) => { groups.push(group); await repair(); },
       reportLangfuse: vi.fn(),
     });
@@ -368,7 +282,7 @@ describe('durable run terminal reconciliation', () => {
     await reconciliation.delivery;
     expect(local.messagesReconciled).toBe(1);
     expect(groups).toEqual([{
-      projectId: 'p1', bindingGeneration: 4, projectRevision: 11,
+      projectId: 'p1',
       terminals: [{ runId: 'orphan-run', executionAttempt: 0, terminal: 'failed' }],
     }]);
     expect(db.prepare("SELECT run_status AS status FROM messages WHERE id = 'm1'").get())
@@ -505,7 +419,7 @@ describe('durable run terminal reconciliation', () => {
       .toEqual({ status: 'failed' });
   });
 
-  it('replays the private project checkpoint for every persisted terminal status', async () => {
+  it('finalizes every persisted terminal status locally', async () => {
     const finalizeTerminalLocally = vi.fn();
     for (const status of ['succeeded', 'failed', 'canceled']) {
       const runId = `run-${status}`;
@@ -522,8 +436,6 @@ describe('durable run terminal reconciliation', () => {
         createdAt: 1_000,
         updatedAt: 2_000,
         terminalAt: 2_000,
-        expectedProjectRevision: 7,
-        projectGitBindingGeneration: 3,
       }));
     }
 
@@ -542,12 +454,10 @@ describe('durable run terminal reconciliation', () => {
     expect(finalizeTerminalLocally.mock.calls.map(([run, status]) => ({
       id: run.id,
       status,
-      generation: run.projectGitBindingGeneration,
-      revision: run.expectedProjectRevision,
     })).sort((left, right) => left.id.localeCompare(right.id))).toEqual([
-      { id: 'run-canceled', status: 'canceled', generation: 3, revision: 7 },
-      { id: 'run-failed', status: 'failed', generation: 3, revision: 7 },
-      { id: 'run-succeeded', status: 'succeeded', generation: 3, revision: 7 },
+      { id: 'run-canceled', status: 'canceled' },
+      { id: 'run-failed', status: 'failed' },
+      { id: 'run-succeeded', status: 'succeeded' },
     ]);
   });
 

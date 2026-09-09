@@ -52,7 +52,6 @@ import { LibraryPreviewModal } from './LibraryPreviewModal';
 import { LibraryUploadModal } from './LibraryUploadModal';
 import styles from './LibrarySection.module.css';
 import { useT } from '../i18n';
-import { captureProjectMutation, isProjectMutationCurrent } from '../state/project-git';
 
 type Translate = ReturnType<typeof useT>;
 
@@ -60,7 +59,6 @@ interface Props {
   active: boolean;
   /** Open a project, optionally deep-linking to a specific file in the editor. */
   onOpenProject: (projectId: string, fileName?: string) => void;
-  projectMutationReady?: (projectId: string) => boolean;
 }
 
 // `value` is matched against an asset's `badgeKind` (not its raw storage kind),
@@ -498,7 +496,6 @@ const LibraryCard = memo(function LibraryCard({
 export function LibrarySection({
   active,
   onOpenProject,
-  projectMutationReady = () => true,
 }: Props) {
   const t = useT();
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
@@ -513,7 +510,6 @@ export function LibrarySection({
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const authoritySourceId = useId();
   const [band, setBand] = useState<Band | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -527,24 +523,6 @@ export function LibrarySection({
   const [dsMenuOpen, setDsMenuOpen] = useState(false);
   const [dsList, setDsList] = useState<DesignSystemSummary[]>([]);
   const [dsBusy, setDsBusy] = useState(false);
-  const [nominatedDesignSystemProjectId, setNominatedDesignSystemProjectId] =
-    useState<string | null>(null);
-  useEffect(() => {
-    const projectIds = dsMenuOpen && nominatedDesignSystemProjectId
-      ? [nominatedDesignSystemProjectId]
-      : [];
-    window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
-      detail: { source: `library-section:${authoritySourceId}`, projectIds },
-    }));
-    return () => {
-      window.dispatchEvent(new CustomEvent('open-design:project-mutation-targets', {
-        detail: { source: `library-section:${authoritySourceId}`, projectIds: [] },
-      }));
-    };
-  }, [authoritySourceId, dsMenuOpen, nominatedDesignSystemProjectId]);
-  useEffect(() => {
-    if (!dsMenuOpen) setNominatedDesignSystemProjectId(null);
-  }, [dsMenuOpen]);
   const dsLoadedRef = useRef(false);
   const dsMenuWrapRef = useRef<HTMLDivElement>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
@@ -845,21 +823,18 @@ export function LibrarySection({
     async (ds: DesignSystemSummary) => {
       const chosen = assets.filter((a) => selectedIds.has(a.id));
       if (!chosen.length) return;
-      if (!ds.projectId || !projectMutationReady(ds.projectId)) return;
+      if (!ds.projectId) return;
       setDsBusy(true);
       try {
         const projectId = ds.projectId;
-        const mutationContext = captureProjectMutation(projectId);
-        if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
         const attachments: ChatAttachment[] = [];
         for (const a of chosen) {
           const res = await applyLibraryAsset(
             a.id,
             projectId,
             undefined,
-            { includeElement: true, mutationContext },
+            { includeElement: true },
           );
-          if (!isProjectMutationCurrent(projectId, mutationContext)) return;
           if (res?.relPath) {
             attachments.push({
               path: res.relPath,
@@ -878,7 +853,6 @@ export function LibrarySection({
             });
           }
         }
-        if (!isProjectMutationCurrent(projectId, mutationContext)) return;
         const n = chosen.length;
         const text =
           `Use ${n} reference${n > 1 ? 's' : ''} I just added from my Library to refine this design ` +
@@ -891,7 +865,7 @@ export function LibrarySection({
         setDsBusy(false);
       }
     },
-    [assets, onOpenProject, projectMutationReady, selectedIds],
+    [assets, onOpenProject, selectedIds],
   );
 
   const toggleOne = useCallback((id: string, index: number) => {
@@ -1308,9 +1282,7 @@ export function LibrarySection({
                       type="button"
                       className={styles.dsMenuItem}
                       role="menuitem"
-                      disabled={!ds.projectId || !projectMutationReady(ds.projectId)}
-                      onPointerEnter={() => setNominatedDesignSystemProjectId(ds.projectId ?? null)}
-                      onFocus={() => setNominatedDesignSystemProjectId(ds.projectId ?? null)}
+                      disabled={!ds.projectId}
                       onClick={() => void optimizeExistingDesignSystem(ds)}
                     >
                       <span className={styles.dsMenuItemTitle}>{ds.title}</span>

@@ -49,15 +49,12 @@ import {
 } from './brands/index.js';
 import { patchMeta } from './brands/store.js';
 import type { BrandDetailResponse, BrandMeta, BrandSummary } from '@open-design/contracts';
-import {
-  expectedProjectRevisionFromTransport,
-  type ProjectGitCoordination,
-} from './services/project-git/mutation-adapter.js';
-import { GitDomainError } from './services/project-git/errors.js';
+import type { ProjectMutationCoordination } from './services/project-mutation.js';
+import { ProjectDomainError } from './services/project-mutation.js';
 import { sendApiError } from './http/api-errors.js';
 
 export interface BrandRoutesDeps {
-  projectGitCoordination: ProjectGitCoordination;
+  projectGitCoordination: ProjectMutationCoordination;
   /** `<dataDir>/brands` — root of all brand directories. */
   brandsRoot: string;
   /** `<dataDir>/design-systems` — where extracted brands register their
@@ -170,16 +167,11 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
     });
     return true;
   };
-  const sendProjectGitError = (res: Response, error: unknown): boolean => {
-    if (!(error instanceof GitDomainError) || res.headersSent) return false;
+  const sendProjectDomainError = (res: Response, error: unknown): boolean => {
+    if (!(error instanceof ProjectDomainError) || res.headersSent) return false;
     sendApiError(res, error.status, error.code, error.message);
     return true;
   };
-  const requestProjectRevision = (req: Request): number | undefined =>
-    expectedProjectRevisionFromTransport({
-      body: req.body?.expectedProjectRevision,
-      header: req.get('X-OD-Project-Revision'),
-    });
   const backingProject = (brandId: string) => {
     const detail = readBrandDetail(brandsRoot, brandId);
     if (!detail) return null;
@@ -424,7 +416,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       trackProgrammaticBrandExtraction(result.id, programmaticAbortController, backgroundExtraction);
       res.json(result);
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       if (sendWorkspaceScopeError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       // A bad URL is the only expected throw; everything else is a 500.
@@ -450,7 +442,6 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         target.projectId,
         { mode: 'write', capability: 'writeFiles' },
       )) return;
-      const expectedProjectRevision = requestProjectRevision(req);
       await abortActiveProgrammaticBrandExtraction(id, {
         settleTimeoutMs: PROGRAMMATIC_ABORT_SETTLE_GRACE_MS,
       });
@@ -465,7 +456,6 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         db,
         coordinateProjectMutation: (input, work) =>
           deps.projectGitCoordination.withProjectMutation(input, work),
-        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
         userDesignSystemsRoot,
         dataDir,
         ...(randomId ? { randomId } : {}),
@@ -481,7 +471,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       trackProgrammaticBrandExtraction(id, programmaticAbortController, backgroundExtractionRef.current);
       res.json(result);
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(/not found/i.test(message) ? 404 : 500).json({ error: message });
     }
@@ -505,14 +495,12 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         target.projectId,
         { mode: 'write', capability: 'writeFiles' },
       )) return;
-      const expectedProjectRevision = requestProjectRevision(req);
       await abortActiveProgrammaticBrandExtraction(id, {
         settleTimeoutMs: PROGRAMMATIC_ABORT_SETTLE_GRACE_MS,
       });
       await deps.projectGitCoordination.withProjectMutation({
         projectId: target.projectId,
         source: 'brand.cancel',
-        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
       }, async () => {
       const currentMeta = readBrandDetail(brandsRoot, id)?.meta ?? target.detail.meta;
       if (currentMeta.status !== 'ready') {
@@ -554,7 +542,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       res.json({ ok: true, status: next.status });
       });
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       res.status(500).json({ error: String(err) });
     }
   });
@@ -588,7 +576,6 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         res.status(400).json({ error: 'projectId does not match brand backing project' });
         return;
       }
-      const expectedProjectRevision = requestProjectRevision(req);
       const renderOptions: Parameters<typeof renderBrandPreviewIntoProject>[0] = {
         id,
         brandsRoot,
@@ -600,11 +587,10 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       const result = await deps.projectGitCoordination.withProjectMutation({
         projectId: target.projectId,
         source: 'brand.preview',
-        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
       }, () => renderBrandPreviewIntoProject(renderOptions));
       res.json(result);
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       const status = /not found/i.test(message) ? 404 : 500;
       res.status(status).json({ error: message });
@@ -640,7 +626,6 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         res.status(400).json({ error: 'projectId does not match brand backing project' });
         return;
       }
-      const expectedProjectRevision = requestProjectRevision(req);
       const designSystemWorkspaceId =
         (await deps.resolveDesignSystemWorkspaceId?.(req)) ?? null;
       const finalizeOptions: Parameters<typeof finalizeBrand>[0] = {
@@ -659,11 +644,10 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       const result = await deps.projectGitCoordination.withProjectMutation({
         projectId: target.projectId,
         source: 'brand.finalize',
-        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
       }, () => finalizeBrand(finalizeOptions));
       res.json(result);
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       if (sendWorkspaceScopeError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       const status = /not found/i.test(message) ? 404 : 422;
@@ -696,14 +680,12 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         target.projectId,
         { mode: 'write', capability: 'writeFiles' },
       )) return;
-      const expectedProjectRevision = requestProjectRevision(req);
       await abortActiveProgrammaticBrandExtraction(id, {
         settleTimeoutMs: PROGRAMMATIC_ABORT_SETTLE_GRACE_MS,
       });
       await deps.projectGitCoordination.withProjectMutation({
         projectId: target.projectId,
         source: 'brand.extract-from-html',
-        ...(expectedProjectRevision === undefined ? {} : { expectedProjectRevision }),
       }, async () => {
       const result = await extractBrandFromHtml({
         id,
@@ -730,7 +712,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       res.json(result);
       });
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       if (isProgrammaticExtractionAbortError(err)) {
         res.status(409).json({ error: PROGRAMMATIC_CANCEL_ERROR });
         return;
@@ -845,7 +827,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
       res.setHeader('Cache-Control', 'no-cache');
       await sendFileAndWait(res, logoPath);
     } catch (err) {
-      if (sendProjectGitError(res, err)) return;
+      if (sendProjectDomainError(res, err)) return;
       res.status(500).json({ error: String(err) });
     }
   });

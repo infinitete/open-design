@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { loadNodePty } from './services/node-pty.js';
-import type { ProjectMutationSession } from './services/project-git/runtime-adapter.js';
 
 export {
   ensureSpawnHelperExecutable,
@@ -50,7 +49,6 @@ export interface CreateTerminalMeta {
   cols?: number;
   rows?: number;
   shell?: string | null;
-  projectMutationSession?: ProjectMutationSession | null;
 }
 
 export function createTerminalService({
@@ -177,7 +175,6 @@ export function createTerminalService({
     for (const sse of session.clients) sse.end();
     session.clients.clear();
     scheduleCleanup(session);
-    session.projectMutationSession?.release();
     session.resolveExit();
   };
 
@@ -217,7 +214,6 @@ export function createTerminalService({
       bufferedBytes: 0,
       pendingData: '',
       flushTimer: null as ReturnType<typeof setTimeout> | null,
-      projectMutationSession: meta.projectMutationSession ?? null,
       exit,
       resolveExit,
     };

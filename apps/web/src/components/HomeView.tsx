@@ -139,8 +139,6 @@ import { localizePluginDescription } from './plugins-home/localization';
 import { RecentProjectsStrip } from './RecentProjectsStrip';
 import { useOpenFolderImport } from './useOpenFolderImport';
 import { Icon } from './Icon';
-import { OpenGitProjectDialog } from './project-git/OpenGitProjectDialog';
-import { defaultProjectGitClient } from '../providers/project-git';
 import { Toast } from './Toast';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
@@ -300,7 +298,6 @@ interface Props {
   onDeleteProject?: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
-  projectMutationReady?: (id: string) => boolean;
   onBrowseRegistry?: () => void;
   onOpenIntegrations?: () => void;
   onOpenMcp?: () => void;
@@ -511,7 +508,6 @@ export function HomeView({
   onDeleteProject,
   onDuplicateProject,
   onRenameProject,
-  projectMutationReady,
   onBrowseRegistry,
   onOpenIntegrations,
   onOpenMcp,
@@ -538,7 +534,6 @@ export function HomeView({
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const [openGitDialog, setOpenGitDialog] = useState(false);
   const folderImport = useOpenFolderImport({
     onImportFolder,
     onImportFolderResponse,
@@ -3206,9 +3201,6 @@ export function HomeView({
         recommendationSlot={artifactUpgradeSlot}
       />
 
-      <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
-        <button type="button" className="designs-refresh-button" onClick={() => setOpenGitDialog(true)}>{t('projectGit.open')}</button>
-      </div>
       {recentProjectsEmpty && folderImport.available ? (
         <div
           data-testid="home-empty-import-row"
@@ -3230,8 +3222,6 @@ export function HomeView({
           </button>
         </div>
       ) : null}
-      {openGitDialog ? <OpenGitProjectDialog client={defaultProjectGitClient} onOpened={onOpenProject} onClose={() => setOpenGitDialog(false)} /> : null}
-
       {recentProjectsEmpty ? null : (
       <RecentProjectsStrip
         isActive={isActive}
@@ -3273,7 +3263,6 @@ export function HomeView({
         {...(onDeleteProject ? { onDelete: onDeleteProject } : {})}
         {...(onDuplicateProject ? { onDuplicate: onDuplicateProject } : {})}
         {...(onRenameProject ? { onRename: onRenameProject } : {})}
-        projectMutationReady={projectMutationReady}
       />
       )}
 

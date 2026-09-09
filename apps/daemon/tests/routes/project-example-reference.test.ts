@@ -55,7 +55,6 @@ function buildDeps(input: {
       transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args),
     },
     design: {},
-    projectGit: { initializeNewProjectGit: async () => {} },
     http: {
       createSseResponse: noop,
       sendApiError: (

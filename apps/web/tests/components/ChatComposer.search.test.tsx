@@ -14,12 +14,6 @@ import {
   typeInComposer,
 } from '../helpers/lexical-composer';
 import type { ChatAttachment, ChatCommentAttachment } from '../../src/types';
-import type { ProjectGitState } from '@open-design/contracts';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-} from '../../src/state/project-git';
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -33,71 +27,12 @@ vi.mock('../../src/providers/registry', async () => {
 
 const mockedUploadProjectFiles = vi.mocked(uploadProjectFiles);
 
-const projectGitState = (revision: number): ProjectGitState => ({
-  enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
-  confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
-  bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
-  operationId: null, error: null,
-  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-});
-let defaultProjectStore = createProjectGitStateStore(projectGitState(1));
-
-beforeEach(() => {
-  defaultProjectStore = createProjectGitStateStore(projectGitState(1));
-  registerProjectMutationStore('project-1', defaultProjectStore);
-});
-
 afterEach(() => {
   cleanup();
-  unregisterProjectMutationStore('project-1', defaultProjectStore);
   vi.clearAllMocks();
 });
 
 describe('ChatComposer /search command', () => {
-  it('does not upload asynchronous clipboard items after their captured authority is revoked', async () => {
-    const projectId = 'clipboard-authority-project';
-    const store = createProjectGitStateStore(projectGitState(2));
-    registerProjectMutationStore(projectId, store);
-    let releaseClipboard!: (items: ClipboardItem[]) => void;
-    const clipboardRead = new Promise<ClipboardItem[]>((resolve) => { releaseClipboard = resolve; });
-    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { read: vi.fn(() => clipboardRead) },
-    });
-    mockedUploadProjectFiles.mockResolvedValue({ uploaded: [], failed: [] });
-    try {
-      render(
-        <ChatComposer
-          projectId={projectId}
-          projectFiles={[]}
-          streaming={false}
-          onEnsureProject={async () => projectId}
-          onSend={vi.fn()}
-          onStop={vi.fn()}
-        />,
-      );
-      fireEvent.paste(screen.getByTestId('chat-composer-input'), {
-        clipboardData: { files: [], items: [] },
-      });
-      await waitFor(() => expect(navigator.clipboard.read).toHaveBeenCalledTimes(1));
-      store.accept(projectGitState(3), 'event');
-      await act(async () => {
-        releaseClipboard([{
-          types: ['image/png'],
-          getType: async () => new Blob(['image'], { type: 'image/png' }),
-        } as unknown as ClipboardItem]);
-        await clipboardRead;
-      });
-      await act(async () => Promise.resolve());
-      expect(mockedUploadProjectFiles).not.toHaveBeenCalled();
-    } finally {
-      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
-      else delete (navigator as { clipboard?: Clipboard }).clipboard;
-      unregisterProjectMutationStore(projectId, store);
-    }
-  });
-
   it('sends staged file attachments even when the text draft is empty', async () => {
     const onSend = vi.fn();
     mockedUploadProjectFiles.mockResolvedValue({
@@ -322,7 +257,7 @@ describe('ChatComposer /search command', () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(mockedUploadProjectFiles).toHaveBeenCalledWith('project-1', [
       expect.any(File),
-    ], undefined, expect.objectContaining({ expectedProjectRevision: 1 }));
+    ]);
     expect(onSend).toHaveBeenCalledWith(
       'please update this spot',
       [{ path: 'uploads/drawing.png', name: 'drawing.png', kind: 'image', order: 0 }],

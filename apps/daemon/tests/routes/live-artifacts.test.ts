@@ -778,7 +778,7 @@ describe('live artifact tool routes', () => {
     expect(response.status).toBe(204);
     expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:17573');
     expect(response.headers.get('access-control-allow-methods')).toBe('GET, POST, PATCH, OPTIONS');
-    expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type, Idempotency-Key, X-OD-Project-Revision');
+    expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type, Idempotency-Key');
     expect(response.headers.get('access-control-allow-origin')).not.toBe('*');
   });
 

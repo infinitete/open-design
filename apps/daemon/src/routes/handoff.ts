@@ -1,6 +1,6 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -135,7 +135,7 @@ export function registerHandoffRoutes(app: Express, ctx: RegisterHandoffRoutesDe
       }
       res.json(result);
     } catch (err: any) {
-      if (err instanceof GitDomainError) {
+      if (err instanceof ProjectDomainError) {
         return sendApiError(res, err.status, err.code, err.message);
       }
       // The selected conversation has no messages — fail fast as caller

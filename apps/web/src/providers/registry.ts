@@ -1,12 +1,4 @@
 import { boundedRequestErrorCode } from '../analytics/workspace';
-import {
-  captureProjectMutation,
-  projectMutationBody,
-  projectMutationHeaders,
-  rethrowProjectStateChanged,
-  throwIfProjectStateChanged,
-  type ProjectMutationContext,
-} from '../state/project-git';
 import type {
   ConnectorAuthConfigPrepareResponse,
   ConnectorDetail,
@@ -777,24 +769,19 @@ export async function startDesignSystemTokenContractRebuildJob(
 export async function updateDesignSystemDraft(
   id: string,
   input: Partial<DesignSystemDraftInput>,
-  mutationContext?: ProjectMutationContext,
 ): Promise<DesignSystemDetail | null> {
   try {
     const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
               },
       body: JSON.stringify(input),
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     noteDesignSystemCatalogMutation();
     return parseDesignSystemDetail(await resp.json());
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -1749,24 +1736,19 @@ export async function fetchProjectFolders(
 export async function createProjectFolder(
   projectId: string,
   name: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<ProjectFolder | null> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/folders`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
               },
       body: JSON.stringify({ name }),
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { folder?: ProjectFolder };
     return json.folder ?? null;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -1774,24 +1756,19 @@ export async function createProjectFolder(
 export async function deleteProjectFolder(
   projectId: string,
   folderPath: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<boolean> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/folders`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
               },
       body: JSON.stringify({ path: folderPath }),
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return false;
     invalidateProjectFilesCache(projectId);
     return true;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return false;
   }
 }
@@ -1882,17 +1859,13 @@ export class LiveArtifactRefreshError extends Error {
 export async function refreshLiveArtifact(
   projectId: string,
   artifactId: string,
-  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<LiveArtifactRefreshResult> {
-  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   let resp: Response;
   try {
     resp = await fetch(
       `/api/live-artifacts/${encodeURIComponent(artifactId)}/refresh?projectId=${encodeURIComponent(projectId)}`,
       {
         method: 'POST',
-        headers: projectMutationHeaders(mutationContext),
-        signal: mutationContext?.signal,
       },
     );
   } catch (error) {
@@ -1901,8 +1874,6 @@ export async function refreshLiveArtifact(
       0,
     );
   }
-
-  await throwIfProjectStateChanged(resp);
 
   if (!resp.ok) {
     const errorBody = await readApiErrorBody(resp);
@@ -1935,9 +1906,7 @@ export async function updateLiveArtifact(
     slug?: string;
     document?: LiveArtifact['document'];
   },
-  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<LiveArtifact> {
-  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   let resp: Response;
   try {
     resp = await fetch(
@@ -1946,10 +1915,8 @@ export async function updateLiveArtifact(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...projectMutationHeaders(mutationContext),
         },
-        body: JSON.stringify(projectMutationBody(input, mutationContext)),
-        signal: mutationContext?.signal,
+        body: JSON.stringify(input),
       },
     );
   } catch (error) {
@@ -1958,8 +1925,6 @@ export async function updateLiveArtifact(
       0,
     );
   }
-
-  await throwIfProjectStateChanged(resp);
 
   if (!resp.ok) {
     const errorBody = await readApiErrorBody(resp);
@@ -1975,22 +1940,16 @@ export async function updateLiveArtifact(
 export async function deleteLiveArtifact(
   projectId: string,
   artifactId: string,
-  suppliedMutationContext?: ProjectMutationContext,
 ): Promise<boolean> {
-  const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(
       `/api/live-artifacts/${encodeURIComponent(artifactId)}?projectId=${encodeURIComponent(projectId)}`,
       {
         method: 'DELETE',
-        headers: projectMutationHeaders(mutationContext),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     return resp.ok;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return false;
   }
 }
@@ -2315,7 +2274,6 @@ export async function restoreProjectFileVersion(
   projectId: string,
   name: string,
   version: Pick<ProjectFileVersion, 'id'>,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<RestoreProjectFileVersionResponse | null> {
   try {
     const resp = await fetch(
@@ -2324,18 +2282,14 @@ export async function restoreProjectFileVersion(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...projectMutationHeaders(mutationContext),
                   },
         body: JSON.stringify({}),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     invalidateProjectFilesCache(projectId);
     return (await resp.json()) as RestoreProjectFileVersionResponse;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2374,7 +2328,6 @@ export async function upsertPreviewComment(
   projectId: string,
   conversationId: string,
   input: PreviewCommentUpsertRequest,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<PreviewComment | null> {
   try {
     const resp = await fetch(
@@ -2383,18 +2336,14 @@ export async function upsertPreviewComment(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...projectMutationHeaders(mutationContext),
                   },
         body: JSON.stringify(input),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { comment: PreviewComment };
     return json.comment ?? null;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2404,7 +2353,6 @@ export async function patchPreviewCommentStatus(
   conversationId: string,
   commentId: string,
   status: PreviewCommentStatus,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<PreviewComment | null> {
   try {
     const resp = await fetch(
@@ -2413,18 +2361,14 @@ export async function patchPreviewCommentStatus(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...projectMutationHeaders(mutationContext),
                   },
         body: JSON.stringify({ status }),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { comment: PreviewComment };
     return json.comment ?? null;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2440,7 +2384,6 @@ export async function patchPreviewCommentSortKey(
   conversationId: string,
   commentId: string,
   sortKey: number,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<PreviewComment | null> {
   try {
     const resp = await fetch(
@@ -2449,18 +2392,14 @@ export async function patchPreviewCommentSortKey(
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...projectMutationHeaders(mutationContext),
                   },
         body: JSON.stringify({ sortKey }),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     const json = (await resp.json()) as { comment: PreviewComment };
     return json.comment ?? null;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2469,21 +2408,16 @@ export async function deletePreviewComment(
   projectId: string,
   conversationId: string,
   commentId: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<boolean> {
   try {
     const resp = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/comments/${encodeURIComponent(commentId)}`,
       {
         method: 'DELETE',
-        headers: projectMutationHeaders(mutationContext),
-        signal: mutationContext?.signal,
       },
     );
-    await throwIfProjectStateChanged(resp);
     return resp.ok;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return false;
   }
 }
@@ -2498,7 +2432,6 @@ export async function writeProjectTextFile(
     versionLabel?: string;
     versionPrompt?: string | null;
     parentVersionId?: string;
-    mutationContext?: ProjectMutationContext;
   },
 ): Promise<ProjectFile | null> {
   const result = await writeProjectTextFileDetailed(projectId, name, content, options);
@@ -2519,16 +2452,13 @@ export async function writeProjectTextFileDetailed(
     versionLabel?: string;
     versionPrompt?: string | null;
     parentVersionId?: string;
-    mutationContext?: ProjectMutationContext;
   },
 ): Promise<WriteProjectTextFileResult> {
-  const mutationContext = options?.mutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
               },
       body: JSON.stringify({
         name,
@@ -2539,9 +2469,7 @@ export async function writeProjectTextFileDetailed(
         versionPrompt: options?.versionPrompt,
         parentVersionId: options?.parentVersionId,
       }),
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) {
       const body = await readApiErrorBody(resp);
       return {
@@ -2558,8 +2486,7 @@ export async function writeProjectTextFileDetailed(
       file: json.file,
       ...(json.version !== undefined ? { version: json.version } : {}),
     };
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return { ok: false, message: 'Network error while saving the file' };
   }
 }
@@ -2568,25 +2495,20 @@ export async function writeProjectBase64File(
   projectId: string,
   name: string,
   base64: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<ProjectFile | null> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
               },
       body: JSON.stringify({ name, content: base64, encoding: 'base64' }),
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     invalidateProjectFilesCache(projectId);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2595,7 +2517,6 @@ export async function uploadProjectFile(
   projectId: string,
   file: File,
   desiredName?: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<ProjectFile | null> {
   try {
     const form = new FormData();
@@ -2603,17 +2524,13 @@ export async function uploadProjectFile(
     if (desiredName) form.append('name', desiredName);
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
       method: 'POST',
-      headers: projectMutationHeaders(mutationContext),
             body: form,
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     invalidateProjectFilesCache(projectId);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }
@@ -2625,9 +2542,8 @@ export async function uploadProjectFile(
 export async function importProjectFigma(
   projectId: string,
   file: File,
-  opts?: { notes?: string; subdir?: string; mutationContext?: ProjectMutationContext },
+  opts?: { notes?: string; subdir?: string },
 ): Promise<{ ok: true; result: FigmaImportResult } | { ok: false; error: string }> {
-  const mutationContext = opts?.mutationContext ?? captureProjectMutation(projectId);
   try {
     const form = new FormData();
     form.append('file', file);
@@ -2635,11 +2551,8 @@ export async function importProjectFigma(
     if (opts?.subdir && opts.subdir.trim()) form.append('subdir', opts.subdir.trim());
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/figma/import`, {
       method: 'POST',
-      headers: projectMutationHeaders(mutationContext),
             body: form,
-      signal: mutationContext?.signal,
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) {
       let message = `import failed (${resp.status})`;
       try {
@@ -2655,7 +2568,6 @@ export async function importProjectFigma(
     const result = (await resp.json()) as FigmaImportResult;
     return { ok: true, result };
   } catch (err) {
-    rethrowProjectStateChanged(err);
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -2682,7 +2594,6 @@ export async function uploadProjectFiles(
   projectId: string,
   files: File[],
   dir?: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<UploadProjectFilesResult> {
   if (files.length === 0) return { uploaded: [], failed: [] };
 
@@ -2706,12 +2617,9 @@ export async function uploadProjectFiles(
         `/api/projects/${encodeURIComponent(projectId)}/upload`,
         {
           method: 'POST',
-          headers: projectMutationHeaders(mutationContext),
                     body: form,
-          signal: mutationContext?.signal,
         },
       );
-      await throwIfProjectStateChanged(resp);
 
       if (!resp.ok) {
         const payload = (await resp.json().catch(() => null)) as
@@ -2751,11 +2659,7 @@ export async function uploadProjectFiles(
         }
       }
     } catch (caught) {
-      rethrowProjectStateChanged(caught);
-      if (
-        mutationContext?.signal.aborted
-        || (caught instanceof DOMException && caught.name === 'AbortError')
-      ) throw caught;
+      if (caught instanceof DOMException && caught.name === 'AbortError') throw caught;
       error = 'upload request failed';
       for (const f of batch) {
         failed.push({ name: f.name, error });
@@ -2800,23 +2704,18 @@ function looksLikeImage(name: string): boolean {
 export async function deleteProjectFile(
   projectId: string,
   name: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<boolean> {
   try {
     const resp = await fetch(
       projectRawUrl(projectId, name),
       {
         method: 'DELETE',
-        headers: projectMutationHeaders(mutationContext),
-        signal: mutationContext?.signal,
               },
     );
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return false;
     invalidateProjectFilesCache(projectId);
     return true;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return false;
   }
 }
@@ -2825,18 +2724,14 @@ export async function renameProjectFile(
   projectId: string,
   from: string,
   to: string,
-  mutationContext = captureProjectMutation(projectId),
 ): Promise<RenameProjectFileResponse> {
   const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files/rename`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...projectMutationHeaders(mutationContext),
           },
     body: JSON.stringify({ from, to }),
-    signal: mutationContext?.signal,
   });
-  await throwIfProjectStateChanged(resp);
   if (!resp.ok) {
     const errorBody = await readApiErrorBody(resp);
     throw new Error(errorBody.message);
@@ -3259,28 +3154,23 @@ export async function applyLibraryAsset(
   assetId: string,
   projectId: string,
   dir?: string,
-  opts?: { includeElement?: boolean; mutationContext?: ProjectMutationContext },
+  opts?: { includeElement?: boolean },
 ): Promise<LibraryApplyResponse | null> {
-  const mutationContext = opts?.mutationContext ?? captureProjectMutation(projectId);
   try {
     const resp = await fetch(`/api/library/assets/${encodeURIComponent(assetId)}/apply`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...projectMutationHeaders(mutationContext),
       },
-      body: JSON.stringify(projectMutationBody({
+      body: JSON.stringify({
         projectId,
         ...(dir ? { dir } : {}),
         ...(opts?.includeElement ? { includeElement: true } : {}),
-      }, mutationContext)),
-      signal: mutationContext?.signal,
+      }),
     });
-    await throwIfProjectStateChanged(resp);
     if (!resp.ok) return null;
     return (await resp.json()) as LibraryApplyResponse;
-  } catch (error) {
-    rethrowProjectStateChanged(error);
+  } catch {
     return null;
   }
 }

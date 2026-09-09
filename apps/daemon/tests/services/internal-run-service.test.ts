@@ -10,7 +10,6 @@ interface TestRun extends InternalPhysicalRun {
   assistantMessageId: string | null;
   manualResumeAttemptCount?: number;
   pendingManualResumeAttemptCount?: number;
-  projectGitBindingGeneration?: number;
 }
 
 function createHarness(initial: {
@@ -53,7 +52,6 @@ function createHarness(initial: {
   } = {
     createOrReuse: vi.fn((meta) => {
       run.projectId = meta.projectId ?? null;
-      run.expectedProjectRevision = meta.expectedProjectRevision;
       return ({
       kind: initial.creation ?? 'created',
       run,
@@ -98,12 +96,10 @@ function createHarness(initial: {
   });
   const preRunHandle = {
     projectId: 'project-1',
-    projectRevision: 7,
-    bindingGeneration: 3,
     release: vi.fn(),
   };
   const beginProjectRunAdmission = vi.fn(async () => preRunHandle);
-  const attachProjectRun = vi.fn(() => ({ bindingGeneration: 3, projectRevision: 7 }));
+  const attachProjectRun = vi.fn((): null => null);
   const detachProjectRun = vi.fn();
   const coordinateProjectMutation = vi.fn(async (
     _admission: unknown,
@@ -219,7 +215,7 @@ describe('internal run creation service', () => {
     expect(harness.start).toHaveBeenCalledOnce();
   });
 
-  it('admits and persists the captured project epoch before claim or portable seeds', async () => {
+  it('admits and attaches the project run before claim or portable seeds', async () => {
     const harness = createHarness();
     let releaseAdmission!: () => void;
     harness.beginProjectRunAdmission.mockImplementation(() => new Promise(resolve => {
@@ -227,26 +223,27 @@ describe('internal run creation service', () => {
     }));
     const beforeClaimCommit = vi.fn();
     const preparing = harness.service.prepare({
-      meta: {
-      projectId: 'project-1',
-      expectedProjectRevision: 7,
-      },
+      meta: { projectId: 'project-1' },
       beforeClaimCommit,
     });
 
     await new Promise<void>(resolve => setImmediate(resolve));
-    expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1', 7);
+    expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1');
     expect(harness.claimAssistantMessage).not.toHaveBeenCalled();
+    expect(harness.attachProjectRun).not.toHaveBeenCalled();
     expect(beforeClaimCommit).not.toHaveBeenCalled();
 
     releaseAdmission();
     const prepared = await preparing;
     expect(prepared.kind).toBe('ready');
-    expect(harness.run.projectGitBindingGeneration).toBe(3);
-    expect(harness.run.expectedProjectRevision).toBe(7);
-    expect(harness.registry.persistState).toHaveBeenCalledWith(harness.run);
+    expect(harness.attachProjectRun).toHaveBeenCalledWith(
+      'run-1',
+      'project-1',
+      harness.preRunHandle,
+      0,
+    );
     expect(beforeClaimCommit).toHaveBeenCalledWith(harness.run);
-    expect(harness.persistState.mock.invocationCallOrder[0]!)
+    expect(harness.attachProjectRun.mock.invocationCallOrder[0]!)
       .toBeLessThan(harness.claimAssistantMessage.mock.invocationCallOrder[0]!);
   });
 
@@ -256,7 +253,7 @@ describe('internal run creation service', () => {
     harness.beginProjectRunAdmission.mockRejectedValue(new Error('stale project revision'));
 
     await expect(harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 6 },
+      meta: { projectId: 'project-1' },
       beforeClaimCommit,
     })).rejects.toThrow('stale project revision');
     expect(harness.claimAssistantMessage).not.toHaveBeenCalled();
@@ -308,7 +305,7 @@ describe('internal run creation service', () => {
     const harness = createHarness({ creation: 'reused' });
 
     expect(await harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 9 },
+      meta: { projectId: 'project-1' },
     })).toEqual({
       kind: 'reused',
       run: harness.run,
@@ -318,13 +315,12 @@ describe('internal run creation service', () => {
     expect(harness.start).not.toHaveBeenCalled();
   });
 
-  it('admits a resume with the request epoch before it reclaims and rearms the run', async () => {
+  it('admits a resume before it reclaims and rearms the run', async () => {
     const harness = createHarness({ creation: 'reused' });
-    harness.run.expectedProjectRevision = 2;
     harness.run.manualResumeAttemptCount = 2;
 
     expect(await harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 8 },
+      meta: { projectId: 'project-1' },
       resume: { requested: true, canResume: () => true },
     })).toEqual({
       kind: 'ready',
@@ -332,7 +328,7 @@ describe('internal run creation service', () => {
       creationKind: 'reused',
       resumed: true,
     });
-    expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1', 8);
+    expect(harness.beginProjectRunAdmission).toHaveBeenCalledWith('project-1');
     expect(harness.reserveRestartAttempt).toHaveBeenCalledWith(harness.run, 3);
     expect(harness.reserveRestartAttempt.mock.invocationCallOrder[0]!)
       .toBeLessThan(harness.claimAssistantMessage.mock.invocationCallOrder[0]!);
@@ -356,7 +352,7 @@ describe('internal run creation service', () => {
     harness.run.manualResumeAttemptCount = 0;
 
     expect(await harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      meta: { projectId: 'project-1' },
       resume: { requested: true, canResume: () => true },
     })).toMatchObject({ kind: 'assistant_claim_conflict' });
 
@@ -370,7 +366,7 @@ describe('internal run creation service', () => {
     const harness = createHarness({ creation: 'reused', reserveRestartOk: false });
 
     await expect(harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      meta: { projectId: 'project-1' },
       resume: { requested: true, canResume: () => true },
     })).rejects.toThrow('Failed to persist the resumed run execution attempt.');
 
@@ -384,7 +380,7 @@ describe('internal run creation service', () => {
     const harness = createHarness({ creation: 'reused', claimThrows: true });
 
     await expect(harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      meta: { projectId: 'project-1' },
       resume: { requested: true, canResume: () => true },
     })).rejects.toThrow('claim failed');
 
@@ -408,7 +404,7 @@ describe('internal run creation service', () => {
     const harness = createHarness({ creation: 'reused', restartOk: false });
 
     expect(await harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 4 },
+      meta: { projectId: 'project-1' },
       resume: { requested: true, canResume: () => true },
     })).toEqual({ kind: 'resume_not_allowed', run: harness.run });
     expect(harness.releaseProjectRun).toHaveBeenCalledOnce();
@@ -445,24 +441,20 @@ describe('internal run creation service', () => {
     expect(starter).not.toHaveBeenCalled();
   });
 
-  it('reuses one branded pre-run admission for snapshot mutation and physical-run attach', async () => {
+  it('reuses one pre-run admission for snapshot mutation and physical-run attach', async () => {
     const harness = createHarness();
     const effect = vi.fn(async () => 'snapshot-ready');
-    const service = harness.service as typeof harness.service & {
-      preAdmitProjectRun(projectId: string, expected?: number): Promise<unknown>;
-      withProjectMutation<T>(admission: unknown, source: string, work: () => Promise<T>): Promise<T>;
-    };
 
-    const admission = await service.preAdmitProjectRun('project-1', 7);
-    await expect(service.withProjectMutation(
+    const admission = await harness.service.preAdmitProjectRun('project-1');
+    await expect(harness.service.withProjectMutation(
       admission,
       'run.snapshot-resolution',
       effect,
     )).resolves.toBe('snapshot-ready');
-    const prepared = await service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+    const prepared = await harness.service.prepare({
+      meta: { projectId: 'project-1' },
       projectAdmission: admission,
-    } as never);
+    });
 
     expect(prepared.kind).toBe('ready');
     expect(harness.beginProjectRunAdmission).toHaveBeenCalledOnce();
@@ -483,12 +475,12 @@ describe('internal run creation service', () => {
       .toBeLessThan(vi.mocked(harness.registry.createOrReuse).mock.invocationCallOrder[0]!);
   });
 
-  it('rejects a stale pre-run epoch before snapshot mutation or private run allocation', async () => {
+  it('rejects a failed pre-run admission before snapshot mutation or private run allocation', async () => {
     const harness = createHarness();
-    harness.beginProjectRunAdmission.mockRejectedValue(new Error('stale project revision'));
+    harness.beginProjectRunAdmission.mockRejectedValue(new Error('admission rejected'));
 
-    await expect(harness.service.preAdmitProjectRun('project-1', 6))
-      .rejects.toThrow('stale project revision');
+    await expect(harness.service.preAdmitProjectRun('project-1'))
+      .rejects.toThrow('admission rejected');
     expect(harness.coordinateProjectMutation).not.toHaveBeenCalled();
     expect(harness.registry.createOrReuse).not.toHaveBeenCalled();
     expect(harness.claimAssistantMessage).not.toHaveBeenCalled();
@@ -496,10 +488,10 @@ describe('internal run creation service', () => {
 
   it('detaches a supplied admission after claim failure so the request scope can release it', async () => {
     const harness = createHarness({ claimThrows: true });
-    const admission = await harness.service.preAdmitProjectRun('project-1', 7);
+    const admission = await harness.service.preAdmitProjectRun('project-1');
 
     await expect(harness.service.prepare({
-      meta: { projectId: 'project-1', expectedProjectRevision: 7 },
+      meta: { projectId: 'project-1' },
       projectAdmission: admission,
     })).rejects.toThrow('claim failed');
     expect(harness.detachProjectRun).toHaveBeenCalledWith(

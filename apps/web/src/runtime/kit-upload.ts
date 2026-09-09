@@ -13,26 +13,18 @@ import {
   uploadProjectFile,
   writeProjectTextFile,
 } from '../providers/registry';
-import {
-  isProjectMutationCurrent,
-  type ProjectMutationContext,
-} from '../state/project-git';
 
 export type KitUploadModule = 'logo' | 'image' | 'font';
 
 export interface KitModuleUpload {
   uploading: KitUploadModule | null;
-  uploadModule: (
-    module: KitUploadModule,
-    file: File,
-    mutationContext?: ProjectMutationContext,
-  ) => Promise<void>;
+  uploadModule: (module: KitUploadModule, file: File) => Promise<void>;
 }
 
 export function useKitModuleUpload(opts: {
   projectId?: string;
   title?: string;
-  onUploaded?: (module: KitUploadModule, mutationContext?: ProjectMutationContext) => void;
+  onUploaded?: (module: KitUploadModule) => void;
   /** Called when the upload or the brand.json write fails, so the host can
    *  surface a visible error instead of the action silently no-op'ing. */
   onError?: (module: KitUploadModule, message: string) => void;
@@ -41,20 +33,15 @@ export function useKitModuleUpload(opts: {
   const [uploading, setUploading] = useState<KitUploadModule | null>(null);
 
   const uploadModule = useCallback(
-    async (module: KitUploadModule, file: File, mutationContext?: ProjectMutationContext) => {
+    async (module: KitUploadModule, file: File) => {
       if (!projectId || uploading) return;
-      const isCurrent = () => Boolean(
-        mutationContext && isProjectMutationCurrent(projectId, mutationContext),
-      );
-      if (!isCurrent()) return;
       setUploading(module);
       try {
         const dir = module === 'logo' ? 'logos' : module === 'font' ? 'fonts' : 'imagery';
         const safe =
           file.name.replace(/[^\w.\-]+/g, '-').replace(/^-+|-+$/g, '') || `${module}-asset`;
         const path = `${dir}/${safe}`;
-        const uploaded = await uploadProjectFile(projectId, file, path, mutationContext);
-        if (!isCurrent()) return;
+        const uploaded = await uploadProjectFile(projectId, file, path);
         if (!uploaded) {
           onError?.(module, 'upload-failed');
           return;
@@ -68,9 +55,7 @@ export function useKitModuleUpload(opts: {
 
         const raw = await fetchProjectFileText(projectId, 'brand.json', {
           cache: 'no-store',
-          signal: mutationContext?.signal,
         });
-        if (!isCurrent()) return;
         if (raw === null) {
           onError?.(module, 'brand-read-failed');
           return;
@@ -95,9 +80,7 @@ export function useKitModuleUpload(opts: {
           projectId,
           'brand.json',
           JSON.stringify(brand, null, 2),
-          { mutationContext },
         );
-        if (!isCurrent()) return;
         if (!wrote) {
           onError?.(module, 'write-failed');
           return;
@@ -105,9 +88,7 @@ export function useKitModuleUpload(opts: {
         if (module === 'font') {
           const manifestRaw = await fetchProjectFileText(projectId, 'fonts/manifest.json', {
             cache: 'no-store',
-            signal: mutationContext?.signal,
           });
-          if (!isCurrent()) return;
           const manifest = parseFontManifest(manifestRaw);
           const family = fontFamilyFromFilename(storedBase);
           manifest.files = manifest.files.filter((entry) => entry.file !== storedBase);
@@ -122,13 +103,10 @@ export function useKitModuleUpload(opts: {
             projectId,
             'fonts/manifest.json',
             JSON.stringify(manifest, null, 2),
-            { mutationContext },
           );
-          if (!isCurrent()) return;
         }
-        onUploaded?.(module, mutationContext);
+        onUploaded?.(module);
       } catch {
-        if (!isCurrent()) return;
         onError?.(module, 'upload-failed');
       } finally {
         setUploading(null);

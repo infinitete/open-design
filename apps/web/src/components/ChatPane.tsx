@@ -73,7 +73,7 @@ import {
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, SkillSummary } from '../types';
 import { agentDisplayName } from '../utils/agentLabels';
 import { commentTargetDisplayName, commentsToAttachments, simplePositionLabel } from '../comments';
-import { AssistantMessage, RestoredHistoricalMessage, type QuestionFormSubmitHandler } from './AssistantMessage';
+import { AssistantMessage, type QuestionFormSubmitHandler } from './AssistantMessage';
 import { TodoCard } from './ToolCard';
 import type { BrandBrowserAssistConfirm } from './OdCard';
 import {
@@ -517,7 +517,6 @@ interface Props {
   // canonical text; non-run errors leave the source undefined.
   errorSourceAssistantId?: string | null;
   projectId: string | null;
-  projectGeneration?: number;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
   // Analytics-only — forwarded to AssistantMessage so the feedback
@@ -635,8 +634,6 @@ interface Props {
   // Composer settings/CLI button forwards to here. The dialog lives in App
   // (it owns the AppConfig lifecycle) so we just pass the open trigger.
   onOpenSettings?: (section?: SettingsSection) => void;
-  onOpenProjectGitSettings?: () => void;
-  projectGitMenu?: ReactNode;
   showByokRecoveryAction?: boolean;
   onSwitchToLocalCli?: () => void;
   // PR #3157: Antigravity's `agy -p` can't complete OAuth on its own,
@@ -696,7 +693,6 @@ interface Props {
   composerDraftSignal?: {
     id: string;
     projectId: string;
-    generation: number;
     conversationId: string;
     text: string;
     attachments?: ChatAttachment[];
@@ -929,7 +925,6 @@ export function ChatPane({
   error,
   errorSourceAssistantId,
   projectId,
-  projectGeneration,
   sessionMode = 'design',
   onSessionModeChange,
   projectKindForTracking = null,
@@ -985,8 +980,6 @@ export function ChatPane({
   onSelectConversation,
   onDeleteConversation,
   onOpenSettings,
-  onOpenProjectGitSettings,
-  projectGitMenu,
   showByokRecoveryAction = false,
   onSwitchToLocalCli,
   onLaunchAntigravityOauth,
@@ -1612,7 +1605,6 @@ export function ChatPane({
     if (!composerDraftSignal) return;
     if (
       composerDraftSignal.projectId !== projectId
-      || (projectGeneration !== undefined && composerDraftSignal.generation !== projectGeneration)
       || composerDraftSignal.conversationId !== activeConversationId
       || lastDraftSignalIdRef.current === composerDraftSignal.id
       || !composerRef.current
@@ -1624,7 +1616,7 @@ export function ChatPane({
     });
     lastDraftSignalIdRef.current = composerDraftSignal.id;
     onComposerDraftRestored?.(composerDraftSignal.id);
-  }, [activeConversationId, composerDraftSignal, onComposerDraftRestored, projectGeneration, projectId]);
+  }, [activeConversationId, composerDraftSignal, onComposerDraftRestored, projectId]);
 
   // Library "optimize design system" hand-off: when the user pushed selected
   // assets into this project's design system from the Library, pre-fill the
@@ -2273,8 +2265,6 @@ export function ChatPane({
       }}
       onStop={onStop}
       onOpenSettings={onOpenSettings}
-      onOpenProjectGitSettings={onOpenProjectGitSettings}
-      projectGitMenu={projectGitMenu}
       onOpenMcpSettings={onOpenMcpSettings}
       onBrowsePlugins={onBrowsePlugins}
       onOpenConnectors={onOpenConnectors}
@@ -3312,7 +3302,6 @@ function ChatRows({
 
   const renderItem = (item: ChatRenderItem) => {
     const m = item.message;
-    if (m.restoredPresentation) return <RestoredHistoricalMessage message={m} />;
     const messageStreaming = isAssistantMessageStreaming(
       m,
       streaming,
@@ -3368,14 +3357,13 @@ function ChatRows({
         hasDesignSystemContext={hasActiveDesignSystem || !!activeDesignSystem}
         onSubmitQuestionForm={
           onSubmitQuestionForm
-            ? (text, attachments, context, _sourceAssistantMessageId, formId, mutationContext) =>
+            ? (text, attachments, context, _sourceAssistantMessageId, formId) =>
                 assistantCallbacksRef.current.onSubmitQuestionForm?.(
                   text,
                   attachments,
                   context,
                   m.id,
                   formId,
-                  mutationContext,
                 )
             : undefined
         }
@@ -3520,8 +3508,7 @@ export function buildChatRenderItems(messages: ChatMessage[]): ChatRenderItem[] 
     // Structured form answers are rendered as a compact summary on the
     // preceding assistant message. Keeping the raw machine payload in a
     // separate user bubble duplicates the same decision and exposes stable IDs.
-    if (!message.restoredPresentation
-      && message.role === 'user'
+    if (message.role === 'user'
       && /^\[form answers\b/i.test(message.content.trim())) {
       continue;
     }

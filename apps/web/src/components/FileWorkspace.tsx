@@ -26,11 +26,6 @@ import {
 import { deriveUploadCohort } from '../analytics/upload-tracking';
 import { useI18n, useT, type Locale } from '../i18n';
 import { useStableHandler } from '../lib/use-stable-handler';
-import {
-  captureProjectMutation,
-  isProjectMutationCurrent,
-  type ProjectMutationContext,
-} from '../state/project-git';
 import type { ProjectDeleteResult } from '../state/projects';
 import { useDeckPreviewScale } from '../lib/use-deck-preview-scale';
 import { isMacPlatform } from '../utils/platform';
@@ -311,14 +306,12 @@ interface Props {
     sectionTitle: string,
     feedback: string,
     files: string[],
-    mutationContext: ProjectMutationContext,
   ) => DesignSystemReviewAgentTask | void;
   designSystemReview?: ProjectMetadata['designSystemReview'];
   onDesignSystemReviewDecision?: (
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
-    mutationContext?: ProjectMutationContext,
   ) => void;
   onUseDesignSystem?: (id: string, title: string) => Promise<void> | void;
   designSystemEditRequest?: DesignKitEditFocusRequest | null;
@@ -1182,7 +1175,6 @@ interface SaveSketchOptions {
   activate?: boolean;
   refreshFiles?: boolean;
   showSaving?: boolean;
-  mutationContext?: ProjectMutationContext;
 }
 
 interface PendingSketchSave {
@@ -1203,7 +1195,6 @@ function mergeSketchSaveOptions(a: SaveSketchOptions, b: SaveSketchOptions): Sav
     activate: a.activate !== false || b.activate !== false,
     refreshFiles: a.refreshFiles !== false || b.refreshFiles !== false,
     showSaving: a.showSaving !== false || b.showSaving !== false,
-    mutationContext: b.mutationContext ?? a.mutationContext,
   };
 }
 
@@ -2360,8 +2351,6 @@ export function FileWorkspace({
 
   async function uploadFiles(picked: File[]) {
     if (picked.length === 0) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
 
     setUploadError(null);
     // Cohort math is shared across all three upload surfaces; see
@@ -2369,7 +2358,7 @@ export function FileWorkspace({
     const cohort = deriveUploadCohort(picked);
     let result: UploadProjectFilesResult;
     try {
-      result = await uploadProjectFiles(projectId, picked, uploadDir, mutationContext);
+      result = await uploadProjectFiles(projectId, picked, uploadDir);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setUploadError(`Upload failed for ${picked.length} file(s) (${detail}).`);
@@ -2553,10 +2542,8 @@ export function FileWorkspace({
 
   async function handleDelete(name: string) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!confirm(t('workspace.deleteFileConfirm', { name }))) return;
-    const ok = await deleteProjectFile(projectId, name, mutationContext);
+    const ok = await deleteProjectFile(projectId, name);
     if (ok) {
       await onRefreshFiles();
       const nextTabs = persistedTabs.filter((n) => n !== name);
@@ -2589,13 +2576,11 @@ export function FileWorkspace({
   async function handleDeleteMany(names: string[]) {
     if (viewerOnly) return; // read-only viewer of a team-shared project
     if (names.length === 0) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!confirm(t('workspace.deleteSelectedFilesConfirm', { n: names.length }))) return;
     const deleted: string[] = [];
     const failed: string[] = [];
     for (const name of names) {
-      const ok = await deleteProjectFile(projectId, name, mutationContext);
+      const ok = await deleteProjectFile(projectId, name);
       if (ok) deleted.push(name);
       else failed.push(name);
     }
@@ -2640,9 +2625,7 @@ export function FileWorkspace({
       );
     }
 
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return null;
-    const result = await renameProjectFile(projectId, oldName, nextName, mutationContext);
+    const result = await renameProjectFile(projectId, oldName, nextName);
     const renamed = result.file;
     await onRefreshFiles();
     await refreshProjectFolders();
@@ -2715,14 +2698,11 @@ export function FileWorkspace({
   }
 
   async function createMarkdownDocument() {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const target = nextMarkdownDocumentPath(files, uploadDir);
     const file = await writeProjectTextFile(
       projectId,
       target,
       initialMarkdownDocument(target, projectKind, t),
-      { mutationContext },
     );
     if (!file) return;
     await onRefreshFiles();
@@ -2734,8 +2714,6 @@ export function FileWorkspace({
     if (pageCreating) return;
     const preset = projectPagePresetById(presetId, projectPagePresets) ?? projectPagePresets[0] ?? PROJECT_PAGE_PRESETS[0]!;
     const target = nextHtmlPagePath(visibleFiles, pagePresetFileBaseName(preset, t, locale));
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     setPageCreating(true);
     try {
       const content = await contentForPagePreset(
@@ -2747,7 +2725,6 @@ export function FileWorkspace({
       const file = await writeProjectTextFile(projectId, target, content, {
         versionSource: 'manual',
         versionPrompt: pagePresetVersionPrompt(preset, t, locale),
-        mutationContext,
       });
       if (!file) {
         // Never let a failed create read as a silent no-op click.
@@ -2853,8 +2830,6 @@ export function FileWorkspace({
     options: SaveSketchOptions = {},
     revisionOverride?: number,
   ): Promise<boolean | undefined> {
-    options = { ...options, mutationContext: options.mutationContext ?? captureProjectMutation(projectId) };
-    if (!options.mutationContext || !isProjectMutationCurrent(projectId, options.mutationContext)) return false;
     const entry = sketches[name] ?? (sceneOverride ? defaultSketchState(name, sceneOverride) : null);
     if (!entry) return;
     const scene = sceneOverride ?? entry.scene;
@@ -2906,9 +2881,7 @@ export function FileWorkspace({
     const startedAt = Date.now();
     let result: boolean | undefined;
     try {
-      const file = await writeProjectTextFile(projectId, name, text, {
-        mutationContext: options.mutationContext,
-      });
+      const file = await writeProjectTextFile(projectId, name, text);
       const elapsed = Date.now() - startedAt;
       // Ensures saving UI shows so the button does not flicker
       if (showSaving && elapsed < 500) await new Promise((resolve) => setTimeout(resolve, 500 - elapsed));
@@ -2988,13 +2961,10 @@ export function FileWorkspace({
   function queueSketchAutosave(name: string, scene: ExcalidrawSketchScene) {
     clearSketchAutosave(name);
     const revision = sketchSceneRevisionRef.current.get(name) ?? 0;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const options: SaveSketchOptions = {
       activate: false,
       refreshFiles: false,
       showSaving: false,
-      mutationContext,
     };
     if (sketchSaveInFlightRef.current.has(name)) {
       const pending = pendingSketchSavesRef.current.get(name);
@@ -3040,11 +3010,9 @@ export function FileWorkspace({
     base64: string,
     imageFileName: string,
   ): Promise<{ fileName: string } | false> {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     const targetDir = parentDirForProjectFile(sketchName);
     const targetName = targetDir ? `${targetDir}/${imageFileName}` : imageFileName;
-    const file = await writeProjectBase64File(projectId, targetName, base64, mutationContext);
+    const file = await writeProjectBase64File(projectId, targetName, base64);
     if (!file) {
       setUploadError(t('common.exportImageFailed'));
       return false;
@@ -3865,17 +3833,8 @@ export function FileWorkspace({
     // Surface a toast when the daemon can't start one (e.g. node-pty not
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
-      const mutationContext = captureProjectMutation(projectId);
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
-        setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
-        return null;
-      }
       try {
-        const term = await createTerminal(projectId, undefined, mutationContext);
-        if (!isProjectMutationCurrent(projectId, mutationContext)) {
-          if (term?.id) void killTerminal(projectId, term.id, { keepalive: true });
-          return null;
-        }
+        const term = await createTerminal(projectId, undefined);
         if (!term) {
           setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
           return null;
@@ -4626,8 +4585,6 @@ export function FileWorkspace({
           <LibraryPicker
             onClose={() => setShowLibraryPicker(false)}
             onConfirm={async (assets) => {
-              const mutationContext = captureProjectMutation(projectId);
-              if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
               // Copy each picked asset into the project's design files (under the
               // folder currently in view, if any). Apply records a provenance
               // back-link so the registry knows the asset was consumed. For
@@ -4641,14 +4598,12 @@ export function FileWorkspace({
                   asset.id,
                   projectId,
                   dir,
-                  { includeElement: true, mutationContext },
+                  { includeElement: true },
                 );
-                if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
                 if (res?.relPath) lastRelPath = res.relPath;
                 if (res?.elementRelPath) lastRelPath = res.elementRelPath;
               }
               await onRefreshFiles();
-              if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
               if (lastRelPath) openFile(lastRelPath);
             }}
           />
@@ -4719,14 +4674,12 @@ function DesignSystemProjectPanel({
     sectionTitle: string,
     feedback: string,
     files: string[],
-    mutationContext: ProjectMutationContext,
   ) => DesignSystemReviewAgentTask | void;
   designSystemReview?: ProjectMetadata['designSystemReview'];
   onReviewDecision?: (
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
-    mutationContext?: ProjectMutationContext,
   ) => void;
   onUseDesignSystem?: (id: string, title: string) => Promise<void> | void;
   editFocusRequest?: DesignKitEditFocusRequest | null;
@@ -4804,18 +4757,11 @@ function DesignSystemProjectPanel({
 
   const refreshKitDependencies = useCallback(async (options?: {
     finalizeBrand?: boolean;
-    mutationContext?: ProjectMutationContext;
   }) => {
-    const mutationContext = options?.mutationContext ?? captureProjectMutation(projectId);
-    const isCurrent = () => !mutationContext
-      || isProjectMutationCurrent(projectId, mutationContext);
     if (options?.finalizeBrand && brandId) {
-      if (!mutationContext) throw new Error(t('ds.actionFailed'));
-      const outcome = await finalizeBrandProject(brandId, projectId, mutationContext);
-      if (!isCurrent()) return;
+      const outcome = await finalizeBrandProject(brandId, projectId);
       if (!outcome.ok) throw new Error(outcome.error);
     }
-    if (!isCurrent()) return;
     setKitReloadKey((k) => k + 1);
     await Promise.all([
       Promise.resolve(onRefreshFiles()),
@@ -4849,10 +4795,10 @@ function DesignSystemProjectPanel({
   const { uploading: kitUploading, uploadModule: kitUploadModule } = useKitModuleUpload({
     projectId,
     title: system.title,
-    onUploaded: (module, mutationContext) => {
+    onUploaded: (module) => {
       setKitActionBusy(`upload:${module}`);
       notifyKit('loading', t('ds.uploading'));
-      void refreshKitDependencies({ finalizeBrand: true, mutationContext })
+      void refreshKitDependencies({ finalizeBrand: true })
         .then(() => notifyKit('success', t('ds.uploadDone')))
         .catch(() => notifyKit('error', t('ds.actionFailed')))
         .finally(() => setKitActionBusy(null));
@@ -4873,17 +4819,12 @@ function DesignSystemProjectPanel({
     reloadKey: kitReloadKey,
   });
   async function persistDesignMd(nextBody: string) {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
-      throw new Error(t('ds.actionFailed'));
-    }
     const updated = await updateDesignSystemDraft(
       system.id,
       { body: nextBody },
-      mutationContext,
     );
     if (!updated) throw new Error(t('ds.actionFailed'));
-    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, { mutationContext });
+    const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody);
     if (!file) throw new Error(t('ds.actionFailed'));
     setDesignMdBody(nextBody);
     await refreshKitDependencies();
@@ -5157,8 +5098,6 @@ function DesignSystemProjectPanel({
   const generationProgress = designSystemGenerationProgress(generationSteps);
 
   async function togglePublished(nextPublished: boolean) {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!editable) return;
     if (nextPublished && !githubEvidence.ready) return;
     setStatusBusy(true);
@@ -5168,15 +5107,12 @@ function DesignSystemProjectPanel({
       const updated = await updateDesignSystemDraft(
         system.id,
         { status: nextStatus },
-        mutationContext,
       );
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       if (!updated) throw new Error(t('ds.actionFailed'));
       setStatus(updated.status ?? nextStatus);
       await onDesignSystemsRefresh?.();
       notifyKit('success', t('ds.actionDone'));
     } catch {
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       notifyKit('error', t('ds.actionFailed'));
     } finally {
       setStatusBusy(false);
@@ -5202,12 +5138,9 @@ function DesignSystemProjectPanel({
     sectionTitle: string,
     decision: DesignSystemReviewDecision,
     details?: DesignSystemReviewDetails,
-    suppliedMutationContext?: ProjectMutationContext,
   ) {
-    const mutationContext = suppliedMutationContext ?? captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
     setReviewDecisions((current) => ({ ...current, [sectionTitle]: decision }));
-    onReviewDecision?.(sectionTitle, decision, details, mutationContext);
+    onReviewDecision?.(sectionTitle, decision, details);
     if (decision === 'looks-good' && feedbackSection === sectionTitle) {
       setFeedbackSection(null);
       setFeedbackText('');
@@ -5223,8 +5156,6 @@ function DesignSystemProjectPanel({
   }
 
   function openNeedsWorkFeedback(sectionTitle: string, expansionKey: string) {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     if (!editable) return;
     setReviewDecisions((current) => ({ ...current, [sectionTitle]: 'needs-work' }));
     setExpandedSections((current) => ({ ...current, [expansionKey]: true }));
@@ -5233,16 +5164,14 @@ function DesignSystemProjectPanel({
   }
 
   function submitNeedsWorkFeedback(sectionTitle: string, sectionFiles: string[]) {
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const feedback = feedbackText.trim();
     if (!feedback) return;
-    const agentTask = onNeedsWork?.(sectionTitle, feedback, sectionFiles, mutationContext);
+    const agentTask = onNeedsWork?.(sectionTitle, feedback, sectionFiles);
     markSectionReview(sectionTitle, 'needs-work', {
       feedback,
       files: sectionFiles,
       ...(agentTask ? { agentTask } : {}),
-    }, mutationContext);
+    });
     setFeedbackSection(null);
     setFeedbackText('');
   }

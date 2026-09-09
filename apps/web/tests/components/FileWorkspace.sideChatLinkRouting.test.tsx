@@ -14,12 +14,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileWorkspace } from '../../src/components/FileWorkspace';
 import { I18nProvider } from '../../src/i18n';
 import { deleteDesignSystemDraft, updateDesignSystemDraft } from '../../src/providers/registry';
-import { createTerminal, killTerminal } from '../../src/state/projects';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-} from '../../src/state/project-git';
 import type { AppConfig, ChatMessage, Conversation, ProjectFile } from '../../src/types';
 
 const launcherCapture = vi.hoisted(() => ({ context: null as null | {
@@ -274,59 +268,6 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
     expect(lastState?.active).toBe('new-file.md');
   });
 
-  it('returns no terminal id when a deferred successful creation loses project authority', async () => {
-    const state = {
-      enabled: true,
-      phase: 'synced' as const,
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: null,
-      confirmedRemoteHead: null,
-      projectRevision: 1,
-      contentRevision: 1,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    const store = createProjectGitStateStore(state);
-    registerProjectMutationStore('project-1', store);
-    let resolveCreate!: (value: Awaited<ReturnType<typeof createTerminal>>) => void;
-    vi.mocked(createTerminal).mockReturnValue(new Promise<Awaited<ReturnType<typeof createTerminal>>>((resolve) => {
-      resolveCreate = resolve;
-    }));
-    try {
-      renderSideChatWorkspace('No links needed.');
-      const create = launcherCapture.context?.createTerminal;
-      expect(create).toBeTypeOf('function');
-      const result = create!();
-      await waitFor(() => expect(createTerminal).toHaveBeenCalledWith(
-        'project-1',
-        undefined,
-        expect.objectContaining({ expectedProjectRevision: 1 }),
-      ));
-      store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event');
-      resolveCreate({
-        id: 'term-stale-success', projectId: 'project-1', cwd: '/data/projects/project-1',
-        shell: '/bin/sh', cols: 80, rows: 24, status: 'running', createdAt: 1, updatedAt: 1,
-        exitCode: null, signal: null,
-      });
-
-      await expect(result).resolves.toBeNull();
-      expect(killTerminal).toHaveBeenCalledWith(
-        'project-1',
-        'term-stale-success',
-        { keepalive: true },
-      );
-    } finally {
-      unregisterProjectMutationStore('project-1', store);
-      store.dispose();
-    }
-  });
-
   it('does not consume a stale backing-project delete as success', async () => {
     let resolveDelete!: (result: 'stale') => void;
     const onDeleteDesignSystemProject = vi.fn(() => new Promise<'stale'>((resolve) => {
@@ -366,168 +307,20 @@ describe('FileWorkspace side-chat file-link routing (host-level)', () => {
     }
   });
 
-  it('keeps a retained publish handler inert after project authority advances', async () => {
-    const state = {
-      enabled: true,
-      phase: 'synced' as const,
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: 'a'.repeat(40),
-      confirmedRemoteHead: 'a'.repeat(40),
-      projectRevision: 1,
-      contentRevision: 1,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    const store = createProjectGitStateStore(state);
-    registerProjectMutationStore('project-1', store);
-    try {
-      render(
-        <I18nProvider initial="en">
-          <FileWorkspace
-            projectId="project-1"
-            projectKind="design_system"
-            files={[workspaceFile('index.html')]}
-            liveArtifacts={[]}
-            onRefreshFiles={vi.fn()}
-            isDeck={false}
-            tabsState={{ tabs: ['__design_system__'], active: '__design_system__' }}
-            onTabsStateChange={vi.fn()}
-            designSystemProject={{ id: 'system-1', title: 'Design system', status: 'draft' } as never}
-            designSystemEditable
-          />
-        </I18nProvider>,
-      );
-      const publish = await screen.findByTestId('design-system-publish');
-      store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event');
-      vi.mocked(updateDesignSystemDraft).mockClear();
-
-      fireEvent.click(publish);
-
-      expect(updateDesignSystemDraft).not.toHaveBeenCalled();
-      expect(screen.queryByTestId('kit-toast')).toBeNull();
-    } finally {
-      unregisterProjectMutationStore('project-1', store);
-      store.dispose();
-    }
-  });
-
-  it('publishes through the real design-kit child with the exact ready revision', async () => {
-    const state = {
-      enabled: true,
-      phase: 'synced' as const,
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: 'a'.repeat(40),
-      confirmedRemoteHead: 'a'.repeat(40),
-      projectRevision: 7,
-      contentRevision: 7,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    const store = createProjectGitStateStore(state);
-    registerProjectMutationStore('project-1', store);
+  it('publishes through the real design-kit child', async () => {
     vi.mocked(updateDesignSystemDraft).mockResolvedValue({
       id: 'system-1',
       title: 'Design system',
       status: 'published',
     } as never);
-    try {
-      renderDesignSystemWorkspace(vi.fn(async () => true as const));
-      fireEvent.click(await screen.findByTestId('design-system-publish'));
+    renderDesignSystemWorkspace(vi.fn(async () => true as const));
+    fireEvent.click(await screen.findByTestId('design-system-publish'));
 
-      await waitFor(() => expect(updateDesignSystemDraft).toHaveBeenCalledWith(
-        'system-1',
-        { status: 'published' },
-        expect.objectContaining({ expectedProjectRevision: 7, generation: 0 }),
-      ));
-      await waitFor(() => expect(screen.getByTestId('kit-toast')).toHaveAttribute('data-tone', 'success'));
-    } finally {
-      unregisterProjectMutationStore('project-1', store);
-      store.dispose();
-    }
+    await waitFor(() => expect(updateDesignSystemDraft).toHaveBeenCalledWith(
+      'system-1',
+      { status: 'published' },
+    ));
+    await waitFor(() => expect(screen.getByTestId('kit-toast')).toHaveAttribute('data-tone', 'success'));
   });
-
-  it.each(['loading', 'error', 'write-lock'] as const)(
-    'keeps a retained publish handler inert after authority becomes %s',
-    async (unavailableKind) => {
-      const state = {
-        enabled: true,
-        phase: 'synced' as const,
-        localHead: 'a'.repeat(40),
-        observedRemoteHead: 'a'.repeat(40),
-        confirmedRemoteHead: 'a'.repeat(40),
-        projectRevision: 11,
-        contentRevision: 11,
-        bindingGeneration: 1,
-        dirty: false,
-        pendingPush: false,
-        autoSync: true,
-        operationId: null,
-        error: null,
-        binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-        dependencies: [],
-      };
-      const readyStore = createProjectGitStateStore(state);
-      registerProjectMutationStore('project-1', readyStore);
-      let replacementStore: ReturnType<typeof createProjectGitStateStore> | null = null;
-      try {
-        render(
-          <I18nProvider initial="en">
-            <FileWorkspace
-              projectId="project-1"
-              projectKind="design_system"
-              files={[workspaceFile('index.html')]}
-              liveArtifacts={[]}
-              onRefreshFiles={vi.fn()}
-              isDeck={false}
-              tabsState={{ tabs: ['__design_system__'], active: '__design_system__' }}
-              onTabsStateChange={vi.fn()}
-              designSystemProject={{ id: 'system-1', title: 'Design system', status: 'draft' } as never}
-              designSystemEditable
-            />
-          </I18nProvider>,
-        );
-        const publish = await screen.findByTestId('design-system-publish');
-
-        if (unavailableKind === 'write-lock') {
-          readyStore.accept({ ...state, projectRevision: 12, contentRevision: 12 }, 'event');
-        } else {
-          replacementStore = createProjectGitStateStore();
-          if (unavailableKind === 'error') {
-            const token = replacementStore.beginRead();
-            replacementStore.failRead(token, new Error('Git state unavailable'));
-          }
-          registerProjectMutationStore('project-1', replacementStore);
-        }
-        vi.mocked(updateDesignSystemDraft).mockClear();
-        analyticsTrack.mockClear();
-
-        fireEvent.click(publish);
-
-        expect(updateDesignSystemDraft).not.toHaveBeenCalled();
-        expect(analyticsTrack).not.toHaveBeenCalled();
-        expect(screen.queryByTestId('kit-toast')).toBeNull();
-      } finally {
-        if (replacementStore) {
-          unregisterProjectMutationStore('project-1', replacementStore);
-          replacementStore.dispose();
-        } else {
-          unregisterProjectMutationStore('project-1', readyStore);
-        }
-        readyStore.dispose();
-      }
-    },
-  );
 
 });

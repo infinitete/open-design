@@ -15,8 +15,6 @@ import {
   resolveProjectFileVersionContentMatch,
 } from '../src/project-file-versions.js';
 import { ensureProject } from '../src/projects.js';
-import { serializePortableMetadata } from '../src/services/project-git/portable.js';
-import { portableSnapshot, writeFixtureEntries } from './helpers/project-git-crash-worker.js';
 
 describe('project file versions', () => {
   it('refuses native legacy symlinks instead of exposing outside content', async () => {
@@ -29,29 +27,6 @@ describe('project file versions', () => {
       const outside = path.join(projectsRoot, 'outside.txt'); await writeFile(outside, 'must not disclose');
       await rm(content); await symlink(outside, content);
       await expect(readProjectFileVersion(projectsRoot, projectId, 'brand.html', version.id)).rejects.toBeDefined();
-    });
-  });
-  it('reads archived legacy IDs in another data root without native history or SHA coercion', async () => {
-    await withProject(async (projectsRoot, projectId) => {
-      const file = 'brand.html'; const legacyId = 'old_version-1';
-      const key = createHash('sha256').update(file).digest('hex').slice(0, 24);
-      const prefix = `.open-design/legacy-file-history/${key}`;
-      const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, fileName: file, currentVersionId: legacyId,
-        entries: [{ id: legacyId, contentPath: `${legacyId}.html`, version: 1, createdAt: 1, source: 'manual' }] }));
-      const content = Buffer.from('<html>archived version</html>'); const snapshot = portableSnapshot('Before');
-      const entries = new Map<string, Uint8Array>([[`${prefix}/manifest.json`, manifest], [`${prefix}/${legacyId}.html`, content]]);
-      for (const [filePath, bytes] of entries) {
-        const digest = createHash('sha256').update(bytes).digest('hex'); snapshot.project.contentRefs.push(digest);
-        snapshot.manifest.resources.push({ digest, references: ['repository'], locations: [{ path: filePath, purpose: 'legacy-history' }] });
-      }
-      for (const [filePath, bytes] of serializePortableMetadata(snapshot)) entries.set(filePath, bytes);
-      await writeFixtureEntries(path.join(projectsRoot, projectId), entries);
-      const versions = await listProjectFileVersions(projectsRoot, projectId, file);
-      expect(versions.map(version => version.id)).toEqual([legacyId]);
-      expect((await readProjectFileVersion(projectsRoot, projectId, file, legacyId)).content).toBe(content.toString());
-      await expect(readFile(path.join(projectsRoot, projectId, '.file-versions', key, 'manifest.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-      await writeFile(path.join(projectsRoot, projectId, prefix, `${legacyId}.html`), 'tampered');
-      await expect(readProjectFileVersion(projectsRoot, projectId, file, legacyId)).rejects.toMatchObject({ code: 'PORTABLE_RESOURCE_MISSING' });
     });
   });
   async function withProject(fn: (projectsRoot: string, projectId: string) => Promise<void>) {

@@ -440,9 +440,7 @@ import { renderDesignSystemPreview } from './design-systems/preview.js';
 import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
-import { createProjectGitServiceComposition } from './services/project-git/service.js';
-import { createProjectGitOwnedResourceReader } from './services/project-git/owned-resources.js';
-import { GitDomainError } from './services/project-git/errors.js';
+import { ProjectDomainError, createPassThroughProjectMutationCoordination } from './services/project-mutation.js';
 import {
   createRunAnalyticsLifecycle,
   inheritedRunLineageHints,
@@ -615,7 +613,6 @@ import {
   agentNetworkPolicyForAgent,
   type StoredAgentNetworkPolicy,
 } from './storage/agent-network-config.js';
-import { createProjectGitStore } from './storage/project-git.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -789,8 +786,7 @@ import { registerDesignSystemToolRoutes } from './routes/design-system-tool.js';
 import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/deploy.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes, createEnforceWorkspaceProjectMutation } from './routes/project/index.js';
-import { registerProjectGitRoutes } from './routes/project-git.js';
-import { coordinateAuthorizedProjectMutation } from './routes/project-git-coordination.js';
+import { coordinateAuthorizedProjectMutation } from './routes/project-coordination.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js';
@@ -1126,7 +1122,6 @@ const ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'artifacts');
 // read path so project-membership, size, and CSP guards cannot be bypassed.
 const CRITIQUE_ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'critique-artifacts');
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
-const PROJECT_GIT_DAEMON_INSTANCE_ID = randomUUID();
 const USER_SKILLS_DIR = path.join(RUNTIME_DATA_DIR, 'skills');
 const USER_DESIGN_SYSTEMS_DIR = path.join(RUNTIME_DATA_DIR, 'design-systems');
 // Brand metadata (brand.json + meta.json per brand) lives here; each brand
@@ -1514,26 +1509,11 @@ const critiqueWarnedAdapters = new Set<string>();
 const critiqueRunRegistry = createRunRegistry();
 export const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 
-function withoutOpenDesignProjectRevision(
-  input: NodeJS.ProcessEnv | Record<string, string | undefined>,
-): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(input).filter(([key]) => key.toUpperCase() !== 'OD_PROJECT_REVISION'),
-  );
-}
-
 export function composeOpenDesignAgentEnvironment(
   layers: ReadonlyArray<NodeJS.ProcessEnv | Record<string, string | undefined>>,
-  runScopedEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  _runScopedEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): NodeJS.ProcessEnv {
-  const env = Object.assign({}, ...layers.map(withoutOpenDesignProjectRevision));
-  const revision = runScopedEnv.OD_PROJECT_REVISION;
-  if (typeof revision === 'string'
-    && /^(?:0|[1-9]\d*)$/u.test(revision)
-    && Number.isSafeInteger(Number(revision))) {
-    env.OD_PROJECT_REVISION = revision;
-  }
-  return env;
+  return Object.assign({}, ...layers);
 }
 
 export function createAgentRuntimeEnv(
@@ -1555,8 +1535,7 @@ export function createAgentRuntimeEnv(
   // children receive only their run-scoped tool capability, never that broad
   // credential inherited from the daemon process (including Windows casing).
   for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'OD_API_TOKEN'
-      || key.toUpperCase() === 'OD_PROJECT_REVISION') delete env[key];
+    if (key.toUpperCase() === 'OD_API_TOKEN') delete env[key];
   }
   // A GUI-launched daemon can inherit a broken PATHEXT such as `.CPL` (issue
   // #6934). Nested native commands then lose stdout/stderr or fail with
@@ -1642,13 +1621,11 @@ export function createAgentRuntimeToolPrompt(
 
 export function createOpenDesignToolEnv({
   daemonUrl,
-  expectedProjectRevision,
   hyperFramesBin = resolveHyperFramesCliPath(),
   projectDir,
   projectId,
 }: {
   daemonUrl: string;
-  expectedProjectRevision?: number;
   hyperFramesBin?: string;
   projectDir?: string | null;
   projectId?: string | null;
@@ -1659,14 +1636,6 @@ export function createOpenDesignToolEnv({
     OD_HYPERFRAMES_BIN: hyperFramesBin,
     OD_NODE_BIN,
     OD_DAEMON_URL: daemonUrl,
-    ...(typeof projectId === 'string'
-      && projectId
-      && projectDir
-      && typeof expectedProjectRevision === 'number'
-      && Number.isSafeInteger(expectedProjectRevision)
-      && expectedProjectRevision >= 0
-      ? { OD_PROJECT_REVISION: String(expectedProjectRevision) }
-      : {}),
     ...(typeof projectId === 'string' && projectId && projectDir
       ? {
           OD_PROJECT_ID: projectId,
@@ -1680,7 +1649,7 @@ export function createDaemonDataDirConfiguredAgentEnv(
   configuredAgentEnv: Record<string, string> = {},
 ): Record<string, string> {
   return {
-    ...withoutOpenDesignProjectRevision(configuredAgentEnv),
+    ...configuredAgentEnv,
     OD_DATA_DIR: RUNTIME_DATA_DIR,
   };
 }
@@ -2611,11 +2580,6 @@ export interface StartServerOptions {
   returnServer?: boolean;
   runtime?: DaemonRuntimeContext | null;
   staticDir?: string;
-  /** Trusted host Git environment used by the project-versioning runtime. */
-  projectGitEnv?: Record<string, string>;
-  projectGitExecutableResolver?: () => string | Promise<string>;
-  /** Host lifecycle checkpoint after a retry attempt becomes durably visible. */
-  projectGitAfterRetryAttemptStarted?: import('./services/project-git/service.js').CreateProjectGitServiceInput['afterRetryAttemptStarted'];
   /** Daemon-owned host capability facts. HTTP/model output cannot populate it. */
   odNextExecutionPreflightResolver?: OdNextExecutionPreflightResolver | null;
   /**
@@ -2637,11 +2601,10 @@ export async function finalizeDaemonServices(input: {
   runs(): Promise<void>;
   terminals(): Promise<void>;
   browsers(): Promise<void>;
-  projectGit(): Promise<void>;
   analytics(): Promise<void>;
 }): Promise<void> {
   let firstError: unknown;
-  for (const finalize of [input.runs, input.terminals, input.browsers, input.projectGit, input.analytics]) {
+  for (const finalize of [input.runs, input.terminals, input.browsers, input.analytics]) {
     try { await finalize(); }
     catch (error) { firstError ??= error; }
   }
@@ -2657,9 +2620,6 @@ export async function startServer({
   desktopArtifactExporter = null,
   runtime = null,
   staticDir = STATIC_DIR,
-  projectGitEnv,
-  projectGitExecutableResolver,
-  projectGitAfterRetryAttemptStarted,
   odNextExecutionPreflightResolver = null,
   odNextComplexProductionResolver = null,
 }: StartServerOptions = {}) {
@@ -2820,12 +2780,7 @@ export async function startServer({
       resolveProjectDir,
       isSafeId,
     },
-    coordinateProjectMutation: async (input, work) => {
-      const existed = Boolean(getProject(db, input.projectId));
-      const result = await projectGitCoordination.withProjectMutation(input, work);
-      if (!existed && getProject(db, input.projectId)) await projectGit.initializeNewProjectGit(input.projectId);
-      return result;
-    },
+    coordinateProjectMutation: async (input, work) => work(),
     bindProjectToWorkspace: (projectId, createdAt, designSystem) => {
       const workspaceId = designSystem.workspaceId?.trim();
       if (!workspaceId) return;
@@ -2980,7 +2935,6 @@ export async function startServer({
     next();
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
-  const projectGitStore = createProjectGitStore(db);
   // The current product authority is one admitted local-daemon principal.
   // Keep this capability explicit so project access, creation, operation
   // ownership and duplicate-copy filtering cannot drift into separate checks.
@@ -2988,10 +2942,10 @@ export async function startServer({
     actorId: 'local-daemon',
     authorizeProjectRequest: async () => true,
     requireProject: (_actorId: string, projectId: string) => {
-      if (!getProject(db, projectId)) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
+      if (!getProject(db, projectId)) throw new ProjectDomainError('NOT_FOUND', 404, 'Project not found.');
     },
     requireCreate: (actorId: string) => {
-      if (actorId !== 'local-daemon') throw new GitDomainError('FORBIDDEN', 403, 'Project creation is not allowed.');
+      if (actorId !== 'local-daemon') throw new ProjectDomainError('FORBIDDEN', 403, 'Project creation is not allowed.');
     },
   };
   let dependencyAgentCache: { expiresAt: number; agents: Awaited<ReturnType<typeof detectAgents>> } | null = null;
@@ -3002,70 +2956,7 @@ export async function startServer({
     dependencyAgentCache = { expiresAt: Date.now() + 5_000, agents };
     return agents;
   };
-  const { service: projectGit, coordination: projectGitCoordination } = await createProjectGitServiceComposition({
-    db,
-    store: projectGitStore,
-    operationRoot: path.join(RUNTIME_DATA_DIR, 'project-git-operations'),
-    instanceId: PROJECT_GIT_DAEMON_INSTANCE_ID,
-    readOwnedResource: createProjectGitOwnedResourceReader({ db,
-      designSystemRoots: { builtIn: DESIGN_SYSTEMS_DIR, user: USER_DESIGN_SYSTEMS_DIR },
-      skillRoots: { builtIn: SKILLS_DIR, user: USER_SKILLS_DIR } }),
-    ...(projectGitEnv ? { gitEnv: projectGitEnv } : {}),
-    ...(projectGitExecutableResolver ? { resolveGitExecutable: projectGitExecutableResolver } : {}),
-    requireDefaultEnable: projectId => {
-      const metadata = getProject(db, projectId)?.metadata;
-      if (metadata?.orchestratorWorkspace) {
-        throw new GitDomainError('FORBIDDEN', 403, 'This workspace uses external writeback. Create an independent copy to enable local project versioning.');
-      }
-      if (metadata?.kind === 'orbit') {
-        throw new GitDomainError('PORTABLE_FORMAT_UNSUPPORTED', 409, 'Orbit projects are not supported by the portable project format.', {
-          nextStep: 'This project type does not support local versioning yet. Continue editing without versioning.',
-        });
-      }
-    },
-    ...(projectGitAfterRetryAttemptStarted ? { afterRetryAttemptStarted: projectGitAfterRetryAttemptStarted } : {}),
-    resolveProjectRoot: async (projectId) => {
-      const project = getProject(db, projectId);
-      // Legacy file-only routes can authorize a trusted project directory
-      // before its SQLite row is materialized. Gate that exact resolved path
-      // without creating it; user-facing Git actions still require the row in
-      // requireProject/prepareProjectRoot.
-      return resolveProjectDir(PROJECTS_DIR, projectId, project?.metadata, {
-        // Root lookup is an admission concern, not execution authorization.
-        // Sandbox-aware routes retain their own imported-folder policy and
-        // user-facing Git actions use the strict prepareProjectRoot callback.
-        allowUnavailableSandboxImportedProject: true,
-      });
-    },
-    prepareProjectRoot: async (projectId) => {
-      const project = getProject(db, projectId);
-      if (!project) throw new GitDomainError('NOT_FOUND', 404, 'Project not found.');
-      return ensureProject(PROJECTS_DIR, projectId, project.metadata);
-    },
-    emit: emitProjectEvent,
-    subscribeProject: (projectId, onChange) => subscribeFileEvents(PROJECTS_DIR, projectId, () => onChange(), {
-      metadata: getProject(db, projectId)?.metadata,
-    }),
-    requireProject: localDaemonProjectAuthority.requireProject,
-    requireCreate: localDaemonProjectAuthority.requireCreate,
-    resolveAvailability: async ({ projectId, kind, id, agentId }) => {
-      if (kind === 'agent') return (await availableDependencyAgents()).some(agent => agent.id === id && agent.available);
-      if (kind === 'model') {
-        if (!agentId) return false;
-        const agent = (await availableDependencyAgents()).find(item => item.id === agentId && item.available);
-        const definition = getAgentDef(agentId);
-        return Boolean(agent && definition && isKnownModel(definition, id));
-      }
-      if (kind === 'linked_folder') {
-        const project = getProject(db, projectId);
-        const linked = validateLinkedDirs(project?.metadata?.linkedDirs);
-        return !linked.error && linked.dirs.some(directory => path.basename(directory) === id);
-      }
-      const registry = await loadPluginRegistryView();
-      return [...registry.skills, ...registry.designSystems, ...registry.atoms, ...registry.scenarios]
-        .some(item => item.id === id);
-    },
-  });
+  const projectGitCoordination = createPassThroughProjectMutationCoordination();
   type SkillCandidateHookArgs = Parameters<typeof detectSkillPluginCandidateOnRunSuccess>;
   const detectSkillPluginCandidateAfterRun = (
     ...args: [
@@ -3075,10 +2966,7 @@ export async function startServer({
       SkillCandidateHookArgs[3],
       SkillCandidateHookArgs[4],
     ]
-  ) => detectSkillPluginCandidateOnRunSuccess(
-    ...args,
-    projectGitCoordination,
-  );
+  ) => detectSkillPluginCandidateOnRunSuccess(...args);
   const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
   if (commentAnchorRepair.created > 0) {
     console.warn(
@@ -3291,15 +3179,10 @@ export async function startServer({
 
   await recoverLiveArtifactsAtStartup({
     projectsRoot: PROJECTS_DIR,
-    projects: listProjects(db).map(project => {
-      const binding = projectGitStore.getBinding(project.id);
-      return {
-        id: project.id,
-        ...(project.metadata === undefined ? {} : { projectMetadata: project.metadata }),
-        ...(binding === null ? {} : { expectedProjectRevision: binding.projectRevision }),
-      };
-    }),
-    recoveryReady: projectGitCoordination.recoveryReady,
+    projects: listProjects(db).map(project => ({
+      id: project.id,
+      ...(project.metadata === undefined ? {} : { projectMetadata: project.metadata }),
+    })),
     coordination: projectGitCoordination,
     onError: (projectId, error) => {
       console.warn(`[od] Failed to recover stale live artifact refreshes for project ${projectId}:`, error);
@@ -3314,14 +3197,6 @@ export async function startServer({
     db,
     brandsRoot: BRANDS_DIR,
     projectsRoot: PROJECTS_DIR,
-    recoveryReady: projectGitCoordination.recoveryReady,
-    bindingFor: projectId => {
-      const binding = projectGitStore.getBinding(projectId);
-      return binding ? {
-        generation: binding.generation,
-        projectRevision: binding.projectRevision,
-      } : null;
-    },
     coordination: projectGitCoordination.startup,
     randomId,
     ...(startupAgentId ? {
@@ -4421,13 +4296,12 @@ export async function startServer({
             terminalAt,
           ),
           recordReceipt: () => {
-            if (projectId) projectGitCoordination.runtime.onTerminal(run.id, projectId, status);
+            // Terminal receipts were owned by the removed project-versioning
+            // runtime; durable run reconciliation covers the same obligation.
           },
         });
       },
-      onSettled: (run) => {
-        projectGitCoordination.runtime.onSettled(run.id);
-      },
+      onSettled: () => {},
     }),
     analytics: analyticsService,
     getAppVersion: () => telemetry.getCachedAppVersion()?.version ?? '0.0.0',
@@ -4483,13 +4357,6 @@ export async function startServer({
     runsLogDir: path.join(RUNTIME_DATA_DIR, 'runs'),
     reconcileTerminalsWithLocalRepair: (group, repair) =>
       projectGitCoordination.runtime.reconcileTerminalsWithLocalRepair(group, repair),
-    currentProjectEpoch: (projectId) => {
-      const binding = projectGitStore.getBinding(projectId);
-      return binding ? {
-        bindingGeneration: binding.generation,
-        projectRevision: binding.projectRevision,
-      } : null;
-    },
   });
   try {
     const reconciled = await runTerminalReconciliation.localReady;
@@ -4499,7 +4366,6 @@ export async function startServer({
   } catch (error) {
     console.warn('[runs] terminal local reconciliation failed', error);
   }
-  await projectGit.start();
   void runTerminalReconciliation.delivery.then(async () => {
     const taskObservationsRecovered = await taskObservationRollout.reconcileCrashWindows();
     if (taskObservationsRecovered > 0) {
@@ -4592,8 +4458,8 @@ export async function startServer({
     claimAssistantMessage: (run, options) =>
       pinAssistantMessageOnRunCreate(db, run, options),
     analyticsLifecycle: runAnalyticsLifecycle,
-    beginProjectRunAdmission: (projectId, expectedProjectRevision) =>
-      projectGitCoordination.runtime.admit(projectId, expectedProjectRevision),
+    beginProjectRunAdmission: (projectId) =>
+      projectGitCoordination.runtime.admit(projectId),
     attachProjectRun: (runId, projectId, admission, executionAttempt) =>
       projectGitCoordination.runtime.attach(runId, projectId, admission, executionAttempt),
     detachProjectRun: (runId, admission) =>
@@ -4601,9 +4467,7 @@ export async function startServer({
     coordinateProjectMutation: (admission, source, work) =>
       projectGitCoordination.withProjectMutation({
         projectId: admission.projectId,
-        expectedProjectRevision: admission.projectRevision,
         source,
-        ...(admission.permit ? { permit: admission.permit } : {}),
       }, work),
     releaseProjectRun: (runId) => {
       projectGitCoordination.runtime.onSettled(runId);
@@ -5107,17 +4971,8 @@ export async function startServer({
     });
   });
   registerSocialShareRoutes(app, { http: httpDeps });
-  registerProjectGitRoutes(app, {
-    db,
-    projectGit,
-    projectGitStore,
-    resolveProjectGitActor: () => localDaemonProjectAuthority.actorId,
-    authorizeProjectRequest,
-    http: httpDeps,
-  });
   registerProjectRoutes(app, {
     db,
-    projectGit,
     projectGitCoordination,
     design,
     http: httpDeps,
@@ -5347,7 +5202,6 @@ export async function startServer({
   });
   registerImportRoutes(app, {
     db,
-    projectGit,
     projectGitCoordination,
     http: httpDeps,
     uploads: uploadDeps,
@@ -5843,7 +5697,6 @@ export async function startServer({
         const resolved = resolvePluginSnapshot({ db, body: { pluginId: actionPluginId, pluginInputs: { source_plugin_id: sourcePlugin.id, source_plugin_title: sourcePlugin.title || sourcePlugin.id, source_plugin_version: sourcePlugin.version, source_plugin_path: sourcePlugin.fsPath, plugin_context_path: stagedPath }, locale: typeof body.locale === 'string' ? body.locale : undefined }, projectId: id, conversationId: cid, registry, connectorProbe });
         if (resolved && !resolved.ok) return res.status(resolved.status).json(resolved.body);
         const project = getProject(db, id); if (!project) return sendApiError(res, 500, 'INTERNAL_ERROR', 'created project could not be loaded');
-        await projectGit.initializeNewProjectGit(id);
         res.json({ ok: true, project, conversationId: cid, ...(resolved?.ok ? { appliedPluginSnapshotId: resolved.snapshotId } : {}), actionPluginId, sourcePluginId: sourcePlugin.id, stagedPath, prompt, message: `Created a ${PLUGIN_SHARE_ACTION_LABELS[action]} task for ${sourcePlugin.title || sourcePlugin.id}.` });
       } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); }
     },
@@ -6633,21 +6486,10 @@ export async function startServer({
           && designSystemVisibleToRun(system),
       );
       if (summary?.source === 'user' && summary.teamSynced !== true) {
-        const runMutationContext = typeof runId === 'string'
-          && typeof projectId === 'string'
-          && projectId
-          ? projectGitCoordination.runtime.mutationContext(runId, projectId)
-          : null;
         await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId, {
           projectMutation: {
             source: 'run-prompt-design-system-sync',
             ...(typeof projectId === 'string' && projectId ? { originProjectId: projectId } : {}),
-            ...(runMutationContext
-              ? {
-                  expectedProjectRevision: runMutationContext.expectedProjectRevision,
-                  permit: runMutationContext.permit,
-                }
-              : {}),
           },
         });
         systems = await listAllDesignSystems(designSystemListOptions);
@@ -8033,7 +7875,7 @@ export async function startServer({
         projectsRoot: PROJECTS_DIR,
         projectId: run.projectId,
         projectRoot: outcome.projectRoot,
-        managed: projectGitStore.getBinding(run.projectId) !== null,
+        managed: false,
         diff: outcome.diff,
         prompt: promptInfo.prompt,
         ...(promptInfo.promptSource ? { promptSource: promptInfo.promptSource } : {}),
@@ -10018,7 +9860,7 @@ export async function startServer({
       def.id,
       {
         ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
-        ...withoutOpenDesignProjectRevision(def.env || {}),
+        ...(def.env || {}),
         ...browserUseRuntimeEnv,
       },
       configuredAgentSpawnEnv,
@@ -10032,11 +9874,6 @@ export async function startServer({
       daemonUrl,
       projectDir: cwd,
       projectId: typeof projectId === 'string' ? projectId : null,
-      ...(typeof run.expectedProjectRevision === 'number'
-        && Number.isSafeInteger(run.expectedProjectRevision)
-        && run.expectedProjectRevision >= 0
-        ? { expectedProjectRevision: run.expectedProjectRevision }
-        : {}),
     });
     if (run.cancelRequested || design.runs.isTerminal(run.status)) {
       cleanupPromptFile();
@@ -12561,9 +12398,6 @@ export async function startServer({
       throw new Error(`Orbit Run could not be prepared (${preparedOrbitRun.kind}).`);
     }
     const run = preparedOrbitRun.run;
-    // This initial run already owns the unmanaged project permit. The service
-    // persists default intent now and enables only after terminal settlement.
-    await projectGit.initializeNewProjectGit(projectId);
 
     try {
       if (template?.dir) {
@@ -13000,7 +12834,6 @@ export async function startServer({
         runStatus: 'queued',
         startedAt: now,
       });
-      if (createdProjectId) await projectGit.initializeNewProjectGit(createdProjectId);
     };
 
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
@@ -13139,10 +12972,7 @@ export async function startServer({
 
   assertServerContextSatisfiesRoutes({
     db,
-    projectGitStore,
-    projectGit,
     projectGitCoordination,
-    resolveProjectGitActor: () => 'local-daemon',
     internalRuns: internalRunCreation,
     design,
     http: httpDeps,
@@ -13270,7 +13100,6 @@ export async function startServer({
         runs: () => design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() }),
         terminals: () => terminalService.shutdownActive(),
         browsers: () => browserSessionService.shutdownActive(),
-        projectGit: () => projectGit.stop(),
         analytics: () => design.analytics.shutdown(),
       });
     };

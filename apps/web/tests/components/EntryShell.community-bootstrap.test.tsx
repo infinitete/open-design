@@ -58,8 +58,8 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
-describe('EntryShell Community remix bootstrap authority', () => {
-  it('loads fresh authority and seeds the duplicated project before opening it', async () => {
+describe('EntryShell Community remix bootstrap', () => {
+  it('refetches the duplicated project and seeds it before opening it', async () => {
     window.history.replaceState(null, '', '/community');
     projectStateMocks.duplicatePluginAsProject.mockResolvedValue({
       projectId: 'entry-remix',
@@ -69,23 +69,17 @@ describe('EntryShell Community remix bootstrap authority', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push({ url, init });
-      if (url === '/api/projects/entry-remix/git') {
+      if (url === '/api/projects/entry-remix' && !init?.method) {
         return new Response(JSON.stringify({
-          enabled: true,
-          phase: 'synced',
-          localHead: 'a'.repeat(40),
-          observedRemoteHead: 'a'.repeat(40),
-          confirmedRemoteHead: 'a'.repeat(40),
-          projectRevision: 31,
-          contentRevision: 31,
-          bindingGeneration: 1,
-          dirty: false,
-          pendingPush: false,
-          autoSync: true,
-          operationId: null,
-          error: null,
-          binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-          dependencies: [],
+          project: {
+            id: 'entry-remix',
+            name: 'Entry remix',
+            skillId: null,
+            designSystemId: null,
+            createdAt: 1,
+            updatedAt: 1,
+            status: { value: 'not_started' },
+          },
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (url === '/api/projects/entry-remix' && init?.method === 'PATCH') {
@@ -151,10 +145,16 @@ describe('EntryShell Community remix bootstrap authority', () => {
     await waitFor(() => {
       expect(onOpenProject).toHaveBeenCalledWith('entry-remix', 'index.html');
     });
-    const patch = requests.find((request) => (
+    const freshRead = requests.findIndex((request) => (
+      request.url === '/api/projects/entry-remix' && !request.init?.method
+    ));
+    const patchIndex = requests.findIndex((request) => (
       request.url === '/api/projects/entry-remix' && request.init?.method === 'PATCH'
     ));
-    expect(patch?.init?.headers).toMatchObject({ 'X-OD-Project-Revision': '31' });
-    expect(JSON.parse(String(patch?.init?.body))).toEqual({ pendingPrompt: 'Seed the remix' });
+    expect(freshRead).toBeGreaterThanOrEqual(0);
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    // The seed patch must land on a freshly-read project row, never a stale one.
+    expect(freshRead).toBeLessThan(patchIndex);
+    expect(JSON.parse(String(requests[patchIndex]?.init?.body))).toEqual({ pendingPrompt: 'Seed the remix' });
   });
 });

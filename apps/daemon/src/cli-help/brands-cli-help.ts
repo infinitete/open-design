@@ -39,11 +39,7 @@ Output:
   "<id>\\t<status>\\t<projectId>\\t<conversationId>"; finalize prints "<id>\\t<name>".
 
 Common options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.
-  --expected-project-revision <n>
-                       Preserve the project epoch for existing-brand writes.
-                       Independent callers read it with od git status; agents
-                       use the run-scoped OD_PROJECT_REVISION fallback.`;
+  --daemon-url <url>   OpenDesign daemon HTTP base.`;
 
 // `help`, `--help`, and `-h` all route to the usage text above.
 export function isBrandHelpArg(arg: string | undefined): boolean {

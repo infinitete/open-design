@@ -3,7 +3,6 @@ import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerChatRoutes } from '../src/routes/chat.js';
-import { GitDomainError } from '../src/services/project-git/errors.js';
 
 let server: http.Server | null = null;
 
@@ -40,7 +39,7 @@ async function startChatServer(options: {
     recoveryReady: Promise.resolve(),
     runtime: {
       admitSession: vi.fn(async (projectId: string) => ({
-        projectId, expectedProjectRevision: 0, permit: {} as never, release: vi.fn(),
+        projectId, release: vi.fn(),
       })),
     },
     withProjectMutation: vi.fn(async (_scope: unknown, work: () => Promise<unknown>) => work()),
@@ -157,37 +156,6 @@ describe('chat-owned project route authority', () => {
     );
   });
 
-  it('rejects a stale managed BYOK session before SSE or upstream egress', async () => {
-    const release = vi.fn();
-    const projectGitCoordination = {
-      recoveryReady: Promise.resolve(),
-      runtime: {
-        admitSession: vi.fn(async () => {
-          throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Reload the project before editing.');
-        }),
-      },
-      withProjectMutation: vi.fn(),
-      withProjectRead: vi.fn(),
-    };
-    const api = await startChatServer({
-      authorizeProjectRequest: vi.fn(async () => true),
-      projectGitCoordination,
-    });
-    const response = await fetch(`${api.baseUrl}/api/proxy/senseaudio/stream`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        apiKey: 'test-key', model: 'test-model', projectId: 'project-a',
-        expectedProjectRevision: 3, baseUrl: 'https://api.example.test', messages: [],
-      }),
-    });
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({ error: 'PROJECT_STATE_CHANGED' });
-    expect(projectGitCoordination.runtime.admitSession).toHaveBeenCalledWith('project-a', 3);
-    expect(projectGitCoordination.withProjectMutation).not.toHaveBeenCalled();
-    expect(release).not.toHaveBeenCalled();
-  });
-
   it('applies a disabled BYOK reasoning policy after project auth but before lookup, admission, or egress', async () => {
     const authorizeProjectRequest = vi.fn(async () => true);
     const getProject = vi.fn(() => null);
@@ -236,7 +204,7 @@ describe('chat-owned project route authority', () => {
       recoveryReady: Promise.resolve(),
       runtime: {
         admitSession: vi.fn(async () => ({
-          projectId: 'project-a', expectedProjectRevision: 4, permit: {} as never, release,
+          projectId: 'project-a', release,
         })),
       },
       withProjectMutation: vi.fn(async (_scope: unknown, work: () => Promise<unknown>) => work()),
@@ -259,12 +227,12 @@ describe('chat-owned project route authority', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         apiKey: 'test-key', model: 'test-model', projectId: 'project-a',
-        expectedProjectRevision: 4, baseUrl: 'https://api.example.test', messages: [],
+        baseUrl: 'https://api.example.test', messages: [],
       }),
     });
     expect(response.status).toBe(200);
     await response.text();
-    expect(projectGitCoordination.runtime.admitSession).toHaveBeenCalledWith('project-a', 4);
+    expect(projectGitCoordination.runtime.admitSession).toHaveBeenCalledWith('project-a');
     expect(projectGitCoordination.withProjectMutation).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
   });

@@ -173,19 +173,6 @@ vi.mock('../../src/components/Loading', () => ({
 }));
 
 function renderProjectView(onProjectsRefresh: () => void, strict = false) {
-  const delegatedFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input) === '/api/projects/project-1/git') {
-      return Promise.resolve(new Response(JSON.stringify({
-        enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
-        confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
-        bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
-        operationId: null, error: null,
-        binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-      }), { status: 200 }));
-    }
-    return delegatedFetch(input, init);
-  }));
   const view = (
     <ProjectView
       project={{ id: 'project-1', name: 'Project', skillId: null, designSystemId: null } as never}
@@ -271,11 +258,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith(
-      'project-1',
-      'conv-1',
-      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
-    );
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     expect(onProjectsRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -308,11 +291,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith(
-      'project-1',
-      'conv-1',
-      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
-    );
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     expect(onProjectsRefresh).not.toHaveBeenCalled();
   });
 
@@ -343,11 +322,7 @@ describe('ProjectView conversation delete', () => {
       await chatPaneProps.onDeleteConversation!('conv-1');
     });
 
-    expect(deleteConversation).toHaveBeenCalledWith(
-      'project-1',
-      'conv-1',
-      expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
-    );
+    expect(deleteConversation).toHaveBeenCalledWith('project-1', 'conv-1');
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-2'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-2']);
   });
@@ -378,16 +353,7 @@ describe('ProjectView conversation delete', () => {
     });
 
     await waitFor(() =>
-      expect(createConversation).toHaveBeenCalledWith(
-        'project-1',
-        undefined,
-        {
-          mutationContext: expect.objectContaining({
-            generation: 0,
-            signal: expect.any(Object),
-          }),
-        },
-      ),
+      expect(createConversation).toHaveBeenCalledWith('project-1', undefined, {}),
     );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-fresh']);

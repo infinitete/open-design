@@ -44,11 +44,6 @@ import {
   patchProject,
 } from "../state/projects";
 import { navigate } from '../router';
-import {
-  captureProjectMutation,
-  isProjectMutationCurrent,
-  type ProjectMutationContext,
-} from '../state/project-git';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
@@ -270,7 +265,6 @@ interface Props {
   // composer's leading gear icon routes here so users can switch models
   // without leaving the chat.
   onOpenSettings?: () => void;
-  onOpenProjectGitSettings?: () => void;
   // Opens settings on the External MCP tab. Wired from ChatPane → App.
   // The composer's `/mcp` slash command and the MCP picker button route here.
   onOpenMcpSettings?: () => void;
@@ -320,7 +314,6 @@ interface Props {
   // ChatPane). Pass `null` (or omit) to render the full rail.
   pinnedPluginId?: string | null;
   footerAccessory?: ReactNode;
-  projectGitMenu?: ReactNode;
   // Slot rendered in the composer's bottom toolbar, immediately right of the
   // "+" menu. Hosts the working-directory pill so the folder selector sits by
   // the composer (mirroring the home input) instead of the file-panel header.
@@ -460,7 +453,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       skills = [],
       onSend,
       onStop,
-      onOpenProjectGitSettings,
       onOpenMcpSettings,
       onBrowsePlugins,
       onStandalonePanelChange,
@@ -484,7 +476,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       onProjectSkillChange,
       pinnedPluginId = null,
       footerAccessory,
-      projectGitMenu,
       leadingAccessory,
       designSystemPicker,
       onShowToast,
@@ -1456,11 +1447,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function addLinkedDirs(
       dirs: string[],
-      suppliedMutationContext = projectId ? captureProjectMutation(projectId) : undefined,
     ): Promise<Map<string, TrackedWorkspaceLinkedDir | null> | false> {
       if (!projectId) return false;
-      const mutationContext = suppliedMutationContext;
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
       const trimmedDirs = Array.from(new Set(dirs.map((dir) => dir.trim()).filter(Boolean)));
       if (trimmedDirs.length === 0) return new Map();
       const base = projectMetadata ?? { kind: 'prototype' as const };
@@ -1482,8 +1470,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       }
       if (changed) {
         const metadata: ProjectMetadata = { ...base, linkedDirs: nextLinkedDirs };
-        const result = await patchProject(projectId, { metadata }, mutationContext);
-        if (!isProjectMutationCurrent(projectId, mutationContext)) return false;
+        const result = await patchProject(projectId, { metadata });
         if (!result?.metadata) {
           onShowToast?.(t('homeWorkingDir.applyFailed'));
           return false;
@@ -1496,16 +1483,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function addLinkedDir(
       dir: string,
-      mutationContext = projectId ? captureProjectMutation(projectId) : undefined,
     ): Promise<TrackedWorkspaceLinkedDir | null | false> {
-      const trackedByDir = await addLinkedDirs([dir], mutationContext);
+      const trackedByDir = await addLinkedDirs([dir]);
       if (trackedByDir === false) return false;
       return trackedByDir.get(dir.trim()) ?? null;
     }
 
     async function handleReferenceProjects(selections: ProjectReferenceSelection[]) {
-      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return;
       const items = selections.map(({ project, resolvedDir }) => {
         const path = resolvedDir.trim();
         return {
@@ -1519,9 +1503,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       });
       const trackedByDir = await addLinkedDirs(
         items.map((item) => workspaceContextLinkedDir(item) ?? ''),
-        mutationContext,
       );
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return;
       if (trackedByDir === false) {
         trackContextLinkResult(analytics.track, {
           page_name: 'chat_panel',
@@ -1557,10 +1539,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     }
 
     async function handleLinkLocalCodeContext() {
-      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return;
       const selected = await openFolderDialog();
-      if (projectId && !isProjectMutationCurrent(projectId, mutationContext)) return;
       if (!selected) {
         trackContextLinkResult(analytics.track, {
           page_name: 'chat_panel',
@@ -1571,8 +1550,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         });
         return;
       }
-      const trackedLinkedDir = await addLinkedDir(selected, mutationContext);
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return;
+      const trackedLinkedDir = await addLinkedDir(selected);
       if (trackedLinkedDir === false) {
         trackContextLinkResult(analytics.track, {
           page_name: 'chat_panel',
@@ -1815,7 +1793,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       tracked: TrackedWorkspaceLinkedDir,
     ): Promise<boolean> {
       if (!projectId) return true;
-      const mutationContext = captureProjectMutation(projectId);
       if (workspaceContextDirStillReferenced(id, tracked.dir)) {
         setWorkspaceLinkedDirAdds((current) => {
           const { [id]: _removed, ...rest } = current;
@@ -1823,13 +1800,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         });
         return true;
       }
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
       const base = projectMetadata ?? { kind: 'prototype' as const };
       const currentLinkedDirs = base.linkedDirs ?? [...tracked.previousLinkedDirs, tracked.dir];
       const nextLinkedDirs = currentLinkedDirs.filter((dir) => dir !== tracked.dir);
       const metadata: ProjectMetadata = { ...base, linkedDirs: nextLinkedDirs };
-      const result = await patchProject(projectId, { metadata }, mutationContext);
-      if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return false;
+      const result = await patchProject(projectId, { metadata });
       if (!result?.metadata) {
         onShowToast?.(t('homeWorkingDir.applyFailed'));
         return false;
@@ -1875,15 +1850,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       return onEnsureProject();
     }
 
-    async function uploadFiles(files: File[], suppliedMutationContext?: ProjectMutationContext) {
+    async function uploadFiles(files: File[]) {
       if (files.length === 0) return;
-      const existingProjectMutation = suppliedMutationContext
-        ?? (projectId ? captureProjectMutation(projectId) : undefined);
-      if (projectId && (!existingProjectMutation || !isProjectMutationCurrent(projectId, existingProjectMutation))) return;
       const id = await ensureProject();
       if (!id) return;
-      const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
-      if (!mutationContext || !isProjectMutationCurrent(id, mutationContext)) return;
       setUploading(true);
       setUploadError(null);
       // Cohort math is identical to the Design Files Upload button; see
@@ -1893,8 +1863,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       const cohort = deriveUploadCohort(files);
       const orderStart = reserveAttachmentOrders(files.length);
       try {
-        const result = await uploadProjectFiles(id, files, undefined, mutationContext);
-        if (mutationContext && !isProjectMutationCurrent(id, mutationContext)) return;
+        const result = await uploadProjectFiles(id, files);
         if (result.uploaded.length > 0) {
           const orderedUploaded = assignChatAttachmentOrders(result.uploaded, orderStart);
           appendOrderedStagedAttachments(orderedUploaded);
@@ -1920,7 +1889,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           ...(partial && result.error ? { error_code: result.error } : {}),
         });
       } catch (err) {
-        if (mutationContext && !isProjectMutationCurrent(id, mutationContext)) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
         const detail = err instanceof Error ? err.message : String(err);
         setUploadError(`Attachment upload failed (${detail}).`);
@@ -1944,12 +1912,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // consumed.
     async function addAssetsFromLibrary(assets: LibraryAsset[]) {
       if (assets.length === 0) return;
-      const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
-      if (projectId && (!existingProjectMutation || !isProjectMutationCurrent(projectId, existingProjectMutation))) return;
       const id = await ensureProject();
       if (!id) return;
-      const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
-      if (!mutationContext || !isProjectMutationCurrent(id, mutationContext)) return;
       setUploading(true);
       setUploadError(null);
       const orderStart = reserveAttachmentOrders(assets.length);
@@ -1961,13 +1925,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         const elementBlocks: string[] = [];
         let failed = 0;
         for (const asset of assets) {
-          const res = await applyLibraryAsset(
-            asset.id,
-            id,
-            undefined,
-            { mutationContext },
-          );
-          if (mutationContext && !isProjectMutationCurrent(id, mutationContext)) return;
+          const res = await applyLibraryAsset(asset.id, id, undefined);
           if (!res?.relPath) {
             failed += 1;
             continue;
@@ -1980,7 +1938,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           const element = elementMetaOf(asset);
           if (element?.hasHtml) {
             const html = await fetchLibraryAssetElementHtml(asset.id);
-            if (mutationContext && !isProjectMutationCurrent(id, mutationContext)) return;
             if (html) elementBlocks.push(formatElementHtmlBlock(asset, element, html));
           }
         }
@@ -2000,7 +1957,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           );
         }
       } catch (err) {
-        if (mutationContext && !isProjectMutationCurrent(id, mutationContext)) return;
         const detail = err instanceof Error ? err.message : String(err);
         setUploadError(`Could not add from library (${detail}).`);
       } finally {
@@ -2010,23 +1966,19 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function uploadClipboardImagesFromAsyncClipboard() {
       if (!navigator.clipboard?.read) return false;
-      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return false;
       try {
         const items = await navigator.clipboard.read();
-        if (projectId && mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return false;
         const files: File[] = [];
         const stamp = Date.now();
         for (const item of items) {
           const imageType = item.types.find((type) => type.startsWith('image/'));
           if (!imageType) continue;
           const blob = await item.getType(imageType);
-          if (projectId && mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return false;
           const extension = imageType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
           files.push(new File([blob], `clipboard-screenshot-${stamp}.${extension}`, { type: imageType }));
         }
         if (files.length === 0) return false;
-        await uploadFiles(files, mutationContext);
+        await uploadFiles(files);
         return true;
       } catch (err) {
         console.warn('Could not read image from clipboard', err);
@@ -2049,11 +2001,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           let visualAttachmentInput: Parameters<typeof buildVisualAnnotationAttachment>[0] | null = null;
           let visualAttachment: ChatCommentAttachment | null = null;
           try {
-            const existingProjectMutation = projectId ? captureProjectMutation(projectId) : undefined;
-            if (projectId && (!existingProjectMutation || !isProjectMutationCurrent(projectId, existingProjectMutation))) {
-              ack({ ok: false, message: t('chat.annotationUploadFailed') });
-              return;
-            }
             // Upload the annotation screenshot together with any images the
             // user attached in the markup composer. The screenshot (when
             // present) is first so it keeps backing the structured visual
@@ -2068,11 +2015,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 ack({ ok: false, message: t('chat.annotationProjectCreateFailed') });
                 return;
               }
-              const mutationContext = existingProjectMutation ?? captureProjectMutation(id);
-              if (!mutationContext || !isProjectMutationCurrent(id, mutationContext)) return;
               setUploading(true);
-              const result = await uploadProjectFiles(id, annotationFiles, undefined, mutationContext);
-              if (!isProjectMutationCurrent(id, mutationContext)) return;
+              const result = await uploadProjectFiles(id, annotationFiles);
               if (result.uploaded.length > 0) {
                 uploaded = assignChatAttachmentOrders(result.uploaded, orderStart);
               }
@@ -2322,12 +2266,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function handleLinkFolder() {
       if (!projectId) return;
-      const mutationContext = captureProjectMutation(projectId);
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
       const selected = await openFolderDialog();
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
       if (!selected) return;
-      await addLinkedDir(selected, mutationContext);
+      await addLinkedDir(selected);
     }
 
     function linkedDirsWithWorkspaceContext(primaryDir: string | null): string[] {
@@ -2346,20 +2287,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // while preserving staged workspace-context dirs. The folder is read-only
     // awareness for the agent (→ `--add-dir`), not a Design Files import, and
     // `baseDir` is never touched.
-    async function setWorkingDirFolder(
-      dir: string,
-      suppliedMutationContext = projectId ? captureProjectMutation(projectId) : undefined,
-    ) {
+    async function setWorkingDirFolder(dir: string) {
       if (!projectId) return;
-      const mutationContext = suppliedMutationContext;
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
       const base = projectMetadata ?? { kind: 'prototype' as const };
       const metadata: ProjectMetadata = {
         ...base,
         linkedDirs: linkedDirsWithWorkspaceContext(dir),
       };
-      const result = await patchProject(projectId, { metadata }, mutationContext);
-      if (mutationContext && !isProjectMutationCurrent(projectId, mutationContext)) return;
+      const result = await patchProject(projectId, { metadata });
       // The daemon rejects stale/inaccessible/system dirs with
       // INVALID_LINKED_DIR (patchProject → null). Only commit the selection
       // and promote it in recents when the project accepted it; otherwise
@@ -2385,23 +2320,17 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       void rememberRecentDir(dir);
     }
     async function handlePickWorkingDir() {
-      const mutationContext = projectId ? captureProjectMutation(projectId) : undefined;
-      if (projectId && (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext))) return;
       const selected = await openFolderDialog();
-      if (projectId && !isProjectMutationCurrent(projectId, mutationContext)) return;
-      if (selected) await setWorkingDirFolder(selected, mutationContext);
+      if (selected) await setWorkingDirFolder(selected);
     }
     async function clearWorkingDir() {
       if (!projectId) return;
-      const mutationContext = captureProjectMutation(projectId);
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
       const base = projectMetadata ?? { kind: 'prototype' as const };
       const metadata: ProjectMetadata = {
         ...base,
         linkedDirs: linkedDirsWithWorkspaceContext(null),
       };
-      const result = await patchProject(projectId, { metadata }, mutationContext);
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return;
+      const result = await patchProject(projectId, { metadata });
       if (result?.metadata) {
         setPromotedWorkspaceContextDir(null);
         onProjectMetadataChange?.(result);
@@ -2652,10 +2581,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function applyProjectSkill(skill: SkillSummary): Promise<boolean> {
       if (!projectId) return false;
-      const mutationContext = captureProjectMutation(projectId);
-      if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return false;
-      const result = await patchProject(projectId, { skillId: skill.id }, mutationContext);
-      if (!isProjectMutationCurrent(projectId, mutationContext)) return false;
+      const result = await patchProject(projectId, { skillId: skill.id });
       if (!result) return false;
       onProjectSkillChange?.(result.skillId ?? skill.id);
       return true;
@@ -3392,7 +3318,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               }}
             />
             {footerAccessory}
-            {projectGitMenu ?? (projectId && onOpenProjectGitSettings ? <button type="button" className="composer-icon-btn od-tooltip" onClick={onOpenProjectGitSettings} aria-label={t('projectGit.settings')} title={t('projectGit.settings')}><Icon name="settings" size={16} /></button> : null)}
             {showStopButton ? (
               <button
                 type="button"

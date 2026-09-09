@@ -13,7 +13,7 @@ import type { RouteDeps } from './server-context.js';
 import {
   coordinateAuthorizedProjectMutation,
   coordinateAuthorizedProjectRead,
-} from './routes/project-git-coordination.js';
+} from './routes/project-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizedProjectToolRequest = any;
@@ -51,7 +51,7 @@ import { authorizeReasoningEgress, sendReasoningEgressDenial } from './reasoning
 import { sandboxImportedProjectRootUnavailableReason } from './sandbox-mode.js';
 import { parseOrchestratorWorkspace } from './workspace-contract.js';
 
-export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation' | 'projectGitCoordination' | 'projectGit'> {
+export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation' | 'projectGitCoordination' > {
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
   enforceWorkspaceProjectMutation?: BoundWorkspaceResourceMutationGate;
 }
@@ -173,7 +173,6 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
           );
           return createdProject;
         })();
-        await ctx.projectGit.initializeNewProjectGit(id);
         res.json({
           project,
           conversationId: cid,
@@ -539,7 +538,6 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         );
         return createdProject;
       })();
-      await ctx.projectGit.initializeNewProjectGit(id);
       /** @type {import('@open-design/contracts').ImportFolderResponse} */
       const body = { project, conversationId: cid, entryFile };
       res.json(body);

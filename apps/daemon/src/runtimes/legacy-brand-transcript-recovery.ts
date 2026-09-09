@@ -9,20 +9,13 @@ import {
   backfillBrandExtractionTranscriptForProject,
   readBrandDetail,
 } from '../brands/index.js';
-import type { ProjectGitStartupCoordination } from '../services/project-git/mutation-adapter.js';
-
-interface BindingEpoch {
-  generation: number;
-  projectRevision: number;
-}
+import type { ProjectStartupCoordination } from '../services/project-mutation.js';
 
 interface LegacyBrandTranscriptRecoveryOptions {
   db: Parameters<typeof listProjects>[0];
   brandsRoot: string;
   projectsRoot: string;
-  recoveryReady: Promise<void>;
-  bindingFor(projectId: string): BindingEpoch | null;
-  coordination: ProjectGitStartupCoordination;
+  coordination: ProjectStartupCoordination;
   randomId(): string;
   transcriptAgent?: { agentId: string; agentName: string };
   onError?(projectId: string, error: unknown): void;
@@ -59,20 +52,14 @@ function candidateFor(
 export async function recoverLegacyBrandTranscriptsAtStartup(
   options: LegacyBrandTranscriptRecoveryOptions,
 ): Promise<{ examined: number; repaired: number; failed: number }> {
-  await options.recoveryReady;
   const result = { examined: 0, repaired: 0, failed: 0 };
   for (const project of listProjects(options.db)) {
     const candidate = candidateFor(options.db, options.brandsRoot, project);
     if (!candidate) continue;
     result.examined += 1;
-    const binding = options.bindingFor(project.id);
-    const bindingGeneration = binding?.generation ?? 0;
-    const projectRevision = binding?.projectRevision ?? 0;
     try {
       const repaired = await options.coordination.repairIfNeeded({
         projectId: project.id,
-        bindingGeneration,
-        projectRevision,
         source: 'legacy-brand-transcript-recovery',
         recheck: async () => {
           const current = getProject(options.db, project.id);

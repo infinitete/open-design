@@ -22,7 +22,6 @@ import { migrateProjectScenarioBindings } from './plugins/scenario-binding.js';
 import { emittedRenderableQuestionForm } from './question-form-detect.js';
 import { migrateOdNextRolloutStore } from './strategies/od-next/rollout.js';
 import { migrateStrategyTaskStore } from './strategies/task-store.js';
-import { migrateProjectGit } from './storage/project-git-migrations.js';
 
 type SqliteDb = Database.Database;
 type DbRow = Record<string, any>;
@@ -471,7 +470,6 @@ function migrate(db: SqliteDb): void {
   migrateProjectScenarioBindings(db);
   migrateStrategyTaskStore(db);
   migrateOdNextRolloutStore(db);
-  migrateProjectGit(db);
   retireVelaProjectMetadata(db);
 }
 
@@ -858,8 +856,6 @@ export function listProjects(db: SqliteDb) {
     .prepare(
       `SELECT ${PROJECT_COLS}
          FROM projects
-        WHERE NOT EXISTS (SELECT 1 FROM project_git_registrations r
-          WHERE r.project_id = projects.id AND r.hidden = 1 AND r.state = 'pending')
         ORDER BY updated_at DESC`,
     )
     .all() as DbRow[];
@@ -1230,12 +1226,6 @@ export function listProjectsAwaitingInput(db: SqliteDb) {
          JOIN conversations c ON c.id = m.conversation_id
         WHERE m.role = 'assistant'
           AND ${AWAITING_INPUT_MARKER_PREFILTER}
-          AND NOT EXISTS (
-            SELECT 1 FROM project_git_portable_records restored
-             WHERE restored.project_id = c.project_id
-               AND restored.kind = 'message'
-               AND restored.local_id = m.id
-          )
         ORDER BY m.created_at DESC, m.position DESC`,
     )
     .iterate() as Iterable<AwaitingInputCandidate>;
@@ -1254,12 +1244,6 @@ export function listConversationsAwaitingInput(db: SqliteDb) {
          JOIN conversations c ON c.id = m.conversation_id
         WHERE m.role = 'assistant'
           AND ${AWAITING_INPUT_MARKER_PREFILTER}
-          AND NOT EXISTS (
-            SELECT 1 FROM project_git_portable_records restored
-             WHERE restored.project_id = c.project_id
-               AND restored.kind = 'message'
-               AND restored.local_id = m.id
-          )
         ORDER BY m.created_at DESC, m.position DESC`,
     )
     .iterate() as Iterable<AwaitingInputCandidate>;
@@ -1268,8 +1252,7 @@ export function listConversationsAwaitingInput(db: SqliteDb) {
 
 export function getProject(db: SqliteDb, id: string) {
   const row = db
-    .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ? AND NOT EXISTS
-      (SELECT 1 FROM project_git_registrations r WHERE r.project_id = projects.id AND r.hidden = 1 AND r.state = 'pending')`)
+    .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ?`)
     .get(id) as DbRow | undefined;
   return row ? normalizeProject(row) : null;
 }

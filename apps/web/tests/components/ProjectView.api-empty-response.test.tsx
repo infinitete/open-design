@@ -1,12 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ProjectGitOperation, ProjectGitState } from '@open-design/contracts';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useLayoutEffect, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProjectView } from '../../src/components/ProjectView';
-import { defaultProjectGitClient, useProjectGit } from '../../src/providers/project-git';
 import { streamViaDaemon } from '../../src/providers/daemon';
 import type { DaemonStreamOptions } from '../../src/providers/daemon';
 import {
@@ -169,7 +167,6 @@ vi.mock('../../src/components/ChatPane', () => ({
     onRetry,
     error,
     projectHeader,
-    projectGitMenu,
     onCollapse,
     collapseControlLifted,
   }: {
@@ -182,7 +179,6 @@ vi.mock('../../src/components/ChatPane', () => ({
     onRetry?: (assistantMessage: ChatMessage) => void;
     error?: string | null;
     projectHeader?: ReactNode;
-    projectGitMenu?: ReactNode;
     onCollapse?: () => void;
     collapseControlLifted?: boolean;
   }) => {
@@ -199,7 +195,6 @@ vi.mock('../../src/components/ChatPane', () => ({
     return (
       <div>
         {projectHeader}
-        {projectGitMenu}
         {error ? <div>{error}</div> : null}
         {error && retryMessage && onRetry ? (
           <button type="button" onClick={() => onRetry(retryMessage)}>
@@ -273,22 +268,6 @@ const project: Project = {
   updatedAt: 1,
 };
 
-function installAuthoritativeUnmanagedGitState(projectId: string) {
-  const delegatedFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input) === `/api/projects/${projectId}/git`) {
-      return Promise.resolve(new Response(JSON.stringify({
-        enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
-        confirmedRemoteHead: null, projectRevision: 0, contentRevision: 0,
-        bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
-        operationId: null, error: null,
-        binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-      }), { status: 200 }));
-    }
-    return delegatedFetch(input, init);
-  }));
-}
-
 function renderProjectView(
   renderProject: Project = project,
   agents: AgentInfo[] = [
@@ -301,7 +280,6 @@ function renderProjectView(
     } as AgentInfo,
   ],
 ) {
-  installAuthoritativeUnmanagedGitState(renderProject.id);
   return render(
     <ProjectView
       project={renderProject}
@@ -327,14 +305,6 @@ function renderProjectView(
 }
 
 describe('ProjectView API empty response handling', () => {
-  it('checks the remote on actual project open through the shared Git client', async () => {
-    const check = vi.spyOn(defaultProjectGitClient, 'check').mockImplementation(id => defaultProjectGitClient.state(id));
-    try {
-      renderProjectView({ ...project, id: 'git-open-intent' });
-      await waitFor(() => expect(check).toHaveBeenCalledWith('git-open-intent'));
-      expect(check).toHaveBeenCalledTimes(1);
-    } finally { check.mockRestore(); }
-  });
   beforeEach(() => {
     chatPaneMockState.attachments = [];
     chatPaneMockState.commentAttachments = [];
@@ -366,50 +336,6 @@ describe('ProjectView API empty response handling', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
     vi.unstubAllGlobals();
-  });
-
-  it('keeps the original conflict mounted until its own resolve completes after a state revision update', async () => {
-    const gitProject = { ...project, id: 'git-conflict-completion' };
-    const basis = { projectRevision: 0, contentRevision: 6, bindingGeneration: 2, localHead: 'local', remoteHead: 'remote' };
-    let current: ProjectGitState = { enabled: true, phase: 'conflict', projectRevision: 0, contentRevision: 6,
-      bindingGeneration: 2, localHead: 'local', observedRemoteHead: 'remote', confirmedRemoteHead: 'base',
-      dirty: false, pendingPush: false, autoSync: false, operationId: 'conflict-original', error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' }, dependencies: [] };
-    const operation: ProjectGitOperation = { id: 'conflict-original', projectId: gitProject.id, kind: 'sync',
-      status: 'waiting', phase: 'conflict', basis, result: null, error: null };
-    let finish!: (operation: ProjectGitOperation) => void;
-    let submittedSignal: AbortSignal | undefined;
-    const spies = [
-      vi.spyOn(defaultProjectGitClient, 'state').mockImplementation(async () => current),
-      vi.spyOn(defaultProjectGitClient, 'operation').mockResolvedValue(operation),
-      vi.spyOn(defaultProjectGitClient, 'conflicts').mockResolvedValue({ conflicts: [{ id: 'name', kind: 'field', recordId: 'name',
-        base: { kind: 'json', value: 'ancestor' }, local: { kind: 'json', value: 'mine' }, remote: { kind: 'json', value: 'theirs' } }] }),
-      vi.spyOn(defaultProjectGitClient, 'execute').mockImplementation(async (_project, _action, _revision, options) => {
-        submittedSignal = options.signal;
-        return new Promise<ProjectGitOperation>(resolve => { finish = resolve; });
-      }),
-    ];
-    try {
-      renderProjectView(gitProject);
-      fireEvent.click(await screen.findByRole('button', { name: 'Version settings' }));
-      fireEvent.click(await screen.findByRole('menuitem', { name: 'Conflicts need resolution' }));
-      fireEvent.click(await screen.findByRole('menuitem', { name: 'Conflicts' }));
-      fireEvent.change(await screen.findByLabelText('name'), { target: { value: 'remote' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Submit resolution' }));
-      await waitFor(() => expect(submittedSignal).toBeDefined());
-      current = { ...current, operationId: 'resolve-new', projectRevision: 1, phase: 'pending_push', localHead: 'merged', pendingPush: true };
-      let refresh!: () => Promise<void>;
-      function StateWitness() { const git = useProjectGit(gitProject.id); refresh = () => git.refresh({ fresh: true }); return null; }
-      render(<StateWitness />);
-      await act(async () => { await refresh(); });
-      await waitFor(() => expect(screen.getByRole('dialog', { name: 'Conflicts' })).toBeInTheDocument());
-      expect(submittedSignal!.aborted).toBe(false);
-      await act(async () => { finish({ ...operation, id: 'resolve-new', kind: 'resolve', status: 'succeeded', phase: 'local_saved', result: { head: 'merged' } }); });
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    } finally {
-      cleanup();
-      for (const spy of spies) spy.mockRestore();
-    }
   });
 
   it('marks an empty API completion as a soft no-output state instead of succeeded', async () => {
@@ -548,17 +474,11 @@ describe('ProjectView API empty response handling', () => {
     await sendTestPrompt();
 
     await waitFor(() => {
-      // `patchPreviewCommentStatus` takes the acting workspace context as a
-      // fifth argument (1c15574c2), so the daemon can authorize the comment
-      // mutation. This harness has no cloud identity, so it is `null` — but the
-      // argument must still be matched: a four-argument matcher cannot match a
-      // five-argument call at all.
       expect(mockedPatchPreviewCommentStatus).toHaveBeenCalledWith(
         project.id,
         'conv-project-1',
         'comment-1',
         'failed',
-        expect.objectContaining({ generation: 0, signal: expect.any(Object) }),
       );
     });
     await waitFor(() => {

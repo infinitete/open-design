@@ -93,7 +93,7 @@ interface ProjectPayload { project?: ProjectSummary; id?: string; name?: string;
 interface ActiveContext { active?: boolean; projectId?: string; projectName?: string | null; fileName?: string | null; ageMs?: number | null }
 type ResolvedProject = { id: string; name: string; source: 'uuid' | 'id' | 'exact' | 'slug' | 'substring' };
 interface ProjectListCache { baseUrl: string; t: number; list: ProjectSummary[] }
-interface McpArgs extends JsonObject { project?: unknown; expectedProjectRevision?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; skills?: string[]; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
+interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; skills?: string[]; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
 interface ProjectFileBundleEntry { name: string; mime: string; size: number | null; content: string | null; binary: boolean }
 interface BundleInput { project: ProjectPayload | ProjectSummary; entry: string; files: ProjectFileBundleEntry[]; truncated: boolean; skippedFileCount?: number; active: ActiveContext | null; resolved?: ResolvedProject | null }
 interface ErrorWithCode { message?: string; code?: string; cause?: { code?: string } }
@@ -321,12 +321,6 @@ const WRITE_ANNOTATIONS = {
 const PROJECT_ARG = {
   type: 'string',
   description: 'Project id (UUID) or name substring. Optional; defaults to the active project (expires after ~5 minutes of no OpenDesign activity).',
-} as const;
-
-const EXPECTED_PROJECT_REVISION_ARG = {
-  type: 'number',
-  minimum: 0,
-  description: 'Project revision captured when the project was read. Required for Git-managed project writes and starts.',
 } as const;
 
 const PLUGIN_WORKFLOW_ID_ARG = {
@@ -582,7 +576,6 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT_ARG,
-        expectedProjectRevision: EXPECTED_PROJECT_REVISION_ARG,
         name: {
           type: 'string',
           description: 'Output path relative to the project root, for example "codex-product/index.html" or "deck.html".',
@@ -615,7 +608,6 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT_ARG,
-        expectedProjectRevision: EXPECTED_PROJECT_REVISION_ARG,
         path: {
           type: 'string',
           description: 'Output path relative to the project root, e.g. "deck.html" or "components/Hero.tsx".',
@@ -643,7 +635,6 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT_ARG,
-        expectedProjectRevision: EXPECTED_PROJECT_REVISION_ARG,
         path: {
           type: 'string',
           description: 'Project-relative path of the file to delete.',
@@ -669,7 +660,6 @@ export const TOOL_DEFS = [
           type: 'boolean',
           description: 'Must be literally true. Guards against an agent accidentally deleting a project while cleaning up.',
         },
-        expectedProjectRevision: EXPECTED_PROJECT_REVISION_ARG,
       },
       required: ['project', 'confirm'],
       additionalProperties: false,
@@ -736,7 +726,6 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT_ARG,
-        expectedProjectRevision: EXPECTED_PROJECT_REVISION_ARG,
         prompt: {
           type: 'string',
           description: 'What to make or change, in natural language. Optional when a plugin supplies its own brief.',
@@ -2257,9 +2246,6 @@ async function writeFile(
       name: args.path,
       content: args.content,
       encoding,
-      ...(args.expectedProjectRevision === undefined
-        ? {}
-        : { expectedProjectRevision: args.expectedProjectRevision }),
     }),
   });
   if (!resp.ok) {
@@ -2284,12 +2270,7 @@ async function deleteFile(
     .filter((s) => s.length > 0)
     .map(encodeURIComponent);
   const url = `${baseUrl}/api/projects/${encodeURIComponent(id)}/raw/${segments.join('/')}`;
-  const deleteHeaders = {
-    ...headers,
-    ...(args.expectedProjectRevision === undefined
-      ? {}
-      : { 'X-OD-Project-Revision': String(args.expectedProjectRevision) }),
-  };
+  const deleteHeaders = { ...headers };
   const resp = await fetch(url, {
     method: 'DELETE',
     ...(Object.keys(deleteHeaders).length > 0 ? { headers: deleteHeaders } : {}),
@@ -2319,12 +2300,7 @@ async function deleteProject(
   }
   const { id, resolved } = await resolveProjectArg(baseUrl, args.project, headers);
   const url = `${baseUrl}/api/projects/${encodeURIComponent(id)}`;
-  const deleteHeaders = {
-    ...headers,
-    ...(args.expectedProjectRevision === undefined
-      ? {}
-      : { 'X-OD-Project-Revision': String(args.expectedProjectRevision) }),
-  };
+  const deleteHeaders = { ...headers };
   const resp = await fetch(url, {
     method: 'DELETE',
     ...(Object.keys(deleteHeaders).length > 0 ? { headers: deleteHeaders } : {}),
@@ -2513,9 +2489,6 @@ async function startRun(
       ? args.requestId
       : randomUUID();
   const body: JsonObject = { projectId: id, clientRequestId: requestId };
-  if (args.expectedProjectRevision !== undefined) {
-    body.expectedProjectRevision = args.expectedProjectRevision;
-  }
   if (options.pluginAttribution) {
     validatePluginRequestId(requestId);
     const logical = logicalPluginRequestDigest(requestId);
@@ -2882,9 +2855,6 @@ async function createArtifact(
       name: args.name,
       content: args.content,
       encoding: args.encoding === 'base64' ? 'base64' : 'utf8',
-      ...(args.expectedProjectRevision === undefined
-        ? {}
-        : { expectedProjectRevision: args.expectedProjectRevision }),
       ...(artifactManifest === undefined ? {} : { artifactManifest }),
     },
   });

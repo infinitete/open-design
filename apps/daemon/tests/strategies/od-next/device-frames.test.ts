@@ -16,7 +16,6 @@ import {
   observeOdNextLayoutPrimitives,
 } from '../../../src/strategies/od-next/device-frames.js';
 import { ownedOdNextDeviceFramePaths } from '../../../src/od-next-device-frame-ownership.js';
-import { projectGitPathsAtRoot } from '../../../src/services/project-git/paths.js';
 
 const BUNDLED_PLUGINS_DIR = path.resolve(import.meta.dirname, '../../../../../plugins/_official');
 
@@ -256,17 +255,6 @@ describe('device frame ownership inventory', () => {
       files: { 'foreign.html': createHash('sha256').update('foreign').digest('hex') },
     }));
     expect([...await ownedOdNextDeviceFramePaths(cwd)]).toEqual([]);
-  });
-
-  it('preserves tracked manifest and frame paths even when their bytes prove daemon ownership', async () => {
-    const cwd = await projectDir();
-    await materializeOdNextDeviceFrames({ cwd, resources: [SHELLS[0]!] });
-    const tracked = [
-      `.od-frames/${OD_NEXT_DEVICE_FRAME_MANIFEST}`,
-      '.od-frames/iphone.html',
-    ];
-
-    expect(await projectGitPathsAtRoot(cwd, tracked, [])).toEqual(tracked);
   });
 });
 

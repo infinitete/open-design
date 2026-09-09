@@ -104,16 +104,14 @@ describe('public MCP write_file', () => {
     vi.stubGlobal('fetch', withDirectory(fetchMock));
 
     await handleMcpToolCall(base, 'write_file', {
-      project: 'Demo', path: 'deck.html', content: 'v2', expectedProjectRevision: 7,
+      project: 'Demo', path: 'deck.html', content: 'v2',
     });
     await handleMcpToolCall(base, 'delete_file', {
-      project: 'Demo', path: 'old.html', expectedProjectRevision: 7,
+      project: 'Demo', path: 'old.html',
     });
 
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)))
-      .toMatchObject({ expectedProjectRevision: 7 });
-    const deleteCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/raw/old.html'));
-    expect(new Headers(deleteCall?.[1]?.headers).get('X-OD-Project-Revision')).toBe('7');
+      .toMatchObject({ name: 'deck.html', content: 'v2' });
   });
 
   it('passes base64 encoding through unchanged', async () => {

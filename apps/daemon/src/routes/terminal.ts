@@ -1,8 +1,7 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
 import type { createTerminalService } from '../terminals.js';
-import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -67,21 +66,11 @@ export function registerTerminalRoutes(app: Express, ctx: RegisterTerminalRoutes
     const body = req.body || {};
     const cwd = resolveProjectDir(PROJECTS_DIR, project.id, project.metadata);
     let projectMutationSession: Awaited<ReturnType<typeof ctx.projectGitCoordination.runtime.admitSession>> | null = null;
-    let transferred = false;
     try {
-      const expectedProjectRevision = expectedProjectRevisionFromTransport({
-        body: body.expectedProjectRevision,
-        header: req.get('X-OD-Project-Revision'),
-      });
-      projectMutationSession = await ctx.projectGitCoordination.runtime.admitSession(
-        project.id,
-        expectedProjectRevision,
-      );
+      projectMutationSession = await ctx.projectGitCoordination.runtime.admitSession(project.id);
       await ctx.projectGitCoordination.withProjectMutation({
         projectId: project.id,
-        expectedProjectRevision: projectMutationSession.expectedProjectRevision,
         source: 'terminal-session',
-        ...(projectMutationSession.permit ? { permit: projectMutationSession.permit } : {}),
       }, async () => undefined);
       const session = await terminals.create({
         projectId: project.id,
@@ -89,12 +78,10 @@ export function registerTerminalRoutes(app: Express, ctx: RegisterTerminalRoutes
         cols: body.cols,
         rows: body.rows,
         shell: typeof body.shell === 'string' ? body.shell : null,
-        projectMutationSession,
       });
-      transferred = true;
       res.json({ terminal: terminals.statusBody(session) });
     } catch (err: any) {
-      if (err instanceof GitDomainError) {
+      if (err instanceof ProjectDomainError) {
         return sendApiError(res, err.status, err.code, err.message);
       }
       // The most common failure is a missing/uncompiled node-pty native
@@ -102,7 +89,7 @@ export function registerTerminalRoutes(app: Express, ctx: RegisterTerminalRoutes
       // operator knows to re-run `pnpm install`.
       sendApiError(res, 500, 'TERMINAL_SPAWN_FAILED', err instanceof Error ? err.message : String(err));
     } finally {
-      if (!transferred) projectMutationSession?.release();
+      projectMutationSession?.release();
     }
   });
 

@@ -15,7 +15,6 @@ import {
   terminalStreamUrl,
 } from '../../state/projects';
 import styles from './TerminalViewer.module.css';
-import { captureProjectMutation, isProjectMutationCurrent } from '../../state/project-git';
 
 interface Props {
   /** PTY session id (the `terminal:<id>` tab's suffix). */
@@ -369,11 +368,6 @@ export function TerminalViewer({
   const restart = useCallback(async () => {
     const restartGeneration = restartGenerationRef.current + 1;
     restartGenerationRef.current = restartGeneration;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) {
-      setPhase('unavailable');
-      return;
-    }
     setPhase('connecting');
     // Abandon the previous PTY before rebinding. Restart is only reachable from
     // the ended/unavailable states (old session already gone), so this is
@@ -383,13 +377,10 @@ export function TerminalViewer({
       keepalive: true,
     });
     try {
-      const next = await createTerminal(projectId, undefined, mutationContext);
-      if (
-        restartGenerationRef.current !== restartGeneration
-        || !isProjectMutationCurrent(projectId, mutationContext)
-      ) {
+      const next = await createTerminal(projectId, undefined);
+      if (restartGenerationRef.current !== restartGeneration) {
         if (next?.id) void killTerminal(projectId, next.id, { keepalive: true });
-        if (restartGenerationRef.current === restartGeneration) setPhase('unavailable');
+        setPhase('unavailable');
         return;
       }
       if (next?.id) {
@@ -399,10 +390,9 @@ export function TerminalViewer({
         setPhase('unavailable');
       }
     } catch {
-      // A restored project revokes the launch signal and createTerminal
-      // surfaces PROJECT_STATE_CHANGED. The previous PTY is already detached;
-      // keep the standard actionable Restart/Close state instead of leaving a
-      // rejected promise and an indefinite connecting overlay.
+      // The previous PTY is already detached; keep the standard actionable
+      // Restart/Close state instead of leaving a rejected promise and an
+      // indefinite connecting overlay.
       if (restartGenerationRef.current === restartGeneration) setPhase('unavailable');
     }
   }, [projectId, sessionId]);

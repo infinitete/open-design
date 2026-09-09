@@ -18,12 +18,6 @@ import { ChatComposer, type ChatComposerHandle } from '../../src/components/Chat
 import { I18nProvider } from '../../src/i18n';
 import type { Locale } from '../../src/i18n/types';
 import type { AppliedPluginSnapshot, ProjectMetadata } from '@open-design/contracts';
-import type { ProjectGitState } from '@open-design/contracts';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-} from '../../src/state/project-git';
 import { composerText, pressEnter, typeAndSettle, typeInComposer } from '../helpers/lexical-composer';
 
 const COMMUNITY_PLUGIN = {
@@ -200,22 +194,11 @@ function projectPatchBodies(): Array<{ metadata?: { linkedDirs?: string[] } }> {
     .map(([, init]) => JSON.parse(String(init?.body ?? '{}')));
 }
 
-const projectGitState = (revision: number): ProjectGitState => ({
-  enabled: true, phase: 'synced', localHead: 'a'.repeat(40), observedRemoteHead: null,
-  confirmedRemoteHead: null, projectRevision: revision, contentRevision: revision,
-  bindingGeneration: 1, dirty: false, pendingPush: false, autoSync: true,
-  operationId: null, error: null,
-  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-});
-let defaultMutationStore = createProjectGitStateStore(projectGitState(1));
-
 // The contenteditable serializes newlines as `<br>`, which jsdom's
 // `.textContent` drops — so use the Lexical-aware `composerText()` helper for
 // every editor-text assertion (it walks the tree and emits real `\n`s).
 
 beforeEach(() => {
-  defaultMutationStore = createProjectGitStateStore(projectGitState(1));
-  registerProjectMutationStore('project-1', defaultMutationStore);
   trackChatPanelClickMock.mockClear();
   plugins = [COMMUNITY_PLUGIN, USER_PLUGIN];
   skills = [SKILL];
@@ -338,51 +321,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  unregisterProjectMutationStore('project-1', defaultMutationStore);
-  defaultMutationStore.dispose();
   vi.unstubAllGlobals();
   cleanup();
 });
 
 describe('ChatComposer context pickers', () => {
-  it('does not open the linked-folder dialog before project mutation authority is ready', async () => {
-    unregisterProjectMutationStore('project-1', defaultMutationStore);
-    defaultMutationStore.dispose();
-    defaultMutationStore = createProjectGitStateStore();
-    registerProjectMutationStore('project-1', defaultMutationStore);
-    renderComposer({ projectMetadata: { kind: 'prototype' } });
-    await flushMounts();
-
-    fireEvent.click(screen.getByTestId('chat-plus-trigger'));
-    fireEvent.click(await screen.findByText('Link local code'));
-    await act(async () => Promise.resolve());
-
-    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/dialog/open-folder')).toHaveLength(0);
-    expect(projectPatchBodies()).toHaveLength(0);
-  });
-
-  it('cancels a linked-folder mutation when the revision captured before the dialog is revoked', async () => {
-    const store = createProjectGitStateStore(projectGitState(12));
-    registerProjectMutationStore('project-1', store);
-    deferNextFolderDialog = true;
-    renderComposer({ projectMetadata: { kind: 'prototype' } });
-    await flushMounts();
-
-    fireEvent.click(screen.getByTestId('chat-plus-trigger'));
-    fireEvent.click(await screen.findByText('Link local code'));
-    await waitFor(() => expect(resolveDeferredFolderDialog).toBeTruthy());
-    store.accept(projectGitState(13), 'event');
-    await act(async () => {
-      resolveDeferredFolderDialog?.();
-      await Promise.resolve();
-    });
-
-    await act(async () => Promise.resolve());
-    expect(projectPatchBodies()).toHaveLength(0);
-    unregisterProjectMutationStore('project-1', store);
-    store.dispose();
-  });
-
   it('auto-stages the active workspace context and re-stages after a tab change', async () => {
     const onSend = vi.fn();
     const fileContext = {

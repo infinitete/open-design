@@ -5,7 +5,7 @@ import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerMediaRoutes } from '../../src/routes/media.js';
-import { GitDomainError } from '../../src/services/project-git/errors.js';
+import { ProjectDomainError } from '../../src/services/project-mutation.js';
 import { HYPERFRAMES_SCAFFOLD_TOOL_ENDPOINT } from '../../src/tool-tokens.js';
 
 const servers: http.Server[] = [];
@@ -99,12 +99,6 @@ async function startServer(options: {
     projectGitCoordination: {
       withProjectMutation,
       withProjectRead: vi.fn(async (_projectId: string, work: () => Promise<unknown>) => work()),
-      runtime: {
-        mutationContext: vi.fn(() => ({
-          expectedProjectRevision: 7,
-          permit: Object.freeze({}),
-        })),
-      },
     },
     authorizeProjectRequest: async () => true,
     authorizeProjectToolRequest: async () => true,
@@ -160,10 +154,10 @@ describe('HyperFrames scaffold routes', () => {
     )).resolves.toContain('hyperframes.heygen.com/schema');
   });
 
-  it('rejects a stale epoch after authorization and before scaffold files are written', async () => {
+  it('surfaces a coordinated mutation rejection after authorization and before scaffold files are written', async () => {
     const started = await startServer({
       withProjectMutation: async () => {
-        throw new GitDomainError('PROJECT_STATE_CHANGED', 409, 'Reload the project before editing.');
+        throw new ProjectDomainError('CONFLICT', 409, 'Reload the project before editing.');
       },
     });
 
@@ -174,7 +168,6 @@ describe('HyperFrames scaffold routes', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           compositionDir: '.hyperframes-cache/stale',
-          expectedProjectRevision: 6,
         }),
       },
     );
@@ -182,7 +175,7 @@ describe('HyperFrames scaffold routes', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
       error: {
-        code: 'PROJECT_STATE_CHANGED',
+        code: 'CONFLICT',
         message: 'Reload the project before editing.',
       },
     });
@@ -193,14 +186,13 @@ describe('HyperFrames scaffold routes', () => {
     expect(started.withProjectMutation).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 'project-1',
-        expectedProjectRevision: 6,
         source: 'media.hyperframes-scaffold',
       }),
       expect.any(Function),
     );
   });
 
-  it('returns media 202 after admission while retaining the same-run permit until generation settles', async () => {
+  it('returns media 202 after admission and holds the mutation until generation settles', async () => {
     const order: string[] = [];
     let resolveGeneration!: (value: unknown) => void;
     const generation = new Promise(resolve => { resolveGeneration = resolve; });
@@ -239,8 +231,6 @@ describe('HyperFrames scaffold routes', () => {
     expect(started.withProjectMutation).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 'project-1',
-        expectedProjectRevision: 7,
-        permit: expect.anything(),
         source: 'media.generate',
       }),
       expect.any(Function),

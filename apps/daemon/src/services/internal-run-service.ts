@@ -8,7 +8,7 @@
  * calling the daemon through HTTP.
  */
 import type { RunAnalyticsFacts } from './run-analytics-lifecycle.js';
-import type { ProjectRunAdmission as ProjectRunAdmissionHandle } from './project-git/runtime-adapter.js';
+import type { ProjectRunAdmission as ProjectRunAdmissionHandle } from './project-mutation.js';
 
 /**
  * `RunAnalyticsFacts` is a REQUIRED argument of `start` on purpose. Analytics
@@ -21,7 +21,6 @@ import type { ProjectRunAdmission as ProjectRunAdmissionHandle } from './project
  */
 export interface InternalRunCreateInput extends Record<string, unknown> {
   projectId?: string;
-  expectedProjectRevision?: number;
   conversationId?: string;
   userMessageId?: string;
   assistantMessageId?: string;
@@ -46,8 +45,6 @@ export interface InternalPhysicalRun {
   id: string;
   status: string;
   projectId?: string | null;
-  expectedProjectRevision?: number;
-  projectGitBindingGeneration?: number;
   manualResumeAttemptCount?: number;
   pendingManualResumeAttemptCount?: number;
 }
@@ -113,7 +110,6 @@ const preRunProjectAdmissionBrand: unique symbol = Symbol('pre-run-project-admis
 /** Opaque capability held before snapshot/pre-claim project mutations. */
 export interface PreRunProjectAdmission {
   readonly projectId: string;
-  readonly expectedProjectRevision: number | undefined;
   readonly [preRunProjectAdmissionBrand]: true;
 }
 
@@ -121,10 +117,7 @@ export interface InternalRunCreationService<
   TMeta extends InternalRunCreateInput,
   TRun extends InternalPhysicalRun,
 > {
-  preAdmitProjectRun(
-    projectId: string,
-    expectedProjectRevision?: number,
-  ): Promise<PreRunProjectAdmission>;
+  preAdmitProjectRun(projectId: string): Promise<PreRunProjectAdmission>;
   withProjectMutation<T>(
     admission: PreRunProjectAdmission,
     source: string,
@@ -157,16 +150,13 @@ export function createInternalRunCreationService<
    * that wants silence injects a no-op lifecycle and says so.
    */
   analyticsLifecycle: InternalRunAnalyticsLifecycle<TRun>;
-  beginProjectRunAdmission: (
-    projectId: string,
-    expectedProjectRevision: number | undefined,
-  ) => Promise<ProjectRunAdmissionHandle>;
+  beginProjectRunAdmission: (projectId: string) => Promise<ProjectRunAdmissionHandle>;
   attachProjectRun: (
     runId: string,
     projectId: string,
     admission: ProjectRunAdmissionHandle,
     executionAttempt: number,
-  ) => { bindingGeneration: number; projectRevision: number } | null;
+  ) => null;
   detachProjectRun(runId: string, admission: ProjectRunAdmissionHandle): void;
   coordinateProjectMutation<T>(
     admission: ProjectRunAdmissionHandle,
@@ -190,14 +180,10 @@ export function createInternalRunCreationService<
     return Boolean(existing && !deps.runs.isTerminal(existing.status));
   };
 
-  const preAdmitProjectRun = async (
-    projectId: string,
-    expectedProjectRevision?: number,
-  ): Promise<PreRunProjectAdmission> => {
-    const handle = await deps.beginProjectRunAdmission(projectId, expectedProjectRevision);
+  const preAdmitProjectRun = async (projectId: string): Promise<PreRunProjectAdmission> => {
+    const handle = await deps.beginProjectRunAdmission(projectId);
     const admission = Object.freeze({
       projectId,
-      expectedProjectRevision,
       [preRunProjectAdmissionBrand]: true as const,
     });
     preRunAdmissions.set(admission, {
@@ -287,19 +273,13 @@ export function createInternalRunCreationService<
         reservedResumeAttempt = true;
       }
       if (typeof input.meta.projectId === 'string' && input.meta.projectId) {
-        projectAdmission ??= await preAdmitProjectRun(
-          input.meta.projectId,
-          input.meta.expectedProjectRevision,
-        );
-        if (
-          projectAdmission.projectId !== input.meta.projectId
-          || projectAdmission.expectedProjectRevision !== input.meta.expectedProjectRevision
-        ) {
+        projectAdmission ??= await preAdmitProjectRun(input.meta.projectId);
+        if (projectAdmission.projectId !== input.meta.projectId) {
           releaseProjectRunAdmission(projectAdmission);
-          throw new Error('Pre-run project admission does not match the run project epoch.');
+          throw new Error('Pre-run project admission does not match the run project.');
         }
         const state = admissionState(projectAdmission);
-        const epoch = deps.attachProjectRun(
+        deps.attachProjectRun(
           run.id,
           input.meta.projectId,
           state.handle,
@@ -307,11 +287,6 @@ export function createInternalRunCreationService<
         );
         state.attachedRunId = run.id;
         admitted = true;
-        if (epoch) {
-          run.projectGitBindingGeneration = epoch.bindingGeneration;
-          run.expectedProjectRevision = epoch.projectRevision;
-          deps.runs.persistState(run);
-        }
       } else if (projectAdmission) {
         releaseProjectRunAdmission(projectAdmission);
         throw new Error('A project admission cannot be attached to a projectless run.');

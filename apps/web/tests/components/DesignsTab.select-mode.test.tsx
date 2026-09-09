@@ -5,11 +5,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DesignsTab } from '../../src/components/DesignsTab';
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles } from '../../src/providers/registry';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-} from '../../src/state/project-git';
 import type { Project } from '../../src/types';
 
 vi.mock('../../src/providers/registry', () => ({
@@ -334,7 +329,6 @@ describe('DesignsTab select mode', () => {
         onOpenLiveArtifact={vi.fn()}
         onDelete={onDelete}
         onRename={vi.fn()}
-        projectMutationReady={() => true}
       />,
     );
 
@@ -361,7 +355,6 @@ describe('DesignsTab select mode', () => {
         onOpenLiveArtifact={vi.fn()}
         onDelete={onDelete}
         onRename={vi.fn()}
-        projectMutationReady={() => true}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Select' }));
@@ -390,7 +383,6 @@ describe('DesignsTab select mode', () => {
         onOpenLiveArtifact={vi.fn()}
         onDelete={onDelete}
         onRename={vi.fn()}
-        projectMutationReady={() => true}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Select' }));
@@ -477,48 +469,6 @@ describe('DesignsTab select mode', () => {
     expect(screen.queryByText('2 selected')).toBeNull();
   });
 
-  it('captures every selected project authority before enabling bulk delete', async () => {
-    const secondProject = {
-      ...project,
-      id: 'project-2',
-      name: 'Brand system',
-      createdAt: 3,
-      updatedAt: 4,
-    };
-    let secondReady = false;
-    const onDelete = vi.fn().mockResolvedValue(true);
-    const props = {
-      projects: [project, secondProject],
-      skills: [],
-      designSystems: [],
-      onOpen: vi.fn(),
-      onOpenLiveArtifact: vi.fn(),
-      onDelete,
-      onRename: vi.fn(),
-      projectMutationReady: (id: string) => id === 'project-1' || secondReady,
-    };
-    const view = render(<DesignsTab {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
-    fireEvent.click(screen.getByText('Landing refresh').closest('.design-card') as HTMLElement);
-    fireEvent.click(screen.getByText('Brand system').closest('.design-card') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
-
-    const dialog = screen.getByRole('alertdialog');
-    const confirm = within(dialog).getByRole('button', { name: 'Delete selected' });
-    expect(confirm).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).not.toBeDisabled();
-    fireEvent.click(confirm);
-    expect(onDelete).not.toHaveBeenCalled();
-
-    secondReady = true;
-    view.rerender(<DesignsTab {...props} />);
-    expect(confirm).not.toBeDisabled();
-    fireEvent.click(confirm);
-    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(2));
-    expect(onDelete).toHaveBeenNthCalledWith(1, 'project-1');
-    expect(onDelete).toHaveBeenNthCalledWith(2, 'project-2');
-  });
-
   it('keeps a refused rename draft visible with recovery guidance', async () => {
     const onRename = vi.fn(async () => false);
     render(
@@ -530,7 +480,6 @@ describe('DesignsTab select mode', () => {
         onOpenLiveArtifact={vi.fn()}
         onDelete={vi.fn()}
         onRename={onRename}
-        projectMutationReady={() => true}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
@@ -560,7 +509,6 @@ describe('DesignsTab select mode', () => {
         onOpenLiveArtifact={vi.fn()}
         onDelete={vi.fn()}
         onRename={onRename}
-        projectMutationReady={() => true}
       />,
     );
 
@@ -585,147 +533,6 @@ describe('DesignsTab select mode', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await act(async () => resolveFirst(false));
     expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('treats a deferred live-artifact delete from an older revision as stale-neutral', async () => {
-    const state = {
-      enabled: true,
-      phase: 'synced' as const,
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: null,
-      confirmedRemoteHead: null,
-      projectRevision: 1,
-      contentRevision: 1,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    const store = createProjectGitStateStore(state);
-    registerProjectMutationStore(project.id, store);
-    const artifact = {
-      schemaVersion: 1 as const,
-      id: 'artifact-stale',
-      projectId: project.id,
-      title: 'Current dashboard',
-      slug: 'current-dashboard',
-      status: 'active' as const,
-      pinned: false,
-      preview: { type: 'html' as const, entry: 'index.html' },
-      refreshStatus: 'succeeded' as const,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      hasDocument: true,
-    };
-    vi.mocked(fetchLiveArtifacts).mockResolvedValue([artifact]);
-    let resolveDelete!: (value: boolean) => void;
-    vi.mocked(deleteLiveArtifact).mockReturnValue(new Promise((resolve) => { resolveDelete = resolve; }));
-    try {
-      render(
-        <DesignsTab
-          projects={[project]}
-          skills={[]}
-          designSystems={[]}
-          onOpen={vi.fn()}
-          onOpenLiveArtifact={vi.fn()}
-          onDelete={vi.fn()}
-          onRename={vi.fn()}
-          projectMutationReady={() => true}
-          isActive
-        />,
-      );
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Delete Current dashboard' })).toBeTruthy());
-      fireEvent.click(screen.getByRole('button', { name: 'Delete Current dashboard' }));
-      const dialog = screen.getByRole('alertdialog');
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-      await waitFor(() => expect(deleteLiveArtifact).toHaveBeenCalledWith(
-        project.id,
-        artifact.id,
-        expect.objectContaining({ expectedProjectRevision: 1 }),
-      ));
-      store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event');
-      resolveDelete(true);
-
-      await waitFor(() => expect(screen.getByRole('alertdialog')).toBe(dialog));
-      expect(within(dialog).getByRole('alert')).toHaveTextContent(/history changed|reload/i);
-      expect(screen.getByText('Current dashboard')).toBeTruthy();
-    } finally {
-      unregisterProjectMutationStore(project.id, store);
-      store.dispose();
-    }
-  });
-
-  it('captures live-artifact authority at final confirm after the dialog revision advances', async () => {
-    const state = {
-      enabled: true,
-      phase: 'synced' as const,
-      localHead: 'a'.repeat(40),
-      observedRemoteHead: null,
-      confirmedRemoteHead: null,
-      projectRevision: 1,
-      contentRevision: 1,
-      bindingGeneration: 1,
-      dirty: false,
-      pendingPush: false,
-      autoSync: true,
-      operationId: null,
-      error: null,
-      binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-      dependencies: [],
-    };
-    const store = createProjectGitStateStore(state);
-    registerProjectMutationStore(project.id, store);
-    const artifact = {
-      schemaVersion: 1 as const,
-      id: 'artifact-final-capture',
-      projectId: project.id,
-      title: 'Final capture dashboard',
-      slug: 'final-capture-dashboard',
-      status: 'active' as const,
-      pinned: false,
-      preview: { type: 'html' as const, entry: 'index.html' },
-      refreshStatus: 'succeeded' as const,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      hasDocument: true,
-    };
-    vi.mocked(fetchLiveArtifacts).mockResolvedValue([artifact]);
-    vi.mocked(deleteLiveArtifact).mockResolvedValue(true);
-    try {
-      render(
-        <DesignsTab
-          projects={[project]}
-          skills={[]}
-          designSystems={[]}
-          onOpen={vi.fn()}
-          onOpenLiveArtifact={vi.fn()}
-          onDelete={vi.fn()}
-          onRename={vi.fn()}
-          projectMutationReady={() => true}
-          isActive
-        />,
-      );
-      fireEvent.click(await screen.findByRole('button', { name: 'Delete Final capture dashboard' }));
-      const dialog = screen.getByRole('alertdialog');
-
-      expect(store.accept({ ...state, projectRevision: 2, contentRevision: 2 }, 'event')).toBe('advanced');
-      expect(store.completeReconciliation(store.reconciliationToken())).toBe(true);
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-
-      await waitFor(() => expect(deleteLiveArtifact).toHaveBeenCalledWith(
-        project.id,
-        artifact.id,
-        expect.objectContaining({ expectedProjectRevision: 2 }),
-      ));
-      expect(screen.queryByRole('alertdialog')).toBeNull();
-    } finally {
-      unregisterProjectMutationStore(project.id, store);
-      store.dispose();
-    }
   });
 
   it('restarts the bulk delete toast timer for repeated matching results', async () => {

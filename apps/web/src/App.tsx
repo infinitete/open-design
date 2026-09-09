@@ -135,13 +135,6 @@ import {
   patchProject,
   patchProjectWithFreshAuthority,
 } from './state/projects';
-import {
-  captureProjectMutation,
-  isProjectMutationCurrent,
-  ProjectStateChangedError,
-  type ProjectMutationContext,
-} from './state/project-git';
-import { useProjectGitAuthoritySet } from './providers/project-git';
 import { useModalWindowDragGuard } from './hooks/useModalWindowDragGuard';
 import { resumeThumbnailLoads, suspendThumbnailLoads } from './lib/thumbnail-load-gate';
 import type {
@@ -591,7 +584,6 @@ function AppInner() {
     Record<string, DesignSystemGenerationJob>
   >({});
   const [projects, setProjects] = useState<Project[]>([]);
-  const projectGitAuthorities = useProjectGitAuthoritySet([]);
   const [pendingProjectCreation, setPendingProjectCreation] =
     useState<PendingProjectCreation | null>(null);
   const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
@@ -2227,28 +2219,8 @@ function AppInner() {
 
   const handleDeleteProject = useCallback(async (
     id: string,
-    suppliedMutationContext?: ProjectMutationContext,
   ): Promise<import('./state/projects').ProjectDeleteResult> => {
-    const freshMutationContext = captureProjectMutation(id);
-    if (!freshMutationContext) return false;
-    if (suppliedMutationContext && (
-      !isProjectMutationCurrent(id, suppliedMutationContext)
-      || suppliedMutationContext.generation !== freshMutationContext.generation
-      || suppliedMutationContext.expectedProjectRevision
-        !== freshMutationContext.expectedProjectRevision
-      || suppliedMutationContext.signal !== freshMutationContext.signal
-    )) return 'stale';
-    const mutationContext = suppliedMutationContext ?? freshMutationContext;
-    try {
-      await deleteProjectApi(id, mutationContext);
-    } catch (error) {
-      if (error instanceof ProjectStateChangedError) return 'stale';
-      throw error;
-    }
-    // A restore that wins while the request is in flight is neither a daemon
-    // failure nor a successful deletion in this browser epoch. Leave every
-    // local projection untouched and let Home close the obsolete intent.
-    if (!isProjectMutationCurrent(id, mutationContext)) return 'stale';
+    await deleteProjectApi(id);
     removeProjectFromDisplaySnapshots({ projectId: id });
     clearLocalProject(id, { deleted: true });
     removeWorkspaceProjectTabs(id);
@@ -2263,9 +2235,6 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    if (!projectGitAuthorities.isReady(id)) return;
-    const mutationContext = captureProjectMutation(id);
-    if (!mutationContext) return;
     const previous = projectsRef.current.find((project) => project.id === id) ?? null;
     if (!previous) return false;
     const renameProjectionKey = JSON.stringify([id]);
@@ -2275,8 +2244,7 @@ function AppInner() {
       confirmed: previous,
       pending: 1,
     });
-    const persisted = await patchProject(id, { name: trimmed }, mutationContext);
-    if (!isProjectMutationCurrent(id, mutationContext)) return false;
+    const persisted = await patchProject(id, { name: trimmed });
     if (projectRenameStatesRef.current.get(renameProjectionKey)?.generation !== renameGeneration) return false;
     if (!persisted) return false;
     setProjects((current) => current.map((project) => project.id === id ? persisted : project));
@@ -2285,7 +2253,7 @@ function AppInner() {
     });
     await refreshProjects();
     return true;
-  }, [projectGitAuthorities, refreshProjects]);
+  }, [refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
   // depending on browser history here: tab restores and template-create flows
@@ -2300,25 +2268,11 @@ function AppInner() {
     });
   }, [iframeKeepAlivePool, route]);
 
-  const handleClearPendingPrompt = useCallback(async (mutationContext: ProjectMutationContext) => {
+  const handleClearPendingPrompt = useCallback(async () => {
     const projectId = route.kind === 'project' ? route.projectId : null;
     if (!projectId) return false;
-    const readyContext = captureProjectMutation(projectId);
-    if (
-      !readyContext
-      || readyContext.generation !== mutationContext.generation
-      || readyContext.expectedProjectRevision !== mutationContext.expectedProjectRevision
-      || readyContext.signal !== mutationContext.signal
-      || !isProjectMutationCurrent(projectId, readyContext)
-    ) return false;
-    let persisted: Project | null;
-    try {
-      persisted = await patchProject(projectId, { pendingPrompt: null }, readyContext);
-    } catch (error) {
-      if (error instanceof ProjectStateChangedError) return false;
-      throw error;
-    }
-    if (!persisted || !isProjectMutationCurrent(projectId, readyContext)) return false;
+    const persisted = await patchProject(projectId, { pendingPrompt: null });
+    if (!persisted) return false;
     setProjects((curr) =>
       curr.map((p) =>
         p.id === projectId ? { ...p, pendingPrompt: undefined } : p,
@@ -2334,8 +2288,6 @@ function AppInner() {
   const handleTouchProject = useCallback(() => {
     const projectId = route.kind === 'project' ? route.projectId : null;
     if (!projectId) return;
-    const mutationContext = captureProjectMutation(projectId);
-    if (!mutationContext || !isProjectMutationCurrent(projectId, mutationContext)) return;
     const updatedAt = Date.now();
     setProjects((curr) =>
       curr.map((p) => (p.id === projectId ? { ...p, updatedAt } : p)),
@@ -2344,7 +2296,7 @@ function AppInner() {
       patch: (cachedProjects) => cachedProjects.map((project) =>
         project.id === projectId ? { ...project, updatedAt } : project),
     });
-    void patchProject(projectId, { updatedAt }, mutationContext);
+    void patchProject(projectId, { updatedAt });
   }, [route]);
 
   const handleProjectChange = useCallback((updated: Project) => {
@@ -3058,7 +3010,6 @@ function AppInner() {
         onDeleteProject={handleDeleteProject}
         onDuplicateProject={handleDuplicateProject}
         onRenameProject={handleRenameProject}
-        projectMutationReady={projectGitAuthorities.isReady}
         onProjectsRefresh={refreshProjects}
         onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
         onCreateDesignSystem={() => {

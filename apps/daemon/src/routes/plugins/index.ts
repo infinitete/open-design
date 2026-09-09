@@ -33,13 +33,13 @@ type AuthorizeProjectRequest = any;
 import type { PluginShareAction } from '../../services/plugin-share-tasks.js';
 import { workspaceTeamPluginBindingResourceId } from '../../plugins/registry.js';
 import { localPluginRegistryScope } from '../../plugins/local-source.js';
-import type { ProjectGitCoordination } from '../../services/project-git/mutation-adapter.js';
+import type { ProjectMutationCoordination } from '../../services/project-mutation.js';
 import {
   coordinateAuthorizedProjectMutation,
   coordinateAuthorizedProjectMutationStart,
   coordinateAuthorizedProjectRead,
   coordinateAuthorizedProjectReadStart,
-} from '../project-git-coordination.js';
+} from '../project-coordination.js';
 import {
   classifyPluginInstallError,
   type PluginInstallErrorCode,
@@ -211,7 +211,7 @@ interface PluginRouteHelpers {
 
 export interface RegisterPluginRoutesDeps {
   db: SqliteDbLike;
-  projectGitCoordination: ProjectGitCoordination;
+  projectGitCoordination: ProjectMutationCoordination;
   authorizeProjectRequest: AuthorizeProjectRequest;
   /** Team-resource copy red-line (D3). When present, a frozen team plugin cannot
    *  be duplicated into a personal project. Omit to skip the guard (no-op). */

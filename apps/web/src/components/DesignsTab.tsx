@@ -17,7 +17,6 @@ import {
 	setProjectCoverSnapshot,
 } from "../lib/project-cover-cache";
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles, liveArtifactPreviewUrl } from "../providers/registry";
-import { captureProjectMutation, isProjectMutationCurrent } from "../state/project-git";
 import type { ProjectDeleteResult } from "../state/projects";
 import type {
 	DesignSystemSummary,
@@ -119,7 +118,6 @@ interface Props {
 	onDelete: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
 	onDuplicate?: (id: string) => Promise<void> | void;
 	onRename?: (id: string, name: string) => Promise<boolean | void> | boolean | void;
-	projectMutationReady?: (id: string) => boolean;
 	onNewProject?: () => void;
 	onImportFolder?: (baseDir: string) => Promise<void> | void;
 	onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
@@ -136,7 +134,6 @@ export function DesignsTab({
 	onDelete,
 	onDuplicate,
 	onRename,
-	projectMutationReady = () => true,
 	onNewProject,
 	onImportFolder,
 	onImportFolderResponse,
@@ -145,7 +142,6 @@ export function DesignsTab({
 }: Props) {
 	const renameTitleId = useId();
 	const confirmTitleId = useId();
-	const authoritySourceId = useId();
 	const t = useT();
 	const analytics = useAnalytics();
 	const folderImport = useOpenFolderImport({
@@ -196,19 +192,6 @@ export function DesignsTab({
 		confirmLabel: string;
 		onConfirm: () => Promise<ProjectDeleteResult | void> | ProjectDeleteResult | void;
 	} | null>(null);
-	useEffect(() => {
-		window.dispatchEvent(new CustomEvent("open-design:project-mutation-targets", {
-			detail: {
-				source: `designs-tab:${authoritySourceId}`,
-				projectIds: [...new Set([...(confirmTarget?.projectIds ?? []), ...(renameTarget ? [renameTarget.id] : []), ...(menuOpenId ? [menuOpenId] : [])])],
-			},
-		}));
-		return () => {
-			window.dispatchEvent(new CustomEvent("open-design:project-mutation-targets", {
-				detail: { source: `designs-tab:${authoritySourceId}`, projectIds: [] },
-			}));
-		};
-	}, [authoritySourceId, confirmTarget, menuOpenId, renameTarget]);
 	const [confirmPending, setConfirmPending] = useState(false);
 	const [confirmError, setConfirmError] = useState<string | null>(null);
 	const [view, setView] = useState<ViewMode>(() => {
@@ -496,7 +479,6 @@ export function DesignsTab({
 		setSelected(new Set());
 	};
 	const handleRenameProject = (project: Project) => {
-		if (!projectMutationReady(project.id)) return;
 		renameOperationRef.current += 1;
 		renamePendingRef.current = false;
 		setRenamePending(false);
@@ -505,7 +487,7 @@ export function DesignsTab({
 		setRenameError(null);
 	};
 	const commitRename = async () => {
-		if (!renameTarget || !projectMutationReady(renameTarget.id) || renamePendingRef.current) return;
+		if (!renameTarget || renamePendingRef.current) return;
 		const target = renameTarget;
 		const operation = renameOperationRef.current + 1;
 		renameOperationRef.current = operation;
@@ -610,7 +592,6 @@ export function DesignsTab({
 		projectId: string,
 		artifact: LiveArtifactSummary,
 	) => {
-		if (!projectMutationReady(projectId)) return;
 		setConfirmError(null);
 		setConfirmTarget({
 			projectIds: [projectId],
@@ -618,11 +599,7 @@ export function DesignsTab({
 			message: `${t("common.delete")} "${artifact.title}"?`,
 			confirmLabel: t("designs.menuDelete"),
 			onConfirm: async () => {
-				if (!projectMutationReady(projectId)) return 'stale';
-				const mutationContext = captureProjectMutation(projectId);
-				if (!mutationContext) return 'stale';
-				const ok = await deleteLiveArtifact(projectId, artifact.id, mutationContext);
-				if (!isProjectMutationCurrent(projectId, mutationContext)) return 'stale';
+				const ok = await deleteLiveArtifact(projectId, artifact.id);
 				if (!ok) return false;
 				setLiveArtifactsByProject((current) => ({
 					...current,
@@ -936,7 +913,6 @@ export function DesignsTab({
 									<button
 										type="button"
 										className="design-card-close"
-										disabled={!projectMutationReady(p.id)}
 										title={t("common.delete")}
 										aria-label={`${t("common.delete")} ${artifact.title}`}
 										onClick={(e) => {
@@ -1073,7 +1049,6 @@ export function DesignsTab({
 											<button
 												type="button"
 												role="menuitem"
-												disabled={!projectMutationReady(p.id)}
 												onClick={() => {
 													const projectKind = projectKindFromMetadataToTracking(p.metadata);
 													trackProjectsMorePopoverClick(analytics.track, {
@@ -1321,7 +1296,6 @@ export function DesignsTab({
 							className="primary"
 							disabled={
 								renamePending ||
-								!projectMutationReady(renameTarget.id) ||
 								!renameInput.trim() ||
 								renameInput.trim() === renameTarget.original
 							}
@@ -1361,16 +1335,13 @@ export function DesignsTab({
 						>
 							{t("designs.renameCancel")}
 						</button>
-						<button
-							type="button"
-							className="primary danger"
-							autoFocus
-							disabled={
-								confirmPending
-								|| confirmTarget.projectIds.some((id) => !projectMutationReady(id))
-							}
-							onClick={() => void commitConfirmTarget()}
-						>
+							<button
+								type="button"
+								className="primary danger"
+								autoFocus
+								disabled={confirmPending}
+								onClick={() => void commitConfirmTarget()}
+							>
 							{confirmTarget.confirmLabel}
 						</button>
 					</DialogFooter>

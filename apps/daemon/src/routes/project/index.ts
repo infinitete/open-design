@@ -115,13 +115,10 @@ import { registerProjectConversationRoutes } from './conversations.js';
 import {
   coordinateAuthorizedProjectMutation,
   coordinateAuthorizedProjectRead,
-} from '../project-git-coordination.js';
-import { GitDomainError } from '../../services/project-git/errors.js';
-import {
-  expectedProjectRevisionFromTransport,
-  type ProjectGitCoordination,
-} from '../../services/project-git/mutation-adapter.js';
-import type { ProjectMutationSession } from '../../services/project-git/runtime-adapter.js';
+} from '../project-coordination.js';
+import { ProjectDomainError } from '../../services/project-mutation.js';
+import type { ProjectMutationCoordination } from '../../services/project-mutation.js';
+import type { ProjectMutationSession } from '../../services/project-mutation.js';
 import { workspaceProjectGroupCountProperties } from './analytics.js';
 import type { ProjectCommentWorkspaceContextResolution } from './comments.js';
 
@@ -135,62 +132,22 @@ function refuseTeamShareScope(..._args: any[]): any { return null; }
 type TeamShareScopeRefusal = any;
 type WorkspaceTypeRegistry = any;
 
-export function parseBatchDeleteExpectedProjectRevisions(input: {
-  selectedProjectIds: readonly string[];
-  finalProjectIds: readonly string[];
-  body?: unknown;
-  header?: unknown;
-}): Map<string, number> {
-  const invalid = (): never => {
-    throw new GitDomainError('BAD_REQUEST', 400, 'Invalid project revision.');
-  };
-  const selected = new Set(input.selectedProjectIds);
-  const revisions = new Map<string, number>();
-  if (input.body !== undefined) {
-    if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) invalid();
-    for (const [projectId, value] of Object.entries(input.body as Record<string, unknown>)) {
-      if (!selected.has(projectId) || !Number.isSafeInteger(value) || (value as number) < 0) invalid();
-      revisions.set(projectId, value as number);
-    }
-  }
-  const hasHeader = input.header !== undefined && input.header !== null && input.header !== '';
-  if (hasHeader && input.finalProjectIds.length !== 1) invalid();
-  for (const projectId of input.finalProjectIds) {
-    const expected = expectedProjectRevisionFromTransport({
-      body: revisions.get(projectId),
-      ...(hasHeader ? { header: input.header } : {}),
-    });
-    if (expected === undefined) revisions.delete(projectId);
-    else revisions.set(projectId, expected);
-  }
-  return new Map(input.finalProjectIds.flatMap(projectId => {
-    const revision = revisions.get(projectId);
-    return revision === undefined ? [] : [[projectId, revision] as const];
-  }));
-}
-
 export async function coordinateProjectBatchDelete<T>(input: {
   finalProjectIds: readonly string[];
-  expectedProjectRevisions: ReadonlyMap<string, number>;
-  coordination: ProjectGitCoordination;
+  coordination: ProjectMutationCoordination;
   cancelProjectRuns(projectId: string): Promise<void>;
   deleteProjects(): Promise<T>;
 }): Promise<T> {
   const sessions: ProjectMutationSession[] = [];
   try {
     for (const projectId of [...input.finalProjectIds].sort()) {
-      sessions.push(await input.coordination.runtime.admitSession(
-        projectId,
-        input.expectedProjectRevisions.get(projectId),
-      ));
+      sessions.push(await input.coordination.runtime.admitSession(projectId));
     }
     for (const session of sessions) await input.cancelProjectRuns(session.projectId);
     for (const session of sessions) {
       await input.coordination.withProjectMutation({
         projectId: session.projectId,
-        expectedProjectRevision: session.expectedProjectRevision,
         source: 'project.batch-delete',
-        ...(session.permit ? { permit: session.permit } : {}),
       }, async () => undefined);
     }
     return await input.deleteProjects();
@@ -204,7 +161,7 @@ export function projectBatchDeleteErrorResponse(error: unknown): {
   code: string;
   message: string;
 } {
-  return error instanceof GitDomainError
+  return error instanceof ProjectDomainError
     ? { status: error.status, code: error.code, message: error.message }
     : { status: 400, code: 'BAD_REQUEST', message: String(error) };
 }
@@ -356,7 +313,7 @@ function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination' | 'projectGit'> {
+export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination' > {
   pluginScope?: {
     loadRegistry: (options: {
       workspaceId?: string | null;
@@ -3742,12 +3699,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return sendApiError(res, 403, 'PROJECT_BATCH_CONTAINS_FORBIDDEN_ITEMS', 'batch contains forbidden projects');
       }
       const finalProjectIds = projectIds.filter((id: string) => countWorkspaceProjectRefs(db, id) <= 1);
-      const expectedProjectRevisions = parseBatchDeleteExpectedProjectRevisions({
-        selectedProjectIds: projectIds,
-        finalProjectIds,
-        body: req.body?.expectedProjectRevisions,
-        header: req.get('X-OD-Project-Revision'),
-      });
       const deleteMany = db.transaction((ids: string[], finalIds: string[]) => {
         for (const id of ids) deleteWorkspaceProject(db, ctx.workspaceId, id);
         for (const id of finalIds) {
@@ -3769,7 +3720,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (finalProjectIds.length > 0) {
         await coordinateProjectBatchDelete({
           finalProjectIds,
-          expectedProjectRevisions,
           coordination: ctx.projectGitCoordination,
           cancelProjectRuns: projectId => cancelRunsOwnedBy(design.runs, { projectId }),
           deleteProjects,
@@ -4371,7 +4321,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           }
         }
       }
-      await ctx.projectGit.initializeNewProjectGit(id);
       /** @type {import('@open-design/contracts').CreateProjectResponse} */
       const createdProject = pluginResolutionState.snapshot
         ? getProject(db, id) ?? project
@@ -4724,7 +4673,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           // Open-tabs state is convenience metadata; file duplication succeeds
           // without it.
         }
-        await ctx.projectGit.initializeNewProjectGit(targetProjectId);
         /** @type {import('@open-design/contracts').DuplicateProjectResponse} */
         const body = {
           project: createHome
@@ -4907,7 +4855,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           metadata,
         );
         await linkUserDesignSystemProject(USER_DESIGN_SYSTEMS_DIR, designSystem.id, targetProjectId);
-        await ctx.projectGit.initializeNewProjectGit(targetProjectId);
         /** @type {import('@open-design/contracts').CreateDesignSystemProjectFromProjectResponse} */
         const body = {
           project: createHome
@@ -5023,7 +4970,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   app.patch('/api/projects/:id', async (req, res) => {
     try {
-      const { expectedProjectRevision: _expectedProjectRevision, ...patch } = req.body || {};
+      const patch = req.body || {};
       let patchProject = getProject(db, req.params.id);
       if (
         !patchProject

@@ -108,7 +108,6 @@ describe('ChatPane connect-repo CTA', () => {
       composerDraftSignal: {
         id: 'repo-draft',
         projectId: 'project-1',
-        generation: 1,
         conversationId: 'conv-1',
         text: 'Pull the linked repo',
       },

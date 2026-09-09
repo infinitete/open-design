@@ -47,7 +47,7 @@ import {
 import { reconcileLibrary, type ReconcileLibraryResult } from '../library-sync.js';
 import { fetchExternalBrandAsset } from '../brands/safe-fetch.js';
 import { ensureProjectSubdir } from '../projects.js';
-import { coordinateAuthorizedProjectMutation } from './project-git-coordination.js';
+import { coordinateAuthorizedProjectMutation } from './project-coordination.js';
 
 function authorizeCreatedProjectWorkspace(..._args: any[]): any { return { ok: true, context: null }; }
 function bindCreatedProjectToWorkspace(..._args: any[]): any { return {}; }
@@ -95,7 +95,7 @@ function applyExtensionCors(req: Request, res: Response): void {
     res.setHeader('Vary', 'Origin');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-OD-Project-Revision',
+      'Content-Type, Authorization',
     );
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   }
@@ -744,10 +744,6 @@ export function registerLibraryRoutes(app: Express, ctx: RegisterLibraryRoutesDe
         coordination: ctx.projectGitCoordination,
         sendApiError,
         authorize: async () => true,
-        trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
-          grant.runId,
-          projectId,
-        ),
         work: async () => {
           const includeElement = req.body?.includeElement === true;
           const result = await applyAssetToProject(asset, projectId, 'agent-task', req.body?.dir, includeElement);

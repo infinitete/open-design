@@ -24,10 +24,6 @@ import {
 
 let tmpDir: string;
 let projectRoot: string;
-const passThroughProjectMutation = {
-  withProjectMutation: async <T>(_input: unknown, work: () => Promise<T>) => work(),
-};
-
 beforeEach(async () => {
   tmpDir = await mkdtemp(path.join(os.tmpdir(), 'od-skill-plugin-candidates-'));
   projectRoot = path.join(tmpDir, 'project');
@@ -331,7 +327,7 @@ describe('skill plugin candidates', () => {
       agentId: 'agent_1',
     }, {
       message: 'Use https://github.com/foo/bar/blob/main/SKILL.md for this run.',
-    }, projectRoot, passThroughProjectMutation);
+    }, projectRoot);
     await flushSkillCandidateHook();
 
     const deferred = listSkillPluginCandidates(db, 'proj_1')[0];
@@ -353,7 +349,7 @@ describe('skill plugin candidates', () => {
       agentId: 'agent_1',
     }, {
       message: '[form answers -- task-type]\n- What?: Slide deck',
-    }, projectRoot, passThroughProjectMutation);
+    }, projectRoot);
     await flushSkillCandidateHook();
 
     const shown = listSkillPluginCandidates(db, 'proj_1')[0];
@@ -365,77 +361,6 @@ describe('skill plugin candidates', () => {
     ]);
   });
 
-  it('rejects stale managed post-run detection before project or message writes', async () => {
-    const db = openDatabase(tmpDir, { dataDir: path.join(tmpDir, 'data') });
-    insertProject(db, {
-      id: 'proj_1', name: 'Candidate project', skillId: null, designSystemId: null,
-      pendingPrompt: null, metadata: { kind: 'prototype' }, createdAt: 1, updatedAt: 1,
-    });
-    insertConversation(db, {
-      id: 'conv_1', projectId: 'proj_1', title: 'Candidate conversation', createdAt: 1, updatedAt: 1,
-    });
-    const admissions: unknown[] = [];
-
-    detectSkillPluginCandidateOnRunSuccess(db, {
-      wait: async () => ({ status: 'succeeded' }),
-    }, {
-      id: 'run_stale',
-      projectId: 'proj_1',
-      conversationId: 'conv_1',
-      expectedProjectRevision: 6,
-    }, {
-      message: 'Use https://github.com/foo/bar/blob/main/SKILL.md for this run.',
-    }, projectRoot, {
-      withProjectMutation: async (input) => {
-        admissions.push(input);
-        throw Object.assign(new Error('Reload the project before editing.'), {
-          code: 'PROJECT_STATE_CHANGED',
-        });
-      },
-    });
-    await flushSkillCandidateHook();
-
-    expect(admissions).toEqual([expect.objectContaining({
-      projectId: 'proj_1',
-      expectedProjectRevision: 6,
-      source: 'plugin-candidate-detection',
-    })]);
-    expect(listSkillPluginCandidates(db, 'proj_1')).toEqual([]);
-    expect(listMessages(db, 'conv_1')).toEqual([]);
-  });
-
-  it('uses the durable current managed epoch for candidate and message writes', async () => {
-    const db = openDatabase(tmpDir, { dataDir: path.join(tmpDir, 'data') });
-    insertProject(db, {
-      id: 'proj_1', name: 'Candidate project', skillId: null, designSystemId: null,
-      pendingPrompt: null, metadata: { kind: 'prototype' }, createdAt: 1, updatedAt: 1,
-    });
-    insertConversation(db, {
-      id: 'conv_1', projectId: 'proj_1', title: 'Candidate conversation', createdAt: 1, updatedAt: 1,
-    });
-    const admissions: unknown[] = [];
-
-    detectSkillPluginCandidateOnRunSuccess(db, {
-      wait: async () => ({ status: 'succeeded' }),
-    }, {
-      id: 'run_current',
-      projectId: 'proj_1',
-      conversationId: 'conv_1',
-      expectedProjectRevision: 7,
-    }, {
-      message: 'Use https://github.com/foo/bar/blob/main/SKILL.md for this run.',
-    }, projectRoot, {
-      withProjectMutation: async (input, work) => {
-        admissions.push(input);
-        return work();
-      },
-    });
-    await flushSkillCandidateHook();
-
-    expect(admissions).toEqual([expect.objectContaining({ expectedProjectRevision: 7 })]);
-    expect(listSkillPluginCandidates(db, 'proj_1')).toHaveLength(1);
-    expect(listMessages(db, 'conv_1')).toHaveLength(1);
-  });
 });
 
 async function flushSkillCandidateHook() {

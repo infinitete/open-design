@@ -75,7 +75,7 @@ import {
 } from '../langfuse-trace.js';
 import { parseMediaExecutionPolicyInput } from '../media/policy.js';
 import { isManagedProjectCwd } from '../mcp-config.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 import {
   normalizeExternalPluginRunAnalyticsHints,
   OPEN_DESIGN_PLUGIN_ID,
@@ -87,7 +87,6 @@ import {
   type InternalRunCreationService,
   type PreRunProjectAdmission,
 } from '../services/internal-run-service.js';
-import { expectedProjectRevisionFromTransport } from '../services/project-git/mutation-adapter.js';
 import {
   projectStrategyTask,
   projectStrategyTaskByRunId,
@@ -898,7 +897,7 @@ export function registerRunCreateRoute(
       return await handleRunCreate(req, res);
     } catch (error) {
       if (res.headersSent) throw error;
-      if (error instanceof GitDomainError) {
+      if (error instanceof ProjectDomainError) {
         return sendApiError(res, error.status, error.code, error.message);
       }
       return sendStructuredRunCreateFailure(res, sendApiError, error);
@@ -1401,14 +1400,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
-    try {
-      requestBody.expectedProjectRevision = expectedProjectRevisionFromTransport({
-        body: requestBody.expectedProjectRevision,
-        header: req.get('X-OD-Project-Revision'),
-      });
-    } catch {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'Invalid project revision.');
-    }
     const requestAnalyticsContext = readAnalyticsContext(req);
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
@@ -1522,14 +1513,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     let preRunProjectAdmission: PreRunProjectAdmission | undefined;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       try {
-        preRunProjectAdmission = await internalRuns.preAdmitProjectRun(
-          requestBody.projectId,
-          typeof requestBody.expectedProjectRevision === 'number'
-            ? requestBody.expectedProjectRevision
-            : undefined,
-        );
+        preRunProjectAdmission = await internalRuns.preAdmitProjectRun(requestBody.projectId);
       } catch (error) {
-        if (error instanceof GitDomainError) {
+        if (error instanceof ProjectDomainError) {
           return sendApiError(res, error.status, error.code, error.message);
         }
         throw error;
@@ -2722,7 +2708,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         'run-claim',
       );
       createdTaskInputSnapshot = null;
-      if (error instanceof GitDomainError) {
+      if (error instanceof ProjectDomainError) {
         return sendApiError(res, error.status, error.code, error.message);
       }
       if (error instanceof AutomaticOdNextPreparationError) {
@@ -3071,7 +3057,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     try {
       task = getStrategyTaskExecutionByRunId(db, runId);
     } catch (error) {
-      if (error instanceof GitDomainError) {
+      if (error instanceof ProjectDomainError) {
         return sendApiError(res, error.status, error.code, error.message);
       }
       if (error instanceof InvalidStrategyTaskRecordError) {
@@ -3353,14 +3339,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
-    try {
-      requestBody.expectedProjectRevision = expectedProjectRevisionFromTransport({
-        body: requestBody.expectedProjectRevision,
-        header: req.get('X-OD-Project-Revision'),
-      });
-    } catch {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'Invalid project revision.');
-    }
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', mediaExecution.message);

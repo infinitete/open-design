@@ -12,8 +12,8 @@ import {
   revokeProjectSurface,
 } from '../genui/index.js';
 import { resolveProjectDir } from '../projects.js';
-import type { ProjectGitCoordination } from '../services/project-git/mutation-adapter.js';
-import { coordinateAuthorizedProjectMutation } from './project-git-coordination.js';
+import type { ProjectMutationCoordination } from '../services/project-mutation.js';
+import { coordinateAuthorizedProjectMutation } from './project-coordination.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -31,7 +31,7 @@ export interface RegisterGenuiRoutesDeps {
   http: {
     sendApiError(res: Response, status: number, code: string, message: string): unknown;
   };
-  projectGitCoordination: ProjectGitCoordination;
+  projectGitCoordination: ProjectMutationCoordination;
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -146,10 +146,6 @@ export function registerGenuiRoutes(app: Express, deps: RegisterGenuiRoutesDeps)
         sendApiError: deps.http.sendApiError,
         authorize: async () => true,
         source: 'genui.diff-review.respond',
-        trustedMutationContext: deps.projectGitCoordination.runtime.mutationContext(
-          req.params.runId,
-          authorizedRun.projectId,
-        ),
         work: respond,
       });
     } catch (err) {

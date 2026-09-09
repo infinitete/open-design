@@ -1,38 +1,15 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProjectGitState } from '@open-design/contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FileViewer,
   cancelManualEditPendingStyleSnapshot,
 } from '../../src/components/FileViewer';
 import { emptyManualEditStyles, type ManualEditTarget } from '../../src/edit-mode/types';
 import type { ProjectFile } from '../../src/types';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-  type ProjectGitStateStore,
-} from '../../src/state/project-git';
-
-const mutationState: ProjectGitState = {
-  enabled: false, phase: 'synced', localHead: null, observedRemoteHead: null,
-  confirmedRemoteHead: null, projectRevision: 1, contentRevision: 1,
-  bindingGeneration: 0, dirty: false, pendingPush: false, autoSync: false,
-  operationId: null, error: null,
-  binding: { remoteConfigured: false, remoteLabel: null, branch: null }, dependencies: [],
-};
-let mutationStore: ProjectGitStateStore;
-
-beforeEach(() => {
-  mutationStore = createProjectGitStateStore(mutationState);
-  registerProjectMutationStore('project-1', mutationStore);
-});
 
 afterEach(() => {
-  unregisterProjectMutationStore('project-1', mutationStore);
-  mutationStore.dispose();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

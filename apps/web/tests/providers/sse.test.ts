@@ -38,30 +38,6 @@ describe('parseSseFrame', () => {
 });
 
 describe('streamViaDaemon', () => {
-  it('sends the captured project revision in the run body and transport header', async () => {
-    const handlers = createDaemonHandlers();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = String(input);
-      if (url === '/api/runs') return jsonResponse({ runId: 'revision-run' });
-      if (url === '/api/runs/revision-run/events') {
-        return sseResponse('event: end\ndata: {"code":0,"status":"succeeded"}\n\n');
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const controller = new AbortController();
-
-    await streamViaDaemon({
-      agentId: 'mock', projectId: 'project', history: [{ id: 'u', role: 'user', content: 'draft' }],
-      signal: new AbortController().signal, handlers,
-      mutationContext: { expectedProjectRevision: 6, generation: 1, signal: controller.signal },
-    });
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
-    expect(JSON.parse(String(init.body))).toMatchObject({ expectedProjectRevision: 6 });
-    expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('6');
-  });
-
   it('sends the latest user turn separately from the full CLI transcript', async () => {
     const handlers = createDaemonHandlers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {

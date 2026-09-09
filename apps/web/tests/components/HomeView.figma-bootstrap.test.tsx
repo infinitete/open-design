@@ -44,8 +44,8 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-describe('HomeView Figma project bootstrap authority', () => {
-  it('loads fresh authority and seeds the imported project before opening it', async () => {
+describe('HomeView Figma project bootstrap', () => {
+  it('refetches the imported project and seeds it before opening it', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -67,24 +67,16 @@ describe('HomeView Figma project bootstrap authority', () => {
           status: { value: 'not_started' },
         } }), { status: 201, headers: { 'content-type': 'application/json' } });
       }
-      if (url === '/api/projects/figma-new/git') {
-        return new Response(JSON.stringify({
-          enabled: true,
-          phase: 'synced',
-          localHead: 'b'.repeat(40),
-          observedRemoteHead: 'b'.repeat(40),
-          confirmedRemoteHead: 'b'.repeat(40),
-          projectRevision: 41,
-          contentRevision: 41,
-          bindingGeneration: 2,
-          dirty: false,
-          pendingPush: false,
-          autoSync: true,
-          operationId: null,
-          error: null,
-          binding: { remoteConfigured: true, remoteLabel: 'origin', branch: 'main' },
-          dependencies: [],
-        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/projects/figma-new' && !init?.method) {
+        return new Response(JSON.stringify({ project: {
+          id: 'figma-new',
+          name: 'Imported from Figma',
+          skillId: null,
+          designSystemId: null,
+          createdAt: 1,
+          updatedAt: 1,
+          status: { value: 'not_started' },
+        } }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (url === '/api/projects/figma-new' && init?.method === 'PATCH') {
         return new Response(JSON.stringify({ project: {
@@ -120,11 +112,17 @@ describe('HomeView Figma project bootstrap authority', () => {
     await waitFor(() => {
       expect(onOpenProject).toHaveBeenCalledWith('figma-new');
     });
-    const patch = requests.find((request) => (
+    const freshRead = requests.findIndex((request) => (
+      request.url === '/api/projects/figma-new' && !request.init?.method
+    ));
+    const patchIndex = requests.findIndex((request) => (
       request.url === '/api/projects/figma-new' && request.init?.method === 'PATCH'
     ));
-    expect(patch?.init?.headers).toMatchObject({ 'X-OD-Project-Revision': '41' });
-    expect(JSON.parse(String(patch?.init?.body))).toEqual({
+    expect(freshRead).toBeGreaterThanOrEqual(0);
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    // The seed patch must land on a freshly-read project row, never a stale one.
+    expect(freshRead).toBeLessThan(patchIndex);
+    expect(JSON.parse(String(requests[patchIndex]?.init?.body))).toEqual({
       pendingPrompt: 'Rebuild the imported Figma',
     });
   });

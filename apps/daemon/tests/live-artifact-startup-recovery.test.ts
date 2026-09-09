@@ -2,10 +2,8 @@ import { expect, it, vi } from 'vitest';
 
 import { recoverLiveArtifactsAtStartup } from '../src/live-artifacts/startup-recovery.js';
 
-it('waits for project-Git recovery, read-probes exact persisted roots, and mutates only candidate projects at the startup epoch', async () => {
+it('read-probes exact persisted roots and mutates only candidate projects after a recheck probe', async () => {
   const events: string[] = [];
-  let ready!: () => void;
-  const recoveryReady = new Promise<void>(resolve => { ready = resolve; });
   const withProjectRead = vi.fn(async (projectId: string, work: () => Promise<unknown>) => {
     events.push(`read:${projectId}`);
     return work();
@@ -23,27 +21,20 @@ it('waits for project-Git recovery, read-probes exact persisted roots, and mutat
     return [];
   });
 
-  const pending = recoverLiveArtifactsAtStartup({
+  await recoverLiveArtifactsAtStartup({
     projectsRoot: '/managed-projects',
     projects: [
-      { id: 'plain', expectedProjectRevision: undefined },
-      { id: 'candidate', projectMetadata: { baseDir: '/external/project' }, expectedProjectRevision: 7 },
+      { id: 'plain' },
+      { id: 'candidate', projectMetadata: { baseDir: '/external/project' } },
     ],
-    recoveryReady,
     coordination: { withProjectRead, withProjectMutation } as never,
     probe,
     recover,
   });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  expect(events).toEqual([]);
-
-  ready();
-  await pending;
 
   expect(withProjectMutation).toHaveBeenCalledTimes(1);
   expect(withProjectMutation).toHaveBeenCalledWith({
     projectId: 'candidate',
-    expectedProjectRevision: 7,
     source: 'live-artifact.startup-recovery',
   }, expect.any(Function));
   expect(probe).toHaveBeenCalledTimes(3);
@@ -70,7 +61,6 @@ it('isolates project recovery failures and never opens a mutation when the read 
   await recoverLiveArtifactsAtStartup({
     projectsRoot: '/projects',
     projects: [{ id: 'broken' }, { id: 'empty' }],
-    recoveryReady: Promise.resolve(),
     coordination: {
       withProjectRead: async (projectId: string, work: () => Promise<unknown>) => {
         if (projectId === 'broken') throw new Error('managed recovery unavailable');

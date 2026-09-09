@@ -11,23 +11,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
 import * as registry from '../../src/providers/registry';
-import type { ProjectGitState } from '@open-design/contracts';
 import type { ChatMessage, ProjectFile } from '../../src/types';
-import {
-  createProjectGitStateStore,
-  registerProjectMutationStore,
-  unregisterProjectMutationStore,
-} from '../../src/state/project-git';
 
-const ownedProjectStores = new Map<string, ReturnType<typeof createProjectGitStateStore>>();
 const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
-
-function registerOwnedProjectStore(projectId: string, state: ProjectGitState) {
-  const store = createProjectGitStateStore(state);
-  registerProjectMutationStore(projectId, store);
-  ownedProjectStores.set(projectId, store);
-  return store;
-}
 
 beforeAll(() => {
   const store = new Map<string, string>();
@@ -49,11 +35,6 @@ afterAll(() => {
   }
 });
 afterEach(() => {
-  for (const [projectId, store] of ownedProjectStores) {
-    unregisterProjectMutationStore(projectId, store);
-    store.dispose();
-  }
-  ownedProjectStores.clear();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -61,7 +42,6 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  registerOwnedProjectStore('proj-1', projectGitState(1));
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -89,26 +69,6 @@ function producedFile(name: string): ProjectFile {
     kind: 'html',
     mime: 'text/html',
   } as ProjectFile;
-}
-
-function projectGitState(revision: number): ProjectGitState {
-  return {
-    enabled: true,
-    phase: 'synced',
-    localHead: 'a'.repeat(40),
-    observedRemoteHead: null,
-    confirmedRemoteHead: null,
-    projectRevision: revision,
-    contentRevision: revision,
-    bindingGeneration: 1,
-    dirty: false,
-    pendingPush: false,
-    autoSync: true,
-    operationId: null,
-    error: null,
-    binding: { remoteConfigured: false, remoteLabel: null, branch: null },
-    dependencies: [],
-  };
 }
 
 describe('internal control markers', () => {
@@ -230,146 +190,38 @@ describe('AssistantMessage feedback gate', () => {
     expect(screen.getByRole('button', { name: 'Create plugin/template' })).toBeTruthy();
   });
 
-  it.each(['loading', 'error', 'write-locked'])(
-    'keeps plugin and feedback mutations inert while project authority is %s',
-    (authorityState) => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch');
-      const onFeedback = vi.fn();
-      render(
-        <AssistantMessage
-          message={baseMessage({
-            events: [{
-              kind: 'plugin_candidate',
-              candidateId: `candidate-${authorityState}`,
-              title: 'Authority-gated helper',
-              description: 'Create or share a reusable helper.',
-            } as ChatMessage['events'][number]],
-          })}
-          streaming={false}
-          projectId={`project-${authorityState}`}
-          projectMutationDisabled
-          onFeedback={onFeedback}
-        />,
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: 'View details' }));
-      const draft = screen.getByRole('button', { name: 'Create plugin/template' });
-      const share = screen.getByRole('button', { name: 'Contribute to open-design' });
-      expect(draft).toBeDisabled();
-      expect(share).toBeDisabled();
-      fireEvent.click(draft);
-      fireEvent.click(share);
-
-      expect(screen.queryByRole('group', { name: 'Feedback' })).toBeNull();
-      expect(fetchSpy).not.toHaveBeenCalled();
-      expect(onFeedback).not.toHaveBeenCalled();
-      expect(screen.queryByRole('status')).toBeNull();
-    },
-  );
-
-  it('does not continue a plugin draft after its captured project epoch is revoked', async () => {
-    const projectId = 'plugin-draft-project';
-    const store = registerOwnedProjectStore(projectId, projectGitState(4));
-    let releaseDraft!: (response: Response) => void;
-    const draftResponse = new Promise<Response>((resolve) => { releaseDraft = resolve; });
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => draftResponse);
-    const onRequestOpenFile = vi.fn();
+  it('keeps plugin and feedback mutations inert while project mutations are disabled', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const onFeedback = vi.fn();
     render(
       <AssistantMessage
         message={baseMessage({
-          content: '',
           events: [{
             kind: 'plugin_candidate',
-            candidateId: 'candidate-deferred',
-            title: 'Deferred helper',
-            description: 'Create a reusable helper.',
+            candidateId: 'candidate-viewer',
+            title: 'Viewer-gated helper',
+            description: 'Create or share a reusable helper.',
           } as ChatMessage['events'][number]],
         })}
         streaming={false}
-        projectId={projectId}
-        onRequestOpenFile={onRequestOpenFile}
+        projectId="project-viewer"
+        projectMutationDisabled
+        onFeedback={onFeedback}
       />,
     );
+
     fireEvent.click(screen.getByRole('button', { name: 'View details' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create plugin/template' }));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    const draft = screen.getByRole('button', { name: 'Create plugin/template' });
+    const share = screen.getByRole('button', { name: 'Contribute to open-design' });
+    expect(draft).toBeDisabled();
+    expect(share).toBeDisabled();
+    fireEvent.click(draft);
+    fireEvent.click(share);
 
-    store.accept(projectGitState(5), 'event');
-    await waitFor(() => expect(
-      screen.getByRole('button', { name: 'Create plugin/template' }),
-    ).not.toBeDisabled());
-    await act(async () => {
-      releaseDraft(new Response(JSON.stringify({ draftPath: '.open-design/plugins/deferred' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }));
-      await draftResponse;
-    });
-
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
-    expect(onRequestOpenFile).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Draft created/)).toBeNull();
-  });
-
-  it('re-enables plugin share when a never-resolving request loses authority', async () => {
-    const projectId = 'plugin-share-abort-project';
-    const store = registerOwnedProjectStore(projectId, projectGitState(8));
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
-      async () => new Promise<Response>(() => {}),
-    );
-    render(
-      <AssistantMessage
-        message={baseMessage({
-          content: '',
-          events: [{
-            kind: 'plugin_candidate',
-            candidateId: 'candidate-share-abort',
-            title: 'Share helper',
-            description: 'Share a reusable helper.',
-          } as ChatMessage['events'][number]],
-        })}
-        streaming={false}
-        projectId={projectId}
-      />,
-    );
-    const contribute = screen.getByRole('button', { name: 'Contribute to open-design' });
-    fireEvent.click(contribute);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
-    expect(contribute).toBeDisabled();
-
-    act(() => store.accept(projectGitState(9), 'event'));
-
-    await waitFor(() => expect(contribute).not.toBeDisabled());
-    expect(screen.queryByText(/started for/)).toBeNull();
-  });
-
-  it('sends plugin share with its captured revision and keeps the stale-state notice', async () => {
-    const projectId = 'plugin-share-project';
-    registerOwnedProjectStore(projectId, projectGitState(7));
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      error: { code: 'PROJECT_STATE_CHANGED', message: 'Plugin action belongs to older history' },
-    }), { status: 409, headers: { 'content-type': 'application/json' } }));
-    render(
-      <AssistantMessage
-        message={baseMessage({
-          content: '',
-          events: [{
-            kind: 'plugin_candidate',
-            candidateId: 'candidate-share',
-            title: 'Share helper',
-            description: 'Share a reusable helper.',
-          } as ChatMessage['events'][number]],
-        })}
-        streaming={false}
-        projectId={projectId}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Contribute to open-design' }));
-
-    expect(await screen.findByText('Plugin action belongs to older history')).toBeTruthy();
-    const [, init] = fetchSpy.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
-    expect(new Headers(init.headers).get('X-OD-Project-Revision')).toBe('7');
-    expect(init.signal).toBeDefined();
+    expect(screen.queryByRole('group', { name: 'Feedback' })).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(onFeedback).not.toHaveBeenCalled();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('omits the repeated identity header for a consecutive assistant reply', () => {
@@ -750,7 +602,7 @@ describe('AssistantMessage thinking blocks', () => {
 });
 
 describe('AssistantMessage question forms', () => {
-  it('keeps project-owned inline form submission inert without mutation authority', () => {
+  it('keeps project-owned inline form submission inert while project mutations are disabled', () => {
     const form = [
       '<question-form id="authority-gated" title="Quick brief">',
       JSON.stringify({
@@ -850,7 +702,6 @@ describe('AssistantMessage question forms', () => {
       undefined,
       undefined,
       'discovery',
-      expect.objectContaining({ expectedProjectRevision: 1 }),
     );
     expect(screen.queryByText('Quick brief — 30 seconds')).toBeNull();
     expect(screen.queryByText('What are we making?')).toBeNull();
@@ -1036,7 +887,6 @@ describe('AssistantMessage question forms', () => {
         },
         undefined,
         'references',
-        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
   });
@@ -1097,11 +947,7 @@ describe('AssistantMessage question forms', () => {
 
     await waitFor(() => {
       expect(onSubmitQuestionForm).toHaveBeenCalledTimes(1);
-      expect(deleteProjectFileMock).toHaveBeenCalledWith(
-        'proj-1',
-        'uploads/mood.png',
-        expect.objectContaining({ expectedProjectRevision: 1 }),
-      );
+      expect(deleteProjectFileMock).toHaveBeenCalledWith('proj-1', 'uploads/mood.png');
     });
     expect(send.disabled).toBe(false);
 
@@ -1191,14 +1037,8 @@ describe('AssistantMessage question forms', () => {
         1,
         'proj-1',
         [mood, brief],
-        undefined,
-        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
-      expect(deleteProjectFileMock).toHaveBeenCalledWith(
-        'proj-1',
-        'uploads/mood.png',
-        expect.objectContaining({ expectedProjectRevision: 1 }),
-      );
+      expect(deleteProjectFileMock).toHaveBeenCalledWith('proj-1', 'uploads/mood.png');
     });
     expect(onSubmitQuestionForm).not.toHaveBeenCalled();
 
@@ -1215,7 +1055,6 @@ describe('AssistantMessage question forms', () => {
         expect.any(Object),
         undefined,
         'references',
-        expect.objectContaining({ expectedProjectRevision: 1 }),
       );
     });
     expect(deleteProjectFileMock).toHaveBeenCalledTimes(1);

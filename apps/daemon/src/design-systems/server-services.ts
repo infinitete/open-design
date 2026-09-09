@@ -13,8 +13,7 @@ import {
 } from '../db.js';
 import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
 import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
-import type { ProjectGitMutationAdapter, ProjectMutationInput } from '../services/project-git/mutation-adapter.js';
-import type { MutationPermit } from '../services/project-git/gate.js';
+import type { ProjectMutationAdapter, ProjectMutationInput } from '../services/project-mutation.js';
 
 type JsonRecord = Record<string, unknown>;
 type SkillEntry = { id: string; dir?: string } & JsonRecord;
@@ -76,9 +75,7 @@ type DesignSystemWorkspaceOptions = {
   exactTeam?: boolean;
   projectMutation?: {
     source: string;
-    expectedProjectRevision?: number;
     originProjectId?: string;
-    permit?: MutationPermit;
   };
 };
 
@@ -221,7 +218,7 @@ export function createDesignSystemServerServices({
     resolveProjectDir: (projectsDir: string, projectId: string, metadata?: JsonRecord) => string;
     isSafeId: (id: string) => boolean;
   };
-  coordinateProjectMutation: ProjectGitMutationAdapter['withProjectMutation'];
+  coordinateProjectMutation: ProjectMutationAdapter['withProjectMutation'];
   /**
    * Give the `ds-*` project that backs a design system's editing workspace a
    * `workspace_projects` home, the same as any other created project.
@@ -747,15 +744,9 @@ export function createDesignSystemServerServices({
     const { summary, projectId, sourceRoot } = resolved;
 
     const mutation = options.projectMutation;
-    const sameOriginProject = mutation?.originProjectId === undefined
-      || mutation.originProjectId === projectId;
     const coordinationInput: ProjectMutationInput = {
       projectId,
       source: mutation?.source ?? 'design-system-workspace-sync',
-      ...(sameOriginProject && mutation?.expectedProjectRevision !== undefined
-        ? { expectedProjectRevision: mutation.expectedProjectRevision }
-        : {}),
-      ...(sameOriginProject && mutation?.permit ? { permit: mutation.permit } : {}),
     };
     return coordinateProjectMutation(coordinationInput, async () => {
       const now = Date.now();

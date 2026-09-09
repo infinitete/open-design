@@ -1115,7 +1115,7 @@ describe('chat run service shutdown', () => {
     }
   });
 
-  it('persists the admitted project epoch so queued work cannot refetch after restart', () => {
+  it('persists durable run state so queued work can reload after restart', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-epoch-test-'));
     try {
       const first = createChatRunService({
@@ -1123,8 +1123,7 @@ describe('chat run service shutdown', () => {
         createSseErrorPayload: (code: string, message: string) => ({ error: { code, message } }),
         runsLogDir: tmpDir as unknown as null,
       });
-      const created = first.create({ projectId: 'project', expectedProjectRevision: 7 }) as any;
-      created.projectGitBindingGeneration = 3;
+      const created = first.create({ projectId: 'project' }) as any;
       first.persistState(created);
 
       const second = createChatRunService({
@@ -1133,8 +1132,8 @@ describe('chat run service shutdown', () => {
         runsLogDir: tmpDir as unknown as null,
       });
       expect(second.get(created.id) as any).toMatchObject({
-        expectedProjectRevision: 7,
-        projectGitBindingGeneration: 3,
+        id: created.id,
+        projectId: 'project',
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

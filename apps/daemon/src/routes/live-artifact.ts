@@ -3,7 +3,7 @@ import type { RouteDeps } from '../server-context.js';
 import {
   coordinateAuthorizedProjectMutation,
   coordinateAuthorizedProjectRead,
-} from './project-git-coordination.js';
+} from './project-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizeProjectRequest = any;
@@ -58,7 +58,6 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
     projectId: string,
     source: string,
     work: () => Promise<unknown>,
-    runId?: string,
   ) => coordinateAuthorizedProjectMutation({
     req,
     res,
@@ -67,9 +66,6 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
     coordination: ctx.projectGitCoordination,
     sendApiError,
     authorize: async () => true,
-    ...(runId
-      ? { trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(runId, projectId) }
-      : {}),
     work,
   });
   app.get('/api/live-artifacts', async (req, res) => {
@@ -206,7 +202,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         });
         emitLiveArtifactEvent(toolGrant, 'created', record.artifact);
         res.json({ artifact: record.artifact });
-      }, toolGrant.runId);
+      });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -268,7 +264,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
         });
         emitLiveArtifactEvent(toolGrant, 'updated', record.artifact);
         res.json({ artifact: record.artifact });
-      }, toolGrant.runId);
+      });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -319,7 +315,7 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
           refreshedSourceCount: result.refresh.refreshedSourceCount,
         });
         res.json(result);
-      }, toolGrant.runId);
+      });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }

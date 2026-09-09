@@ -36,29 +36,21 @@ describe('legacy brand transcript startup recovery', () => {
     return { projectId, conversationId };
   }
 
-  it('waits for recoveryReady, then repairs an exact empty candidate under its boot epoch', async () => {
+  it('repairs an exact empty candidate through startup coordination', async () => {
     const candidate = seed('acme');
-    let ready!: () => void;
-    const recoveryReady = new Promise<void>(resolve => { ready = resolve; });
     const repairIfNeeded = vi.fn(async (input: any) => {
       expect(await input.recheck()).toBe(true);
       return { mutated: true, value: await input.work() };
     });
-    const pending = recoverLegacyBrandTranscriptsAtStartup({
+    await expect(recoverLegacyBrandTranscriptsAtStartup({
       db,
       brandsRoot: path.join(root, 'brands'),
       projectsRoot: path.join(root, 'projects'),
-      recoveryReady,
-      bindingFor: () => ({ generation: 3, projectRevision: 7 }),
       coordination: { repairIfNeeded },
       randomId: (() => { let id = 0; return () => `repair-${id += 1}`; })(),
-    });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    expect(repairIfNeeded).not.toHaveBeenCalled();
-    ready();
-    await expect(pending).resolves.toMatchObject({ repaired: 1, failed: 0 });
+    })).resolves.toMatchObject({ repaired: 1, failed: 0 });
     expect(repairIfNeeded).toHaveBeenCalledWith(expect.objectContaining({
-      projectId: candidate.projectId, bindingGeneration: 3, projectRevision: 7,
+      projectId: candidate.projectId,
       source: 'legacy-brand-transcript-recovery',
     }));
     expect(listMessages(db, candidate.conversationId).map(message => message.role))
@@ -72,8 +64,6 @@ describe('legacy brand transcript startup recovery', () => {
       db,
       brandsRoot: path.join(root, 'brands'),
       projectsRoot: path.join(root, 'projects'),
-      recoveryReady: Promise.resolve(),
-      bindingFor: () => null,
       coordination: { repairIfNeeded },
       randomId: () => 'unused',
     })).resolves.toMatchObject({ repaired: 0, failed: 0 });
@@ -84,7 +74,7 @@ describe('legacy brand transcript startup recovery', () => {
     const failed = seed('failed');
     const healthy = seed('healthy');
     const repairIfNeeded = vi.fn(async (input: any) => {
-      if (input.projectId === failed.projectId) throw new Error('stale generation');
+      if (input.projectId === failed.projectId) throw new Error('repair failed');
       if (!await input.recheck()) return { mutated: false as const };
       return { mutated: true as const, value: await input.work() };
     });
@@ -92,8 +82,6 @@ describe('legacy brand transcript startup recovery', () => {
       db,
       brandsRoot: path.join(root, 'brands'),
       projectsRoot: path.join(root, 'projects'),
-      recoveryReady: Promise.resolve(),
-      bindingFor: () => ({ generation: 1, projectRevision: 2 }),
       coordination: { repairIfNeeded },
       randomId: (() => { let id = 0; return () => `repair-${id += 1}`; })(),
       onError: vi.fn(),

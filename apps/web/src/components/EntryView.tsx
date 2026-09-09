@@ -133,7 +133,6 @@ interface Props {
   onDeleteProject: (id: string) => Promise<ProjectDeleteResult> | ProjectDeleteResult;
   onDuplicateProject?: (id: string) => Promise<void> | void;
   onRenameProject: (id: string, name: string) => Promise<boolean | void> | boolean | void;
-  projectMutationReady?: (id: string) => boolean;
   onProjectsRefresh?: () => Promise<void> | void;
   onTeamProjectContentReady?: (
     projectId: string,
@@ -286,7 +285,6 @@ export function EntryView({
   onDeleteProject,
   onDuplicateProject,
   onRenameProject,
-  projectMutationReady,
   onProjectsRefresh,
   onTeamProjectContentReady,
   onChangeDefaultDesignSystem,
@@ -408,7 +406,6 @@ export function EntryView({
       onDeleteProject={onDeleteProject}
       onDuplicateProject={onDuplicateProject}
       onRenameProject={onRenameProject}
-      projectMutationReady={projectMutationReady}
       onProjectsRefresh={onProjectsRefresh}
       onTeamProjectContentReady={onTeamProjectContentReady}
       onChangeDefaultDesignSystem={onChangeDefaultDesignSystem}

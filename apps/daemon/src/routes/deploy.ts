@@ -1,6 +1,6 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
-import { GitDomainError } from '../services/project-git/errors.js';
+import { ProjectDomainError } from '../services/project-mutation.js';
 
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
@@ -200,7 +200,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
       });
       res.json(publicDeployment(body));
     } catch (err: any) {
-      if (err instanceof GitDomainError) {
+      if (err instanceof ProjectDomainError) {
         return sendApiError(res, err.status, err.code, err.message);
       }
       const status = err instanceof DeployError ? err.status : 400;
@@ -245,7 +245,7 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
       ));
       res.json(body);
     } catch (err: any) {
-      if (err instanceof GitDomainError) {
+      if (err instanceof ProjectDomainError) {
         return sendApiError(res, err.status, err.code, err.message);
       }
       // DeployError is a known/expected outcome (validation, missing file).

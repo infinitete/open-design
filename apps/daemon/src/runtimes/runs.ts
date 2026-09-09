@@ -522,12 +522,6 @@ function durableRunState(run) {
     schemaVersion: RUN_STATE_SCHEMA_VERSION,
     id: run.id,
     projectId: run.projectId,
-    ...(Number.isSafeInteger(run.expectedProjectRevision)
-      ? { expectedProjectRevision: run.expectedProjectRevision }
-      : {}),
-    ...(Number.isSafeInteger(run.projectGitBindingGeneration)
-      ? { projectGitBindingGeneration: run.projectGitBindingGeneration }
-      : {}),
     conversationId: run.conversationId,
     assistantMessageId: run.assistantMessageId,
     clientRequestId: run.clientRequestId,
@@ -805,14 +799,6 @@ export function createChatRunService({
     const run = {
       ...state,
       projectId: typeof state.projectId === 'string' ? state.projectId : null,
-      expectedProjectRevision:
-        Number.isSafeInteger(state.expectedProjectRevision) && state.expectedProjectRevision >= 0
-          ? state.expectedProjectRevision
-          : undefined,
-      projectGitBindingGeneration:
-        Number.isSafeInteger(state.projectGitBindingGeneration) && state.projectGitBindingGeneration >= 1
-          ? state.projectGitBindingGeneration
-          : undefined,
       conversationId: typeof state.conversationId === 'string' ? state.conversationId : null,
       assistantMessageId:
         typeof state.assistantMessageId === 'string' ? state.assistantMessageId : null,
@@ -850,10 +836,6 @@ export function createChatRunService({
     const run = {
       id,
       projectId: typeof meta.projectId === 'string' && meta.projectId ? meta.projectId : null,
-      expectedProjectRevision:
-        Number.isSafeInteger(meta.expectedProjectRevision) && meta.expectedProjectRevision >= 0
-          ? meta.expectedProjectRevision
-          : undefined,
       conversationId: typeof meta.conversationId === 'string' && meta.conversationId ? meta.conversationId : null,
       assistantMessageId: typeof meta.assistantMessageId === 'string' && meta.assistantMessageId ? meta.assistantMessageId : null,
       clientRequestId: typeof meta.clientRequestId === 'string' && meta.clientRequestId ? meta.clientRequestId : null,

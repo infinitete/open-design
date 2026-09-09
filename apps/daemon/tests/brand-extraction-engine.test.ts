@@ -45,8 +45,6 @@ import {
   type ImagerySlot,
 } from '../src/brands/imagery-fallback.js';
 import { isChallengePage, type PrefetchResult } from '../src/brands/prefetch.js';
-import { createProjectGate } from '../src/services/project-git/gate.js';
-import { createProjectGitMutationAdapter } from '../src/services/project-git/mutation-adapter.js';
 
 // Real repo skills root so the bundled brand-kit template resolves.
 const SKILLS_ROOT = path.resolve(
@@ -67,7 +65,7 @@ const NO_IMAGERY_FALLBACK = async () => ({ changed: false });
 const NO_SEED_FALLBACK = async () => ({ changed: false });
 
 const PASSTHROUGH_PROJECT_MUTATION = async <T>(
-  _input: { projectId: string; expectedProjectRevision?: number; source: string },
+  _input: { projectId: string; source: string },
   work: () => Promise<T>,
 ): Promise<T> => work();
 
@@ -2102,29 +2100,22 @@ describe('agent-driven brand extraction engine', () => {
     const db = openDatabase(tempDir, { dataDir: tempDir });
     let backgroundExtraction: Promise<unknown> | null = null;
     const phases: string[] = [];
-    const gate = createProjectGate();
-    const adapter = createProjectGitMutationAdapter({
-      recoveryReady: Promise.resolve(),
-      store: { getBinding: () => null, bumpContent: () => 0 },
-      gateFor: () => gate,
-      notify: () => {},
-    });
-    const coordinateProjectMutation = vi.fn(async <T>(
-      input: { projectId: string; expectedProjectRevision?: number; source: string },
+    const coordinateProjectMutation = async <T>(
+      input: { projectId: string; source: string },
       work: () => Promise<T>,
-    ): Promise<T> => adapter.withProjectMutation(input, async () => {
-        phases.push(`enter:${input.source}:${input.expectedProjectRevision ?? 'missing'}`);
-        try {
-          return await work();
-        } finally {
-          const project = getProject(db, input.projectId);
-          const terminalMessage = project
-            ? listMessages(db, listConversations(db, input.projectId)[0]?.id ?? '')
-              .find((message) => message.role === 'assistant')
-            : null;
-          phases.push(`exit:${input.source}:${terminalMessage?.runStatus ?? 'none'}`);
-        }
-      }));
+    ): Promise<T> => {
+      phases.push(`enter:${input.source}`);
+      try {
+        return await work();
+      } finally {
+        const project = getProject(db, input.projectId);
+        const terminalMessage = project
+          ? listMessages(db, listConversations(db, input.projectId)[0]?.id ?? '')
+            .find((message) => message.role === 'assistant')
+          : null;
+        phases.push(`exit:${input.source}:${terminalMessage?.runStatus ?? 'none'}`);
+      }
+    };
 
     const result = await startOfflineBrandExtraction({
       url: 'acme.com',
@@ -2140,20 +2131,20 @@ describe('agent-driven brand extraction engine', () => {
       onBackgroundExtraction: (settled) => {
         backgroundExtraction = settled;
       },
-    } as Parameters<typeof startBrandExtraction>[0]);
+    });
 
     expect(phases).toEqual([
-      'enter:brand.startup:missing',
+      'enter:brand.startup',
+      'enter:brand.background',
       'exit:brand.startup:running',
-      'enter:brand.background:missing',
     ]);
     if (!backgroundExtraction) throw new Error('expected background extraction promise');
     await backgroundExtraction;
     expect(readBrandDetail(brandsRoot, result.id)?.meta.status).toBe('failed');
     expect(phases).toEqual([
-      'enter:brand.startup:missing',
+      'enter:brand.startup',
+      'enter:brand.background',
       'exit:brand.startup:running',
-      'enter:brand.background:missing',
       'exit:brand.background:failed',
     ]);
   });

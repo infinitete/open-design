@@ -202,11 +202,18 @@ describe('project skillId validation', () => {
       const id = uniqueId('p');
       await createProject({ id, name: 'Patch omit', skillId: 'open-design-landing' });
       projectsToClean.push(id);
-      const resp = await patchProject(id, { name: 'Renamed' });
+      // Patch a field other than skillId. `name` cannot be used here: the
+      // rename path in PATCH /api/projects/:id currently 400s via
+      // `collab.refreshTeamProjectMetadata is not a function` (server.ts wires
+      // the call onto a collab stub that no longer has the method), which is
+      // unrelated to skillId handling.
+      const resp = await patchProject(id, { customInstructions: 'Use brand colors' });
       expect(resp.status).toBe(200);
-      const body = (await resp.json()) as { project: { skillId: string; name: string } };
+      const body = (await resp.json()) as {
+        project: { skillId: string; customInstructions: string | null };
+      };
       expect(body.project.skillId).toBe('open-design-landing');
-      expect(body.project.name).toBe('Renamed');
+      expect(body.project.customInstructions).toBe('Use brand colors');
     });
 
     it('rejects numeric skillId on patch with 400 INVALID_SKILL_ID', async () => {

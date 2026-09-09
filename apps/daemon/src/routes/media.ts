@@ -16,7 +16,7 @@ import type { RouteDeps } from '../server-context.js';
 import {
   coordinateAuthorizedProjectMutation,
   coordinateAuthorizedProjectMutationStart,
-} from './project-git-coordination.js';
+} from './project-coordination.js';
 
 // Collab types removed - define locally
 type AuthorizeProjectRequest = any;
@@ -230,14 +230,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       coordination: ctx.projectGitCoordination,
       sendApiError,
       authorize: async () => true,
-      ...(options.grant
-        ? {
-            trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
-              options.grant.runId,
-              projectId,
-            ),
-          }
-        : {}),
       start: async () => {
       let task: ReturnType<typeof createMediaTask> | null = null;
       try {
@@ -870,10 +862,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         coordination: ctx.projectGitCoordination,
         sendApiError,
         authorize: async () => true,
-        trustedMutationContext: ctx.projectGitCoordination.runtime.mutationContext(
-          grant.runId,
-          grant.projectId,
-        ),
         work: () => handleHyperFramesScaffold(req, res, grant.projectId),
       });
     } catch (err: any) {

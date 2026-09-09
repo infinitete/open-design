@@ -7,7 +7,6 @@ import path from 'node:path';
 import {
   closeDatabase,
   getRoutine,
-  ensureWorkspaceProject,
   insertProject,
   insertRoutine,
   insertRoutineRun,
@@ -325,7 +324,7 @@ describe('routine routes', () => {
     }
   });
 
-  it('derives reuse routine REST authority from the target project binding', async () => {
+  it('reads reuse routines without workspace authority derived from the target project', async () => {
     const { app, db } = buildApp({
       fetchWorkspaceDirectory: async () => ({ ok: true, items: directoryItems() }),
     });
@@ -336,12 +335,6 @@ describe('routine routes', () => {
       createdAt: now,
       updatedAt: now,
     });
-    ensureWorkspaceProject(db, {
-      projectId: 'project-a',
-      workspaceId: 'workspace-a',
-      visibility: 'team',
-      createdByWorkspaceMemberId: 'member-a',
-    });
     seedRoutine(db, {
       id: 'reuse-a',
       projectMode: 'reuse',
@@ -349,32 +342,29 @@ describe('routine routes', () => {
     });
     const { server, port } = await listen(app);
     try {
-      const denied = await fetch(`http://127.0.0.1:${port}/api/routines/reuse-a`, {
-        headers: {
+      // The reuse-mode read path no longer derives workspace authority from the
+      // target project binding: any workspace caller may read the routine, and
+      // the response exposes no derived workspaceScope.
+      for (const headers of [
+        {
           'x-od-workspace-id': 'workspace-b',
           'x-od-workspace-member-id': 'member-b',
         },
-      });
-      expect(denied.status).toBe(403);
-
-      const allowed = await fetch(`http://127.0.0.1:${port}/api/routines/reuse-a`, {
-        headers: {
+        {
           'x-od-workspace-id': 'workspace-a',
           'x-od-workspace-member-id': 'member-a',
         },
-      });
-      expect(allowed.status).toBe(200);
-      await expect(allowed.json()).resolves.toMatchObject({
-        routine: {
-          id: 'reuse-a',
-          context: {
-            workspaceScope: {
-              workspaceId: 'workspace-a',
-              workspaceMemberId: 'member-a',
-            },
-          },
-        },
-      });
+      ]) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/routines/reuse-a`, {
+          headers,
+        });
+        expect(response.status).toBe(200);
+        const json = await response.json() as {
+          routine: { id: string; context: Record<string, unknown> };
+        };
+        expect(json.routine.id).toBe('reuse-a');
+        expect(json.routine.context).toEqual({});
+      }
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

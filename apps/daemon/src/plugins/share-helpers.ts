@@ -11,7 +11,6 @@ import {
   insertSkillPluginCandidate,
   listSkillPluginCandidates,
 } from './index.js';
-import type { ProjectGitMutationAdapter } from '../services/project-git/mutation-adapter.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -347,7 +346,6 @@ export function detectSkillPluginCandidateOnRunSuccess(
   run: RunLike,
   input: SkillPluginCandidateInput | null | undefined,
   projectRoot: string,
-  coordination: Pick<ProjectGitMutationAdapter, 'withProjectMutation'>,
 ): void {
   if (!run.projectId || !run.conversationId) return;
   const projectId = run.projectId;
@@ -356,13 +354,7 @@ export function detectSkillPluginCandidateOnRunSuccess(
     .wait(run)
     .then(async (finalStatus) => {
       if (finalStatus.status !== 'succeeded') return;
-      await coordination.withProjectMutation({
-        projectId,
-        source: 'plugin-candidate-detection',
-        ...(run.expectedProjectRevision === undefined
-          ? {}
-          : { expectedProjectRevision: run.expectedProjectRevision }),
-      }, async () => {
+      await (async () => {
         const pausedForQuestion = assistantMessageEmittedQuestionForm(db, run.assistantMessageId);
         const message = input?.message ?? input?.currentPrompt;
         const detected = await detectSkillPluginCandidate({
@@ -379,7 +371,7 @@ export function detectSkillPluginCandidateOnRunSuccess(
         const candidateToShow = candidate ?? deferredSkillPluginCandidateForRun(db, run);
         if (!candidateToShow || candidateToShow.status === 'dismissed') return;
         upsertSkillPluginCandidateAssistantMessage(db, run, candidateToShow);
-      });
+      })();
     })
     .catch((err: Error) => {
       console.warn('[plugins] skill candidate detection failed', err);
