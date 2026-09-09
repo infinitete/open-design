@@ -41,7 +41,7 @@ export interface LiveArtifactRefreshSourceExecutionOptions {
   sourceTimeoutMs?: number;
 }
 
-export type LocalDaemonRefreshToolName =
+type LocalDaemonRefreshToolName =
   | 'project_files.search'
   | 'project_files.read_json'
   | 'git.summary'
@@ -61,7 +61,7 @@ export interface ApplyLiveArtifactOutputMappingOptions {
   output: BoundedJsonObject;
 }
 
-export interface LiveArtifactRefreshDocumentOutput {
+interface LiveArtifactRefreshDocumentOutput {
   output: BoundedJsonObject;
 }
 
@@ -76,22 +76,22 @@ export interface LiveArtifactRefreshCandidate {
   dataJson: BoundedJsonObject;
 }
 
-export interface ProjectFilesSearchInput extends BoundedJsonObject {
+interface ProjectFilesSearchInput extends BoundedJsonObject {
   query?: string;
   maxResults?: number;
 }
 
-export interface ProjectFilesReadJsonInput extends BoundedJsonObject {
+interface ProjectFilesReadJsonInput extends BoundedJsonObject {
   path?: string;
   file?: string;
   name?: string;
 }
 
-export interface GitSummaryInput extends BoundedJsonObject {
+interface GitSummaryInput extends BoundedJsonObject {
   maxCommits?: number;
 }
 
-export interface PublicGithubRepositoryMetricInput extends BoundedJsonObject {
+interface PublicGithubRepositoryMetricInput extends BoundedJsonObject {
   url?: string;
   fields?: string[];
 }

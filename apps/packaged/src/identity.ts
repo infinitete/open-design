@@ -5,7 +5,7 @@ import type { SidecarStamp } from "@open-design/sidecar-proto";
 
 import type { PackagedNamespacePaths } from "./paths.js";
 
-export type PackagedDesktopRootIdentity = {
+type PackagedDesktopRootIdentity = {
   appPath: string;
   executablePath: string;
   logPath: string;
@@ -18,7 +18,7 @@ export type PackagedDesktopRootIdentity = {
   version: 1;
 };
 
-export type PackagedWebRootIdentity = {
+type PackagedWebRootIdentity = {
   namespace: string;
   pid: number;
   url: string;

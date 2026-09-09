@@ -20,8 +20,6 @@ import type {
   InstalledPluginRecord,
 } from '@open-design/contracts';
 
-export type PluginPreviewKind = 'media' | 'html' | 'design' | 'text';
-
 export interface MediaPreviewSpec {
   kind: 'media';
   /**
@@ -68,7 +66,7 @@ export interface DesignPreviewSpec {
   swatches: string[];
 }
 
-export interface TextPreviewSpec {
+interface TextPreviewSpec {
   kind: 'text';
 }
 

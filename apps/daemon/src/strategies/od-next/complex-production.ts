@@ -12,7 +12,7 @@ import {
   hashOdNextRuntimeCapabilitySnapshotV1,
 } from '../../runtimes/od-next-capability-gate.js';
 
-export type OdNextComplexProductionReasonCode =
+type OdNextComplexProductionReasonCode =
   | 'od_next_complex_capability_snapshot_missing'
   | 'od_next_complex_capability_snapshot_invalid'
   | 'od_next_complex_capability_agent_mismatch'

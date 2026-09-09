@@ -34,7 +34,7 @@ export interface RegisterHostToolsRoutesDeps
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
-export type RealPlatform = 'darwin' | 'win32' | 'linux';
+type RealPlatform = 'darwin' | 'win32' | 'linux';
 export type Platform = RealPlatform | 'unknown';
 
 export interface CatalogueEntry {

@@ -4,7 +4,7 @@ import type {
   BrandSeedOverrides,
 } from '@open-design/contracts';
 
-export const ASSET_KINDS = ['landing', 'deck', 'poster', 'email', 'newsletter', 'form'] as const;
+const ASSET_KINDS = ['landing', 'deck', 'poster', 'email', 'newsletter', 'form'] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
 
 export type BrandColor = ContractBrandColor;

@@ -7,7 +7,7 @@ import type { OrbitRunSummary, OrbitStatusResponse } from '@open-design/contract
 import type { OrbitConfigPrefs } from './app-config.js';
 import { skillCwdAliasSegment } from './cwd-aliases.js';
 
-export interface OrbitConnectorRunResult {
+interface OrbitConnectorRunResult {
   connectorId: string;
   connectorName: string;
   accountLabel?: string;
@@ -35,7 +35,7 @@ export interface OrbitActivitySummary extends OrbitRunSummary {
   results: OrbitConnectorRunResult[];
 }
 
-export interface OrbitAgentRunResult {
+interface OrbitAgentRunResult {
   agentRunId: string;
   status: 'succeeded' | 'failed' | 'canceled';
   artifactId?: string;
@@ -43,7 +43,7 @@ export interface OrbitAgentRunResult {
   summary?: string;
 }
 
-export interface OrbitRunHandlerStart {
+interface OrbitRunHandlerStart {
   projectId: string;
   agentRunId: string;
   completion: Promise<OrbitAgentRunResult>;

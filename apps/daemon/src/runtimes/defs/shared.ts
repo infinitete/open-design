@@ -27,21 +27,3 @@ export function clampCodexReasoning(
   }
   return effort;
 }
-
-// Parse one-id-per-line stdout from `<cli> models` and prepend the synthetic
-// default option. Used by opencode / cursor-agent.
-export function parseLineSeparatedModels(stdout: string): RuntimeModelOption[] {
-  const ids = String(stdout || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith('#'));
-  // De-dupe while preserving order — some CLIs print near-duplicates.
-  const seen = new Set();
-  const out = [DEFAULT_MODEL_OPTION];
-  for (const id of ids) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, label: id });
-  }
-  return out;
-}

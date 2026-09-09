@@ -1,17 +1,17 @@
-export interface OpenDesignGithubRepoStats {
+interface OpenDesignGithubRepoStats {
   stargazersCount: number;
   fetchedAt: number;
   stale: boolean;
 }
 
-export interface OpenDesignGithubLatestReleaseInfo {
+interface OpenDesignGithubLatestReleaseInfo {
   tagName: string;
   htmlUrl: string;
   fetchedAt: number;
   stale: boolean;
 }
 
-export interface OpenDesignDiscordPresence {
+interface OpenDesignDiscordPresence {
   onlineCount: number;
   memberCount: number;
   fetchedAt: number;

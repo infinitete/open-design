@@ -37,7 +37,7 @@ export type LogoFallbackFn = (
 ) => Promise<{ changed: boolean }>;
 
 /** A logo file written into the project/brand `logos/` dir by the fallback. */
-export interface FallbackLogo {
+interface FallbackLogo {
   /** Path relative to the dir owner, e.g. `logos/apple-touch-icon.png`. */
   rel: string;
   /** Bare filename inside `logos/`. */

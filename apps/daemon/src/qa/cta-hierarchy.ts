@@ -21,7 +21,7 @@ import { type CheerioAPI, load } from 'cheerio';
 type CheerioCollection = ReturnType<CheerioAPI>;
 type CheerioNode = CheerioCollection extends ArrayLike<infer N> ? N : never;
 
-export interface CtaHierarchyIssue {
+interface CtaHierarchyIssue {
   /** Category of the finding; the UI may surface different copy per kind. */
   kind: 'multiple-primary' | 'ambiguous-weight' | 'misleading-prominence';
   /** Short CSS-like selector for the offending element, e.g. `a.btn.btn-primary`. */

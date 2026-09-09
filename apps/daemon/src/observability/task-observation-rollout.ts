@@ -56,7 +56,7 @@ import {
   type TaskObservationDeliveryState,
 } from './task-observation-otlp-exporter.js';
 
-export type TaskObservationRolloutMode = 'off' | 'observe' | 'send';
+type TaskObservationRolloutMode = 'off' | 'observe' | 'send';
 
 export interface TaskObservationRolloutConfig {
   requestedMode: 'auto' | 'off' | 'observe' | 'send' | 'invalid';
@@ -64,7 +64,7 @@ export interface TaskObservationRolloutConfig {
   context: TaskObservationExportContextV1 | null;
 }
 
-export interface TaskObservationRolloutDiagnostic {
+interface TaskObservationRolloutDiagnostic {
   requestedMode: TaskObservationRolloutConfig['requestedMode'];
   mode: TaskObservationRolloutMode;
   effectiveMode: TaskObservationRolloutMode;
@@ -134,7 +134,7 @@ interface TaskObservationDeliveryRow {
   updatedAt: number;
 }
 
-export interface TaskObservationRolloutResult {
+interface TaskObservationRolloutResult {
   mode: TaskObservationRolloutMode;
   action:
     | 'compatibility'
@@ -168,7 +168,7 @@ export interface TaskObservationRolloutService {
   reconcileCrashWindows(): Promise<number>;
 }
 
-export interface TaskObservationFinalizationHandle {
+interface TaskObservationFinalizationHandle {
   durableTaskTruth: boolean;
   suppressSingleRun: boolean;
   completion: Promise<TaskObservationRolloutResult>;

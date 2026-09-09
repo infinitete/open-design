@@ -70,7 +70,7 @@ type ResearchInput = {
   maxSources?: number;
 } | null;
 
-export interface OdNextInitialPromptMeta {
+interface OdNextInitialPromptMeta {
   agentId: string;
   message?: unknown;
   currentPrompt?: unknown;

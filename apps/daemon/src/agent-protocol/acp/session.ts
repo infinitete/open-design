@@ -79,7 +79,7 @@ const NON_DISPLAYABLE_ACP_SESSION_UPDATES = new Set([
  * exclude these; consumers that build the transcript still want them, which is
  * why the pair is emitted rather than dropped.
  */
-export interface AcpEmissionMeta {
+interface AcpEmissionMeta {
   hostSynthesized?: boolean;
 }
 

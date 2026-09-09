@@ -17,7 +17,7 @@ type DaemonRuntimeOptions = Omit<StartServerOptions, 'returnServer'> & {
   logListening?: boolean;
 };
 
-export type DaemonCliStartupConfig = {
+type DaemonCliStartupConfig = {
   host: string;
   open: boolean;
   port: number;

@@ -697,7 +697,7 @@ export async function mockSignedInVelaAccount(
   });
 }
 
-export async function waitForVisualReady(page: Page): Promise<void> {
+async function waitForVisualReady(page: Page): Promise<void> {
   await page.getByText('Loading OpenDesign…').waitFor({ state: 'hidden', timeout: T.xlong });
   await expect(page.getByTestId('home-hero')).toBeVisible({ timeout: T.medium });
   await expect(page.getByTestId('home-hero-input')).toBeVisible({ timeout: T.medium });
@@ -752,7 +752,7 @@ export async function gotoVisualWorkspace(page: Page): Promise<void> {
  *
  * Clicking is safe to repeat: the tab's handler just sets the same active id.
  */
-export async function activateVisualDesignFilesTab(page: Page): Promise<void> {
+async function activateVisualDesignFilesTab(page: Page): Promise<void> {
   const tab = page.getByTestId('design-files-tab');
   await expect(tab).toBeVisible({ timeout: T.medium });
   await expect(async () => {
@@ -816,7 +816,7 @@ export async function prepareVisualSettingsDialog(page: Page): Promise<Locator> 
   return dialog;
 }
 
-export async function openAvatarMenu(page: Page): Promise<Locator> {
+async function openAvatarMenu(page: Page): Promise<Locator> {
   await page.locator('.avatar-menu .avatar-agent-trigger').click();
   const menu = page.locator('.avatar-popover[role="dialog"]');
   await expect(menu).toBeVisible();
@@ -851,7 +851,7 @@ export async function waitForVisualFonts(page: Page): Promise<void> {
   });
 }
 
-export async function resetVisualScroll(page: Page): Promise<void> {
+async function resetVisualScroll(page: Page): Promise<void> {
   await page.evaluate(() => {
     document.scrollingElement?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     for (const element of document.querySelectorAll<HTMLElement>(
@@ -954,7 +954,7 @@ export async function scrollVisualLocatorIntoStableView(
   await waitForVisualStable(page);
 }
 
-export async function waitForVisualStable(page: Page): Promise<void> {
+async function waitForVisualStable(page: Page): Promise<void> {
   // The app shell owns long-lived SSE channels such as /api/memory/events, so
   // Playwright's networkidle state never represents visual readiness here.
   await waitForVisualFrameAssets(page);

@@ -1,16 +1,16 @@
-export interface SketchPoint {
+interface SketchPoint {
   x: number;
   y: number;
 }
 
-export interface SketchStroke {
+interface SketchStroke {
   kind: 'pen';
   points: SketchPoint[];
   color: string;
   size: number;
 }
 
-export interface SketchRectShape {
+interface SketchRectShape {
   kind: 'rect';
   x: number;
   y: number;
@@ -20,7 +20,7 @@ export interface SketchRectShape {
   size: number;
 }
 
-export interface SketchArrowShape {
+interface SketchArrowShape {
   kind: 'arrow';
   x1: number;
   y1: number;
@@ -30,7 +30,7 @@ export interface SketchArrowShape {
   size: number;
 }
 
-export interface SketchTextItem {
+interface SketchTextItem {
   kind: 'text';
   x: number;
   y: number;

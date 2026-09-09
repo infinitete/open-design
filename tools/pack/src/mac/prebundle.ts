@@ -39,7 +39,7 @@ export const MAC_PREBUNDLE_COPIED_RUNTIME_DEPENDENCIES = {
   "fsevents": "2.3.3",
 } as const;
 
-export const MAC_STANDALONE_PREBUNDLE_EXCLUDED_INTERNAL_PACKAGES = [
+const MAC_STANDALONE_PREBUNDLE_EXCLUDED_INTERNAL_PACKAGES = [
   "@open-design/daemon",
   "@open-design/desktop",
   "@open-design/launcher-proto",

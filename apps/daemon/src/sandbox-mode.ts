@@ -11,7 +11,7 @@ export const SANDBOX_IMPORTED_PROJECT_UNAVAILABLE_MESSAGE =
 export const SANDBOX_IMPORT_ALLOWED_ROOTS_INVALID_MESSAGE =
   `${SANDBOX_IMPORT_ALLOWED_ROOTS_ENV} entries must be absolute paths.`;
 
-export interface SandboxRuntimeRoots {
+interface SandboxRuntimeRoots {
   agentHomeDir: string;
   cacheDir: string;
   configDir: string;

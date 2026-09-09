@@ -29,7 +29,7 @@ import {
 
 type SqliteDb = Database.Database;
 
-export type OdNextCoordinatorReasonCode =
+type OdNextCoordinatorReasonCode =
   | 'od_next_route_already_locked'
   | 'od_next_route_not_locked'
   | 'od_next_task_not_found'

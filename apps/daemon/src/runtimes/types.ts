@@ -20,7 +20,7 @@ export type RuntimeModelOption = {
 
 export type RuntimeModelSource = 'live' | 'fallback';
 
-export type RuntimeReasoningOption = RuntimeModelOption;
+type RuntimeReasoningOption = RuntimeModelOption;
 
 export type RuntimeBuildOptions = {
   model?: string | null;
@@ -129,7 +129,7 @@ export type RuntimeVersionPolicy = {
   parse?: (raw: string) => string | null;
 };
 
-export type RuntimeCompatibilityProbe = {
+type RuntimeCompatibilityProbe = {
   /** Arguments for a side-effect-free runtime/profile handshake. */
   args: string[];
   timeoutMs?: number;

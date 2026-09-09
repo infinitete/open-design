@@ -4,7 +4,7 @@ import {
   type TokenSpec,
 } from '@open-design/contracts/design-systems/token-schema';
 
-export type DesignTokenEvidenceConfidence = 'high' | 'medium' | 'low' | 'fallback' | 'alias';
+type DesignTokenEvidenceConfidence = 'high' | 'medium' | 'low' | 'fallback' | 'alias';
 
 export type SourceDesignToken = {
   name: string;

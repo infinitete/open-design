@@ -116,7 +116,7 @@ export async function queryWinRegistryEntries(
   return entries;
 }
 
-export async function queryWinNamespaceRegistryEntry(
+async function queryWinNamespaceRegistryEntry(
   config: Pick<ToolPackConfig, "namespace">,
   paths: WinPaths,
 ): Promise<WindowsUninstallRegistryEntry | null> {

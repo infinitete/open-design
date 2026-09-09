@@ -31,10 +31,10 @@ import { promises as fsp } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { PatchReceiptEntry, PatchStepRecord } from './patch-edit.js';
 
-export type DiffReviewDecision = 'accept' | 'reject' | 'partial';
+type DiffReviewDecision = 'accept' | 'reject' | 'partial';
 export type DiffReviewer = 'user' | 'agent';
 
-export interface DiffReviewDecisionFile {
+interface DiffReviewDecisionFile {
   decision: DiffReviewDecision;
   accepted_files: string[];
   rejected_files: string[];
@@ -43,7 +43,7 @@ export interface DiffReviewDecisionFile {
   decidedAt: string;
 }
 
-export interface DiffReviewMeta {
+interface DiffReviewMeta {
   generatedAt:    string;
   atomDigest:     string;
   planRevision:   number;

@@ -13,7 +13,7 @@ import type { AgentEvent } from '../types';
 import { dedupeToolUsesById } from './tool-events';
 
 export type FileOpKind = 'read' | 'write' | 'edit' | 'delete';
-export type FileOpStatus = 'running' | 'done' | 'error';
+type FileOpStatus = 'running' | 'done' | 'error';
 
 export interface FileOpEntry {
   /** Basename — used as both display label and the lookup key passed to

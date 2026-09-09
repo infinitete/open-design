@@ -17,7 +17,7 @@ import type {
  * in the action union (not as a separate setter) so the reducer
  * remains the single source of truth for state transitions.
  */
-export interface CritiqueResetAction {
+interface CritiqueResetAction {
   type: '__reset__';
 }
 
@@ -58,7 +58,7 @@ export interface CritiqueRunConfig {
   protocolVersion: number;
 }
 
-export interface CritiqueParserWarning {
+interface CritiqueParserWarning {
   kind: ParserWarningKind;
   position: number;
 }

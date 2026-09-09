@@ -3,9 +3,9 @@ import type { ApiProtocol, ProviderModelOption } from '../../types';
 
 export type ByokDraftField = 'api_key' | 'base_url' | 'model';
 
-export type ByokDraftIssueLevel = 'error' | 'warn';
+type ByokDraftIssueLevel = 'error' | 'warn';
 
-export type ByokDraftIssueCode =
+type ByokDraftIssueCode =
   | 'api_key_required'
   | 'api_key_extra_whitespace'
   | 'api_key_malformed'
@@ -14,7 +14,7 @@ export type ByokDraftIssueCode =
   | 'base_url_invalid'
   | 'model_required';
 
-export type ByokDraftAction =
+type ByokDraftAction =
   | 'focus_api_key'
   | 'focus_base_url'
   | 'focus_model'
@@ -55,7 +55,7 @@ export interface NormalizedByokBaseUrl {
   addedOpenAiVersionPath: boolean;
 }
 
-export type ByokModelPreferenceSource =
+type ByokModelPreferenceSource =
   | 'explicit'
   | 'account'
   | 'provider_preferred'

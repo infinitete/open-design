@@ -46,19 +46,19 @@ import { upsertPluginLockfileEntry } from './lockfile.js';
 
 type SqliteDb = Database.Database;
 
-export interface InstallProgressEvent {
+interface InstallProgressEvent {
   kind: 'progress';
   phase: 'resolving' | 'copying' | 'parsing' | 'persisting';
   message: string;
 }
 
-export interface InstallSuccessEvent {
+interface InstallSuccessEvent {
   kind: 'success';
   plugin: InstalledPluginRecord;
   warnings: string[];
 }
 
-export interface InstallErrorEvent {
+interface InstallErrorEvent {
   kind: 'error';
   message: string;
   warnings: string[];

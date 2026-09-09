@@ -1562,7 +1562,7 @@ export async function installGeneratedPluginFolder(
   }
 }
 
-export interface PluginShareOutcome {
+interface PluginShareOutcome {
   ok: boolean;
   message: string;
   url?: string;
@@ -1578,13 +1578,13 @@ export interface PluginShareTaskStart {
   startedAt: number;
 }
 
-export interface PluginShareTaskResult {
+interface PluginShareTaskResult {
   message: string;
   url?: string;
   log?: string[];
 }
 
-export interface PluginShareTaskError {
+interface PluginShareTaskError {
   message: string;
   code?: string;
   log?: string[];

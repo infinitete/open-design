@@ -30,7 +30,7 @@ export const WIN_PREBUNDLE_RUNTIME_DEPENDENCIES = {
   "sharp": "0.35.3",
 } as const;
 
-export const WIN_STANDALONE_PREBUNDLE_EXCLUDED_INTERNAL_PACKAGES = [
+const WIN_STANDALONE_PREBUNDLE_EXCLUDED_INTERNAL_PACKAGES = [
   "@open-design/daemon",
   "@open-design/desktop",
   "@open-design/launcher-proto",

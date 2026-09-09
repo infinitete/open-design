@@ -120,7 +120,7 @@ import {
   type PlaceholderScenario,
 } from './home-hero/placeholderScenarios';
 
-export interface HomeHeroSubmitHandler {
+interface HomeHeroSubmitHandler {
   (): void;
 }
 

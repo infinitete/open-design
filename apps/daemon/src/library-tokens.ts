@@ -49,10 +49,6 @@ export function libraryExtensionAllowedOrigins(): string[] {
   return Array.from(extensionOrigins);
 }
 
-export function isAllowedExtensionOrigin(origin: string | undefined | null): boolean {
-  return Boolean(origin) && extensionOrigins.has(String(origin));
-}
-
 export function startPairing(now = Date.now()): { code: string; expiresAt: number } {
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   const expiresAt = now + PAIRING_TTL_MS;

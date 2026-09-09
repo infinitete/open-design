@@ -5,7 +5,7 @@
 
 import type { Project } from '@open-design/contracts';
 
-export interface DesignMdSummary {
+interface DesignMdSummary {
   generatedAt: Date | null;
   transcriptMessageCount: number | null;
   designSystemId: string | null;

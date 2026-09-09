@@ -55,11 +55,6 @@ export function defaultRegistryRoots(): RegistryRoots {
   return registryRootsForDataDir(path.resolve(process.env.OD_DATA_DIR ?? path.join(process.cwd(), '.od')));
 }
 
-export interface ScannedPlugin {
-  record: InstalledPluginRecord;
-  warnings: string[];
-}
-
 export interface ResolveOptions {
   // The on-disk folder. Used for both reading and computing the manifest's
   // sourceDigest. Phase 2A swaps this to the registry's discovered fsPath.
@@ -80,13 +75,13 @@ export interface ResolveOptions {
   archiveIntegrity?: string;
 }
 
-export interface ResolveOutcome {
+interface ResolveOutcome {
   ok: true;
   record: InstalledPluginRecord;
   warnings: string[];
 }
 
-export interface ResolveFailure {
+interface ResolveFailure {
   ok: false;
   errors: string[];
   warnings: string[];

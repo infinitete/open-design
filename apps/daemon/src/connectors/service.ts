@@ -498,7 +498,7 @@ interface ConnectorRunLimitState {
   totalCalls: number;
 }
 
-export interface ConnectorOutputProtectionResult {
+interface ConnectorOutputProtectionResult {
   output: BoundedJsonValue;
   redacted: boolean;
   serializedBytes: number;

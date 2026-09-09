@@ -5,9 +5,9 @@ export function fixedStageDeckFixtureHtml(): string {
   return recentProjectFixedStageDeckHtml;
 }
 
-export type ScenarioKind = 'prototype' | 'deck' | 'hyperframes' | 'image' | 'audio' | 'template' | 'workspace';
+type ScenarioKind = 'prototype' | 'deck' | 'hyperframes' | 'image' | 'audio' | 'template' | 'workspace';
 
-export interface MockArtifactScenario {
+interface MockArtifactScenario {
   identifier: string;
   title: string;
   html: string;
@@ -15,7 +15,7 @@ export interface MockArtifactScenario {
   heading: string;
 }
 
-export interface ExpectedScenarioFile {
+interface ExpectedScenarioFile {
   kind?: string;
   name: string;
   previewText?: string;

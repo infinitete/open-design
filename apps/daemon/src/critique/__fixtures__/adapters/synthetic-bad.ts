@@ -17,16 +17,12 @@ import url from 'node:url';
  * Module-URL-anchored fixture path (mirrors `synthetic-good.ts`; see
  * lefarcen P2 on PR #1317 for the rationale).
  */
-export const SYNTHETIC_BAD_FIXTURE_URL = new URL(
+const SYNTHETIC_BAD_FIXTURE_URL = new URL(
   '../v1/malformed-unbalanced.txt',
   import.meta.url,
 );
 
-export const SYNTHETIC_BAD_FIXTURE_PATH = url.fileURLToPath(
-  SYNTHETIC_BAD_FIXTURE_URL,
-);
-
-export function syntheticBadTranscript(): string {
+function syntheticBadTranscript(): string {
   return readFileSync(SYNTHETIC_BAD_FIXTURE_URL, 'utf8');
 }
 

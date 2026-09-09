@@ -2,7 +2,7 @@
 // allowlist only. A fetch rejection is ambiguous (the provider may already
 // have accepted and billed the request), so this helper reports it and lets it
 // fail without issuing a second POST.
-export type ImageGenerationRetryReason = 'rate_limit_429' | 'service_unavailable_503';
+type ImageGenerationRetryReason = 'rate_limit_429' | 'service_unavailable_503';
 
 export type ImageGenerationRequestSummary = {
   attemptCount: number;

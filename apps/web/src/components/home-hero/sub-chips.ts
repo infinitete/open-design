@@ -31,7 +31,7 @@ export type SubChipParentId = 'prototype' | 'deck';
  * WHICH product kind is being built, so it cannot turn itself into a task type
  * by stamping a different kind than its parent.
  */
-export type HomeHeroSubChipMetadata = Omit<Partial<ProjectMetadata>, 'kind'>;
+type HomeHeroSubChipMetadata = Omit<Partial<ProjectMetadata>, 'kind'>;
 
 export interface HomeHeroSubChip {
   // Facet subcategory slug, e.g. 'business-dashboards'.

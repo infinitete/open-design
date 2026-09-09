@@ -11,7 +11,7 @@ export interface GithubRegistryClient {
   createPublishPullRequest?(request: GithubPublishMutation): Promise<{ url: string }>;
 }
 
-export interface GithubPublishMutation {
+interface GithubPublishMutation {
   owner: string;
   repo: string;
   baseRef: string;

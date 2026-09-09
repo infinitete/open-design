@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const RUNTIME_NAME = 'open-design' as const;
+const RUNTIME_NAME = 'open-design' as const;
 export const CAPABILITIES = {
   session_resume: true,
   session_cancel: true,
@@ -35,7 +35,7 @@ export type ExecuteCommand = {
   mcp_servers: unknown[];
 };
 
-export type CancelCommand = {
+type CancelCommand = {
   v: 1;
   type: 'cancel';
   request_id: string;

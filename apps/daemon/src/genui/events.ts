@@ -47,19 +47,6 @@ export function buildSurfaceResponseEvent(args: {
   };
 }
 
-export function buildSurfaceTimeoutEvent(args: {
-  surfaceRow: SurfaceRow;
-  runId:      string;
-  resolution: 'abort' | 'default' | 'skip';
-}): GenUISurfaceEvent {
-  return {
-    kind:       'genui_surface_timeout',
-    surfaceId:  args.surfaceRow.surfaceId,
-    runId:      args.runId,
-    resolution: args.resolution,
-  };
-}
-
 export function buildStateSyncedEvent(args: {
   surfaceRow: SurfaceRow;
   runId:      string;

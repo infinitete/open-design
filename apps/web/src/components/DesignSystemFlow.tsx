@@ -137,7 +137,7 @@ import { useI18n } from '../i18n';
 // runtime/about-you context that only it knows; without this hook the
 // onboarding wrapper would have no way to see the user-pinned source
 // material because the form state lives inside `DesignSystemCreationFlow`.
-export interface DesignSystemGenerateSnapshot {
+interface DesignSystemGenerateSnapshot {
   sourceCount: number;
   hasBrandDescription: boolean;
   hasDesignMd: boolean;

@@ -41,7 +41,7 @@ export interface AgentResumeContext {
 
 export type CapturedAgentSessionResult = 'stored' | 'cleared' | 'skipped';
 
-export type AgentResumeTranscriptMode = 'resume-session' | 'full-transcript';
+type AgentResumeTranscriptMode = 'resume-session' | 'full-transcript';
 
 export interface AgentResumePromptPolicy {
   mode: AgentResumeTranscriptMode;

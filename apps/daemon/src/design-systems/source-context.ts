@@ -5,7 +5,7 @@ export type DesignSystemSourceContext = {
   notes: string;
 };
 
-export type GitHubRepositoryContext = {
+type GitHubRepositoryContext = {
   url: string;
   owner: string;
   repo: string;

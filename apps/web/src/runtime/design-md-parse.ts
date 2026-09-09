@@ -23,27 +23,27 @@ export interface ParsedColor {
   usage: string;
 }
 
-export interface ParsedFont {
+interface ParsedFont {
   family: string;
   fallbacks: string[];
   weights: number[];
 }
 
-export interface ParsedVoice {
+interface ParsedVoice {
   adjectives: string[];
   tone: string;
   messagingPillars: string[];
   vocabulary: { use: string[]; avoid: string[] };
 }
 
-export interface ParsedImagery {
+interface ParsedImagery {
   style: string;
   subjects: string[];
   treatment: string;
   avoid: string[];
 }
 
-export interface ParsedLayout {
+interface ParsedLayout {
   radius: string;
   borderWeight: string;
   spacing: string;

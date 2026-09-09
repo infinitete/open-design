@@ -55,7 +55,7 @@ function isSupportingMediaPath(filePath: string): boolean {
   return SUPPORTING_MEDIA_EXTENSIONS.has(extensionOf(filePath));
 }
 
-export interface ArtifactFingerprint {
+interface ArtifactFingerprint {
   size: number;
   mtimeMs: number;
   // Content hash for files up to `HASH_MAX_BYTES`, else null. size + mtime

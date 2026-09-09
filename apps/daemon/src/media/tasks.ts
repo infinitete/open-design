@@ -8,7 +8,7 @@ export type MediaTaskStatus =
   | 'interrupted';
 
 /** What a content-safety policy objected to, when the supplier proved it. */
-export type MediaTaskErrorSubject = 'prompt' | 'input_image' | 'output_image';
+type MediaTaskErrorSubject = 'prompt' | 'input_image' | 'output_image';
 
 export interface MediaTaskError {
   message: string;

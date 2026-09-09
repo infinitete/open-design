@@ -28,8 +28,6 @@ export type CssCustomPropertyEvidence = {
   line: number;
 };
 
-export type DesignTokenEvidenceCollector = ReturnType<typeof createDesignTokenEvidenceCollector>;
-
 const HEX_COLOR_RE = /#[0-9a-fA-F]{3,8}\b/g;
 const RGBA_COLOR_RE = /rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*[\d.]+)?\s*\)/g;
 const HSLA_COLOR_RE = /hsla?\(\s*[\d.]+(?:deg|rad|turn)?\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*[\d.]+)?\s*\)/g;

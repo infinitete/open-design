@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process';
 
-export interface CodexRunnerResult {
+interface CodexRunnerResult {
   exitCode: number;
   stdout: string;
   stderr: string;

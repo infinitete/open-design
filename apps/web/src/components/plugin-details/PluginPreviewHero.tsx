@@ -12,7 +12,7 @@
 import { useMemo, useState } from 'react';
 import { Icon } from '../Icon';
 
-export interface PluginExampleEntry {
+interface PluginExampleEntry {
   path: string;
   title?: string;
 }

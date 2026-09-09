@@ -241,7 +241,7 @@ function dedupeTags(tags: Array<string | undefined | null>): string[] {
   return out;
 }
 
-export interface RegisterLibrarySource {
+interface RegisterLibrarySource {
   sourceKind: LibrarySourceKind;
   projectId?: string | undefined;
   conversationId?: string | undefined;

@@ -58,7 +58,7 @@ export function loadBrandKitTemplate(skillsRoot: string): string {
 
 export type BrandKitStatus = 'extracting' | 'ready' | 'draft' | 'failed';
 
-export interface BrandKitPayload {
+interface BrandKitPayload {
   status: BrandKitStatus;
   host: string;
   brand: Record<string, unknown>;

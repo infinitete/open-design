@@ -19,7 +19,7 @@
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
-export interface CodeImportFileEntry {
+interface CodeImportFileEntry {
   path:     string;
   size:     number;
   language: 'ts' | 'tsx' | 'js' | 'jsx' | 'css' | 'scss' | 'json' | 'html' | 'md' | 'other';
@@ -30,7 +30,7 @@ export interface CodeImportFileEntry {
   imports?: string[];
 }
 
-export interface CodeImportSkipped {
+interface CodeImportSkipped {
   path:   string;
   reason: 'directory-skiplist' | 'unsupported-extension' | 'budget-exceeded' | 'symlink' | 'large-file';
 }

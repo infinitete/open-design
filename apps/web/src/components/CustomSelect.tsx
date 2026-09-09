@@ -3,7 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
-export interface CustomSelectOption {
+interface CustomSelectOption {
   value: string;
   label: string;
   disabled?: boolean;
@@ -14,7 +14,7 @@ export interface CustomSelectGroup {
   options: CustomSelectOption[];
 }
 
-export type CustomSelectItem = CustomSelectOption | CustomSelectGroup;
+type CustomSelectItem = CustomSelectOption | CustomSelectGroup;
 
 interface Props {
   value: string;

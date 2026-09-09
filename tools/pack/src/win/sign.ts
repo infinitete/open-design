@@ -13,7 +13,7 @@ const DEFAULT_SIGNTOOL_CANDIDATES = [
   "C:\\Program Files (x86)\\Windows Kits\\10\\App Certification Kit\\signtool.exe",
 ];
 
-export type WinSigningConfig = {
+type WinSigningConfig = {
   certificateSha1: string;
   digestAlgorithm: "sha256";
   signtoolPath: string;
@@ -60,7 +60,7 @@ export function resolveWinSigningCacheKey(config: ToolPackConfig): WinSigningCac
   };
 }
 
-export function resolveWinSigningConfig(): WinSigningConfig {
+function resolveWinSigningConfig(): WinSigningConfig {
   const certificateSha1 = normalizeSha1(process.env.OD_WIN_SIGN_CERT_SHA1 ?? process.env.WIN_SIGN_CERT_SHA1);
   if (certificateSha1 == null) {
     throw new Error("signed Windows builds require OD_WIN_SIGN_CERT_SHA1");

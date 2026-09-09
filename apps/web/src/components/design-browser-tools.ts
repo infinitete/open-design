@@ -2,7 +2,7 @@ import type { PreviewAnnotationStyle } from '../types';
 
 export type BrowserViewportId = 'desktop' | 'tablet' | 'mobile';
 
-export interface BrowserViewportPreset {
+interface BrowserViewportPreset {
   id: BrowserViewportId;
   width: number | null;
   height: number | null;
@@ -20,7 +20,7 @@ export const BROWSER_VIEWPORT_PRESETS: BrowserViewportPreset[] = [
 export const BROWSER_PAGE_ARCHIVE_SCHEMA = 'open-design.browser-page-archive.v1';
 export const BROWSER_PAGE_ARCHIVE_INDEX_FILE = 'browser/latest-page-snapshot.json';
 
-export type BrowserPageArchiveResourceKind =
+type BrowserPageArchiveResourceKind =
   | 'image'
   | 'stylesheet'
   | 'script'
@@ -30,7 +30,7 @@ export type BrowserPageArchiveResourceKind =
   | 'document'
   | 'other';
 
-export interface BrowserPageArchiveCaptureResource {
+interface BrowserPageArchiveCaptureResource {
   url: string;
   kind: BrowserPageArchiveResourceKind;
   tag?: string;
@@ -46,7 +46,7 @@ export interface BrowserPageArchiveCapture {
   resources: BrowserPageArchiveCaptureResource[];
 }
 
-export interface BrowserPageArchiveManifestResource extends BrowserPageArchiveCaptureResource {
+interface BrowserPageArchiveManifestResource extends BrowserPageArchiveCaptureResource {
   file?: string;
   mime?: string;
   size?: number;

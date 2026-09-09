@@ -5,7 +5,7 @@ import type {
 } from '@open-design/contracts/api/reasoningExecution';
 import { normalizeGoogleModelId } from './integrations/google-models.js';
 
-export type ReasoningEgressRouteKind =
+type ReasoningEgressRouteKind =
   | 'proxy'
   | 'provider_models'
   | 'connection_test'
@@ -23,7 +23,7 @@ export type ReasoningEgressDenial =
   | ReasoningEgressInvalidPolicyDenial
   | ReasoningEgressPolicyDenial;
 
-export interface ReasoningEgressInvalidPolicyDenial {
+interface ReasoningEgressInvalidPolicyDenial {
   status: 400;
   code: 'reasoning_execution_invalid_policy';
   message: string;
@@ -35,7 +35,7 @@ export interface ReasoningEgressInvalidPolicyDenial {
   };
 }
 
-export interface ReasoningEgressPolicyDenial {
+interface ReasoningEgressPolicyDenial {
   status: 403;
   code: 'reasoning_execution_disabled' | 'reasoning_execution_not_allowlisted';
   message: string;

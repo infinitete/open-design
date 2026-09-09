@@ -31,9 +31,9 @@ const FINALIZE_PROTOCOLS = new Set<FinalizeProviderProtocol>([
   'ollama',
 ]);
 
-export type FinalizeStatus = 'idle' | 'pending' | 'success' | 'error';
+type FinalizeStatus = 'idle' | 'pending' | 'success' | 'error';
 
-export interface FinalizeError {
+interface FinalizeError {
   code: ApiErrorCode | 'NETWORK_ERROR' | 'TIMEOUT';
   message: string;
   details: string | null;

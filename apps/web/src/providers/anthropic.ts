@@ -29,7 +29,7 @@ export interface StreamHandlers {
   onError: (err: Error) => void;
 }
 
-export function makeClient(cfg: AppConfig): Anthropic {
+function makeClient(cfg: AppConfig): Anthropic {
   return new Anthropic({
     apiKey: cfg.apiKey,
     baseURL: cfg.baseUrl || undefined,

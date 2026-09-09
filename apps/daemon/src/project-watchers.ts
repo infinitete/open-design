@@ -19,7 +19,7 @@ import { projectDir, resolveProjectDir } from './projects.js';
 // (e.g. the daemon's own `.od/` runtime dir, which contains every project) do
 // not accidentally match and silence every event in the tree.
 const WATCHER_ONLY_IGNORE_NAMES = new Set(['.ds_store']);
-export type ProjectWatchKind = 'add' | 'change' | 'unlink';
+type ProjectWatchKind = 'add' | 'change' | 'unlink';
 export interface ProjectWatchEvent { type: 'file-changed'; path: string; kind: ProjectWatchKind }
 export type ProjectWatchCallback = (evt: ProjectWatchEvent) => void;
 type ProjectWatchIgnored = (absPath: string, stats?: Stats) => boolean;

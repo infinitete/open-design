@@ -31,7 +31,7 @@ import type { IconName } from '../Icon';
 // the default table by carrying their own plugin id directly. The
 // curated union keeps typo safety while letting the rail evolve
 // independently of the default-binding mapping.
-export type ChipScenarioPluginId =
+type ChipScenarioPluginId =
   | DefaultScenarioPluginId
   | 'example-hyperframes'
   // Powered-preview scenarios: real-time GPU / off-main-thread artifacts that
@@ -40,7 +40,7 @@ export type ChipScenarioPluginId =
   // scenario the default table has not mapped yet; both are mapped today.
   | 'example-webgl-experience';
 
-export type ChipAction =
+type ChipAction =
   | {
       kind: 'apply-scenario';
       pluginId: ChipScenarioPluginId;

@@ -1,7 +1,7 @@
 import { chmod, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-export type NodePtyRuntimePlatform = "darwin" | "win32";
+type NodePtyRuntimePlatform = "darwin" | "win32";
 export type NodePtyRuntimeArch = "arm64" | "x64";
 
 export interface NodePtyRuntimeOptions {

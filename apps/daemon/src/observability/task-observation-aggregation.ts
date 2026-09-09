@@ -45,7 +45,7 @@ const TERMINAL_OBSERVATION_STATUSES = new Set<NormalizedAgentObservationStatusV1
   'canceled',
 ]);
 
-export interface TaskObservationCoverageV1 {
+interface TaskObservationCoverageV1 {
   runs: {
     availability: 'complete' | 'partial';
     expected: number;
@@ -72,7 +72,7 @@ export interface ObservationAvailabilityCountsV1 {
   unavailable: number;
 }
 
-export interface KnownUsageSummaryV1 extends ObservationAvailabilityCountsV1 {
+interface KnownUsageSummaryV1 extends ObservationAvailabilityCountsV1 {
   observedObservationCount: number;
   values?: Partial<ObservationUsageValuesV1>;
 }
@@ -85,7 +85,7 @@ export interface TaskObservationStageTotalV1 {
   knownChildUsage: KnownUsageSummaryV1;
 }
 
-export interface StrategyTaskObservationRootV1 {
+interface StrategyTaskObservationRootV1 {
   observationId: string;
   taskExecutionId: string;
   projectId: string;
@@ -694,26 +694,6 @@ export function aggregateStrategyTaskObservations(input: {
     stageTotals,
     limitations,
   };
-}
-
-export function aggregateStoredStrategyTaskObservations(input: {
-  db: Database.Database;
-  taskExecutionId: string;
-  observations: readonly unknown[];
-}): StrategyTaskObservationAggregateV1 {
-  const task = getStrategyTaskExecution(input.db, input.taskExecutionId);
-  if (!task) {
-    throw new InvalidTaskObservationAggregateError(
-      `Unknown strategy task execution ${input.taskExecutionId}.`,
-    );
-  }
-  const snapshot = getSnapshot(input.db, task.snapshotId);
-  const taskType = snapshot?.strategy?.selectedTaskProfile.taskType;
-  return aggregateStrategyTaskObservations({
-    task,
-    observations: input.observations,
-    ...(taskType ? { taskType } : {}),
-  });
 }
 
 function legacyLevel(status: NormalizedAgentObservationStatusV1 | StrategyTaskOutcome): string {

@@ -14,7 +14,7 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
-export interface ProjectPluginManifest {
+interface ProjectPluginManifest {
   name: string;
   title: string;
   version: string;

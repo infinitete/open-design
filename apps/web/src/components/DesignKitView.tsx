@@ -62,7 +62,7 @@ interface DesignMdModuleSpec {
 type DesignMdEditTarget =
   | { kind: 'all' }
   | { kind: 'module'; module: DesignMdModuleSpec };
-export type DesignKitEditFocusModule = 'logo';
+type DesignKitEditFocusModule = 'logo';
 export interface DesignKitEditFocusRequest {
   module: DesignKitEditFocusModule;
   nonce: number;
@@ -225,7 +225,7 @@ interface BrandTokenSubset {
   borderRadius?: number;
 }
 
-export interface KitDesignMdActions {
+interface KitDesignMdActions {
   body: string;
   onSave?: (value: string) => void | Promise<void>;
   onOpenFile?: () => void;

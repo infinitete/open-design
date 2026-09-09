@@ -6,7 +6,7 @@ export interface WorkspaceDirectoryItem {
   memberStatus: string;
   lifecycleState: string;
 }
-export interface WorkspaceDirectoryResponse {
+interface WorkspaceDirectoryResponse {
   items: WorkspaceDirectoryItem[];
 }
 

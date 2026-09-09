@@ -35,8 +35,8 @@ export const WORKSPACE_ROOT = resolve(resolveToolPackRoot(__dirname), "../..");
 
 export type ToolPackPlatform = "mac" | "win" | "linux";
 export type ToolPackBuildOutput = "all" | "app" | "appimage" | "deb" | "dir" | "dmg" | "nsis" | "zip";
-export type ToolPackMacCompression = "store" | "normal" | "maximum";
-export type ToolPackWebOutputMode = "server" | "standalone";
+type ToolPackMacCompression = "store" | "normal" | "maximum";
+type ToolPackWebOutputMode = "server" | "standalone";
 
 export type ToolPackCliOptions = {
   appVersion?: string;
@@ -68,7 +68,7 @@ export type ToolPackCliOptions = {
   updateAction?: string;
 };
 
-export type ToolPackRoots = {
+type ToolPackRoots = {
   output: {
     appBuilderRoot: string;
     namespaceRoot: string;

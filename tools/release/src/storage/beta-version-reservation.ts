@@ -17,18 +17,13 @@ export type CountedVersionReservation = {
   version: 1;
 };
 
-export type BetaVersionReservation = CountedVersionReservation & {
-  betaNumber?: number;
-  channel: "beta";
-};
-
 function requiredCountedChannel(): CountedReleaseChannel {
   const channel = required("RELEASE_CHANNEL");
   if (channel === "stable") throw new Error("version reservation only supports counted release channels");
   return channel as CountedReleaseChannel;
 }
 
-export function parseCountedVersion(value: string, channel: CountedReleaseChannel): { baseVersion: string; releaseNumber: number; releaseVersion: string } {
+function parseCountedVersion(value: string, channel: CountedReleaseChannel): { baseVersion: string; releaseNumber: number; releaseVersion: string } {
   const parsed = parseCountedReleaseVersion(value, channel);
   if (parsed == null) {
     throw new Error(`release version must be x.y.z-${channel}.N; got ${value}`);
@@ -56,7 +51,7 @@ function sameOwner(left: Record<string, unknown>, right: Record<string, unknown>
     left.commit === right.commit;
 }
 
-export async function readVersionReservation(storage: StorageConfig, objectKey: string): Promise<CountedVersionReservation | null> {
+async function readVersionReservation(storage: StorageConfig, objectKey: string): Promise<CountedVersionReservation | null> {
   const text = await getStorageObjectText({ ...storage, objectKey });
   if (text == null) return null;
   const parsed = JSON.parse(text.replace(/^\uFEFF/u, "")) as CountedVersionReservation;

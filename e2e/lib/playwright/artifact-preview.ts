@@ -4,12 +4,8 @@ export const ACTIVE_ARTIFACT_PREVIEW_SELECTOR =
   '[data-testid="artifact-preview-frame"]:not([data-od-handoff-pending]):visible, '
   + '[data-testid="live-artifact-preview-frame"]:visible';
 
-export function activeArtifactPreview(page: Page): Locator {
+function activeArtifactPreview(page: Page): Locator {
   return page.locator(ACTIVE_ARTIFACT_PREVIEW_SELECTOR).first();
-}
-
-export function activeArtifactPreviewFrame(page: Page): FrameLocator {
-  return page.frameLocator(ACTIVE_ARTIFACT_PREVIEW_SELECTOR);
 }
 
 export async function settledActiveArtifactPreview(

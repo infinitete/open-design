@@ -259,34 +259,3 @@ export function buildVideoRequest(cap: ModelCapability, input: VideoBuildInput):
     hasReference,
   };
 }
-
-export interface NormalizedVideoResponse {
-  id?: string;
-  status?: string;
-  /** Inline asset URL when the upstream returns one. */
-  url?: string;
-  error?: string;
-}
-
-/** Best-effort normalization of an async-submit / poll response across families. */
-export function normalizeVideoResponse(raw: unknown): NormalizedVideoResponse {
-  const d = (raw ?? {}) as Record<string, any>;
-  const id = d.id || d.task_id || d.data?.id || d.data?.task_id;
-  const status = d.status || d.data?.status;
-  const url =
-    d.video_url
-    || d.url
-    || d.output_url
-    || d.data?.video_url
-    || d.data?.url
-    || (Array.isArray(d.data) ? d.data[0]?.url : undefined)
-    || (Array.isArray(d.unsigned_urls) ? d.unsigned_urls[0] : undefined);
-  const error =
-    d.error?.message || (typeof d.error === 'string' ? d.error : undefined) || d.failure_reason || d.message;
-  return {
-    ...(id ? { id: String(id) } : {}),
-    ...(status ? { status: String(status) } : {}),
-    ...(url ? { url: String(url) } : {}),
-    ...(error ? { error: String(error) } : {}),
-  };
-}

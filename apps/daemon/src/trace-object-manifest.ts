@@ -32,7 +32,7 @@ export interface TraceObjectUploadManifests {
   completeness: ObjectManifestCompleteness;
 }
 
-export interface TraceObjectSource {
+interface TraceObjectSource {
   objectClass: ObjectClass;
   id: string;
   filename: string;

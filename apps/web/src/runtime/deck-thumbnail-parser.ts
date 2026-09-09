@@ -26,7 +26,7 @@ import {
 } from '@open-design/contracts/runtime/deck-stage-fallback';
 import { collectLegacyDeckScreenSlides } from './deck-slide-structure';
 
-export type DeckThumbnailFallbackReason =
+type DeckThumbnailFallbackReason =
   | 'no-dom-parser'
   | 'no-slides'
   | 'no-styles'
@@ -34,7 +34,7 @@ export type DeckThumbnailFallbackReason =
   | 'external-stylesheet';
 
 /** One reconstructed wrapper element between the shadow root and the slide. */
-export interface DeckThumbnailAncestor {
+interface DeckThumbnailAncestor {
   tag: string;
   attributes: Array<[string, string]>;
 }

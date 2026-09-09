@@ -1,4 +1,4 @@
-export type ToolsDevAppStatus = {
+type ToolsDevAppStatus = {
   pid?: number;
   state?: string;
   title?: string | null;
@@ -57,7 +57,7 @@ export type ToolsDevSuiteSpec = {
   toolsDevRoot: string;
 };
 
-export type ToolsDevUrlBuilder = {
+type ToolsDevUrlBuilder = {
   api: (path?: string) => string;
   daemon: (path?: string) => string;
   web: (path?: string) => string;

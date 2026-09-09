@@ -27,7 +27,7 @@
  */
 import { parsePartialJson } from '../runtime/partial-json';
 
-export type QuestionType =
+type QuestionType =
   | 'radio'
   | 'checkbox'
   | 'select'

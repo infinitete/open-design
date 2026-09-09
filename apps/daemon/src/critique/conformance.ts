@@ -74,7 +74,7 @@ const COMPOSITE_TOLERANCE = 0.01;
  * `toContractReason` below, so a downstream listing of degraded
  * adapters still uses the wire-shape enum.
  */
-export type ConformanceDegradedReason =
+type ConformanceDegradedReason =
   | 'malformed_block'
   | 'oversize_block'
   | 'missing_artifact'

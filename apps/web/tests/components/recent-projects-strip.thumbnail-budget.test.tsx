@@ -41,12 +41,6 @@ vi.mock('../../src/collab/useTeamMembers', () => ({
   useTeamMembers: () => ({ resolve: () => null }),
 }));
 
-vi.mock('../../src/collab/useWorkspaceContext', () => ({
-  notifyTeamProjectsChanged: vi.fn(),
-  useWorkspaceBilling: () => null,
-  useWorkspaceContext: () => ({ context: null }),
-}));
-
 vi.mock('../../src/collab/workspace-events', () => ({
   useWorkspaceInvalidation: vi.fn(),
 }));

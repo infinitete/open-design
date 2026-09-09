@@ -60,7 +60,7 @@ export interface DesignSystemTokenBag {
   tokens: DesignSystemToken[];
 }
 
-export interface TokenMapMatch {
+interface TokenMapMatch {
   source:    string;            // raw input value (or token name when present)
   sourceName?: string;
   target:    string;            // matched target token name
@@ -72,7 +72,7 @@ export interface TokenMapMatch {
   sources:   string[];
 }
 
-export interface TokenMapUnmatched {
+interface TokenMapUnmatched {
   source:      string;
   sourceName?: string;
   kind:        DesignTokenKind;

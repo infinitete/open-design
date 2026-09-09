@@ -248,7 +248,7 @@ interface StoredBriefDraft {
   briefState?: 'confirmed' | 'skipped';
 }
 
-export interface LocalMcpBriefQuestionForm {
+interface LocalMcpBriefQuestionForm {
   id: 'open-design-brief';
   title: string;
   description: string;
@@ -269,7 +269,7 @@ export interface LocalMcpBriefQuestionForm {
   }>;
 }
 
-export interface LocalMcpBriefForm {
+interface LocalMcpBriefForm {
   view: 'brief-form';
   artifactType: OpenDesignBriefArtifactType;
   projectTitle: string;
@@ -284,7 +284,7 @@ export interface LocalMcpBriefForm {
   questionFormsByLocale: Record<LocalMcpBriefLocale, LocalMcpBriefQuestionForm>;
 }
 
-export interface LocalMcpBriefConfirmation {
+interface LocalMcpBriefConfirmation {
   view: 'brief-confirmed';
   artifactType: OpenDesignBriefArtifactType;
   projectTitle: string;

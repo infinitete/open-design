@@ -56,14 +56,14 @@ export function computeRetryBackoffMs(
   return Math.round(half + jitter * half);
 }
 
-export interface RunRetryFailureSignal {
+interface RunRetryFailureSignal {
   failure_category?: TrackingRunFailureCategory;
   failure_detail?: TrackingRunFailureDetail;
   failure_stage?: TrackingRunFailureStage;
   retryable?: boolean;
 }
 
-export interface RunRetrySideEffectState {
+interface RunRetrySideEffectState {
   cancelRequested?: boolean;
   userVisibleOutputSeen?: boolean;
   toolCallSeen?: boolean;

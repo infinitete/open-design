@@ -15,15 +15,6 @@ export class NodePtyUnavailableError extends Error {
   }
 }
 
-export function isNodePtyUnavailableError(error: unknown): error is NodePtyUnavailableError {
-  return error instanceof NodePtyUnavailableError
-    || (
-      error instanceof Error
-      && 'code' in error
-      && error.code === NODE_PTY_UNAVAILABLE_CODE
-    );
-}
-
 /**
  * Resolve node-pty's POSIX spawn-helper candidates without importing its
  * native addon. The lookup keeps Terminal users on the package-relative

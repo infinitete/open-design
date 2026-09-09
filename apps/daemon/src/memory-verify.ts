@@ -24,7 +24,7 @@ import type {
 } from '@open-design/contracts';
 import { memoryEvents } from './memory.js';
 
-export interface ActiveRuleForVerify {
+interface ActiveRuleForVerify {
   name: string;
   /** The rule's Check line — the rubric a scorecard row should address. */
   check?: string;

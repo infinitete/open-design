@@ -238,7 +238,7 @@ export class PackagedOnboardingConfigError extends Error {
  * that was never written is the honest state of a fresh install, whereas in a
  * run that seeded completion its disappearance means the seed vanished.
  */
-export type PackagedOnboardingConfigOutcomeKind =
+type PackagedOnboardingConfigOutcomeKind =
   | 'absent'
   | 'http-error'
   | 'malformed'
@@ -387,7 +387,7 @@ export function packagedAppShellPolicy(
  * The clock and sleep are injectable so the transition can be driven without
  * waiting out a real timeout.
  */
-export async function settlePackagedAppShell(options: {
+async function settlePackagedAppShell(options: {
   readonly describeLast?: (value: unknown) => string;
   readonly now?: () => number;
   readonly observe: () => Promise<unknown>;

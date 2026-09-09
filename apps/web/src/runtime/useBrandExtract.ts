@@ -13,9 +13,9 @@ import type { BrandExtractStartResponse, BrandStatus } from '@open-design/contra
 import { useI18n } from '../i18n';
 
 /** Coarse kickoff phase. */
-export type BrandExtractPhase = 'idle' | 'starting' | 'done' | 'error';
+type BrandExtractPhase = 'idle' | 'starting' | 'done' | 'error';
 
-export interface BrandExtractState {
+interface BrandExtractState {
   phase: BrandExtractPhase;
   /** Reserved brand id, available once the kickoff succeeds. */
   brandId: string | null;

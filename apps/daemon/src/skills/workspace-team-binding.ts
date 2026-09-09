@@ -31,22 +31,6 @@ export function skillIdFromWorkspaceTeamBinding(
   }
 }
 
-export function skillLogicalResourceId(bindingResourceId: string): string {
-  if (!bindingResourceId.startsWith(WORKSPACE_TEAM_SKILL_BINDING_PREFIX)) {
-    return bindingResourceId;
-  }
-  const separator = bindingResourceId.indexOf(
-    ':',
-    WORKSPACE_TEAM_SKILL_BINDING_PREFIX.length,
-  );
-  if (separator < 0) return bindingResourceId;
-  try {
-    return decodeURIComponent(bindingResourceId.slice(separator + 1));
-  } catch {
-    return bindingResourceId;
-  }
-}
-
 export function workspaceTeamSkillBindingAllowsRead(
   db: SqliteDb,
   workspaceId: string,
@@ -86,16 +70,6 @@ export function workspaceTeamSkillBindingActivationFence(
     binding.updatedByWorkspaceMemberId ?? null,
     binding.resourceHubResourceId ?? null,
   ]);
-}
-
-export async function resolveWorkspaceTeamSkillWithBindingGate<T>(input: {
-  bindingAllowsRead: () => boolean;
-  resolve: () => Promise<T | null>;
-}): Promise<T | null> {
-  if (!input.bindingAllowsRead()) return null;
-  const resolved = await input.resolve();
-  if (resolved == null || !input.bindingAllowsRead()) return null;
-  return resolved;
 }
 
 export async function activateWorkspaceTeamSkillIfStillShared(input: {

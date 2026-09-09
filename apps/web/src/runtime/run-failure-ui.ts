@@ -28,7 +28,7 @@ import {
 // user has a Retry button after the external step completes (OAuth /
 // switching models happens out-of-band; we can't auto-retry from the
 // daemon side).
-export type RunFailurePrimaryAction =
+type RunFailurePrimaryAction =
   | 'retry'
   | 'launch-terminal-auth'
   | 'launch-terminal-switch-model'
@@ -40,7 +40,7 @@ export type RunFailurePrimaryAction =
 // i18n keys for the gray-card text override (null = show the raw error).
 // Keys ending in a value with `{agent}` are interpolated at render time via
 // t(key, { agent }) (see ChatPane displayError)
-export type RunFailureMessageKey =
+type RunFailureMessageKey =
   | 'chat.connectionDropped'
   | 'chat.runError.signInMessage.other'
   | 'chat.runError.cliMissingMessage'
@@ -71,7 +71,7 @@ export type RunFailureMessageKey =
 // detail message). Frontend-only mapping from error code → human-readable type;
 // the daemon does not yet emit a type name (the raw status label is just the
 // word "error"). A full backend type ⇄ frontend pairing is a later effort.
-export type RunFailureTitleKey =
+type RunFailureTitleKey =
   | 'chat.runError.title.connectionDropped'
   | 'chat.runError.title.signInRequired'
   | 'chat.runError.title.rateLimited'

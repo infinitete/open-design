@@ -14,13 +14,13 @@ import type { JsonRecord, SendAgentEvent } from './internal.js';
 import { isRecord, errorMessage, errorCode, getRecord } from './internal.js';
 
 /** A base64-encoded image object in pi's RPC prompt format. */
-export type PiImagePayload = {
+type PiImagePayload = {
   type: 'image';
   data: string;
   mimeType: string;
 };
 /** Generic parameter bag for a pi RPC command written to child stdin. */
-export type PiRpcParams = JsonRecord;
+type PiRpcParams = JsonRecord;
 /** Options for `attachPiRpcSession`. All fields map directly to the pi RPC protocol. */
 export type PiRpcSessionOptions = {
   child: ChildProcess;
@@ -92,7 +92,7 @@ export function replyExtensionUi(writable: Writable, raw: JsonRecord): void {
   );
 }
 /** Snapshot of `.pi/sessions/` file metadata taken before a prompt is sent. */
-export type PiSessionFileSnapshot = Map<string, { mtimeMs: number; size: number }>;
+type PiSessionFileSnapshot = Map<string, { mtimeMs: number; size: number }>;
 /**
  * Reads `.pi/sessions/*.jsonl` entries from the given working directory,
  * returning file paths with their mtime and size. Returns an empty array

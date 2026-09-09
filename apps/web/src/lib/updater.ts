@@ -21,9 +21,9 @@ import {
   type OpenDesignHostUpdaterStatusSnapshot,
 } from '@open-design/host';
 
-export type UpdaterEnvironment = 'desktop' | 'web';
+type UpdaterEnvironment = 'desktop' | 'web';
 
-export type UpdaterDownloadProgress = {
+type UpdaterDownloadProgress = {
   percent: number | null;
   receivedBytes: number;
   totalBytes: number | null;

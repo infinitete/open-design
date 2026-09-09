@@ -23,7 +23,7 @@ type MockAmrPersonalWorkspaceOptions = {
   accountSummaryAvailable?: boolean;
 };
 
-export const AMR_PERSONAL_WORKSPACE_ITEM = {
+const AMR_PERSONAL_WORKSPACE_ITEM = {
   workspaceId: 'ws-amr-playwright-personal',
   workspaceName: 'AMR Playwright personal workspace',
   workspaceType: 'personal',

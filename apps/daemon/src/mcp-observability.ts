@@ -9,7 +9,6 @@ import type {
 } from '@open-design/contracts/analytics';
 
 export const OPEN_DESIGN_PLUGIN_ID = 'open-design';
-export const PLUGIN_TELEMETRY_SCHEMA_VERSION = 3;
 const MIN_PLUGIN_GENERATION_SLO_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_PLUGIN_GENERATION_SLO_WINDOW_MS = 45 * 60 * 1000;
 const MAX_PLUGIN_GENERATION_SLO_WINDOW_MS = 24 * 60 * 60 * 1000;

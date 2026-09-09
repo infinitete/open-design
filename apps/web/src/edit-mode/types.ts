@@ -7,7 +7,7 @@ export interface ManualEditRect {
   height: number;
 }
 
-export interface ManualEditComputedSummary {
+interface ManualEditComputedSummary {
   display: string;
   position: string;
   fontFamily: string;
@@ -23,7 +23,7 @@ export interface ManualEditComputedSummary {
   margin: string;
 }
 
-export interface ManualEditMeasurement {
+interface ManualEditMeasurement {
   label: string;
   value: number;
   orientation: 'horizontal' | 'vertical';
@@ -31,7 +31,7 @@ export interface ManualEditMeasurement {
   to: ManualEditRect;
 }
 
-export interface ManualEditAlignmentGuide {
+interface ManualEditAlignmentGuide {
   orientation: 'horizontal' | 'vertical';
   position: number;
   label: string;
@@ -127,36 +127,36 @@ export interface ManualEditHistoryEntry {
   createdAt: number;
 }
 
-export interface ManualEditTargetMessage {
+interface ManualEditTargetMessage {
   type: 'od-edit-targets';
   targets: ManualEditTarget[];
 }
 
-export interface ManualEditSelectMessage {
+interface ManualEditSelectMessage {
   type: 'od-edit-select';
   target: ManualEditTarget;
 }
 
-export interface ManualEditHoverMessage {
+interface ManualEditHoverMessage {
   type: 'od-edit-hover';
   target: ManualEditTarget;
 }
 
-export interface ManualEditInspectHoverMessage {
+interface ManualEditInspectHoverMessage {
   type: 'od-edit-inspect-hover';
   target: ManualEditTarget;
 }
 
-export interface ManualEditInspectSelectMessage {
+interface ManualEditInspectSelectMessage {
   type: 'od-edit-inspect-select';
   target: ManualEditTarget;
 }
 
-export interface ManualEditBackgroundMessage {
+interface ManualEditBackgroundMessage {
   type: 'od-edit-background';
 }
 
-export interface ManualEditPreviewAppliedMessage {
+interface ManualEditPreviewAppliedMessage {
   type: 'od-edit-preview-style-applied';
   id: string;
   version: number;
@@ -164,13 +164,13 @@ export interface ManualEditPreviewAppliedMessage {
   error?: string;
 }
 
-export interface ManualEditTextCommitMessage {
+interface ManualEditTextCommitMessage {
   type: 'od-edit-text-commit';
   id: string;
   value: string;
 }
 
-export interface ManualEditTextSessionMessage {
+interface ManualEditTextSessionMessage {
   type: 'od-edit-text-session';
   id: string;
   active: boolean;
@@ -180,7 +180,7 @@ export interface ManualEditTextSessionMessage {
 
 /** Free drag-to-reposition finished: the element's new translate() value, to
  *  be committed as a pending style so the panel's Save persists it. */
-export interface ManualEditDragCommitMessage {
+interface ManualEditDragCommitMessage {
   type: 'od-edit-drag-commit';
   id: string;
   transform: string;

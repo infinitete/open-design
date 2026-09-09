@@ -5,21 +5,21 @@ export interface RunEventForDiagnostics {
   data: unknown;
 }
 
-export type RunDiagnosticSource =
+type RunDiagnosticSource =
   | 'error_event'
   | 'stderr'
   | 'exit_code'
   | 'signal'
   | 'unknown';
 
-export type StderrLineCountBucket =
+type StderrLineCountBucket =
   | 'none'
   | '1_5'
   | '6_20'
   | '21_100'
   | 'gt_100';
 
-export type RunCloseReason =
+type RunCloseReason =
   | 'exit_0'
   | 'exit_nonzero'
   | 'signal'

@@ -56,9 +56,9 @@ export const OD_NEXT_BUNDLE_NODE_PATHS_V2 = [
   'user_first_prompt',
 ] as const;
 
-export type OdNextBundleNodePathV2 = (typeof OD_NEXT_BUNDLE_NODE_PATHS_V2)[number];
+type OdNextBundleNodePathV2 = (typeof OD_NEXT_BUNDLE_NODE_PATHS_V2)[number];
 
-export type OdNextExactInputClassification =
+type OdNextExactInputClassification =
   | 'initial_bundle'
   | 'stage_turn'
   | 'transport_reference'
@@ -635,12 +635,6 @@ export const OD_NEXT_SEMANTIC_REQUEST_FACT_MAP_V1 = [
     note: 'No all-Skills catalogue is serialized or observed.',
   },
 ] as const satisfies readonly OdNextSemanticRequestFactEntry[];
-
-export const OD_NEXT_AGENT_INPUT_OWNERSHIP_V1 = {
-  version: OD_NEXT_EXACT_INPUT_MAP_VERSION,
-  finalTextAndTransport: OD_NEXT_EXACT_INPUT_MAP_V1,
-  semanticRequestFacts: OD_NEXT_SEMANTIC_REQUEST_FACT_MAP_V1,
-} as const;
 
 export const OD_NEXT_EXACT_TEXT_DELIVERY_PATHS_V1 = [
   {

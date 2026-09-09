@@ -30,7 +30,7 @@ import { createHash } from 'node:crypto';
 import type { CodeImportIndex } from './code-import.js';
 import type { DesignExtractReport } from './design-extract.js';
 
-export type OwnershipTier = 'leaf' | 'shared' | 'route' | 'shell';
+type OwnershipTier = 'leaf' | 'shared' | 'route' | 'shell';
 
 export interface OwnershipEntry {
   file: string;

@@ -27,14 +27,9 @@ import url from 'node:url';
  * exact line rather than a stale `path.join('..', 'v1', ...)` that
  * silently resolves to the wrong place.
  */
-export const SYNTHETIC_GOOD_FIXTURE_URL = new URL(
+const SYNTHETIC_GOOD_FIXTURE_URL = new URL(
   '../v1/happy-3-rounds.txt',
   import.meta.url,
-);
-
-/** String form of the fixture path so tests and tooling can still `path.join` against it. */
-export const SYNTHETIC_GOOD_FIXTURE_PATH = url.fileURLToPath(
-  SYNTHETIC_GOOD_FIXTURE_URL,
 );
 
 /**
@@ -42,7 +37,7 @@ export const SYNTHETIC_GOOD_FIXTURE_PATH = url.fileURLToPath(
  * with the daemon source so the call cannot fail in a packaged build;
  * `readFileSync` accepts URL objects directly.
  */
-export function syntheticGoodTranscript(): string {
+function syntheticGoodTranscript(): string {
   return readFileSync(SYNTHETIC_GOOD_FIXTURE_URL, 'utf8');
 }
 

@@ -24,7 +24,7 @@ export const WORKSPACE_ROOT = path.resolve(__dirname, "../../..");
 
 export const ALL_APPS = [APP_KEYS.DAEMON, APP_KEYS.WEB, APP_KEYS.DESKTOP] as const;
 export const DEFAULT_START_APPS = [APP_KEYS.DAEMON, APP_KEYS.WEB, APP_KEYS.DESKTOP] as const;
-export const DEFAULT_RUN_APPS = [APP_KEYS.DAEMON, APP_KEYS.WEB] as const;
+const DEFAULT_RUN_APPS = [APP_KEYS.DAEMON, APP_KEYS.WEB] as const;
 export const DEFAULT_STOP_APPS = [APP_KEYS.DESKTOP, APP_KEYS.WEB, APP_KEYS.DAEMON] as const;
 
 export type ToolDevAppName = (typeof ALL_APPS)[number];
@@ -38,7 +38,7 @@ export type ToolDevOptions = {
   webPort?: number | string | null;
 };
 
-export type ToolDevAppConfig = {
+type ToolDevAppConfig = {
   app: ToolDevAppName;
   ipcPath: string;
   latestLogPath: string;
@@ -99,7 +99,7 @@ function resolveAppConfig(options: {
   };
 }
 
-export function isToolDevAppName(value: string): value is ToolDevAppName {
+function isToolDevAppName(value: string): value is ToolDevAppName {
   return ALL_APPS.includes(value as ToolDevAppName);
 }
 

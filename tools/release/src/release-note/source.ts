@@ -12,7 +12,7 @@ const MAX_RELEASE_NOTE_BYTES = 1024 * 1024;
 const MAX_TITLE_LENGTH = 200;
 const MAX_DESCRIPTION_LENGTH = 500;
 
-export type ReleaseNotePlanEntry = {
+type ReleaseNotePlanEntry = {
   description: string;
   locale: string;
   mediaType: typeof RELEASE_NOTE_MEDIA_TYPE;

@@ -11,7 +11,7 @@ import type {
 
 import { listFiles, resolveProjectDir } from './projects.js';
 
-export type RunDeliverableValidation =
+type RunDeliverableValidation =
   | 'valid'
   | 'not_succeeded'
   | 'no_artifact'

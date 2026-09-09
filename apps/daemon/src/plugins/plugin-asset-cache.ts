@@ -227,7 +227,7 @@ export function createValidatingLookup(lookupImpl: DnsLookupCb = dnsLookupCb) {
   };
 }
 
-export interface AssetCacheResult {
+interface AssetCacheResult {
   buf: Buffer;
   contentType: string;
 }

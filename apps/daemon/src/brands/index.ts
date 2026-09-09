@@ -1628,13 +1628,13 @@ async function finalizeBrandCore(opts: FinalizeBrandCoreOptions): Promise<BrandF
 /** Deterministic harvester that downloads a site's brand material into the
  *  brand workspace. Injectable so tests run offline. The optional signal lets a
  *  user Stop tear down in-flight fetches instead of waiting out their timeouts. */
-export type PrefetchFn = (
+type PrefetchFn = (
   url: string,
   brandDir: string,
   opts?: { signal?: AbortSignal },
 ) => Promise<PrefetchResult | null>;
 
-export interface RunProgrammaticExtractionOptions {
+interface RunProgrammaticExtractionOptions {
   id: string;
   meta: BrandMeta;
   projectId: string;

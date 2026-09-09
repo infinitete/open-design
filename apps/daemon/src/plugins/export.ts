@@ -26,7 +26,7 @@ import { getSnapshot } from './snapshots.js';
 
 type SqliteDb = Database.Database;
 
-export type ExportTarget = 'od' | 'claude-plugin' | 'agent-skill';
+type ExportTarget = 'od' | 'claude-plugin' | 'agent-skill';
 
 export interface ExportInput {
   db: SqliteDb;

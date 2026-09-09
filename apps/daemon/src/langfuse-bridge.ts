@@ -73,7 +73,7 @@ import type { TraceArtifactObjectSource, TraceObjectUploadManifests } from './tr
 import { getDetectedRuntimeVersions } from './runtimes/detection.js';
 import { runTelemetryDeliveryIdempotencyKey } from './observability/delivery-state.js';
 
-export interface DaemonRunRecord {
+interface DaemonRunRecord {
   id: string;
   projectId: string | null;
   conversationId: string | null;
@@ -135,7 +135,7 @@ export interface BuildSafeRunQualityProjectionFromDaemonOpts {
 }
 
 /** Minimal durable Run surface required to rebuild the Task-safe projection. */
-export interface SafeRunQualityDaemonRunRecord {
+interface SafeRunQualityDaemonRunRecord {
   id: string;
   projectId: string | null;
   conversationId: string | null;

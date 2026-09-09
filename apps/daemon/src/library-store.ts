@@ -582,32 +582,6 @@ export function insertLibraryTask(db: SqliteDb, task: LibraryTask): void {
   );
 }
 
-export function getLibraryTask(db: SqliteDb, id: string): LibraryTask | null {
-  const raw = db.prepare(`SELECT ${TASK_COLS} FROM library_tasks WHERE id = ?`).get(id) as
-    | RawTaskRow
-    | undefined;
-  return raw ? normalizeTask(raw) : null;
-}
-
-export function updateLibraryTask(
-  db: SqliteDb,
-  id: string,
-  patch: Partial<Pick<LibraryTask, 'status' | 'progress' | 'error' | 'endedAt'>>,
-): void {
-  const existing = getLibraryTask(db, id);
-  if (!existing) return;
-  const next = { ...existing, ...patch };
-  db.prepare(
-    `UPDATE library_tasks SET status = ?, progress_json = ?, error_json = ?, ended_at = ? WHERE id = ?`,
-  ).run(
-    next.status,
-    JSON.stringify(next.progress ?? []),
-    next.error ? JSON.stringify(next.error) : null,
-    next.endedAt ?? null,
-    id,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Tokens (browser-extension pairing)
 // ---------------------------------------------------------------------------

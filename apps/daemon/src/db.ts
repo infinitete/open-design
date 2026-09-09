@@ -996,13 +996,6 @@ export function updateWorkspaceResource(
   return null;
 }
 
-export function deleteWorkspaceResource(
-  _db: SqliteDb,
-  _resourceType: string,
-  _workspaceId: string,
-  _resourceId: string,
-): void {}
-
 export function deleteWorkspaceResourceByResourceId(
   _db: SqliteDb,
   _resourceType: string,
@@ -2553,10 +2546,6 @@ export function appendMessageAgentEvent(
   return appendMessageAgentEvents(db, messageId, [event]);
 }
 
-export function deleteMessage(db: SqliteDb, id: string) {
-  db.prepare(`DELETE FROM messages WHERE id = ?`).run(id);
-}
-
 // ---------- preview comments ----------
 
 const PREVIEW_COMMENT_STATUSES = new Set([
@@ -3069,7 +3058,7 @@ export function deleteConversationAndRepairTeamCommentAnchor(
  * apply an inbound tombstone. Scoped by project so a stray id can't reach across
  * projects. Returns true when a row was removed.
  */
-export function deleteSyncedPreviewComment(
+function deleteSyncedPreviewComment(
   db: SqliteDb,
   projectId: string,
   id: string,

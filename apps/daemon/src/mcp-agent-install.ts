@@ -74,7 +74,7 @@ export interface PlanContext {
 }
 
 /** Agent owns a `<bin> mcp add/remove/get`; we drive it. */
-export interface CliInstallPlan {
+interface CliInstallPlan {
   kind: 'cli';
   slug: AgentSlug;
   bin: string;
@@ -99,7 +99,7 @@ export interface JsonInstallPlan {
 }
 
 /** Unverified format — print a snippet, never write. */
-export interface ManualInstallPlan {
+interface ManualInstallPlan {
   kind: 'manual';
   slug: AgentSlug;
   format: 'json' | 'yaml' | 'toml';

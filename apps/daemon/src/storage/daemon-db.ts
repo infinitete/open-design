@@ -13,7 +13,7 @@
 // a misconfigured operator sees a clear error instead of silently
 // dropping writes onto a non-existent backend.
 
-export type DaemonDbKind = 'sqlite' | 'postgres';
+type DaemonDbKind = 'sqlite' | 'postgres';
 
 export interface DaemonDbConfig {
   kind: DaemonDbKind;

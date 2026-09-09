@@ -19,7 +19,7 @@ export interface ArtifactTextSuppressor {
   stats(): ArtifactTextSuppressorStats;
 }
 
-export interface ArtifactTextSuppressorStats {
+interface ArtifactTextSuppressorStats {
   suppressedChars: number;
   suppressedChunks: number;
   openedBlocks: number;
@@ -131,17 +131,6 @@ function createTaggedTextSuppressor(args: {
   }
 
   return { strip, flush, isSuppressing, hasPendingCandidate, stats };
-}
-
-export function emitWithTextSuppressor(
-  suppressor: ArtifactTextSuppressor,
-  onEvent: EventSink,
-  text: string,
-): boolean {
-  const delta = suppressor.strip(text);
-  if (!delta) return false;
-  onEvent({ type: 'text_delta', delta });
-  return true;
 }
 
 function possibleDsmlArtifactOpenStart(text: string): number {

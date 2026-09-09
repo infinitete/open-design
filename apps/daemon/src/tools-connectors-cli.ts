@@ -138,9 +138,9 @@ interface LocalDesignEvidence {
   warnings: string[];
 }
 
-export type DesignSystemAuditSeverity = 'error' | 'warning';
+type DesignSystemAuditSeverity = 'error' | 'warning';
 
-export interface DesignSystemAuditIssue {
+interface DesignSystemAuditIssue {
   severity: DesignSystemAuditSeverity;
   code: string;
   message: string;

@@ -25,15 +25,15 @@ function assertSpawnedProcessAlive(appName: string, isProcessAlive: ProcessAlive
   }
 }
 
-export function resolveDaemonIpcPath(runtime: AppRuntimeLookup): string {
+function resolveDaemonIpcPath(runtime: AppRuntimeLookup): string {
   return resolveAppIpcPath({ app: APP_KEYS.DAEMON, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace: runtime.namespace });
 }
 
-export function resolveWebIpcPath(runtime: AppRuntimeLookup): string {
+function resolveWebIpcPath(runtime: AppRuntimeLookup): string {
   return resolveAppIpcPath({ app: APP_KEYS.WEB, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace: runtime.namespace });
 }
 
-export function resolveDesktopIpcPath(runtime: AppRuntimeLookup): string {
+function resolveDesktopIpcPath(runtime: AppRuntimeLookup): string {
   return resolveAppIpcPath({ app: APP_KEYS.DESKTOP, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace: runtime.namespace });
 }
 

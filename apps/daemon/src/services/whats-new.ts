@@ -9,7 +9,7 @@ import type { WhatsNewContent, WhatsNewLocaleContent } from '@open-design/contra
 // resolves to `{ id: null, content: null }`; this endpoint must never fail the
 // home surface.
 
-export interface WhatsNewReadResult {
+interface WhatsNewReadResult {
   id: string | null;
   content: WhatsNewContent | null;
   fetchedAt: number;

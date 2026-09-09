@@ -4,13 +4,13 @@ import { basename, dirname, join, relative } from "node:path";
 
 import { withDirectoryLock } from "./lock.js";
 
-export const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 1;
 
-export type CacheInvalidation = {
+type CacheInvalidation = {
   reason: string;
 };
 
-export type CacheManifest<TMetadata> = {
+type CacheManifest<TMetadata> = {
   createdAt: string;
   key: string;
   nodeId: string;
@@ -40,7 +40,7 @@ export type CacheReport = {
   root: string;
 };
 
-export type CacheBuildContext = {
+type CacheBuildContext = {
   entryRoot: string;
 };
 

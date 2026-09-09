@@ -37,7 +37,7 @@ import type { DesktopUpdaterLogger } from "../updater.js";
 
 export const RELEASE_CLEANUP_DESCRIPTOR_VERSION = 1;
 
-export type ReleaseCleanupReason =
+type ReleaseCleanupReason =
   | "cleanup-failed"
   | "current-version-or-newer"
   | "manual-clear"
@@ -45,7 +45,7 @@ export type ReleaseCleanupReason =
   | "metadata-missing"
   | "older-than-current-version";
 
-export type ReleaseCleanupEntry = {
+type ReleaseCleanupEntry = {
   currentVersion?: string;
   deprecatedAt?: string;
   error?: DesktopUpdateErrorSnapshot;
@@ -60,7 +60,7 @@ export type ReleaseCleanupEntry = {
   version?: string;
 };
 
-export type ReleaseCleanupDescriptor = {
+type ReleaseCleanupDescriptor = {
   currentVersion?: string;
   platform: string;
   readyVersion?: string;

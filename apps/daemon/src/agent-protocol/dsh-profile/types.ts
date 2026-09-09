@@ -6,7 +6,6 @@
 
 export const DSH_PROFILE_PROTOCOL_VERSION = 1 as const;
 export const DSH_PROFILE_RUNTIME = 'open-design' as const;
-export const DSH_PROFILE_NAME = 'open-design' as const;
 
 export type DshProfileCapabilities = {
   session_resume: true;
@@ -14,7 +13,7 @@ export type DshProfileCapabilities = {
   structured_events: true;
 };
 
-export type DshProfileModelSelection = {
+type DshProfileModelSelection = {
   provider: string;
   id: string;
 };
@@ -25,13 +24,6 @@ export type DshProfileModelCatalogEntry = {
   id: string;
   name: string;
   reasoning_options?: Array<{ id: string; name: string; default?: boolean }>;
-};
-
-export type DshProfileModelsFrame = {
-  v: 1;
-  type: 'models';
-  runtime: 'open-design';
-  models: DshProfileModelCatalogEntry[];
 };
 
 export type DshProfileExecuteCommand = {
@@ -46,7 +38,7 @@ export type DshProfileExecuteCommand = {
   mcp_servers: unknown[];
 };
 
-export type DshProfileCancelCommand = {
+type DshProfileCancelCommand = {
   v: 1;
   type: 'cancel';
   request_id: string;
@@ -65,7 +57,7 @@ export type DshProfileProbeFrame = {
   capabilities: DshProfileCapabilities;
 };
 
-export type DshProfileReadyFrame = {
+type DshProfileReadyFrame = {
   v: 1;
   type: 'ready';
   runtime: 'open-design';
@@ -74,7 +66,7 @@ export type DshProfileReadyFrame = {
   capabilities: DshProfileCapabilities;
 };
 
-export type DshProfileSessionFrame = {
+type DshProfileSessionFrame = {
   v: 1;
   type: 'session';
   request_id: string;
@@ -82,21 +74,21 @@ export type DshProfileSessionFrame = {
   resumed: boolean;
 };
 
-export type DshProfileThinkingFrame = {
+type DshProfileThinkingFrame = {
   v: 1;
   type: 'thinking';
   request_id: string;
   content: string;
 };
 
-export type DshProfileTextFrame = {
+type DshProfileTextFrame = {
   v: 1;
   type: 'text';
   request_id: string;
   content: string;
 };
 
-export type DshProfileToolCallFrame = {
+type DshProfileToolCallFrame = {
   v: 1;
   type: 'tool_call';
   request_id: string;
@@ -105,7 +97,7 @@ export type DshProfileToolCallFrame = {
   arguments: string;
 };
 
-export type DshProfileToolResultFrame = {
+type DshProfileToolResultFrame = {
   v: 1;
   type: 'tool_result';
   request_id: string;
@@ -115,7 +107,7 @@ export type DshProfileToolResultFrame = {
   is_error: boolean;
 };
 
-export type DshProfileUsageFrame = {
+type DshProfileUsageFrame = {
   v: 1;
   type: 'usage';
   request_id: string;
@@ -127,14 +119,14 @@ export type DshProfileUsageFrame = {
   cache_write_tokens?: number;
 };
 
-export type DshProfileWireError = {
+type DshProfileWireError = {
   code: string;
   message: string;
 };
 
 export type DshProfileResultStatus = 'completed' | 'cancelled' | 'failed';
 
-export type DshProfileResultFrame = {
+type DshProfileResultFrame = {
   v: 1;
   type: 'result';
   request_id: string;
@@ -146,7 +138,7 @@ export type DshProfileResultFrame = {
   error?: DshProfileWireError;
 };
 
-export type DshProfileProtocolErrorFrame = {
+type DshProfileProtocolErrorFrame = {
   v: 1;
   type: 'protocol_error';
   request_id?: string;

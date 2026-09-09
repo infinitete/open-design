@@ -8,7 +8,7 @@ type ResourceHubPrincipal = Record<string, never>;
 type AuthorizeProjectRequest = (...args: any[]) => any;
 type AuthorizeProjectToolRequest = (...args: any[]) => any;
 
-export interface HttpDeps {
+interface HttpDeps {
   createSseResponse: (...args: any[]) => any;
   getPublicBaseUrl?: (...args: any[]) => string;
   isLocalSameOrigin: (...args: any[]) => boolean;
@@ -45,7 +45,7 @@ export interface PathDeps {
   USER_SKILLS_DIR: string;
 }
 
-export interface ResourceDeps {
+interface ResourceDeps {
   FIRST_PARTY_ATOMS?: Array<any>;
   // `workspaceId` scopes the user half of the catalog to one workspace (#145).
   // Omit it to resolve a design system by id from anywhere.
@@ -87,11 +87,11 @@ export interface ResourceDeps {
   mimeFor: (filePath: string) => string;
 }
 
-export interface RoutineDeps {
+interface RoutineDeps {
   routineService: RoutineRoutesService;
 }
 
-export interface ProjectPreviewScopeDeps {
+interface ProjectPreviewScopeDeps {
   mint: (
     projectId: string,
     workspace?: { workspaceId: string; workspaceMemberId: string } | null,
@@ -111,7 +111,7 @@ export interface ProjectPreviewScopeDeps {
   ) => { workspaceId: string; workspaceMemberId: string } | null | undefined;
 }
 
-export interface TelemetryDeps {
+interface TelemetryDeps {
   reportFinalizedMessage: (
     saved: any,
     body?: any,
@@ -244,5 +244,3 @@ export interface ServerContext {
 }
 
 export type RouteDeps<K extends keyof ServerContext> = Pick<ServerContext, K>;
-
-export type RouteRegistrar = (app: Express, ctx: ServerContext) => void;

@@ -35,7 +35,7 @@ export interface CommentOverlayBounds {
   height: number;
 }
 
-export interface VisualAnnotationTarget {
+interface VisualAnnotationTarget {
   filePath: string;
   elementId?: string;
   selector?: string;

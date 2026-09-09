@@ -274,7 +274,7 @@ export function buildDaemonPriorTranscript(
     : buildDaemonTranscript(history.slice(0, latestUserIndex), targetAgentId);
 }
 
-export interface DaemonStreamHandlers extends StreamHandlers {
+interface DaemonStreamHandlers extends StreamHandlers {
   onAgentEvent: (ev: AgentEvent) => void;
   /** Authoritative artifact count from the daemon's terminal run record. */
   onArtifactCount?: (count: number) => void;

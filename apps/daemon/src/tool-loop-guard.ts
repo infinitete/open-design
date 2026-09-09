@@ -52,10 +52,10 @@
  */
 
 /** Why the guard tripped. */
-export type ToolLoopReason = 'consecutive-errors' | 'repeated-failure';
+type ToolLoopReason = 'consecutive-errors' | 'repeated-failure';
 
 /** What the run loop should do about it. */
-export type ToolLoopAction = 'warn' | 'halt';
+type ToolLoopAction = 'warn' | 'halt';
 
 /** Operating mode. `off` disables the guard entirely. `warn` (the daemon
  *  default) only ever emits heads-up events and never halts. `halt` warns

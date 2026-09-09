@@ -33,7 +33,7 @@ function resolveToolsPackRoot(startDir: string): string {
   throw new Error(`tools-pack: unable to resolve package root from ${startDir}`);
 }
 
-export const toolsPackRoot = resolveToolsPackRoot(dirname(fileURLToPath(import.meta.url)));
+const toolsPackRoot = resolveToolsPackRoot(dirname(fileURLToPath(import.meta.url)));
 export const resourcesRoot = join(toolsPackRoot, "resources");
 
 export const macResources = {

@@ -346,7 +346,7 @@ export interface ChatComposerDraftOptions {
 }
 
 /** Which of the two standalone quick-pill popovers is open, if either. */
-export type ComposerStandalonePanel = 'plugins' | 'toolbox' | null;
+type ComposerStandalonePanel = 'plugins' | 'toolbox' | null;
 
 export interface ChatComposerHandle {
   setDraft: (text: string, options?: ChatComposerDraftOptions) => void;

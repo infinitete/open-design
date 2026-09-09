@@ -12,7 +12,7 @@ import {
 
 export type ReplaySpeed = 'paused' | 'instant' | 'live' | { intervalMs: number };
 
-export interface UseCritiqueReplayOptions {
+interface UseCritiqueReplayOptions {
   /**
    * Resolve the transcript bytes for a given URL. Tests stub this; production
    * passes through `fetch`. Returns either a UTF-8 string or a binary buffer
@@ -38,7 +38,7 @@ export interface UseCritiqueReplayOptions {
   clearTimeoutFn?: typeof clearTimeout;
 }
 
-export interface UseCritiqueReplayResult {
+interface UseCritiqueReplayResult {
   state: CritiqueState;
   dispatch: Dispatch<CritiqueAction>;
   status: ReplayStatus;

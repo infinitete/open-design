@@ -62,13 +62,13 @@ export interface KitFont {
   notes?: string;
 }
 
-export interface KitImageSample {
+interface KitImageSample {
   url: string;
   caption?: string;
   kind?: string;
 }
 
-export interface KitImagery {
+interface KitImagery {
   style: string;
   subjects: string[];
   treatment: string;
@@ -76,14 +76,14 @@ export interface KitImagery {
   samples: KitImageSample[];
 }
 
-export interface KitLayout {
+interface KitLayout {
   radius: string;
   borderWeight: string;
   spacing: string;
   postureRules: string[];
 }
 
-export interface KitSystem {
+interface KitSystem {
   kitUrl: string;
   kitDarkUrl?: string;
   tokensUrl?: string;
@@ -91,7 +91,7 @@ export interface KitSystem {
   kitLabel?: string;
 }
 
-export interface KitAsset {
+interface KitAsset {
   kind: string;
   label: string;
   url: string;

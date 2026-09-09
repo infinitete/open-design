@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
-export type MockOpenAiRequest = {
+type MockOpenAiRequest = {
   body: unknown;
   headers: Record<string, string | string[] | undefined>;
   method: string;

@@ -5,7 +5,7 @@ import {
   type LiveArtifactSsePayload,
   type ProjectConversationCreatedSsePayload,
 } from '@open-design/contracts';
-export interface ProjectFileChangeEvent {
+interface ProjectFileChangeEvent {
   type: 'file-changed';
   path: string;
   kind: 'add' | 'change' | 'unlink';
@@ -15,9 +15,9 @@ export interface ProjectFileChangeEvent {
 // package keep their existing import shape; the canonical type lives in
 // `packages/contracts` alongside the other SSE payloads (per repo review
 // guidance on contract/protocol seams).
-export type ProjectConversationCreatedEvent = ProjectConversationCreatedSsePayload;
+type ProjectConversationCreatedEvent = ProjectConversationCreatedSsePayload;
 
-export type ProjectLiveArtifactEvent = LiveArtifactSsePayload | LiveArtifactRefreshSsePayload;
+type ProjectLiveArtifactEvent = LiveArtifactSsePayload | LiveArtifactRefreshSsePayload;
 
 export type ProjectEvent =
   | ProjectFileChangeEvent

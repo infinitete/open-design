@@ -101,7 +101,7 @@ export interface RoutineRunHandlerStart {
   discardUnstarted?: () => void;
 }
 
-export interface RoutineRunCompletion {
+interface RoutineRunCompletion {
   status: RoutineRunStatus;
   summary?: string;
   error?: string;

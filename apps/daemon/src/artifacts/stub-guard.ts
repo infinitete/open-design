@@ -13,7 +13,7 @@ import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-export type ArtifactStubGuardMode = 'reject' | 'warn' | 'off';
+type ArtifactStubGuardMode = 'reject' | 'warn' | 'off';
 
 export interface ArtifactStubGuardConfig {
   mode: ArtifactStubGuardMode;
@@ -26,7 +26,7 @@ export interface PriorArtifactSibling {
   size: number;
 }
 
-export interface ArtifactStubGuardWarning {
+interface ArtifactStubGuardWarning {
   code: 'ARTIFACT_REGRESSION';
   message: string;
   identifier: string;

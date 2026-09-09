@@ -1525,15 +1525,6 @@ export function validateProjectPath(raw) {
   return parts.join('/');
 }
 
-export function isReservedProjectFilePath(raw) {
-  try {
-    const normalized = String(raw ?? '').replace(/\\/g, '/');
-    return normalized.split('/').filter(Boolean).some((part) => RESERVED_PROJECT_FILE_SEGMENTS.has(part));
-  } catch {
-    return false;
-  }
-}
-
 // Keep Unicode letters/digits as-is; replace path separators, control
 // characters, and reserved punctuation with underscore. Spaces collapse
 // to dashes (matches the kebab-case style used by the agent's slugs).

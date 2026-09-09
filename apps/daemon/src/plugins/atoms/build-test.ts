@@ -18,9 +18,9 @@ import { promises as fsp } from 'node:fs';
 import { spawn, type SpawnOptions } from 'node:child_process';
 import type { UntilSignals } from '../until.js';
 
-export type BuildTestStatus = 'passing' | 'failing' | 'skipped';
+type BuildTestStatus = 'passing' | 'failing' | 'skipped';
 
-export interface BuildTestCommandResult {
+interface BuildTestCommandResult {
   command:    string;
   exitCode:   number;
   durationMs: number;

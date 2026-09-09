@@ -36,13 +36,13 @@ export type SmokeSuiteOptions = {
   dataDir?: string;
 };
 
-export type SmokeSuiteFinalizeInput = {
+type SmokeSuiteFinalizeInput = {
   diagnostics?: unknown;
   error?: unknown;
   success: boolean;
 };
 
-export type SmokeSuiteWith = {
+type SmokeSuiteWith = {
   env: <T>(patch: EnvPatch, run: () => Promise<T>) => Promise<T>;
   pathEntry: <T>(entry: string, run: () => Promise<T>) => Promise<T>;
   toolsDev: (
@@ -51,9 +51,9 @@ export type SmokeSuiteWith = {
   ) => Promise<string>;
 };
 
-export type EnvPatch = Record<string, string | null | undefined>;
+type EnvPatch = Record<string, string | null | undefined>;
 
-export type ToolsDevSuiteContext = {
+type ToolsDevSuiteContext = {
   check: () => Promise<ToolsDevCheckResult>;
   logs: () => Promise<Record<string, ToolsDevLogResult>>;
   runtime: ToolsDevPortAllocation;
@@ -62,7 +62,7 @@ export type ToolsDevSuiteContext = {
   webUrl: string;
 };
 
-export type ToolsDevSuiteOptions = {
+type ToolsDevSuiteOptions = {
   env?: Record<string, string | undefined>;
   onFailure?: (input: {
     context: ToolsDevSuiteContext | null;

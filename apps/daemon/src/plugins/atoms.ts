@@ -3,7 +3,7 @@
 // `status: 'planned'` so `od plugin doctor` can warn rather than reject
 // when a plugin references a not-yet-implemented atom.
 
-export type AtomStatus = 'implemented' | 'planned';
+type AtomStatus = 'implemented' | 'planned';
 
 export interface AtomCatalogEntry {
   id: string;

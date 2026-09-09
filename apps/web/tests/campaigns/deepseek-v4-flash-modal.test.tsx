@@ -25,15 +25,6 @@ vi.mock('../../src/analytics/provider', () => ({
   useAnalytics: () => ({ track: trackSpy }),
 }));
 
-vi.mock('../../src/collab/useWorkspaceContext', () => ({
-  useWorkspaceContext: () => ({
-    context: null,
-    resourceReadIdentity: null,
-    loading: false,
-    identityChangePending: false,
-  }),
-}));
-
 vi.mock('../../src/analytics/client', () => ({
   getResolvedDeviceId: () => null,
 }));

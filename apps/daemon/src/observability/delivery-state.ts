@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const RUN_TELEMETRY_DELIVERY_STATE_VERSION = 1 as const;
 
-export type RunTelemetryDeliveryTerminalStatus =
+type RunTelemetryDeliveryTerminalStatus =
   | 'accepted'
   | 'not_expected';
 

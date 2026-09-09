@@ -29,7 +29,7 @@ export type MediaFamily = 'seedance' | 'wan' | 'veo' | 'generic';
 export type MediaType = 'video' | 'image' | 'audio';
 
 /** Vendor-specific param passthrough declaration (= aihubmix-video ExtraBodyParamDef). */
-export interface ExtraBodyParamDef {
+interface ExtraBodyParamDef {
   name: string;
   type: 'string' | 'number' | 'boolean';
   default?: string | number | boolean;

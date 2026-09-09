@@ -235,7 +235,7 @@ export interface RunAnalyticsLifecycleDeps {
   telemetry: RunAnalyticsTelemetryDeps;
 }
 
-export interface RunAnalyticsTelemetryDeps {
+interface RunAnalyticsTelemetryDeps {
   reportRunCompletionTelemetryFallback: (input: RunCreatedFallbackInput) => void;
   resolveRunProjectKindForAnalytics: (input: RunProjectKindInput) => string | null;
   runArtifactBaselines: RunArtifactBaselines;
@@ -281,7 +281,7 @@ export interface RunAnalyticsFacts {
 }
 
 /** The facts plus the Run they describe. */
-export type RunAnalyticsInstallInput = RunAnalyticsFacts & { run: ChatRun };
+type RunAnalyticsInstallInput = RunAnalyticsFacts & { run: ChatRun };
 
 export interface RunAnalyticsLifecycle {
   /**

@@ -5,8 +5,6 @@ import {
   writeProjectTextFile,
 } from '../providers/registry';
 
-export type KitTextModule = 'identity' | 'voice' | 'imagery-layout' | 'design-md';
-
 async function readBrand(
   projectId: string,
 ): Promise<Brand | null> {

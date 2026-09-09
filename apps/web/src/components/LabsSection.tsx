@@ -217,7 +217,7 @@ function OptOutPanel({ onAnswer }: OptOutPanelProps) {
  * would not be enough: a newer section can legitimately be showing the same
  * `saving` this write left behind.
  */
-export interface LabsAutosaveController {
+interface LabsAutosaveController {
   /** Take the indicator for one write and report it as saving. */
   claim(): number;
   /** Settle that claim. A no-op once a newer writer has taken the indicator. */

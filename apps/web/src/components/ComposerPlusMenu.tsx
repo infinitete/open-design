@@ -36,7 +36,7 @@ const PLUS_MENU_FLYOUT_MAX_HEIGHT = 320;
 // measured (first layout pass). Once `contentHeight` is known the real stack
 // height drives the flip decision instead of this approximation.
 const PLUS_MENU_MIN_HEIGHT = 260;
-export type PlusMenuPlacementPreference = 'auto' | 'down' | 'up';
+type PlusMenuPlacementPreference = 'auto' | 'down' | 'up';
 type PlusMenuFlyoutPlacement = 'right' | 'left' | 'contained';
 type PlusMenuFlyoutVerticalPlacement = 'down' | 'up';
 type PlusMenuVerticalPlacement = 'down' | 'up';

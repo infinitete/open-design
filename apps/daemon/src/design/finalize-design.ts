@@ -483,7 +483,7 @@ export function appendVersionedApiPath(baseUrl: string, suffix: string): string 
   return url.toString();
 }
 
-export interface FinalizeProviderCallParams {
+interface FinalizeProviderCallParams {
   protocol: FinalizeProviderProtocol;
   apiKey: string;
   baseUrl: string;

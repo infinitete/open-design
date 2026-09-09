@@ -60,7 +60,7 @@ import { Toast } from './Toast';
  *  (hidden in the all-shared team space) and the "{creator}创建" line: 'recent'
  *  = home's mixed private/shared, 'drafts' = the member's own private list,
  *  'team' = the全部项目 grid where every card is a team-shared project. */
-export type SpaceKind = 'recent' | 'drafts' | 'team';
+type SpaceKind = 'recent' | 'drafts' | 'team';
 import {
   coverFromProjectFile,
   projectCoverUrl,

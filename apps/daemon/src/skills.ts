@@ -511,14 +511,6 @@ function humanizeExampleName(key: string): string {
     .join(" ");
 }
 
-// Used by `/api/skills/:id/example` to resolve a derived id back to its
-// on-disk file. Returns null when the key is unsafe; the route checks
-// `fs.existsSync` against the returned path before reading.
-export function resolveDerivedExamplePath(parentDir: string, childKey: string): string | null {
-  if (!isSafeExampleKey(childKey)) return null;
-  return path.join(parentDir, "examples", `${childKey}.html`);
-}
-
 // Split a `<parent>:<child>` synthetic id into its two halves. Returns
 // null for non-derived ids so the caller can fall through to the regular
 // listing-based lookup.

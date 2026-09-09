@@ -87,7 +87,7 @@ export function resolveWinProductNamespaceRoot(config: ToolPackConfig): string {
   return join(resolveWinProductUserDataRoot(), "namespaces", config.namespace);
 }
 
-export function resolveWinLocalDataRoot(config: ToolPackConfig): string {
+function resolveWinLocalDataRoot(config: ToolPackConfig): string {
   return resolveWinProductNamespaceRoot(config);
 }
 

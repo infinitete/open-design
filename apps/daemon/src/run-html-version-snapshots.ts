@@ -29,7 +29,7 @@ export interface AiHtmlVersionSnapshotFailure {
   message: string;
 }
 
-export interface AiHtmlVersionSnapshot {
+interface AiHtmlVersionSnapshot {
   fileName: string;
   version: ProjectFileVersion;
 }

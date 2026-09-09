@@ -75,7 +75,7 @@ function extractionAttemptStallBaseline(meta: BrandMeta): { key: string; started
   };
 }
 
-export interface BrandReadyPromptState {
+interface BrandReadyPromptState {
   /** The registered `user:<id>` design system to preview. */
   designSystemId: string;
   /** Display name for the prompt copy; null falls back to a generic title. */
@@ -84,7 +84,7 @@ export interface BrandReadyPromptState {
 
 /** A one-shot signal that ProjectView should post the "solve the wall in the
  *  browser, then Confirm" assist card into the conversation. */
-export interface BrandBrowserAssistState {
+interface BrandBrowserAssistState {
   brandId: string;
   /** The page the browser tab is open to, used as the extraction base URL. */
   sourceUrl: string;

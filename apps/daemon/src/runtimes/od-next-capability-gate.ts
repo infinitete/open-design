@@ -164,7 +164,7 @@ export const OD_NEXT_RUNTIME_CAPABILITY_REGISTRY:
     },
   }));
 
-export type OdNextCapabilityResolutionReason =
+type OdNextCapabilityResolutionReason =
   | 'runtime_out_of_scope'
   | 'runtime_version_denied'
   | 'fixture_manifest_missing'

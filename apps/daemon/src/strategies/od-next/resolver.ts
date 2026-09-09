@@ -1,6 +1,6 @@
 import type { StrategyExecutionModeV2, StrategyRouteV2 } from '@open-design/contracts';
 
-export const OD_NEXT_RESOLVER_SOURCE_AUTHORITY = {
+const OD_NEXT_RESOLVER_SOURCE_AUTHORITY = {
   user_explicit: 600,
   project_metadata: 500,
   baseline_artifact: 400,
@@ -9,10 +9,10 @@ export const OD_NEXT_RESOLVER_SOURCE_AUTHORITY = {
   default: 100,
 } as const;
 
-export type OdNextResolverSource = keyof typeof OD_NEXT_RESOLVER_SOURCE_AUTHORITY;
-export type OdNextMissingPolicy = 'extract' | 'infer' | 'default' | 'ask' | 'block';
+type OdNextResolverSource = keyof typeof OD_NEXT_RESOLVER_SOURCE_AUTHORITY;
+type OdNextMissingPolicy = 'extract' | 'infer' | 'default' | 'ask' | 'block';
 
-export interface OdNextResolverCandidate<T = unknown> {
+interface OdNextResolverCandidate<T = unknown> {
   source: Exclude<OdNextResolverSource, 'inferred' | 'default'>;
   value: T;
   explicitChange?: boolean;
@@ -27,7 +27,7 @@ export interface OdNextResolverFieldInput<T = unknown> {
   defaultValue?: T;
 }
 
-export interface OdNextResolvedField<T = unknown> {
+interface OdNextResolvedField<T = unknown> {
   status: 'confirmed' | 'inferred' | 'defaulted' | 'missing' | 'conflicted';
   source?: OdNextResolverSource | 'locked';
   value?: T;
@@ -43,7 +43,7 @@ export interface OdNextResolverResult {
   conflictedFields: string[];
 }
 
-export class OdNextResolverError extends Error {
+class OdNextResolverError extends Error {
   constructor(
     message: string,
     readonly reasonCodes: string[],

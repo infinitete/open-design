@@ -405,7 +405,7 @@ export function workspaceUpgradeUrl(
   return OPEN_DESIGN_PRICING_URL;
 }
 
-export type WorkspaceInviteTarget =
+type WorkspaceInviteTarget =
   | { kind: 'local' }
   | { kind: 'console'; url: string }
   | { kind: 'unavailable' };

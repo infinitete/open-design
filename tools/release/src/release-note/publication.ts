@@ -6,7 +6,7 @@ import {
   type ReleaseNotePlan,
 } from "./source.ts";
 
-export type ReleaseNotePublicationEntry = {
+type ReleaseNotePublicationEntry = {
   locale: string;
   mediaType: string;
   name: string;

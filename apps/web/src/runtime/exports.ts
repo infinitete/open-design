@@ -401,7 +401,7 @@ export type PreviewSnapshot = { dataUrl: string; w: number; h: number };
 
 export type PreviewSnapshotOptions = { full?: boolean };
 
-export type PreviewSnapshotResult =
+type PreviewSnapshotResult =
   | { ok: true; snapshot: PreviewSnapshot }
   | { ok: false; reason: 'loading' | 'post-message-error' | 'render-error' | 'timeout'; error?: string };
 
@@ -924,7 +924,7 @@ export async function exportProjectAsZip(opts: {
  * to the user as "this export is not available here" — a claim about the
  * product when the real problem was the connection.
  */
-export type ExportUnavailableReason = 'no-renderer' | 'unreachable';
+type ExportUnavailableReason = 'no-renderer' | 'unreachable';
 
 export type ProjectScreenshotExportResult =
   | { ok: true }
@@ -1653,7 +1653,7 @@ export function injectDeckPrintStylesheet(doc: string): string {
 // main bundle until an export actually runs.
 // ===========================================================================
 
-export type CapturedSlide = {
+type CapturedSlide = {
   index: number;
   dataUrl?: string;
   w: number;

@@ -21,7 +21,7 @@
 import { type CheerioAPI, load } from 'cheerio';
 
 /** Severity of a finding. `error` blocks the brand-system rebuild. */
-export type DeckLayoutSeverity = 'error' | 'warning';
+type DeckLayoutSeverity = 'error' | 'warning';
 
 export interface DeckLayoutIssue {
   /** Stable machine code for the finding. */

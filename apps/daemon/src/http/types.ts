@@ -20,7 +20,7 @@ export type Handler<Input, Output, Deps> = (
   deps: Deps,
 ) => Promise<Result<Output>> | Result<Output>;
 
-export type HttpMethod = 'get' | 'post' | 'put' | 'delete' | 'patch';
+type HttpMethod = 'get' | 'post' | 'put' | 'delete' | 'patch';
 
 export interface JsonRouteSpec<Input, Output, Deps> {
   method: HttpMethod;

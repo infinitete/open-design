@@ -63,7 +63,7 @@ export interface MigrateLegacyDataDirOptions {
   writeMarker?: (dataDir: string, legacyDir: string) => void;
 }
 
-export type MigrateStatus = 'noop' | 'migrated' | 'skipped';
+type MigrateStatus = 'noop' | 'migrated' | 'skipped';
 
 export interface MigrateLegacyDataDirResult {
   status: MigrateStatus;

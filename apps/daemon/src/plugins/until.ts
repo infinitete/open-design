@@ -14,7 +14,7 @@
 // at install time without booting an interpreter, and the daemon refuses
 // to execute a stage whose `until` does not parse.
 
-export type SignalKind = 'number' | 'boolean';
+type SignalKind = 'number' | 'boolean';
 
 export interface UntilSignals {
   'critique.score'?: number | undefined;
@@ -38,9 +38,9 @@ const SIGNAL_KINDS: Record<keyof UntilSignals, SignalKind> = {
   'tests.passing':  'boolean',
 };
 
-export type UntilOp = '==' | '!=' | '>=' | '<=' | '>' | '<';
+type UntilOp = '==' | '!=' | '>=' | '<=' | '>' | '<';
 
-export interface UntilComparison {
+interface UntilComparison {
   signal: keyof UntilSignals;
   op:     UntilOp;
   value:  number | boolean;

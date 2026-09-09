@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-export const DEFAULT_LOCAL_ENV_FILE_NAMES = [".env.development.local", ".env.local", ".env.development", ".env"] as const;
+const DEFAULT_LOCAL_ENV_FILE_NAMES = [".env.development.local", ".env.local", ".env.development", ".env"] as const;
 export const LOCAL_DEVELOPMENT_TELEMETRY_ENV = "local_development";
 export const TELEMETRY_ENV_KEY = "OD_TELEMETRY_ENV";
 

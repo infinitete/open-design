@@ -61,7 +61,7 @@ export interface MarketplaceJsonManifest {
   [key: string]: unknown;
 }
 
-export interface MarketplaceJsonEntry {
+interface MarketplaceJsonEntry {
   name: string;
   source: string;
   version: string;

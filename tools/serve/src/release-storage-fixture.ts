@@ -6,7 +6,7 @@ export type ReleaseStorageFixtureOptions = {
   port?: number;
 };
 
-export type ReleaseStorageFixtureInfo = {
+type ReleaseStorageFixtureInfo = {
   bucket: string;
   endpointUrl: string;
   origin: string;

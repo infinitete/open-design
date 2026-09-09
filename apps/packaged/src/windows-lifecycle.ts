@@ -5,7 +5,7 @@ import { resolveWindowsUninstallRegistryKey } from "@open-design/sidecar-proto";
 
 const execFileAsync = promisify(execFile);
 
-export type WindowsRegistryExec = (
+type WindowsRegistryExec = (
   command: string,
   args: string[],
   options: { windowsHide: true },

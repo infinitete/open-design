@@ -19,7 +19,7 @@ import type Database from 'better-sqlite3';
 
 type SqliteDb = Database.Database;
 
-export interface DaemonDbTableInfo {
+interface DaemonDbTableInfo {
   name:      string;
   rowCount:  number;
 }
@@ -129,9 +129,9 @@ function sanitizeTableName(name: string): string | null {
 // healthy or one row per issue. PRAGMA foreign_key_check returns
 // rows for each FK violation; we surface them as 'fk' issues.
 
-export type DbIntegrityIssueKind = 'integrity' | 'foreign_key';
+type DbIntegrityIssueKind = 'integrity' | 'foreign_key';
 
-export interface DbIntegrityIssue {
+interface DbIntegrityIssue {
   kind:    DbIntegrityIssueKind;
   message: string;
 }

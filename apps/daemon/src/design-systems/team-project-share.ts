@@ -12,7 +12,7 @@ class TeamResourceShareForbiddenError extends Error {
 type TeamResourceRequestScope = any;
 type TeamResourceShareService = any;
 
-export interface PreparedLinkedProjectShare {
+interface PreparedLinkedProjectShare {
   projectId: string;
   /**
    * Move the one backing project projection and its remote Team publication.
@@ -34,7 +34,7 @@ export interface CreateLinkedProjectTeamResourceShareServiceOptions {
   ): Promise<PreparedLinkedProjectShare>;
 }
 
-export interface DesignSystemBackingProjectBinding {
+interface DesignSystemBackingProjectBinding {
   workspaceId?: string | null;
   createdByWorkspaceMemberId?: string | null;
 }

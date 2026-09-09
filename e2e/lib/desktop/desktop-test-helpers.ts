@@ -156,7 +156,7 @@ export function createDesktopHarness(name: string) {
   };
 }
 
-export async function desktopStatus(namespace: string): Promise<DesktopStatus> {
+async function desktopStatus(namespace: string): Promise<DesktopStatus> {
   return await runToolsDevJson<DesktopStatus>([
     'inspect',
     'desktop',

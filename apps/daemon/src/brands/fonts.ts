@@ -39,7 +39,7 @@ export type FontFile = {
 
 export type FontManifest = { format: "brand-fonts/1"; files: FontFile[] };
 
-export type FontFaceRef = {
+type FontFaceRef = {
   family: string;
   weight: string;
   style: string;

@@ -50,10 +50,10 @@ export const CHAT_TOOL_OPERATIONS = [
   'library:apply',
 ] as const;
 
-export type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});
-export type ToolOperation = (typeof CHAT_TOOL_OPERATIONS)[number] | (string & {});
+type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});
+type ToolOperation = (typeof CHAT_TOOL_OPERATIONS)[number] | (string & {});
 export type ToolTokenRevocationReason = 'child_exit' | 'sse_end' | 'ttl_expired' | 'manual';
-export type ToolTokenErrorCode =
+type ToolTokenErrorCode =
   | 'TOOL_TOKEN_MISSING'
   | 'TOOL_TOKEN_INVALID'
   | 'TOOL_TOKEN_EXPIRED'

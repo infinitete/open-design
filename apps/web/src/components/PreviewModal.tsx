@@ -53,7 +53,7 @@ export interface PreviewView {
   custom?: ReactNode;
 }
 
-export interface PreviewSidebar {
+interface PreviewSidebar {
   // Accessible label for the side pane and its stage-edge handles.
   label: string;
   // Side-pane content — caller renders whatever it likes (markdown source
@@ -85,7 +85,7 @@ export interface PreviewPrimaryActionMenuItem {
   testId?: string;
 }
 
-export interface PreviewPrimaryAction {
+interface PreviewPrimaryAction {
   label: string;
   onClick: () => void;
   busy?: boolean;
@@ -99,7 +99,7 @@ export interface PreviewPrimaryAction {
   menu?: PreviewPrimaryActionMenuItem[];
 }
 
-export interface PreviewShareTarget {
+interface PreviewShareTarget {
   title?: string;
   description?: string;
   url?: string | null;

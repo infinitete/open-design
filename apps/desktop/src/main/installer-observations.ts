@@ -8,8 +8,8 @@ export const INSTALLER_OBSERVATION_SCHEMA_VERSION = 1;
 export const INSTALLER_OBSERVATION_KIND = "installer_apply_observation";
 
 export type InstallerObservationArtifactType = "dmg" | "installer" | "payload";
-export type InstallerObservationResult = "pending" | "success" | "not_applied" | "unknown";
-export type InstallerObservationReason =
+type InstallerObservationResult = "pending" | "success" | "not_applied" | "unknown";
+type InstallerObservationReason =
   | "installer_open_requested"
   | "installer_open_failed"
   | "app_version_matches"

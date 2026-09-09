@@ -44,14 +44,14 @@ const SIDE_FILE_REFERENCE = /\b(?:assets|references|scripts|examples)\/[A-Za-z0-
  */
 const ADOPTABLE_CANONICAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-export interface FrozenSkillFileV1 {
+interface FrozenSkillFileV1 {
   path: string;
   bytesBase64: string;
   byteLength: number;
   digest: string;
 }
 
-export interface FrozenSkillSelectionV1 {
+interface FrozenSkillSelectionV1 {
   canonicalId: string;
   name: string;
   body: string;
@@ -129,7 +129,7 @@ export async function captureFrozenSkillPackage(input: {
  * what an unavailable Skill means for it. Capture itself has no opinion: it
  * freezes the entries it is handed.
  */
-export function resolveSelectedCatalogSkills(input: {
+function resolveSelectedCatalogSkills(input: {
   skillId?: unknown;
   skillIds?: unknown;
   catalog: readonly SkillInfo[];

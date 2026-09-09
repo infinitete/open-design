@@ -17,7 +17,7 @@ export type LiveArtifactOutputTransform = 'identity' | 'compact_table' | 'metric
 export type LiveArtifactProvenanceGenerator = 'agent' | 'refresh_runner';
 export type LiveArtifactProvenanceSourceType = 'connector' | 'local_file' | 'user_input' | 'derived';
 export type LiveArtifactRefreshStepStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
-export type LiveArtifactRefreshSourceType = 'document' | 'artifact';
+type LiveArtifactRefreshSourceType = 'document' | 'artifact';
 
 export interface LiveArtifactPreview {
   type: LiveArtifactPreviewType;
@@ -82,7 +82,7 @@ export interface LiveArtifact {
   document: LiveArtifactDocument;
 }
 
-export interface LiveArtifactRefreshConnectorMetadata {
+interface LiveArtifactRefreshConnectorMetadata {
   connectorId: string;
   accountLabel?: string;
   toolName: string;

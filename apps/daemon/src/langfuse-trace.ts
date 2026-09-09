@@ -84,13 +84,13 @@ export interface LangfuseConfig {
   retries: number;
 }
 
-export type LangfuseDeliveryStatus =
+type LangfuseDeliveryStatus =
   | 'not_expected'
   | 'queued'
   | 'accepted'
   | 'failed';
 
-export type LangfuseDropReason =
+type LangfuseDropReason =
   | 'metrics_consent_off'
   | 'content_consent_off'
   | 'missing_sink_config'
@@ -133,7 +133,7 @@ export type TelemetrySinkConfig =
  */
 export type RunTelemetrySinkConfig = TelemetrySinkConfig;
 
-export interface RunSummary {
+interface RunSummary {
   runId: string;
   status: 'succeeded' | 'failed' | 'canceled';
   startedAt: number;
@@ -190,20 +190,20 @@ export interface ArtifactSummary {
 
 export type ObjectManifestCompleteness = 'complete' | 'partial' | 'unavailable';
 
-export type ObjectManifestStatus = 'ok' | 'partial' | 'unavailable';
+type ObjectManifestStatus = 'ok' | 'partial' | 'unavailable';
 
-export type ObjectManifestSensitivity = 'public' | 'internal' | 'private' | 'sensitive';
+type ObjectManifestSensitivity = 'public' | 'internal' | 'private' | 'sensitive';
 
-export type ObjectManifestAccessScope = 'owner' | 'project' | 'workspace' | 'evaluator';
+type ObjectManifestAccessScope = 'owner' | 'project' | 'workspace' | 'evaluator';
 
-export type ObjectManifestRetentionPolicy =
+type ObjectManifestRetentionPolicy =
   | 'ephemeral'
   | 'observability_90d'
   | 'project_lifetime'
   | 'eval_fixture'
   | 'legal_hold';
 
-export interface TraceSafeObjectManifestBase {
+interface TraceSafeObjectManifestBase {
   object_class: 'attachment' | 'artifact' | 'input_text_snapshot';
   storage_ref: string;
   status: ObjectManifestStatus;

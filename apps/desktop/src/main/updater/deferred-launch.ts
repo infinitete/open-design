@@ -19,7 +19,7 @@ import { HELPERS_DIR, ensureOwnedSubdir } from "./store.js";
 
 export const DEFERRED_INSTALLER_TIMEOUT_MS = 10 * 60 * 1000;
 
-export type DetachedProcess = Pick<ReturnType<typeof spawn>, "once" | "unref">;
+type DetachedProcess = Pick<ReturnType<typeof spawn>, "once" | "unref">;
 export type SpawnInstallerHelper = (
   command: string,
   args: string[],

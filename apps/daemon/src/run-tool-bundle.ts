@@ -30,7 +30,7 @@ export type RunToolBundleValidationResult =
   | { ok: true }
   | { ok: false; message: string };
 
-export type RunToolBundleDeliveryTarget =
+type RunToolBundleDeliveryTarget =
   | 'managed-project'
   | 'external-project'
   | 'none';

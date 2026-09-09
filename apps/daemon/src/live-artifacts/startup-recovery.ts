@@ -7,7 +7,7 @@ import {
   type LiveArtifactRefreshRecoveryResult,
 } from './store.js';
 
-export interface StartupLiveArtifactProject {
+interface StartupLiveArtifactProject {
   id: string;
   projectMetadata?: unknown;
 }

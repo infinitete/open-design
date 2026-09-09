@@ -250,7 +250,7 @@ export async function validateMacNativeRebuildOutput(appRoot: string): Promise<s
   }
 }
 
-export async function runMacElectronRebuild(
+async function runMacElectronRebuild(
   config: ToolPackConfig,
   appRoot: string,
 ): Promise<void> {

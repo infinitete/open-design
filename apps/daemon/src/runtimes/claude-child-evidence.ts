@@ -15,14 +15,14 @@ import {
 export const CLAUDE_CHILD_EVIDENCE_ADAPTER_VERSION =
   'od-claude-child-evidence/v1' as const;
 
-export type ClaudeChildRuntimeFactState =
+type ClaudeChildRuntimeFactState =
   | 'started'
   | 'completed'
   | 'failed'
   | 'canceled'
   | 'conflicted';
 
-export type ClaudeChildEvidenceConflictReason =
+type ClaudeChildEvidenceConflictReason =
   | 'runtime_session_changed'
   | 'task_parent_rebound'
   | 'native_agent_type_rebound'
@@ -74,7 +74,7 @@ export interface ClaudeChildRuntimeFact {
   conflictReasons?: ClaudeChildEvidenceConflictReason[];
 }
 
-export type ClaudeChildToolRuntimeFactState =
+type ClaudeChildToolRuntimeFactState =
   | 'started'
   | 'completed'
   | 'failed'

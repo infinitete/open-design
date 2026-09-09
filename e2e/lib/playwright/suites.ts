@@ -72,7 +72,7 @@ export const uiP0Groups = {
   },
 } as const satisfies Record<string, UiPlaywrightGroup>;
 
-export type UiP0GroupName = keyof typeof uiP0Groups;
+type UiP0GroupName = keyof typeof uiP0Groups;
 
 export const uiP0CiMatrix = [
   { name: "entry-settings", shard: "entry-settings" },

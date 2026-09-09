@@ -29,7 +29,7 @@ export type UpdaterFixtureOptions = {
   version?: string;
 };
 
-export type UpdaterFixtureInfo = {
+type UpdaterFixtureInfo = {
   artifactPath: string | null;
   artifactUrl: string;
   channel: UpdaterFixtureChannel;

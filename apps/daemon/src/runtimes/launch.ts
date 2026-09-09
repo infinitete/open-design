@@ -3,7 +3,7 @@ import path, { delimiter } from 'node:path';
 import { inspectAgentExecutableResolution, userToolchainBinDirs } from './executables.js';
 import type { RuntimeAgentDef } from './types.js';
 
-export type AgentLaunchKind = 'selected' | 'codex-native';
+type AgentLaunchKind = 'selected' | 'codex-native';
 
 export type AgentLaunchResolution = ReturnType<typeof inspectAgentExecutableResolution> & {
   launchPath: string | null;

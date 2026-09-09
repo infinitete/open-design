@@ -198,7 +198,7 @@ export async function ensureNsisPersianLanguageAlias(config: ToolPackConfig): Pr
   return updated;
 }
 
-export async function appendNsisLog(paths: WinPaths, message: string, meta: Record<string, unknown> = {}): Promise<void> {
+async function appendNsisLog(paths: WinPaths, message: string, meta: Record<string, unknown> = {}): Promise<void> {
   await mkdir(dirname(paths.nsisLogPath), { recursive: true });
   await appendFile(paths.nsisLogPath, `${JSON.stringify({ message, meta, timestamp: new Date().toISOString() })}\n`, "utf8");
 }

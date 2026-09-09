@@ -48,7 +48,7 @@ export type CollabCloudFixtureOptions = {
   store?: string;
 };
 
-export type CollabCloudFixtureInfo = {
+type CollabCloudFixtureInfo = {
   origin: string;
   endpointUrl: string;
   token: string;

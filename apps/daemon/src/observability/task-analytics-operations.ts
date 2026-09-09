@@ -16,7 +16,7 @@ import type {
 
 export const TASK_ANALYTICS_REPORT_SCHEMA = 'open-design.task-analytics-report/v1' as const;
 
-export type TaskAnalyticsBucketV1 = StrategyTaskTypeV2 | 'unknown';
+type TaskAnalyticsBucketV1 = StrategyTaskTypeV2 | 'unknown';
 
 export interface TaskAnalyticsRecordV1 {
   aggregate: StrategyTaskObservationAggregateV1;

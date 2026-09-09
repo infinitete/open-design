@@ -63,11 +63,6 @@ export interface LiveArtifactStorePaths {
   snapshotsDir: string;
 }
 
-export interface LiveArtifactStoreSummary {
-  artifact: LiveArtifactSummary;
-  paths: LiveArtifactStorePaths;
-}
-
 export interface LiveArtifactStoreRecord {
   artifact: LiveArtifact;
   paths: LiveArtifactStorePaths;
@@ -187,7 +182,7 @@ export interface LiveArtifactPreviewRenderRecord extends LiveArtifactStoreRecord
   html: string;
 }
 
-export interface LiveArtifactRefreshLockMetadata {
+interface LiveArtifactRefreshLockMetadata {
   schemaVersion: 1;
   projectId: string;
   artifactId: string;
@@ -1354,8 +1349,4 @@ export async function deleteLiveArtifact(options: DeleteLiveArtifactOptions): Pr
   const current = await readPersistedLiveArtifact(paths);
   assertArtifactMatchesStorage(current, options.projectId, artifactId);
   await rm(paths.artifactDir, { recursive: true, force: true });
-}
-
-export function summarizeLiveArtifactRecord(record: LiveArtifactStoreRecord): LiveArtifactStoreSummary {
-  return { artifact: toSummary(record.artifact), paths: record.paths };
 }

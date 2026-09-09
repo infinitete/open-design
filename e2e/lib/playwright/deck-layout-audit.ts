@@ -55,7 +55,7 @@ interface ActivationIssue {
 
 export type DeckLayoutIssue = CollisionIssue | ClippedTextIssue | ActivationIssue;
 
-export interface DeckSlideAudit {
+interface DeckSlideAudit {
   index: number;
   selector: string;
   label: string | null;

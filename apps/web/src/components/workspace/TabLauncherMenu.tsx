@@ -22,7 +22,7 @@ const ACTION_ICON_COLORS = [
 
 // Page/area/project_id are filled by the host (FileWorkspace); the menu only
 // supplies the event-specific fields.
-export type TabLauncherTrackInput = Omit<
+type TabLauncherTrackInput = Omit<
   TabLauncherClickProps,
   'page_name' | 'area' | 'project_id'
 >;

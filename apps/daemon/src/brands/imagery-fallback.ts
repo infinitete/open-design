@@ -55,7 +55,7 @@ export type ImageryFallbackFn = (
 ) => Promise<{ changed: boolean }>;
 
 /** An image file written into the `imagery/` dir by the fallback. */
-export interface FallbackImage {
+interface FallbackImage {
   /** Path relative to the dir owner, e.g. `imagery/hero-0.jpg`. */
   rel: string;
   /** Bare filename inside `imagery/`. */

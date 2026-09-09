@@ -5,7 +5,7 @@ import {
   type ReleaseChannel,
 } from '@open-design/release';
 
-export type PackagedUpdateChannel = ReleaseChannel;
+type PackagedUpdateChannel = ReleaseChannel;
 
 export type PackagedUpdateScenario = {
   channel: PackagedUpdateChannel;

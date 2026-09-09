@@ -10,7 +10,7 @@ export type VisualStyleVariant =
   | 'brutalist'
   | 'human';
 
-export interface VisualStylePreviewAsset {
+interface VisualStylePreviewAsset {
   src: string;
   alt: string;
 }

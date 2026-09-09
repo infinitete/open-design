@@ -36,7 +36,7 @@ const DEFAULT_MAX_RECURSION_DEPTH = 16;
 
 type ChildTerminalStatus = 'completed' | 'failed' | 'canceled';
 
-export type CodexRolloutReadFailureReason =
+type CodexRolloutReadFailureReason =
   | 'parent_session_not_declared'
   | 'codex_home_not_declared'
   | 'codex_home_not_absolute'
@@ -50,7 +50,7 @@ export type CodexRolloutReadFailureReason =
   | 'rollout_too_large'
   | 'rollout_read_failed';
 
-export interface CodexChildEvidenceDiagnostic {
+interface CodexChildEvidenceDiagnostic {
   code: CodexRolloutReadFailureReason | string;
   count: number;
 }

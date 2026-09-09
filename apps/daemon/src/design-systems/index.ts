@@ -38,9 +38,9 @@ type SqliteDb = Database.Database;
 
 export type DesignSystemSurface = 'web' | 'image' | 'video' | 'audio';
 export type DesignSystemSource = 'built-in' | 'installed' | 'user';
-export type DesignSystemStatus = 'draft' | 'published';
+type DesignSystemStatus = 'draft' | 'published';
 export type DesignSystemRevisionStatus = 'pending' | 'accepted' | 'rejected';
-export type DesignSystemArtifactMode = 'generated' | 'agent-managed';
+type DesignSystemArtifactMode = 'generated' | 'agent-managed';
 
 export type DesignSystemSummary = {
   id: string;

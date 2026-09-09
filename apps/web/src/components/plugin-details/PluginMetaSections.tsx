@@ -44,7 +44,7 @@ import {
 } from '../../i18n/plugin-content';
 import { localizePluginDescription } from '../plugins-home/localization';
 
-export interface PluginMetaOmit {
+interface PluginMetaOmit {
   description?: boolean;
   query?: boolean;
   inputs?: boolean;

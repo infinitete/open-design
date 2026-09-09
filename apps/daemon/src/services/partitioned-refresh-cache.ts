@@ -6,7 +6,7 @@ export interface PartitionedRefreshCacheOptions<T> {
   now?: () => number;
 }
 
-export interface PartitionedRefreshReadOptions {
+interface PartitionedRefreshReadOptions {
   /** Ignore a settled value, while still joining current-generation work. */
   force?: boolean;
   /**

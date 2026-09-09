@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, posix } from 'node:path';
 
-export type ReportBlob = ArrayBuffer | Blob | string | Uint8Array;
+type ReportBlob = ArrayBuffer | Blob | string | Uint8Array;
 
-export type ReportEntry = {
+type ReportEntry = {
   bytes: number;
   path: string;
   relpath: string;

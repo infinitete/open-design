@@ -23,8 +23,6 @@ import { CURATED_LIVE_ARTIFACT_PLUGIN_IDS } from './curatedPriority';
 import { localizedText } from './localization';
 import { resolveCommercialCategoryId, type CommercialCategoryId } from './categoryLabel';
 
-export type FacetAxis = 'category' | 'subcategory';
-
 export interface FacetOption {
   slug: string;
   label: string;

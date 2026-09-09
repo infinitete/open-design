@@ -63,7 +63,7 @@ const ACCEPTED_FINAL_TEXT_SCHEMAS = {
 
 export type StrategyTaskOutcome = 'running' | StrategyOutcomeV2;
 
-export interface StrategyTaskRunMapping {
+interface StrategyTaskRunMapping {
   runId: string;
   inputStage: StrategyInputStageV2;
   taskRunIndex: number;
@@ -71,14 +71,14 @@ export interface StrategyTaskRunMapping {
   finalText: StrategyTaskFinalTextIdentity;
 }
 
-export type StrategyTaskFinalTextKind = 'bundle' | 'turn';
+type StrategyTaskFinalTextKind = 'bundle' | 'turn';
 
 /**
  * A stored final text always carries the schema it was written with. Prompt
  * Bundles exist at two versions because v1 rows are already persisted and are
  * never rewritten; request Turns have exactly one.
  */
-export type StrategyTaskFinalTextSchema =
+type StrategyTaskFinalTextSchema =
   | typeof OD_NEXT_PROMPT_BUNDLE_SCHEMA_V1
   | typeof OD_NEXT_PROMPT_BUNDLE_SCHEMA_V2
   | typeof OD_NEXT_REQUEST_TURN_SCHEMA_V1;
@@ -91,7 +91,7 @@ export interface StrategyTaskFinalTextIdentity {
   sha256: string;
 }
 
-export interface StrategyTaskFrozenInputIdentity {
+interface StrategyTaskFrozenInputIdentity {
   schema: 'open-design.od-next-frozen-input-identity/v1';
   snapshotId: string;
   strategyPackageHash: string;
@@ -149,12 +149,12 @@ export interface CreateStrategyTaskExecutionInput {
  * plus the agent-visible text of the turn that was rejected. Every blocked
  * outcome must be diagnosable from the store alone, without live logs.
  */
-export interface StrategyTaskBlockedContext {
+interface StrategyTaskBlockedContext {
   reasonCodes: string[];
   visibleText: string | null;
 }
 
-export interface StrategyTaskTransitionState {
+interface StrategyTaskTransitionState {
   route: StrategyRouteV2;
   inputStage: StrategyInputStageV2;
   outcome: StrategyTaskOutcome;
@@ -497,34 +497,6 @@ export function strategyTaskTurnsForRunIds(
     throw error;
   }
   return turns;
-}
-
-export function getAwaitingClarificationStrategyTaskExecution(
-  db: SqliteDb,
-  input: { projectId: string; conversationId: string },
-): StrategyTaskExecutionRecord | null {
-  try {
-    const rows = db.prepare(`
-      SELECT * FROM strategy_task_executions
-       WHERE project_id = ? AND conversation_id = ?
-         AND route = 'full_plan'
-         AND input_stage = 'request'
-         AND outcome = 'clarification_required'
-       ORDER BY updated_at DESC, task_execution_id ASC
-       LIMIT 2
-    `).all(input.projectId, input.conversationId) as DbRow[];
-    // Ambiguous active ownership is fail-closed. A continuation must never be
-    // guessed onto one of two logical tasks sharing a conversation.
-    if (rows.length > 1) {
-      throw new InvalidStrategyTaskRecordError(
-        'Conversation has multiple strategy tasks awaiting clarification.',
-      );
-    }
-    return rows.length === 1 ? rowToTask(db, rows[0]!) : null;
-  } catch (error) {
-    if (isMissingTaskStoreError(error)) return null;
-    throw error;
-  }
 }
 
 export function compareAndTransitionStrategyTaskExecution(

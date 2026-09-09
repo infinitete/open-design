@@ -42,7 +42,7 @@ interface CachedComposioLogo {
 const composioLogoCache = new Map<string, CachedComposioLogo>();
 const composioLogoInflight = new Map<string, Promise<CachedComposioLogo | null>>();
 
-export type ConnectorApiErrorSender = (
+type ConnectorApiErrorSender = (
   res: Response,
   status: number,
   code: ConnectorApiErrorCode,

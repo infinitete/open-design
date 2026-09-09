@@ -9,7 +9,7 @@ import styles from './AgentDiagnosticRow.module.css';
 // a handler for it, so the same row works in the Settings grid, the
 // connection-test failure surface, and (PR-B) the health-check panel without
 // any of them having to know which intents the others support.
-export interface AgentFixHandlers {
+interface AgentFixHandlers {
   onRescan?: () => void;
   onOpenInstall?: () => void;
   onOpenDocs?: () => void;

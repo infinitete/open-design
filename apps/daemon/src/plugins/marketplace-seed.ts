@@ -5,17 +5,17 @@ import path from 'node:path';
 export const OFFICIAL_MARKETPLACE_ID = 'official';
 export const OFFICIAL_PLUGIN_SOURCE_REPO = 'github:nexu-io/open-design@main';
 
-export interface MarketplaceSeedEntry {
+interface MarketplaceSeedEntry {
   name: string;
   [key: string]: unknown;
 }
 
-export interface MarketplaceSeedConfig {
+interface MarketplaceSeedConfig {
   trust: 'official' | 'restricted';
   url: string;
 }
 
-export interface MarketplaceSeedFetchResponse {
+interface MarketplaceSeedFetchResponse {
   ok: boolean;
   status: number;
   text(): Promise<string>;

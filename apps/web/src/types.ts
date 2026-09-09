@@ -123,14 +123,6 @@ export type ApiProtocol =
   | 'bedrock';
 
 export type LiveArtifactTabId = `live:${string}`;
-// Tab ids are arbitrary strings; the template-literal members below are
-// conventions FileWorkspace's `.ws-body` switch keys off (`live:` → live
-// artifact viewer, `chat:` → Side Chat tab). See `SideChatTabId` below.
-export type ProjectWorkspaceTabId =
-  | string
-  | LiveArtifactTabId
-  | SideChatTabId
-  | TerminalTabId;
 
 export function liveArtifactTabId(artifactId: string): LiveArtifactTabId {
   return `live:${artifactId}`;
@@ -186,13 +178,6 @@ export type LiveArtifactViewerTab =
   | 'data'
   | 'refresh-history';
 
-export interface ProjectFileWorkspaceEntry {
-  kind: 'file';
-  tabId: string;
-  name: string;
-  file: ProjectFile;
-}
-
 export interface LiveArtifactWorkspaceEntry {
   kind: 'live-artifact';
   tabId: LiveArtifactTabId;
@@ -208,8 +193,6 @@ export interface LiveArtifactWorkspaceEntry {
   updatedAt: string;
   lastRefreshedAt?: string;
 }
-
-export type ProjectWorkspaceEntry = ProjectFileWorkspaceEntry | LiveArtifactWorkspaceEntry;
 
 export function liveArtifactSummaryToWorkspaceEntry(
   liveArtifact: LiveArtifactSummary,
@@ -230,12 +213,6 @@ export function liveArtifactSummaryToWorkspaceEntry(
   };
   if (liveArtifact.lastRefreshedAt) entry.lastRefreshedAt = liveArtifact.lastRefreshedAt;
   return entry;
-}
-
-export interface LiveArtifactPreviewRequest {
-  projectId: string;
-  artifactId: string;
-  previewUrl: string;
 }
 
 export interface MediaProviderCredentials {
@@ -271,7 +248,7 @@ export interface ApiProtocolConfig {
   byokSpeechVoice?: string;
 }
 
-export interface ByokProviderConfigDraft {
+interface ByokProviderConfigDraft {
   apiConfig: ApiProtocolConfig;
   maxTokens?: number;
 }
@@ -281,8 +258,8 @@ export interface ByokProviderConfigDraft {
 // other one's choice. Missing entries fall back to the agent's first
 // declared model (`'default'` — let the CLI pick).
 export type AgentModelChoice = AgentModelPrefs;
-export type AgentCliEnvConfig = AgentCliEnvPrefs;
-export type AgentCliEnvIntentConfig = AgentCliEnvIntentPrefs;
+type AgentCliEnvConfig = AgentCliEnvPrefs;
+type AgentCliEnvIntentConfig = AgentCliEnvIntentPrefs;
 
 export type AppTheme = 'system' | 'light' | 'dark';
 
@@ -399,7 +376,7 @@ export interface TelemetryConfig {
   artifactManifest?: boolean;
 }
 
-export interface ComposioSettings {
+interface ComposioSettings {
   apiKey?: string;
   apiKeyConfigured?: boolean;
   apiKeyTail?: string;
@@ -443,13 +420,6 @@ export interface Artifact {
   savedUrl?: string;
 }
 
-export interface ExamplePreview {
-  source: 'skill' | 'design-system';
-  id: string;
-  title: string;
-  html: string;
-}
-
 export type ModelCost = 'low' | 'medium' | 'high' | 'very_high';
 
 export type ModelCapability = 'standard' | 'advanced' | 'best_quality';
@@ -473,7 +443,7 @@ export interface AgentModelOption {
 
 export type Surface = 'web' | 'image' | 'video' | 'audio';
 
-export interface PromptTemplateSource {
+interface PromptTemplateSource {
   repo: string;
   license: string;
   author?: string;

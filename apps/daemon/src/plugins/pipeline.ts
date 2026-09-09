@@ -40,7 +40,7 @@ export interface PipelineEnv {
   maxIterations: number; // OD_MAX_DEVLOOP_ITERATIONS
 }
 
-export interface StageRunOutcome {
+interface StageRunOutcome {
   signals?:           UntilSignals | undefined;
   artifactDiffSummary?: string | null | undefined;
   critiqueSummary?:    string | null | undefined;

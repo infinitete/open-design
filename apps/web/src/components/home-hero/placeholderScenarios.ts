@@ -153,7 +153,7 @@ export function buildPlaceholderScenarios({
 
 // ---- Typewriter state machine (pure, so it is unit-testable) --------------
 
-export type TypewriterPhase = 'typing' | 'holding' | 'deleting' | 'pausing';
+type TypewriterPhase = 'typing' | 'holding' | 'deleting' | 'pausing';
 
 export interface TypewriterState {
   // Index into the scenario list.

@@ -23,7 +23,7 @@ export interface AttributionService {
   bridgeUrl(url: string): Promise<string | null>;
 }
 
-export interface AttributionClaimInput {
+interface AttributionClaimInput {
   token?: string | null;
   source: AttributionClaimSource;
   rawUrl?: string | null;

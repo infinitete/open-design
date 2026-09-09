@@ -83,7 +83,7 @@ export type AssistantRunClaimResult = {
   reason?: 'active' | 'scope';
 };
 
-export interface PrepareInternalRunInput<TMeta extends InternalRunCreateInput, TRun> {
+interface PrepareInternalRunInput<TMeta extends InternalRunCreateInput, TRun> {
   meta: TMeta;
   projectAdmission?: PreRunProjectAdmission;
   /**

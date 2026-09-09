@@ -121,7 +121,7 @@ export async function suppressWhatsNew(page: Page): Promise<void> {
 }
 
 /** Seed localStorage with the standard config only (no route interception). */
-export async function applyStorageConfig(page: Page): Promise<void> {
+async function applyStorageConfig(page: Page): Promise<void> {
   const configJson = JSON.stringify(STANDARD_CONFIG);
   await page.addInitScript(
     ({ key, value }: { key: string; value: string }) => window.localStorage.setItem(key, value),

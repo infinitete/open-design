@@ -19,22 +19,6 @@ interface AuthorizedProjectOperation<T> {
   work(): Promise<T>;
 }
 
-export type AuditedProjectOperation =
-  | 'current-content-read'
-  | 'portable-content-mutation'
-  | 'event-stream'
-  | 'preview-scope'
-  | 'tab-state'
-  | 'file-version-bookkeeping';
-
-export function projectOperationCoordination(
-  operation: AuditedProjectOperation,
-): 'read' | 'mutation' | 'none' {
-  if (operation === 'current-content-read') return 'read';
-  if (operation === 'portable-content-mutation') return 'mutation';
-  return 'none';
-}
-
 function responseCompletion(res: Response): Promise<void> {
   if (res.writableEnded || res.destroyed) return Promise.resolve();
   return new Promise(resolve => {

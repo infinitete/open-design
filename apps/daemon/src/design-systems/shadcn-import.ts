@@ -56,7 +56,7 @@ const DEFAULT_GITHUB_REFS = ['main', 'master'] as const;
 // importer-generated files at the temp root.
 const SHADCN_FILES_SUBDIR = 'registry-files';
 
-export type ShadcnFetchResponse = {
+type ShadcnFetchResponse = {
   ok: boolean;
   status: number;
   statusText: string;

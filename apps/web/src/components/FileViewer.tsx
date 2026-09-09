@@ -1190,7 +1190,7 @@ export function desktopPreviewAutoFitZoomPercent(
   return Math.max(1, Math.min(100, (canvasSize.width / contentWidth) * 100));
 }
 
-export type PreviewContentMeasurementRequest = {
+type PreviewContentMeasurementRequest = {
   measurementId: string;
   generation: string;
   documentEpoch: string;
@@ -1198,7 +1198,7 @@ export type PreviewContentMeasurementRequest = {
   previewScale: number;
 };
 
-export type PreviewContentMeasurementResponse = {
+type PreviewContentMeasurementResponse = {
   measurementId: string;
   generation: string;
   documentEpoch: string;
@@ -3322,7 +3322,7 @@ type ExportToastState = {
   tone: 'default' | 'success' | 'error' | 'loading';
 };
 
-export type DeckKeyboardShortcut = 'next' | 'prev' | 'first' | 'last' | 'reset';
+type DeckKeyboardShortcut = 'next' | 'prev' | 'first' | 'last' | 'reset';
 
 type DeckKeyboardShortcutEvent = Pick<
   KeyboardEvent,
@@ -5307,11 +5307,11 @@ type InspectOverridePayload = {
 
 // Authoritative host-side override map: elementId → { selector, props }.
 // Mirrors the in-iframe shape so serializeInspectOverrides can consume it.
-export type InspectOverrideEntry = {
+type InspectOverrideEntry = {
   selector: string;
   props: Record<string, string>;
 };
-export type InspectOverrideMap = Record<string, InspectOverrideEntry>;
+type InspectOverrideMap = Record<string, InspectOverrideEntry>;
 
 // Allow-list of CSS properties the host will persist on Save. Mirrors the
 // in-iframe ALLOWED_PROPS list so the host doesn't accept properties that

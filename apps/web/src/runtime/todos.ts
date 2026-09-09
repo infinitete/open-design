@@ -1,7 +1,7 @@
 import { todoStatusIsUnfinished } from '@open-design/contracts';
 import type { AgentEvent } from '../types';
 
-export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'stopped';
+type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'stopped';
 
 export interface TodoItem {
   content: string;

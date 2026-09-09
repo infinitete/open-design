@@ -5,7 +5,7 @@ export type OrbitRunStart = {
   projectId: string;
 };
 
-export type OrbitSummary = {
+type OrbitSummary = {
   agentRunId?: string | null;
   artifactId?: string | null;
   artifactProjectId?: string | null;

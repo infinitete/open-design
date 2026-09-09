@@ -28,8 +28,8 @@ import { BackoffController } from '../lib/backoff';
 // four connections (team-projects + members + context + billing) into the
 // browser's ~6-per-host budget.
 
-export type EventStreamHandler = (data: unknown) => void;
-export type EventStreamActiveReason = 'connected' | 'ambient';
+type EventStreamHandler = (data: unknown) => void;
+type EventStreamActiveReason = 'connected' | 'ambient';
 
 export interface UseEventStreamOptions {
   /** Named-event handlers, keyed by SSE `event:` name. */

@@ -35,7 +35,7 @@ export class StandaloneHtmlExportError extends Error {
   }
 }
 
-export interface StandaloneAssetHandle {
+interface StandaloneAssetHandle {
   readonly buffer?: Buffer;
   readonly mime: string;
   readonly size: number;
@@ -53,7 +53,7 @@ export interface StandaloneHtmlOptions {
   limits?: Partial<StandaloneHtmlLimits>;
 }
 
-export interface StandaloneHtmlLimits {
+interface StandaloneHtmlLimits {
   entryBytes: number;
   firstLevelCandidates: number;
   graphNodes: number;

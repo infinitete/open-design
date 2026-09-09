@@ -158,27 +158,3 @@ export async function rebuildSystem(
     files: written.map((abs) => path.relative(outDir, abs)).sort(),
   };
 }
-
-export function listSystemArtifacts(brandsRoot: string, id: string): AssetKind[] {
-  const dir = path.join(brandSystemDir(brandsRoot, id), 'artifacts');
-  return BRAND_ARTIFACT_KINDS.filter((kind) => fs.existsSync(path.join(dir, `${kind}.html`)));
-}
-
-export function readSystemSummary(
-  brandsRoot: string,
-  id: string,
-): {
-  hasSystem: boolean;
-  seed: SeedToken | null;
-  themes: string[];
-} {
-  const dir = brandSystemDir(brandsRoot, id);
-  let seed: SeedToken | null = null;
-  try {
-    seed = JSON.parse(fs.readFileSync(path.join(dir, 'seed.json'), 'utf8')) as SeedToken;
-  } catch {
-    seed = null;
-  }
-  const themes = THEME_ALGORITHMS.filter((t) => fs.existsSync(path.join(dir, `tokens.${t}.json`)));
-  return { hasSystem: seed !== null, seed, themes };
-}

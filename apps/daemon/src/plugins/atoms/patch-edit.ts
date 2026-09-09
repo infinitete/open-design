@@ -71,7 +71,7 @@ async function atomicWriteFile(target: string, body: string | Buffer): Promise<v
   }
 }
 
-export type PatchStepStatus = 'pending' | 'completed' | 'skipped' | 'failed';
+type PatchStepStatus = 'pending' | 'completed' | 'skipped' | 'failed';
 
 export interface PatchStepRecord extends Omit<RewriteStep, 'rationale'> {
   rationale?: string;
