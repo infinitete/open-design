@@ -5,7 +5,6 @@ import type {
   ResetOdNextRolloutControlRequest,
 } from '@open-design/contracts';
 
-import { newInsertId, readAnalyticsContext, type AnalyticsService } from '../analytics.js';
 import {
   readOdNextRolloutControlStatus,
   resetOdNextRolloutStop,
@@ -14,8 +13,6 @@ import {
 
 export function registerStrategyRolloutRoutes(app: Express, deps: {
   db: Database.Database;
-  analytics: AnalyticsService;
-  getAppVersion: () => string;
   requireLocalDaemonRequest: RequestHandler;
   /**
    * The installation's saved OD Next preference. Injected rather than read
@@ -60,7 +57,6 @@ export function registerStrategyRolloutRoutes(app: Express, deps: {
       }
 
       const preference = await deps.readOdNextPreference();
-      const before = readOdNextRolloutControlStatus(deps.db, process.env, preference);
       const result = resetOdNextRolloutStop(deps.db, {
         expectedRevision: body.expectedRevision,
         reasonCode: 'operator_reset',
@@ -78,23 +74,6 @@ export function registerStrategyRolloutRoutes(app: Express, deps: {
         return;
       }
 
-      const analyticsContext = readAnalyticsContext(req);
-      if (analyticsContext) {
-        void deps.analytics.capture({
-          eventName: 'strategy_rollout_control_changed',
-          context: analyticsContext,
-          appVersion: deps.getAppVersion(),
-          insertId: newInsertId(),
-          properties: {
-            strategy_id: 'od-next-strategy',
-            action: 'reset',
-            scope: 'daemon_instance',
-            changed: result.changed,
-            previous_latch_mode: before.latch?.mode ?? 'none',
-            effective_mode: status.effectiveMode,
-          },
-        });
-      }
       const response: OdNextRolloutControlResponse = { status };
       res.json(response);
     },

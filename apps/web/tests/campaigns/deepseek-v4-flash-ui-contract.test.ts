@@ -144,13 +144,4 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(modelSwitcherSource).toContain('const campaignRestricted = false;');
     expect(modelSwitcherSource).toContain('const campaignNeedsUpgrade = false;');
   });
-
-  it('keeps DeepSeek analytics for paid and unpaid campaign audiences', () => {
-    expect(workbenchCampaignBadgeSource).toContain('trackDeepSeekCampaignBadgeSurfaceView');
-    expect(workbenchCampaignBadgeSource).toContain('trackDeepSeekCampaignBadgeClick');
-    expect(workbenchCampaignBadgeSource).toContain('user_state: audience');
-    expect(workbenchCampaignBadgeSource).toContain("page !== 'home'");
-    expect(modelSwitcherSource).toContain('trackDeepSeekCampaignModelBenefitSurfaceView');
-    expect(modelSwitcherSource).toContain('trackExecutionSettingsPopoverClick');
-  });
 });

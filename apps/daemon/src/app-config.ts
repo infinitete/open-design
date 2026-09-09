@@ -97,12 +97,6 @@ export interface AgentModelPrefs {
 export type AgentCliEnvPrefs = Record<string, Record<string, string>>;
 export type AgentCliEnvIntentPrefs = Record<string, { apiKeyOverride?: boolean }>;
 
-export interface TelemetryPrefs {
-  metrics?: boolean;
-  content?: boolean;
-  artifactManifest?: boolean;
-}
-
 export interface OrbitConfigPrefs {
   enabled: boolean;
   time: string;
@@ -131,7 +125,6 @@ export interface AppConfigPrefs {
   disabledSkills?: string[];
   disabledDesignSystems?: string[];
   installationId?: string | null;
-  telemetry?: TelemetryPrefs;
   privacyDecisionAt?: number | null;
   allowSilentUpdates?: boolean;
   orbit?: OrbitConfigPrefs;
@@ -165,7 +158,6 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'disabledSkills',
   'disabledDesignSystems',
   'installationId',
-  'telemetry',
   'privacyDecisionAt',
   'allowSilentUpdates',
   'orbit',
@@ -194,24 +186,6 @@ export const RETIRED_HOSTED_AGENT_ID = 'amr';
 export const RETIRED_WORKSPACE_CONTEXT_SOURCE = 'vela';
 
 const RETIRED_AGENT_IDS: ReadonlySet<string> = new Set(['gemini', RETIRED_HOSTED_AGENT_ID]);
-
-const TELEMETRY_KEYS: ReadonlySet<string> = new Set([
-  'metrics',
-  'content',
-  'artifactManifest',
-]);
-
-function validateTelemetry(raw: unknown): TelemetryPrefs | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const result: Record<string, boolean> = Object.create(null);
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (k === '__proto__' || k === 'constructor') continue;
-    if (!TELEMETRY_KEYS.has(k)) continue;
-    if (typeof v === 'boolean') result[k] = v;
-  }
-  return Object.keys(result).length > 0 ? (result as TelemetryPrefs) : undefined;
-}
 
 const AGENT_CLI_ENV_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['amr', new Set([
@@ -625,14 +599,6 @@ function applyConfigValue(
     if (typeof value === 'string' || value === null) target[key] = value;
     return;
   }
-  if (key === 'telemetry') {
-    const validated = validateTelemetry(value);
-    if (validated !== undefined) {
-      target[key] = validated;
-    } else {
-      delete target[key];
-    }
-  }
   if (key === 'privacyDecisionAt') {
     if (
       value === null ||
@@ -762,29 +728,9 @@ export function toPublicAppConfigPrefs(prefs: AppConfigPrefs): PublicAppConfigPr
   };
 }
 
-// Fill in telemetry defaults when the saved config has no `telemetry`
-// field at all (fresh install, pre-disclosure). `metrics` / `content`
-// default to true so onboarding-funnel events emit from the first
-// render — without these defaults the gate at
-// `analytics.ts` (`if (cfg.telemetry?.metrics !== true) return`)
-// dropped every event a user fired before the post-onboarding
-// disclosure modal had a chance to set them. An EXPLICIT `false`
-// the user previously saved is preserved (only `undefined` gets
-// the new default), so opt-out users stay opted out across the
-// 0.7.x → 0.8.0 upgrade.
-function applyTelemetryDefaults(prefs: AppConfigPrefs): AppConfigPrefs {
-  if (prefs.telemetry === undefined) {
-    return {
-      ...prefs,
-      telemetry: { metrics: true, content: true },
-    };
-  }
-  return prefs;
-}
-
 export async function readAppConfig(dataDir: string): Promise<AppConfigPrefs> {
   const base = await readAppConfigFileOnly(dataDir);
-  // Channel-root installation file is the new authoritative source for the
+  // Channel-root installation file is the authoritative source for the
   // identity bits that must survive a namespace-scoped data-dir wipe. It
   // lives outside `<namespace>/data/` so a reinstall of the same channel
   // (which might churn the namespace token, or eventually clear per-
@@ -792,13 +738,12 @@ export async function readAppConfig(dataDir: string): Promise<AppConfigPrefs> {
   //
   // Migration: when this daemon is the first to boot with installation.json
   // support and finds an existing installationId in the legacy app-config
-  // path, mirror it forward exactly once so PostHog continues to see the
-  // same person across the 0.7.x → 0.8.0 upgrade. Without this mirror, the
-  // user count would double when 0.8.0 ships.
+  // path, mirror it forward exactly once so the installation keeps a stable
+  // identity across that upgrade.
   const installationDir = resolveInstallationDir(dataDir);
   const installation = await readInstallationFile(installationDir);
   if (typeof installation.installationId === 'string' && installation.installationId.length > 0) {
-    return applyTelemetryDefaults({ ...base, installationId: installation.installationId });
+    return { ...base, installationId: installation.installationId };
   }
   if (typeof base.installationId === 'string' && base.installationId.length > 0) {
     // Best-effort migration. A write failure here doesn't break the read —
@@ -810,17 +755,16 @@ export async function readAppConfig(dataDir: string): Promise<AppConfigPrefs> {
       // swallow — observability beats correctness on this path
     }
   }
-  return applyTelemetryDefaults(base);
+  return base;
 }
 
 // Synchronous mirror of readAppConfig for callers that cannot await — e.g.
 // building the spawn env for the vela CLI inside the synchronous
-// spawnEnvForAgent. It reuses the exact same parsing, validation and telemetry
-// defaulting as the async path, so the consent decision and installationId can
-// never drift from what the rest of the daemon (and the web analytics config)
-// sees. The only intentional difference is that it skips the best-effort
-// legacy→channel-root migration *write*, which is a side effect rather than
-// part of the read result.
+// spawnEnvForAgent. It reuses the exact same parsing and validation as the
+// async path, so the installationId can never drift from what the rest of
+// the daemon sees. The only intentional difference is that it skips the
+// best-effort legacy→channel-root migration *write*, which is a side effect
+// rather than part of the read result.
 export function readAppConfigSync(dataDir: string): AppConfigPrefs {
   const base = readAppConfigFileOnlySync(dataDir);
   const installation = readInstallationFileSync(resolveInstallationDir(dataDir));
@@ -828,12 +772,12 @@ export function readAppConfigSync(dataDir: string): AppConfigPrefs {
     typeof installation.installationId === 'string' &&
     installation.installationId.length > 0
   ) {
-    return applyTelemetryDefaults({
+    return {
       ...base,
       installationId: installation.installationId,
-    });
+    };
   }
-  return applyTelemetryDefaults(base);
+  return base;
 }
 
 function readAppConfigFileOnlySync(dataDir: string): AppConfigPrefs {
@@ -948,37 +892,19 @@ async function doWrite(
   });
   await rename(tmp, file);
   if (process.platform !== 'win32') await chmod(file, 0o600);
-  const installationIdWasExplicitlyReset = Object.prototype.hasOwnProperty.call(partial, 'installationId')
-    && (partial.installationId == null || (
-      typeof existing.installationId === 'string'
-      && typeof normalizedNextWithoutRetiredAgents.installationId === 'string'
-      && existing.installationId !== normalizedNextWithoutRetiredAgents.installationId
-    ));
-  const metricsWereExplicitlyDisabled = isMetricsExplicitlyDisabled(partial.telemetry);
-  const shouldClearAttribution = installationIdWasExplicitlyReset || metricsWereExplicitlyDisabled;
   // Mirror the identity bits to the channel-root installation file so they
   // survive a namespace-scoped data-dir wipe. Only fires when the caller
-  // explicitly touches installation identity or consent lifecycle state
-  // (avoiding noisy writes on every unrelated app-config update). A write
-  // failure here doesn't roll back the app-config write — the next read
-  // merges them transparently.
-  if (Object.prototype.hasOwnProperty.call(partial, 'installationId') || shouldClearAttribution) {
+  // explicitly touches installation identity (avoiding noisy writes on
+  // every unrelated app-config update). A write failure here doesn't roll
+  // back the app-config write — the next read merges them transparently.
+  if (Object.prototype.hasOwnProperty.call(partial, 'installationId')) {
     const id = normalizedNextWithoutRetiredAgents.installationId;
     // Caller explicitly touched installationId — mirror the outcome
     // (including the clear case) to installation.json so a future read
     // doesn't keep serving the old value out of the channel-root file.
     // "Delete my data" relies on this clear path.
     const installPatch: InstallationFilePatch = {
-      ...(Object.prototype.hasOwnProperty.call(partial, 'installationId')
-        ? { installationId: typeof id === 'string' && id.length > 0 ? id : null }
-        : {}),
-      ...(shouldClearAttribution
-        ? {
-            pendingAttribution: null,
-            attributionClaimedAt: null,
-            attributionClaimResultAt: null,
-          }
-        : {}),
+      installationId: typeof id === 'string' && id.length > 0 ? id : null,
     };
     try {
       await writeInstallationFile(resolveInstallationDir(dataDir), installPatch);
@@ -988,11 +914,4 @@ async function doWrite(
     }
   }
   return normalizedNextWithoutRetiredAgents;
-}
-
-function isMetricsExplicitlyDisabled(value: unknown): boolean {
-  return value != null
-    && typeof value === 'object'
-    && !Array.isArray(value)
-    && (value as Record<string, unknown>).metrics === false;
 }

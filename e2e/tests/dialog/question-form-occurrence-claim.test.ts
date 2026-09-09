@@ -72,7 +72,6 @@ describe('inline question form occurrence claim (OPEND-2367)', () => {
           designSystemId: null,
           onboardingCompleted: true,
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });
@@ -180,7 +179,6 @@ describe('inline question form occurrence claim (OPEND-2367)', () => {
           designSystemId: null,
           onboardingCompleted: true,
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });

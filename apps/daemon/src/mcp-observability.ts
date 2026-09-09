@@ -1,54 +1,69 @@
 import { createHash } from 'node:crypto';
 
-import type {
-  AnalyticsAttributionQuality,
-  AnalyticsDistributionMechanism,
-  AnalyticsEntrySurface,
-  AnalyticsHostProduct,
-  AnalyticsPublisherClass,
-} from '@open-design/contracts/analytics';
-
 export const OPEN_DESIGN_PLUGIN_ID = 'open-design';
-const MIN_PLUGIN_GENERATION_SLO_WINDOW_MS = 5 * 60 * 1000;
-const DEFAULT_PLUGIN_GENERATION_SLO_WINDOW_MS = 45 * 60 * 1000;
-const MAX_PLUGIN_GENERATION_SLO_WINDOW_MS = 24 * 60 * 60 * 1000;
-const PLUGIN_GENERATION_TERMINAL_BUFFER_MS = 60 * 1000;
 
-export interface ExternalPluginContext {
-  id: typeof OPEN_DESIGN_PLUGIN_ID;
-  version: string;
-  distributionMechanism: AnalyticsDistributionMechanism;
-  publisherClass: AnalyticsPublisherClass;
+// Plugin contract vocabularies (formerly @open-design/contracts/analytics
+// types). The unions mirror the external plugin protocol wire contract and
+// gate validation below.
+export type AnalyticsDistributionMechanism =
+  | 'git_marketplace'
+  | 'local_repo'
+  | 'manual'
+  | 'unknown';
+export type AnalyticsPublisherClass =
+  | 'open_design_first_party'
+  | 'third_party'
+  | 'unknown';
+export type AnalyticsHostProduct =
+  | 'codex_desktop'
+  | 'codex_cli'
+  | 'codex_unknown'
+  | 'claude_code'
+  | 'unknown';
+
+import type { ExternalPluginContext, PluginWorkflowProvenance } from '@open-design/contracts';
+export type { ExternalPluginContext } from '@open-design/contracts';
+
+export function validatePluginWorkflowProvenance(value: unknown, requestId?: unknown): PluginWorkflowProvenance {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw pluginContractError('pluginWorkflowProvenance must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const keys = new Set(['pluginWorkflowId', 'externalPluginContext', 'logicalRequestDigest', 'logicalRequestDigestVersion']);
+  if (Object.keys(input).some((key) => !keys.has(key))) {
+    throw pluginContractError('unsupported pluginWorkflowProvenance field');
+  }
+  if (input.logicalRequestDigestVersion !== 1 || typeof input.logicalRequestDigest !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(input.logicalRequestDigest)) {
+    throw pluginContractError('invalid logical request digest');
+  }
+  if (requestId !== undefined && logicalPluginRequestDigest(validatePluginRequestId(requestId)).digest !== input.logicalRequestDigest) {
+    throw pluginContractError('logical request digest does not match requestId');
+  }
+  return {
+    pluginWorkflowId: validatePluginWorkflowId(input.pluginWorkflowId),
+    externalPluginContext: validateExternalPluginContext(input.externalPluginContext),
+    logicalRequestDigest: input.logicalRequestDigest,
+    logicalRequestDigestVersion: 1,
+  };
 }
 
-export interface ExternalPluginRunAnalyticsHints {
-  entrySurface: AnalyticsEntrySurface;
-  hostProduct: AnalyticsHostProduct;
-  externalPluginId: typeof OPEN_DESIGN_PLUGIN_ID;
-  externalPluginVersion: string;
-  distributionMechanism: AnalyticsDistributionMechanism;
-  publisherClass: AnalyticsPublisherClass;
-  attributionQuality: AnalyticsAttributionQuality;
-  pluginWorkflowId: string;
-  logicalRequestDigest: string;
-  logicalRequestDigestVersion: 1;
-  briefState: 'confirmed' | 'skipped' | 'not_applicable';
-}
-
-interface PluginAnalyticsContextLike {
-  deviceId?: unknown;
-  sessionId?: unknown;
-  clientType?: unknown;
-  locale?: unknown;
-  requestId?: unknown;
-  entrySurface?: unknown;
-  hostProduct?: unknown;
-  externalPluginId?: unknown;
-  externalPluginVersion?: unknown;
-  distributionMechanism?: unknown;
-  publisherClass?: unknown;
-  attributionQuality?: unknown;
-  mcpSessionId?: unknown;
+/** Read-only migration of old local state; never accepts analytics hints on new requests. */
+export function decodeDurablePluginWorkflowProvenance(state: Record<string, unknown>): PluginWorkflowProvenance | null {
+  try {
+    if (state.pluginWorkflowProvenance != null) return validatePluginWorkflowProvenance(state.pluginWorkflowProvenance);
+    const legacy = state.externalPluginAnalytics as Record<string, unknown> | undefined;
+    if (!legacy || legacy.entrySurface !== 'external_mcp') return null;
+    return validatePluginWorkflowProvenance({
+      pluginWorkflowId: legacy.pluginWorkflowId,
+      logicalRequestDigest: legacy.logicalRequestDigest,
+      logicalRequestDigestVersion: legacy.logicalRequestDigestVersion,
+      externalPluginContext: {
+        id: legacy.externalPluginId, version: legacy.externalPluginVersion,
+        distributionMechanism: legacy.distributionMechanism, publisherClass: legacy.publisherClass,
+      },
+    });
+  } catch { return null; }
 }
 
 const ALLOWED_CONTEXT_KEYS = new Set([
@@ -75,21 +90,6 @@ const ALLOWED_HOST_PRODUCT = new Set<AnalyticsHostProduct>([
   'claude_code',
   'unknown',
 ]);
-const EXTERNAL_PLUGIN_RUN_HINT_KEYS = new Set([
-  'entrySurface',
-  'hostProduct',
-  'externalPluginId',
-  'externalPluginVersion',
-  'distributionMechanism',
-  'publisherClass',
-  'attributionQuality',
-  'pluginWorkflowId',
-  'logicalRequestDigest',
-  'logicalRequestDigestVersion',
-  'briefState',
-]);
-const EXTERNAL_PLUGIN_RUN_RESERVED_KEY =
-  /^(?:entrySurface|hostProduct|externalPlugin|distributionMechanism|publisherClass|attributionQuality|pluginWorkflow|logicalRequest|generationSlo)/u;
 const VERSION_PATTERN = /^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?$/u;
 const WORKFLOW_ID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$/iu;
@@ -192,116 +192,4 @@ export function logicalPluginRequestDigest(requestId: string): {
       .update(`od-plugin-logical-request:v1:${requestId}`)
       .digest('hex'),
   };
-}
-
-export function normalizeExternalPluginRunAnalyticsHints(
-  value: unknown,
-  input: {
-    clientRequestId: unknown;
-    analyticsContext: PluginAnalyticsContextLike | null | undefined;
-  },
-): ExternalPluginRunAnalyticsHints {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw pluginContractError('analyticsHints must be an object');
-  }
-  const hints = value as Record<string, unknown>;
-  for (const key of Object.keys(hints)) {
-    if (
-      EXTERNAL_PLUGIN_RUN_RESERVED_KEY.test(key)
-      && !EXTERNAL_PLUGIN_RUN_HINT_KEYS.has(key)
-    ) {
-      throw pluginContractError(`unsupported external plugin analytics field: ${key}`);
-    }
-  }
-  if (hints.entrySurface !== 'external_mcp') {
-    throw pluginContractError('entrySurface must be external_mcp');
-  }
-  if (
-    typeof hints.hostProduct !== 'string'
-    || !ALLOWED_HOST_PRODUCT.has(hints.hostProduct as AnalyticsHostProduct)
-  ) {
-    throw pluginContractError('hostProduct is invalid');
-  }
-  const context = validateExternalPluginContext({
-    id: hints.externalPluginId,
-    version: hints.externalPluginVersion,
-    distributionMechanism: hints.distributionMechanism,
-    publisherClass: hints.publisherClass,
-  });
-  if (
-    hints.attributionQuality !== undefined
-    && hints.attributionQuality !== 'self_reported'
-    && hints.attributionQuality !== 'session_correlated'
-  ) {
-    throw pluginContractError('attributionQuality is invalid');
-  }
-  const pluginWorkflowId = validatePluginWorkflowId(hints.pluginWorkflowId);
-  if (
-    hints.briefState !== 'confirmed'
-    && hints.briefState !== 'skipped'
-    && hints.briefState !== 'not_applicable'
-  ) {
-    throw pluginContractError('briefState is invalid');
-  }
-  if (
-    typeof input.clientRequestId !== 'string'
-    || input.clientRequestId.length === 0
-  ) {
-    throw pluginContractError('clientRequestId is required for plugin runs');
-  }
-  const expectedLogical = logicalPluginRequestDigest(input.clientRequestId);
-  if (
-    hints.logicalRequestDigestVersion !== expectedLogical.version
-    || hints.logicalRequestDigest !== expectedLogical.digest
-  ) {
-    throw pluginContractError(
-      'logical request digest does not match clientRequestId',
-    );
-  }
-  const analyticsContext = input.analyticsContext;
-  const sessionCorrelated =
-    analyticsContext?.clientType === 'external_mcp'
-    && analyticsContext.entrySurface === 'external_mcp'
-    && analyticsContext.hostProduct === hints.hostProduct
-    && analyticsContext.externalPluginId === context.id
-    && analyticsContext.externalPluginVersion === context.version
-    && analyticsContext.distributionMechanism === context.distributionMechanism
-    && analyticsContext.publisherClass === context.publisherClass;
-  return {
-    entrySurface: 'external_mcp',
-    hostProduct: hints.hostProduct as AnalyticsHostProduct,
-    externalPluginId: context.id,
-    externalPluginVersion: context.version,
-    distributionMechanism: context.distributionMechanism,
-    publisherClass: context.publisherClass,
-    attributionQuality: sessionCorrelated
-      ? 'session_correlated'
-      : 'self_reported',
-    pluginWorkflowId,
-    logicalRequestDigest: expectedLogical.digest,
-    logicalRequestDigestVersion: expectedLogical.version,
-    briefState: hints.briefState,
-  };
-}
-
-export function resolvePluginGenerationSloWindowMs(input: {
-  inactivityTimeoutMs: number;
-  configuredValue?: string | undefined;
-}): number {
-  const configured = Number(input.configuredValue);
-  const requested = Number.isFinite(configured)
-    ? Math.floor(configured)
-    : DEFAULT_PLUGIN_GENERATION_SLO_WINDOW_MS;
-  const boundedRequested = Math.min(
-    MAX_PLUGIN_GENERATION_SLO_WINDOW_MS,
-    Math.max(MIN_PLUGIN_GENERATION_SLO_WINDOW_MS, requested),
-  );
-  const runtimeFloor = Math.min(
-    MAX_PLUGIN_GENERATION_SLO_WINDOW_MS,
-    Math.max(
-      MIN_PLUGIN_GENERATION_SLO_WINDOW_MS,
-      Math.floor(input.inactivityTimeoutMs) + PLUGIN_GENERATION_TERMINAL_BUFFER_MS,
-    ),
-  );
-  return Math.max(boundedRequested, runtimeFloor);
 }

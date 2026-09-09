@@ -40,21 +40,16 @@ export interface AiHtmlVersionSnapshotResult {
 
 export function artifactOriginForRun(input: {
   runId: string;
-  externalPluginAnalytics?: Record<string, unknown> | null;
+  pluginWorkflowProvenance?: import('@open-design/contracts').PluginWorkflowProvenance | null;
 }): ArtifactOrigin | undefined {
-  const analytics = input.externalPluginAnalytics;
-  if (
-    analytics?.entrySurface !== 'external_mcp'
-    || analytics.externalPluginId !== OPEN_DESIGN_PLUGIN_ID
-    || typeof analytics.pluginWorkflowId !== 'string'
-    || !analytics.pluginWorkflowId
-  ) {
+  const provenance = input.pluginWorkflowProvenance;
+  if (!provenance || provenance.externalPluginContext.id !== OPEN_DESIGN_PLUGIN_ID) {
     return undefined;
   }
   return {
     entrySurface: 'external_mcp',
     externalPluginId: OPEN_DESIGN_PLUGIN_ID,
-    pluginWorkflowId: analytics.pluginWorkflowId,
+    pluginWorkflowId: provenance.pluginWorkflowId,
     runId: input.runId,
   };
 }

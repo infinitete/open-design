@@ -33,7 +33,6 @@ describe('tools-dev automations routines', () => {
           designSystemId: null,
           onboardingCompleted: true,
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });

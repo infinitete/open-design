@@ -236,26 +236,21 @@ describe('syncConfigToDaemon', () => {
     });
   });
 
-  it('syncs daemon-owned privacy decision fields', async () => {
+  it('ignores legacy privacy keys instead of writing them back to the daemon', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-
-    await syncConfigToDaemon({
+    const legacyConfig = {
       ...DEFAULT_CONFIG,
       installationId: 'install-1',
       privacyDecisionAt: 1778244000000,
       telemetry: { metrics: true, content: true, artifactManifest: false },
-    });
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ];
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      installationId: 'install-1',
-      privacyDecisionAt: 1778244000000,
-      telemetry: { metrics: true, content: true, artifactManifest: false },
-    });
+    };
+    await syncConfigToDaemon(legacyConfig);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const saved = JSON.parse(String(init.body));
+    for (const key of ['privacyDecisionAt', 'telemetry']) {
+      expect(saved).not.toHaveProperty(key);
+    }
   });
 
   it('syncs the silent update preference to daemon app config', async () => {
@@ -410,64 +405,19 @@ describe('mergeDaemonConfig', () => {
     });
   });
 
-  it('copies privacyDecisionAt from daemon config', () => {
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
+  it.each([true, false])('ignores legacy daemon privacy keys with metrics=%s', (metrics) => {
+    const legacyConfig = {
+      agentId: 'codex',
       installationId: 'install-1',
       privacyDecisionAt: 1778244000000,
-      telemetry: { metrics: true },
-    });
-
-    expect(merged.installationId).toBe('install-1');
-    expect(merged.privacyDecisionAt).toBe(1778244000000);
-    expect(merged.telemetry).toEqual({ metrics: true });
-  });
-
-  it('migrates old daemon privacy config to a resolved decision', () => {
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      installationId: 'install-1',
-      telemetry: { metrics: true },
-    });
-
-    expect(merged.installationId).toBe('install-1');
-    expect(typeof merged.privacyDecisionAt).toBe('number');
-  });
-
-  it('defaults reporting on and mints an installationId when the install never opted out', () => {
-    // Brand-new install: the daemon has no privacy state at all. The product
-    // default telemetry channels (metrics + content) are on and an anonymous
-    // id is assigned so events have a stable distinct id. This mirrors the
-    // first-run banner's "Share" payload; artifactManifest stays
-    // off, matching that surface.
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {});
-
-    expect(merged.telemetry?.metrics).toBe(true);
-    expect(merged.telemetry?.content).toBe(true);
-    expect(merged.telemetry?.artifactManifest).toBe(false);
-    expect(typeof merged.installationId).toBe('string');
-    expect(merged.installationId).toBeTruthy();
-  });
-
-  it('mints an installationId for a reporting install that somehow has none', () => {
-    // The "on but no id" state that surfaces as "Opted out" in Settings:
-    // metrics is on but no anonymous id was ever assigned.
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      installationId: null,
-    });
-
-    expect(merged.telemetry?.metrics).toBe(true);
-    expect(merged.installationId).toBeTruthy();
-  });
-
-  it('preserves an explicit opt-out and never re-mints an id', () => {
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      telemetry: { metrics: false, content: false, artifactManifest: false },
-      installationId: null,
-      privacyDecisionAt: 1778244000000,
-    });
-
-    expect(merged.telemetry?.metrics).toBe(false);
-    expect(merged.installationId == null).toBe(true);
+      telemetry: { metrics, content: metrics, artifactManifest: false },
+    };
+    const merged = mergeDaemonConfig(DEFAULT_CONFIG, legacyConfig);
+    expect(merged.agentId).toBe('codex');
+    for (const key of ['privacyDecisionAt', 'telemetry']) {
+      expect(merged).not.toHaveProperty(key);
+      expect(DEFAULT_CONFIG).not.toHaveProperty(key);
+    }
   });
 
   it('uses daemon silent update preference and clears stale local values when absent', () => {
@@ -1597,14 +1547,15 @@ describe('saveConfig', () => {
     expect(saved.byokCredentialConfigured).toBeUndefined();
   });
 
-  it('keeps daemon-owned privacy fields out of localStorage', () => {
-    saveConfig({
+  it('ignores legacy privacy keys without writing them back to localStorage', () => {
+    const legacyConfig = {
       ...DEFAULT_CONFIG,
       installationId: 'install-1',
       privacyDecisionAt: 1778244000000,
       telemetry: { metrics: true },
       allowSilentUpdates: true,
-    });
+    };
+    saveConfig(legacyConfig);
 
     const saved = JSON.parse(store.get('open-design:config') ?? '{}');
     expect(saved.installationId).toBeUndefined();

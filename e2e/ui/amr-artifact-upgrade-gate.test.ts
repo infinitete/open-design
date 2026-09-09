@@ -33,7 +33,6 @@ const KIMI_CONFIG = {
   designSystemId: null,
   onboardingCompleted: true,
   privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
   agentModels: { kimi: { model: 'default', reasoning: 'default' } },
 };
 

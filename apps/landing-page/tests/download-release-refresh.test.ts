@@ -108,8 +108,6 @@ test('download page refreshes the complete stable release snapshot on entry', as
   };
   const window = {
     matchMedia: () => ({ matches: false, addEventListener() {} }),
-    __odTrack: undefined,
-    posthog: undefined,
   };
   const navigator = {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -268,8 +266,6 @@ test('download page keeps the static snapshot when stable metadata is incomplete
   };
   const window = {
     matchMedia: () => ({ matches: false, addEventListener() {} }),
-    __odTrack: undefined,
-    posthog: undefined,
   };
   const navigator = {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -366,8 +362,6 @@ test('download page refreshes the neutral release link when no desktop platform 
   };
   const window = {
     matchMedia: () => ({ matches: true, addEventListener() {} }),
-    __odTrack: undefined,
-    posthog: undefined,
   };
   const navigator = {
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile',

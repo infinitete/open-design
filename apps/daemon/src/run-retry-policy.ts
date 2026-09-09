@@ -1,3 +1,5 @@
+// TODO(contracts): keep — these type the product retry policy's failure
+// vocabulary and decision fields, not analytics payloads.
 import type {
   TrackingRunFailureCategory,
   TrackingRunFailureDetail,

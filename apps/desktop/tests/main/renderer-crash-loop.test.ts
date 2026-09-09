@@ -17,7 +17,7 @@ describe("RendererCrashLoopBreaker", () => {
     for (let i = 0; i < 4; i += 1) {
       const outcome = breaker.recordCrash((now += 1000));
       expect(outcome.tripped).toBe(false);
-      expect(outcome.suppressTelemetry).toBe(false);
+      expect(outcome.justOpened).toBe(false);
     }
     expect(breaker.isOpen()).toBe(false);
   });
@@ -29,12 +29,10 @@ describe("RendererCrashLoopBreaker", () => {
     const trip = breaker.recordCrash((now += 1000));
     expect(trip.tripped).toBe(true);
     expect(trip.justOpened).toBe(true);
-    // The tripping crash is still reported so the loop is visible in analytics.
-    expect(trip.suppressTelemetry).toBe(false);
     expect(breaker.isOpen()).toBe(true);
   });
 
-  test("suppresses telemetry for every crash after it opens", () => {
+  test("stays open with no fresh justOpened once it has already opened", () => {
     const breaker = new RendererCrashLoopBreaker({ limit: 3, windowMs: 60_000 });
     breaker.recordCrash(1000);
     breaker.recordCrash(2000);
@@ -42,7 +40,6 @@ describe("RendererCrashLoopBreaker", () => {
     const after = breaker.recordCrash(3100);
     expect(after.tripped).toBe(true);
     expect(after.justOpened).toBe(false);
-    expect(after.suppressTelemetry).toBe(true);
   });
 
   test("never opens when crashes are spread wider than the window", () => {
@@ -108,9 +105,8 @@ describe("renderer crash-loop breaker wiring", () => {
     expect(runtimeSource).toContain("new RendererCrashLoopBreaker(");
   });
 
-  test("the crash handler feeds the breaker and can suppress telemetry", () => {
+  test("the crash handler feeds the breaker", () => {
     expect(runtimeSource).toContain(".recordCrash(");
-    expect(runtimeSource).toContain("suppressTelemetry");
   });
 
   test("the poll loop stays parked while the breaker is open", () => {
@@ -120,13 +116,11 @@ describe("renderer crash-loop breaker wiring", () => {
     expect(runtimeSource).toContain("rearmIfCooledDown(");
   });
 
-  test("breaker open and recovery attempts are observable via logs + bounded telemetry", () => {
+  test("breaker open and recovery attempts are observable via logs", () => {
     // A wedged device must be diagnosable: one warn on open, one info per
-    // recovery attempt, and a bounded recovery-attempt analytics signal.
+    // recovery attempt.
     expect(runtimeSource).toContain("crash-loop breaker OPEN");
     expect(runtimeSource).toContain("attempting recovery reload");
-    expect(runtimeSource).toContain('reason: "recovery-attempt"');
-    expect(runtimeSource).toContain("recovery_attempt:");
   });
 
   test("the crash screen offers report + save-logs + email actions via already-exposed IPC", () => {

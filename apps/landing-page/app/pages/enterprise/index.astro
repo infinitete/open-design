@@ -137,7 +137,7 @@ const jsonLd = {
     </div>
 
     <div class="ent-card">
-      <EnterpriseLeadForm locale={locale} source="enterprise" pageName="enterprise" />
+      <EnterpriseLeadForm locale={locale} source="enterprise" />
     </div>
   </section>
 
@@ -341,18 +341,6 @@ const jsonLd = {
             idx = items.indexOf(it);
             show(it);
             start();
-            // A real user pick (not the auto-cycle) — which use-case demo drew
-            // interest. Uses the shared PostHog delegate directly (this enhancer
-            // lives in its own IIFE, separate from the form's `track`).
-            try {
-              if (typeof window.__odTrack === 'function') {
-                window.__odTrack('demo_click', {
-                  page_name: 'enterprise',
-                  locale: (document.documentElement.lang || 'en').toLowerCase(),
-                  demo: it.getAttribute('data-preview-title') || '',
-                });
-              }
-            } catch (e) {}
           });
         }
 

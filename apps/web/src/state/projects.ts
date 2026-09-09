@@ -40,7 +40,7 @@ import type {
   ProjectTemplate,
 } from '../types';
 import { removeDesignBrowserProjectCache } from '../components/design-browser-storage';
-import { boundedRequestErrorCode } from '../analytics/workspace';
+import { boundedRequestErrorCode } from '../runtime/request-error-code';
 
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';

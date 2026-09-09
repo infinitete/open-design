@@ -278,7 +278,7 @@ const retiredVelaAllowedExactPaths = new Set([
   "apps/daemon/src/run-failure-classification.ts",
   // Historical compatibility: failure-detail union members still emitted by
   // the classifier above when it decodes stored AMR_* run failures.
-  "packages/contracts/src/analytics/events/shared-enums.ts",
+  "packages/contracts/src/analytics/shared-enums.ts",
   // Historical compatibility: still sweeps the retired hosted runtime's
   // on-disk log home so diagnostics bundles surface pre-retirement logs.
   "packages/diagnostics/src/agent-logs.ts",

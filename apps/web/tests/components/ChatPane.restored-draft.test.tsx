@@ -22,7 +22,7 @@ describe('ChatPane restored manual draft', () => {
       text: string;
     }) => (
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[]}
         streaming={false}
         error={null}
@@ -71,7 +71,7 @@ describe('ChatPane restored manual draft', () => {
     const onSend = vi.fn();
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[{ id: 'old-user', role: 'user', content: 'Restored history', createdAt: 1 }]}
         streaming={false}
         error={null}
@@ -143,7 +143,7 @@ describe('ChatPane restored manual draft', () => {
     };
     const renderPane = (conversationId: string, nonce: number | null) => (
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[]}
         streaming={false}
         error={null}
@@ -197,7 +197,7 @@ describe('ChatPane restored manual draft', () => {
     const acknowledged = vi.fn();
     const pane = (conversationId: string, initialDraft?: string, signalId?: string) => (
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[]}
         streaming={false}
         error={null}
@@ -239,7 +239,7 @@ describe('ChatPane restored manual draft', () => {
     const onSend = vi.fn(async () => 'restore-draft' as const);
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[]}
         streaming={false}
         error={null}

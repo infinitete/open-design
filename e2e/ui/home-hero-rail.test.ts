@@ -33,7 +33,6 @@ const HOME_CONFIG = {
   onboardingCompleted: true,
   agentModels: { codex: { model: 'default', reasoning: 'default' } },
   privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
 };
 
 const HOME_DESIGN_SYSTEMS = [

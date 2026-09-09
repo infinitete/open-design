@@ -46,7 +46,7 @@ describe('resolvePackagedNamespaceBaseRoot', () => {
   });
 });
 
-describe('readPackagedConfig legacy Vela fields', () => {
+describe('readPackagedConfig legacy fields', () => {
   const tempDirs: string[] = [];
   const savedConfigPath = process.env[PACKAGED_CONFIG_PATH_ENV];
   const savedResourcesPath = process.resourcesPath;
@@ -92,6 +92,37 @@ describe('readPackagedConfig legacy Vela fields', () => {
     expect('velaWebUrl' in config).toBe(false);
     expect('velaWebUrls' in config).toBe(false);
     expect(config.namespace).toBe('release-legacy-check');
+    expect(config.resourceRoot).toBe(resolve(join(root, 'resources')));
+  });
+
+  it('ignores the retired telemetryRelayUrl/posthogKey/posthogHost keys instead of loading them', async () => {
+    // Already-deployed open-design-config.json files were baked with the
+    // telemetry fields before the observability stack was removed. The loader
+    // must keep tolerating them: the keys are ignored on read and never
+    // surface on the resolved config, so an upgrade never breaks the load.
+    const { readPackagedConfig } = await import('../src/config.js');
+    const root = mkdtempSync(join(tmpdir(), 'od-packaged-config-legacy-telemetry-'));
+    tempDirs.push(root);
+    writeFileSync(
+      join(root, 'open-design-config.json'),
+      JSON.stringify({
+        namespace: 'release-legacy-telemetry-check',
+        posthogHost: 'https://us.i.posthog.com',
+        posthogKey: 'phc_deployed_bundle',
+        resourceRoot: join(root, 'resources'),
+        telemetryRelayUrl: 'https://telemetry.open-design.ai/api/langfuse',
+      }),
+      'utf8',
+    );
+    Object.defineProperty(process, 'resourcesPath', { value: root, configurable: true });
+    process.env[PACKAGED_CONFIG_PATH_ENV] = join(root, 'open-design-config.json');
+
+    const config = await readPackagedConfig();
+
+    expect('telemetryRelayUrl' in config).toBe(false);
+    expect('posthogKey' in config).toBe(false);
+    expect('posthogHost' in config).toBe(false);
+    expect(config.namespace).toBe('release-legacy-telemetry-check');
     expect(config.resourceRoot).toBe(resolve(join(root, 'resources')));
   });
 });

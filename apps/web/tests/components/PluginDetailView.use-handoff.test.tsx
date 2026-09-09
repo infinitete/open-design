@@ -10,11 +10,6 @@ import { navigate } from '../../src/router';
 import { applyPlugin } from '../../src/state/projects';
 import { takeHomePromptHandoff } from '../../src/components/home-hero/plugin-authoring';
 
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return { ...actual, useAnalytics: () => ({ track: vi.fn() }) };
-});
-
 vi.mock('../../src/router', () => ({
   goBack: vi.fn(),
   navigate: vi.fn(),

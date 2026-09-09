@@ -30,7 +30,6 @@ interface ByokModelFieldProps {
   azureModelFetchHint: string;
   onCustomModelChange: (value: string) => void;
   onCustomModelSelect: () => void;
-  onFocus: () => void;
   onModelSelect: (value: string) => void;
 }
 
@@ -50,7 +49,6 @@ export function ByokModelField({
   azureModelFetchHint,
   onCustomModelChange,
   onCustomModelSelect,
-  onFocus,
   onModelSelect,
 }: ByokModelFieldProps) {
   const selectValue = customActive
@@ -73,7 +71,6 @@ export function ByokModelField({
             type="text"
             value={model}
             placeholder={labels.customModelPlaceholder}
-            onFocus={onFocus}
             onChange={(e) => onCustomModelChange(e.target.value.trim())}
           />
         </label>
@@ -95,7 +92,6 @@ export function ByokModelField({
             popoverClassName="settings-byok-select-popover"
             models={models}
             value={selectValue}
-            onFocus={onFocus}
             onChange={(nextValue) => {
               if (nextValue === CUSTOM_MODEL_SENTINEL) {
                 onCustomModelSelect();

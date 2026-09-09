@@ -1,7 +1,6 @@
-// Shapes and narrowing guards for the loosely-typed rows the run routes and
-// the run analytics lifecycle both read.
+// Shapes and narrowing guards for the loosely-typed rows the run routes read.
 //
-// These live outside `routes/runs.ts` so the analytics lifecycle can consume
+// These live outside `routes/runs.ts` so other daemon modules can consume
 // them without importing the route module back — a run's project row and its
 // touched-artifact list are facts about the run, not about HTTP.
 //
@@ -14,7 +13,6 @@ import type {
   ProjectMetadata as ContractProjectMetadata,
   StrategyTaskProjectionV2,
 } from '@open-design/contracts';
-import type { AnalyticsContext } from '../analytics.js';
 import type { RunArtifactBaseline } from '../run-artifact-fs.js';
 import type {
   RunEventForAnalyticsObservability,
@@ -153,9 +151,7 @@ export interface ChatRun {
   context?: Record<string, unknown> | null;
   events: RunEventRecord[];
   clients: Set<SseClient>;
-  analyticsContext?: AnalyticsContext;
-  analyticsRecovery?: { context?: AnalyticsContext } | null;
-  externalPluginAnalytics?: Record<string, unknown> | null;
+  pluginWorkflowProvenance?: import('@open-design/contracts').PluginWorkflowProvenance | null;
   manualResumeAttemptCount?: number;
   /** Private durable reservation used only across a same-ID resume claim crash window. */
   pendingManualResumeAttemptCount?: number;
@@ -242,7 +238,7 @@ export interface RunArtifactBaselines {
 }
 
 export interface RunCreatedFallbackInput {
-  analyticsContext: AnalyticsContext | null;
+  analyticsContext: Record<string, unknown> | null;
   run: ChatRun;
   status: string;
 }
@@ -252,7 +248,7 @@ export interface RunProjectKindInput {
   projectMetadata?: ProjectMetadata;
 }
 
-/** A settled Run, as the analytics lifecycle reads it. */
+/** A settled Run's terminal facts. */
 export type TerminalRunStatus = {
   status: string;
   error?: string | null;

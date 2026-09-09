@@ -99,7 +99,6 @@ async function openProxySettingsHarness(
     designSystemId: null,
     onboardingCompleted: true,
     privacyDecisionAt: 1,
-    telemetry: { metrics: false, content: false, artifactManifest: false },
     mediaProviders: {},
     agentModels: {},
     agentCliEnv: {},

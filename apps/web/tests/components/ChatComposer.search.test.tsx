@@ -262,7 +262,7 @@ describe('ChatComposer /search command', () => {
       'please update this spot',
       [{ path: 'uploads/drawing.png', name: 'drawing.png', kind: 'image', order: 0 }],
       [],
-      { entryFrom: 'mark' },
+      undefined,
     );
   });
 
@@ -427,7 +427,7 @@ describe('ChatComposer /search command', () => {
     });
   });
 
-  it('tags entry_from=mark on a draw annotation sent while a run is streaming', async () => {
+  it('sends a deferred draw annotation once the active run finishes', async () => {
     const onSend = vi.fn();
     mockedUploadProjectFiles.mockResolvedValue({
       uploaded: [{ path: 'uploads/drawing.png', name: 'drawing.png', kind: 'image' }],
@@ -472,7 +472,11 @@ describe('ChatComposer /search command', () => {
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     const meta = onSend.mock.calls[0]![3];
-    expect(meta).toMatchObject({ entryFrom: 'mark' });
+    expect(meta).toBeUndefined();
+    expect(onSend.mock.calls[0]![0]).toBe('tighten this area');
+    expect(onSend.mock.calls[0]![1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'uploads/drawing.png' }),
+    ]));
   });
 
   it('previews a staged image attachment from its chip', async () => {

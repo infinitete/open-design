@@ -334,7 +334,7 @@ HTTP/UI/CLI closure, with CLI secrets accepted through stdin or a key file.
 - pinned bundle update with staging, verification, rollback, and single-flight;
 - Harness credential status/set/unset via write-only Web and CLI surfaces;
 - environment credential shown as read-only;
-- setup telemetry and actionable repair states.
+- setup diagnostics and actionable repair states.
 
 ### Phase three — capability parity
 

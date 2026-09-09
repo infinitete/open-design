@@ -66,7 +66,7 @@ setTimeout(() => process.exit(0), 250);
     else process.env.OD_CRITIQUE_ENABLED = originalCritiqueEnabled;
   });
 
-  it('labels critique with the canonical project skill when the request omits skillId', async () => {
+  it('starts critique for a legacy project skill when the request omits skillId', async () => {
     const projectId = `project-skill-label-${randomUUID()}`;
     const createResponse = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
@@ -90,9 +90,6 @@ setTimeout(() => process.exit(0), 250);
     db.prepare('UPDATE projects SET skill_id = ? WHERE id = ?')
       .run('editorial-collage-deck', projectId);
 
-    const { __resetCritiqueMetricsForTests } = await import('../src/metrics/index.js');
-    __resetCritiqueMetricsForTests();
-
     const chatResponse = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -106,13 +103,5 @@ setTimeout(() => process.exit(0), 250);
     expect(chatResponse.ok).toBe(true);
     const chatBody = await chatResponse.text();
     expect(chatBody).toContain('critique.run_started');
-
-    const metricsResponse = await fetch(`${baseUrl}/api/metrics`);
-    const metrics = await metricsResponse.text();
-    expect(metrics).toContain(
-      'open_design_critique_runs_total{status="shipped",adapter="qwen",skill="open-design-landing-deck"} 1',
-    );
-    expect(metrics).not.toContain('skill="unknown"');
-    expect(metrics).not.toContain('skill="editorial-collage-deck"');
   });
 });

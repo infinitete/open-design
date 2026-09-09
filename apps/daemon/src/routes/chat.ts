@@ -32,7 +32,6 @@ import {
   classifyAIHubMixModel,
 } from '../integrations/aihubmix.js';
 import { isSafeId as isSafeProjectId } from '../projects.js';
-import { projectKindToTracking } from '@open-design/contracts/analytics';
 import { proxyDispatcherRequestInit, validateUserProviderBaseUrl } from '../connectionTest.js';
 import { isKnownReasoningEffort, resolveModelForServiceTier } from '../runtimes/models.js';
 import { googleStreamGenerateContentUrl } from '../integrations/google-models.js';
@@ -48,25 +47,7 @@ import {
 // Collab type removed - define locally
 type AuthorizeProjectRequest = any;
 
-// Allowlist for the `/feedback` route. Mirrors the
-// ChatMessageFeedbackReasonCode union in packages/contracts/src/api/chat.ts.
-// Kept inline (not imported as a runtime value, since the contract type is
-// type-only) so a stale client can't poison Langfuse with unknown categories.
-const FEEDBACK_REASON_ALLOWLIST: ReadonlySet<string> = new Set([
-  'matched_request',
-  'strong_visual',
-  'useful_structure',
-  'easy_to_continue',
-  'followed_design_system',
-  'missed_request',
-  'weak_visual',
-  'incomplete_output',
-  'hard_to_use',
-  'missed_design_system',
-  'other',
-]);
-
-export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle' | 'paths' | 'telemetry' | 'appConfig' | 'projectStore' | 'projectFiles' | 'projectGitCoordination'> {
+export interface RegisterChatRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'chat' | 'agents' | 'critique' | 'validation' | 'lifecycle' | 'paths' | 'appConfig' | 'projectStore' | 'projectFiles' | 'projectGitCoordination'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
 }
 
@@ -101,98 +82,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     return false;
   };
 
-  // Run lifecycle routes live in `routes/runs.ts`; this file owns feedback,
-  // connection tests, critique handoff, and provider proxy routes.
-
-  // Receives the user's thumbs-up/down (+ reason codes) for an assistant
-  // turn and forwards it to Langfuse as a `score-create`. Web persists the
-  // feedback itself via PUT /messages/:id; this endpoint exists only as a
-  // telemetry side channel — the daemon is the single network egress for
-  // Langfuse and gates on `telemetry.metrics + telemetry.content` consent.
-  //
-  // The consent + sink decision is fast (awaits a small file read, no
-  // network); we await it so the response status honestly reflects whether
-  // the score was enqueued, skipped for consent, or skipped because no
-  // Langfuse sink is configured. The actual Langfuse network call happens
-  // as a detached promise inside the bridge.
-  app.post('/api/runs/:id/feedback', async (req, res) => {
-    const runId = req.params.id;
-    const body = (req.body ?? {}) as Partial<{
-      rating: 'positive' | 'negative';
-      reasonCodes: string[];
-      hasCustomReason: boolean;
-      customReason: string;
-    }> & Record<string, unknown>;
-    if (!runId) {
-      return sendApiError(res, 400, 'INVALID_RUN_ID', 'runId missing');
-    }
-    const callerOwnedContextFields = [
-      'projectId',
-      'conversationId',
-      'assistantMessageId',
-    ].filter((field) => Object.prototype.hasOwnProperty.call(body, field));
-    if (callerOwnedContextFields.length > 0) {
-      return sendApiError(
-        res,
-        400,
-        'INVALID_FEEDBACK_CONTEXT',
-        'feedback project, conversation, and message identity are derived from the run',
-      );
-    }
-    if (body.rating !== 'positive' && body.rating !== 'negative') {
-      return sendApiError(res, 400, 'INVALID_RATING', 'rating must be positive or negative');
-    }
-    const run = design.runs.get(runId);
-    if (!run || typeof run.projectId !== 'string' || !run.projectId) {
-      return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
-    }
-    if (!await ctx.authorizeProjectRequest(
-      req,
-      res,
-      run.projectId,
-      { mode: 'write', capability: 'writeFiles' },
-    )) return;
-    // Drop anything outside the contract-side reason allowlist and
-    // deduplicate; otherwise a malformed or replayed client payload could
-    // create unknown Langfuse categories or duplicate score ids in the
-    // same batch.
-    const reasonCodes = Array.isArray(body.reasonCodes)
-      ? Array.from(
-          new Set(
-            body.reasonCodes.filter(
-              (c): c is string =>
-                typeof c === 'string' && FEEDBACK_REASON_ALLOWLIST.has(c),
-            ),
-          ),
-        )
-      : [];
-    const customReason = typeof body.customReason === 'string' ? body.customReason : '';
-    const reportFeedback = ctx.telemetry?.reportFeedback;
-    if (!reportFeedback) {
-      res.status(202).json({ status: 'skipped_no_sink' });
-      return;
-    }
-    // Build score metadata bag that lands in the Langfuse score body.
-    // Mirrors the PostHog event so analysts can cross-reference. Every
-    // identity field comes from the daemon-owned run object; request bodies
-    // cannot retarget a score to another project/conversation/message.
-    const scoreMetadata: Record<string, unknown> = {
-      projectId: run.projectId,
-      conversationId: run.conversationId ?? null,
-      assistantMessageId: run.assistantMessageId ?? null,
-      hasCustomReason: body.hasCustomReason === true,
-      customReason,
-    };
-    const outcome = await reportFeedback({
-      runId,
-      rating: body.rating,
-      reasonCodes,
-      hasCustomReason: body.hasCustomReason === true,
-      customReason,
-      scoreMetadata,
-    });
-    res.status(202).json(outcome);
-  });
+  // Run lifecycle routes live in `routes/runs.ts`; this file owns connection
+  // tests, critique handoff, and provider proxy routes.
 
   // ---- Connection tests (single-shot JSON; no SSE) ------------------------
   // Settings dialog uses these to verify a config works without sending a

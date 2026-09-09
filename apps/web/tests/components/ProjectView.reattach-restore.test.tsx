@@ -43,6 +43,7 @@ const chatPaneHarness = vi.hoisted(() => ({
     meta?: unknown,
   ) => unknown),
   onStop: null as null | (() => void),
+  messages: [] as ChatMessage[],
   openRequestNames: [] as string[],
 }));
 
@@ -121,10 +122,13 @@ vi.mock('../../src/components/ChatPane', () => ({
   ChatPane: ({
     onSend,
     onStop,
+    messages,
   }: {
     onSend: typeof chatPaneHarness.onSend;
     onStop: typeof chatPaneHarness.onStop;
+    messages: ChatMessage[];
   }) => {
+    chatPaneHarness.messages = messages;
     chatPaneHarness.onSend = onSend;
     chatPaneHarness.onStop = onStop;
     return null;
@@ -1258,25 +1262,26 @@ describe('ProjectView daemon reattach restore', () => {
     }));
   });
 
-  it('finalizes reattached telemetry only after trace object files are restored', async () => {
+  it('delivers an edited existing report.md without new artifacts and retains evidence after reload', async () => {
     const startedAt = Date.now();
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([
       {
         id: 'msg-reattach-trace',
+        sessionMode: 'design',
         role: 'assistant',
         content: '',
         createdAt: startedAt,
         startedAt,
         runId: 'run-trace',
         runStatus: 'running',
-        preTurnFileNames: ['existing.html'],
+        preTurnFileNames: ['report.md'],
         events: [
           {
             kind: 'tool_use',
             id: 'tool-edit',
             name: 'str_replace_edit',
-            input: { path: 'existing.html' },
+            input: { path: 'report.md' },
           },
           { kind: 'tool_result', toolUseId: 'tool-edit', content: '', isError: false },
         ],
@@ -1285,10 +1290,10 @@ describe('ProjectView daemon reattach restore', () => {
     fetchPreviewComments.mockResolvedValue([]);
     loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
     const beforeFiles = [
-      { name: 'existing.html', path: '/p/existing.html', size: 1, updatedAt: 0 },
+      { name: 'report.md', path: '/p/report.md', size: 1, updatedAt: 0 },
     ];
     const afterFiles = [
-      { name: 'existing.html', path: '/p/existing.html', size: 2, updatedAt: 1 },
+      { name: 'report.md', path: '/p/report.md', size: 2, updatedAt: 1 },
     ];
     fetchProjectFiles.mockResolvedValueOnce(beforeFiles).mockResolvedValue(afterFiles);
     fetchLiveArtifacts.mockResolvedValue([]);
@@ -1325,7 +1330,7 @@ describe('ProjectView daemon reattach restore', () => {
       kind: 'tool_use',
       id: 'tool-edit',
       name: 'str_replace_edit',
-      input: { path: 'existing.html' },
+      input: { path: 'report.md' },
     });
     captured!.onAgentEvent({
       kind: 'tool_result',
@@ -1335,27 +1340,33 @@ describe('ProjectView daemon reattach restore', () => {
     });
     captured!.onDone();
 
+    let saved: ChatMessage | undefined;
     await waitFor(() => {
-      const saves = saveMessage.mock.calls
-        .map((call) => ({
-          message: call[2] as ChatMessage,
-          options: call[3] as { telemetryFinalized?: boolean } | undefined,
-        }))
-        .filter(({ message }) => message?.id === 'msg-reattach-trace');
-      const firstFinalizedIndex = saves.findIndex(
-        ({ options }) => options?.telemetryFinalized === true,
-      );
-      expect(firstFinalizedIndex).toBeGreaterThan(-1);
-      expect(saves[firstFinalizedIndex]!.message.traceObjectFiles?.map((file) => [
-        file.name,
-        file.traceObjectReason,
-      ])).toEqual([['existing.html', 'modified']]);
-      expect(
-        saves.slice(0, firstFinalizedIndex).some(
-          ({ options }) => options?.telemetryFinalized === true,
-        ),
-      ).toBe(false);
+      saved = saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .filter((message) => message?.id === 'msg-reattach-trace' && message.runStatus === 'succeeded')
+        .at(-1);
+      expect(saved?.traceObjectFiles?.map((file) => [file.name, file.traceObjectReason]))
+        .toEqual([['report.md', 'modified']]);
+      expect(saved?.producedFiles ?? []).toEqual([]);
+      expect(saved?.resultDeliveryState).toBe('delivered');
     });
+
+    cleanup();
+    // Simulate the persisted message crossing the daemon JSON boundary on reload.
+    const persisted = JSON.parse(JSON.stringify(saved)) as ChatMessage;
+    listMessages.mockResolvedValue([persisted]);
+    fetchChatRunStatus.mockResolvedValue(null);
+    reattachDaemonRun.mockClear();
+    renderProjectView();
+    await waitFor(() => expect(chatPaneHarness.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: persisted.id,
+        resultDeliveryState: 'delivered',
+        traceObjectFiles: persisted.traceObjectFiles,
+      }),
+    ])));
+    expect(reattachDaemonRun).not.toHaveBeenCalled();
   });
 
   it('uses replayed events for trace object files during a full reattach replay', async () => {
@@ -1431,12 +1442,11 @@ describe('ProjectView daemon reattach restore', () => {
       const finalized = saveMessage.mock.calls
         .map((call) => ({
           message: call[2] as ChatMessage,
-          options: call[3] as { telemetryFinalized?: boolean } | undefined,
         }))
         .filter(
-          ({ message, options }) =>
+          ({ message }) =>
             message?.id === 'msg-reattach-full-replay-trace' &&
-            options?.telemetryFinalized === true,
+            message.runStatus === 'succeeded',
         )
         .at(-1);
       expect(finalized?.message.traceObjectFiles?.map((file) => [

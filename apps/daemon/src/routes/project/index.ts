@@ -119,7 +119,6 @@ import {
 import { ProjectDomainError } from '../../services/project-mutation.js';
 import type { ProjectMutationCoordination } from '../../services/project-mutation.js';
 import type { ProjectMutationSession } from '../../services/project-mutation.js';
-import { workspaceProjectGroupCountProperties } from './analytics.js';
 import type { ProjectCommentWorkspaceContextResolution } from './comments.js';
 
 // Collab types removed - define locally
@@ -313,7 +312,7 @@ function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination' > {
+export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'appConfig' | 'agents' | 'validation' | 'collabSync' | 'projectGitCoordination' > {
   pluginScope?: {
     loadRegistry: (options: {
       workspaceId?: string | null;
@@ -2089,7 +2088,6 @@ function buildDesignSystemCopyPendingPrompt(input: {
 
 export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDeps) {
   const { db, design } = ctx;
-  const projectTelemetry = ctx.telemetry;
   const { sendApiError, createSseResponse } = ctx.http;
   const { DESIGN_SYSTEMS_DIR, PROJECTS_DIR, SKILLS_DIR, BRANDS_DIR, USER_DESIGN_SYSTEMS_DIR } = ctx.paths;
   const { readAppConfig, writeAppConfig } = ctx.appConfig;
@@ -3381,19 +3379,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           if (owner === 'others' && createdByCurrentMember) return false;
           return true;
         });
-      const groupCountProperties = workspaceProjectGroupCountProperties({
-        view,
-        owner,
-        visibility,
-        projectCount: projects.length,
-      });
-      if (groupCountProperties) {
-        void projectTelemetry.identifyWorkspaceGroup?.(
-          req,
-          ctx.workspaceId,
-          groupCountProperties,
-        );
-      }
       /** @type {import('@open-design/contracts').WorkspaceProjectsResponse} */
       const body = { projects };
       res.json(body);

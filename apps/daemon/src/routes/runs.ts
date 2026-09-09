@@ -18,22 +18,7 @@ import {
   type ProjectMetadata as ContractProjectMetadata,
   type RunResultPackageResponse,
 } from '@open-design/contracts';
-import {
-  buildRunCreatedV4Aliases,
-  buildRunFinishedV4Aliases,
-  deriveConfigureGlobals,
-  harnessAnalyticsFromRolloutDecision,
-  modelIdForTracking,
-  sessionModeToTracking,
-  type TrackingDesignSystemSource,
-  type TrackingDesignSystemKind,
-  type TrackingDesignSystemEditSurface,
-  type RunTaskLineageProps,
-  type TrackingRunRecoveryActionType,
-} from '@open-design/contracts/analytics';
 import type { OdNativeEvent } from '@open-design/agui-adapter';
-import { newInsertId, readAnalyticsContext } from '../analytics.js';
-import type { AnalyticsContext } from '../analytics.js';
 import { spawnEnvForAgent } from '../agents.js';
 import { agentCliEnvForAgent, readAppConfig } from '../app-config.js';
 import {
@@ -69,18 +54,14 @@ import {
   odNextAdvertisedCapabilityGap,
   resolveBundledOdNextRuntimeCapability,
 } from '../runtimes/od-next-capability-gate.js';
-import {
-  deriveLangfuseDeliveryState,
-  readTelemetrySinkConfig,
-} from '../langfuse-trace.js';
 import { parseMediaExecutionPolicyInput } from '../media/policy.js';
 import { isManagedProjectCwd } from '../mcp-config.js';
 import { ProjectDomainError } from '../services/project-mutation.js';
 import {
-  normalizeExternalPluginRunAnalyticsHints,
   OPEN_DESIGN_PLUGIN_ID,
-  resolvePluginGenerationSloWindowMs,
   validatePluginWorkflowId,
+  validatePluginWorkflowProvenance,
+  validatePluginRequestId,
 } from '../mcp-observability.js';
 import {
   type InternalRunCreateInput,
@@ -124,7 +105,6 @@ import {
   readOdNextRolloutStop,
   type OdNextRolloutDecision,
 } from '../strategies/od-next/rollout.js';
-import { odNextRolloutAnalyticsProperties } from '../strategies/od-next/rollout-analytics.js';
 import {
   buildConnectorProbe,
   automaticScenarioTaskProfile,
@@ -148,16 +128,6 @@ import {
   SandboxImportedProjectError,
 } from '../projects.js';
 import {
-  agentProviderIdForRunAnalytics,
-  hasExplicitRequestedModelForAnalytics,
-  runtimeTypeForRunAnalytics,
-  scanRunEventsForUsageAnalytics,
-  summarizeRunTimingAnalytics,
-  summarizeToolAnalytics,
-  type RunEventForAnalyticsObservability,
-  type RunTelemetryTimestamps,
-} from '../run-analytics-observability.js';
-import {
   diffRunArtifacts,
   primaryArtifactChangeForRun,
   snapshotProjectArtifacts,
@@ -170,11 +140,9 @@ import {
   type RunDeliverableValidationResult,
 } from '../run-deliverable-validation.js';
 import type { RunEventForDiagnostics } from '../run-diagnostics.js';
-import { summarizeRunDiagnosticsForAnalytics } from '../run-diagnostics.js';
 import type { RunEventForFailureClassification } from '../run-failure-classification.js';
 import { classifyRunFailure } from '../run-failure-classification.js';
 import { deriveRunErrorCode, runResultFromStatus } from '../run-result.js';
-import type { RunStatusForAnalytics } from '../run-result.js';
 import {
   parseRunToolBundleForRequest,
   validateRunToolBundleForAgent,
@@ -185,19 +153,7 @@ import {
   BYOK_OPENCODE_AGENT_ID,
   BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
 } from '../runtimes/byok-opencode.js';
-import { resolveChatRunInactivityTimeoutMs } from '../runtimes/chat-run-lifecycle.js';
-import { runMessageEventPersistenceAnalytics } from '../runtimes/chat-run-messages.js';
 import { TERMINAL_RUN_STATUSES } from '../runtimes/runs.js';
-import {
-  deriveActivationMilestones,
-  runAskedUserQuestion,
-} from '../runtimes/run-artifacts.js';
-import {
-  runArtifactCountForRun,
-  runDesignSystemCreatedForRun,
-  runFilesWrittenForRun,
-  runPreviewModuleCountForRun,
-} from '../runtimes/run-lifecycle-analytics.js';
 import {
   normalizeCommentAttachments,
   UPLOAD_DIR,
@@ -209,10 +165,6 @@ import {
   validateChatRunDeliverable,
   type ChatRun,
   type JsonRecord,
-  type RunArtifactBaselines,
-  type RunCreatedFallbackInput,
-  type RunProjectKindInput,
-  type RunRetryAnalyticsEvent,
   type ProjectMetadata,
   type ProjectRecord,
   type RunEventRecord,
@@ -361,41 +313,23 @@ interface RunCreateMeta extends InternalRunCreateInput, JsonRecord {
 }
 
 /**
- * Invariant: a conversation runs at most one design-system enrichment
- * ("AI Optimize") pass at a time.
- *
- * The enrichment turn is a hidden, seeded prompt that refines the SAME
- * registered design system in place, so two concurrent passes bill twice and
- * race on identical files. Incident 2026-07-28: one double-triggered UI
- * affordance created two enrichment runs 383 ms apart in one conversation and
- * both were billed. Ordinary chat turns are deliberately NOT gated here — the
- * web composer already queues them while the conversation is busy, and a
- * "send now" interrupt may legitimately overlap the run it is cancelling.
- *
- * Returns the non-terminal run that already owns the conversation's
- * enrichment pass, or null when the request may proceed.
+ * Returns the active run that already owns a design-system AI enrichment pass
+ * for this conversation. Ordinary runs are intentionally not gated.
  */
 function activeRunBlockingDesignSystemEnrichment(
   runs: Pick<ChatRunService, 'list'>,
   input: {
     conversationId: unknown;
-    analyticsHints: unknown;
+    designSystemEnrichment: unknown;
     /** The optimistically created run for this request; it never blocks itself. */
     excludeRunId?: string | null;
   },
 ): ChatRun | null {
-  const hints = input.analyticsHints;
-  const isEnrichment =
-    hints !== null
-    && typeof hints === 'object'
-    && !Array.isArray(hints)
-    && (hints as Record<string, unknown>).dsEnrichment === true;
-  if (!isEnrichment) return null;
+  if (input.designSystemEnrichment !== true) return null;
   if (typeof input.conversationId !== 'string' || !input.conversationId) return null;
-  const active = runs
+  return runs
     .list({ conversationId: input.conversationId, status: 'active' })
-    .filter((run) => run.id !== input.excludeRunId);
-  return active[0] ?? null;
+    .find((run) => run.id !== input.excludeRunId) ?? null;
 }
 
 interface RunListFilters {
@@ -429,32 +363,14 @@ interface ChatRunService {
   persistState(run: ChatRun): void;
   isTerminal(status: ChatRunStatus): boolean;
   emit?(run: ChatRun, event: string, data: unknown): RunEventRecord;
-  setAnalyticsRecovery?(run: ChatRun, recovery: {
-    context: AnalyticsContext;
-    properties: Record<string, unknown>;
-    insertId: string;
-  }): void;
-  markAnalyticsCompleted?(run: ChatRun): void;
   setDeliverableValidation?(
     run: ChatRun,
     result: RunDeliverableValidationResult,
   ): void;
 }
 
-interface AnalyticsService {
-  capture(input: {
-    eventName: string;
-    context: AnalyticsContext;
-    appVersion: string;
-    properties: Record<string, unknown>;
-    insertId: string;
-  }): void | Promise<void>;
-}
-
 interface RunRoutesDesignService {
   runs: ChatRunService;
-  analytics: AnalyticsService;
-  getAppVersion(): string;
 }
 
 /**
@@ -623,12 +539,6 @@ export interface RegisterRunRoutesDeps {
       pluginId: string,
     ) => Promise<boolean>;
   };
-  telemetry: {
-    reportRunCompletionTelemetryFallback: (input: RunCreatedFallbackInput) => void;
-    resolveRunProjectKindForAnalytics: (input: RunProjectKindInput) => string | null;
-    runArtifactBaselines: RunArtifactBaselines;
-    runRetryEventsForAnalytics: (events: RunEventRecord[]) => RunRetryAnalyticsEvent[];
-  };
   messages: {
     pinAssistantMessageOnRunCreate: (
       db: SqliteDb,
@@ -768,6 +678,9 @@ function withoutSensitiveRunInput(body: JsonRecord): JsonRecord {
   // persistence.
   delete sanitized.workspaceScope;
   delete sanitized.odNextTaskInputSnapshot;
+  // Retired telemetry field: analytics hints are no longer part of the run
+  // create API surface, and a stale client payload must not reach persistence.
+  delete sanitized.analyticsHints;
   return sanitized;
 }
 
@@ -802,8 +715,8 @@ function runRequestFingerprint(
 ): string {
   // Fingerprint the complete execution-shaping request, not a hand-picked
   // subset that silently aliases system prompts, attachments, context,
-  // research or media defaults. Exclude only transport/recovery metadata,
-  // analytics-only source hints and derived mutable rows. A freshly-created
+  // research or media defaults. Exclude only transport/recovery metadata
+  // and derived mutable rows. A freshly-created
   // snapshot id is deliberately excluded; its immutable semantic content is
   // included instead so a lost-response retry neither conflicts spuriously
   // nor ignores a real plugin upgrade.
@@ -811,7 +724,6 @@ function runRequestFingerprint(
   delete logicalRequest.clientRequestId;
   delete logicalRequest.requestFingerprint;
   delete logicalRequest.resume;
-  delete logicalRequest.analyticsHints;
   delete logicalRequest.userMessageId;
   delete logicalRequest.assistantMessageId;
   delete logicalRequest.projectMetadata;
@@ -821,37 +733,6 @@ function runRequestFingerprint(
   return createHash('sha256')
     .update(JSON.stringify(canonicalJsonValue(logicalRequest)))
     .digest('hex');
-}
-
-const EXTERNAL_PLUGIN_ANALYTICS_KEYS = [
-  'entrySurface',
-  'hostProduct',
-  'externalPluginId',
-  'externalPluginVersion',
-  'distributionMechanism',
-  'publisherClass',
-  'attributionQuality',
-  'pluginWorkflowId',
-  'logicalRequestDigest',
-  'logicalRequestDigestVersion',
-] as const;
-
-function externalPluginAttributionMismatch(
-  existing: Record<string, unknown> | null | undefined,
-  incoming: unknown,
-): boolean {
-  const next =
-    incoming && typeof incoming === 'object' && !Array.isArray(incoming)
-      ? (incoming as Record<string, unknown>)
-      : null;
-  const existingIsPlugin =
-    existing?.externalPluginId === OPEN_DESIGN_PLUGIN_ID;
-  const nextIsPlugin = next?.externalPluginId === OPEN_DESIGN_PLUGIN_ID;
-  if (!existingIsPlugin && !nextIsPlugin) return false;
-  if (!existingIsPlugin || !nextIsPlugin) return true;
-  return EXTERNAL_PLUGIN_ANALYTICS_KEYS.some(
-    (key) => existing[key] !== next[key],
-  );
 }
 
 function hasCompleteByokOpenCodeConfig(meta: JsonRecord): boolean {
@@ -897,6 +778,9 @@ export function registerRunCreateRoute(
       return await handleRunCreate(req, res);
     } catch (error) {
       if (res.headersSent) throw error;
+      if (error instanceof Error && 'code' in error && error.code === 'PLUGIN_WORKFLOW_CONFLICT') {
+        return sendApiError(res, 409, 'PLUGIN_WORKFLOW_CONFLICT', error.message);
+      }
       if (error instanceof ProjectDomainError) {
         return sendApiError(res, error.status, error.code, error.message);
       }
@@ -923,12 +807,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     loadPluginRegistryView,
     renderPluginBriefTemplate,
   } = ctx.plugins;
-  const {
-    reportRunCompletionTelemetryFallback,
-    resolveRunProjectKindForAnalytics,
-    runArtifactBaselines,
-    runRetryEventsForAnalytics,
-  } = ctx.telemetry;
   const {
     pinAssistantMessageOnRunCreate,
   } = ctx.messages;
@@ -1207,15 +1085,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     meta.message = instruction;
     meta.currentPrompt = instruction;
     meta.titleGeneration = undefined;
-    meta.analyticsHints = {
-      ...(meta.analyticsHints && typeof meta.analyticsHints === 'object'
-        ? meta.analyticsHints
-        : {}),
-      taskExecutionId: task.taskExecutionId,
-      initialRunId: task.initialRunId,
-      sourceRunId,
-      taskRunIndex,
-    };
     // A continuation is a second physical Run of the same logical task, and the
     // rollout is only evaluated on the branch that resolves a project — which
     // this path skips. Without inheriting, every answered clarification would
@@ -1400,7 +1269,21 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
-    const requestAnalyticsContext = readAnalyticsContext(req);
+    if (requestBody.pluginWorkflowProvenance !== undefined) {
+      try {
+        const provenance = validatePluginWorkflowProvenance(
+          requestBody.pluginWorkflowProvenance, validatePluginRequestId(requestBody.clientRequestId),
+        );
+        requestBody.pluginWorkflowProvenance = provenance;
+        const boundRun = design.runs.findByPluginWorkflowId(provenance.pluginWorkflowId);
+        if (boundRun && boundRun.clientRequestId !== requestBody.clientRequestId) {
+          return sendApiError(res, 409, 'PLUGIN_WORKFLOW_CONFLICT',
+            'pluginWorkflowId is already bound to a different logical run request');
+        }
+      } catch (error) {
+        return sendApiError(res, 400, 'PLUGIN_CONTRACT_REJECTED', error instanceof Error ? error.message : 'Invalid plugin workflow provenance');
+      }
+    }
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', mediaExecution.message);
@@ -2094,66 +1977,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (runProject?.metadata) {
       meta.projectMetadata = runProject.metadata;
     }
-    const requestAnalyticsHints =
-      meta.analyticsHints
-      && typeof meta.analyticsHints === 'object'
-      && !Array.isArray(meta.analyticsHints)
-        ? (meta.analyticsHints as Record<string, unknown>)
-        : null;
-    const hasExternalPluginHints = Boolean(
-      requestAnalyticsHints
-      && (
-        requestAnalyticsHints.externalPluginId !== undefined
-        || requestAnalyticsHints.externalPluginVersion !== undefined
-        || requestAnalyticsHints.pluginWorkflowId !== undefined
-        || requestAnalyticsHints.logicalRequestDigest !== undefined
-        || requestAnalyticsHints.logicalRequestDigestVersion !== undefined
-      ),
-    );
-    if (hasExternalPluginHints) {
-      let normalizedExternalPluginHints;
-      try {
-        normalizedExternalPluginHints =
-          normalizeExternalPluginRunAnalyticsHints(requestAnalyticsHints, {
-            clientRequestId: meta.clientRequestId,
-            analyticsContext: requestAnalyticsContext,
-          });
-      } catch (error) {
-        return sendApiError(
-          res,
-          400,
-          'PLUGIN_CONTRACT_REJECTED',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-      const runtimeDef =
-        typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null;
-      const inactivityTimeoutMs = resolveChatRunInactivityTimeoutMs(
-        runtimeDef?.inactivityTimeoutMs,
-      );
-      meta.analyticsHints = {
-        ...requestAnalyticsHints,
-        ...normalizedExternalPluginHints,
-        generationSloWindowMs: resolvePluginGenerationSloWindowMs({
-          inactivityTimeoutMs,
-          configuredValue: process.env.OD_PLUGIN_GENERATION_SLO_WINDOW_MS,
-        }),
-      };
-      const existingWorkflowRun = design.runs.findByPluginWorkflowId(
-        normalizedExternalPluginHints.pluginWorkflowId,
-      );
-      if (
-        existingWorkflowRun
-        && existingWorkflowRun.clientRequestId !== meta.clientRequestId
-      ) {
-        return sendApiError(
-          res,
-          409,
-          'PLUGIN_WORKFLOW_CONFLICT',
-          'pluginWorkflowId is already bound to a different logical run request',
-        );
-      }
-    }
     // Headless / MCP clients often omit conversationId; bind the project's
     // earliest conversation so the run has a chat home.
     let conversationFallbackBound = false;
@@ -2768,7 +2591,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (preparedRun.kind === 'ready' && preparedRun.creationKind === 'created') {
       const blockingRun = activeRunBlockingDesignSystemEnrichment(design.runs, {
         conversationId: meta.conversationId,
-        analyticsHints: meta.analyticsHints,
+        designSystemEnrichment: meta.designSystemEnrichment,
         excludeRunId: preparedRun.run.id,
       });
       if (blockingRun) {
@@ -2789,12 +2612,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       }
     }
     const run = preparedRun.run;
-    const analyticsAttributionMismatch =
-      (preparedRun.kind !== 'ready' || preparedRun.creationKind === 'reused')
-      && externalPluginAttributionMismatch(
-        run.externalPluginAnalytics,
-        meta.analyticsHints,
-      );
     if (preparedRun.kind === 'reused') {
       let strategyTask;
       try {
@@ -2823,9 +2640,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         clientRequestId: run.clientRequestId ?? null,
         reused: true,
         resumed: false,
-        ...(analyticsAttributionMismatch
-          ? { analyticsAttributionMismatch: true }
-          : {}),
         ...(run.appliedPluginSnapshotId
           ? { appliedPluginSnapshotId: run.appliedPluginSnapshotId }
           : {}),
@@ -2852,9 +2666,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     const resumed = preparedRun.resumed;
     const declaredClient = String(req.get('x-od-client') ?? '').toLowerCase();
-    if (requestAnalyticsContext?.clientType === 'external_mcp') {
-      run.clientType = 'external_mcp';
-    } else if (declaredClient === 'desktop' || declaredClient === 'web') {
+    if (declaredClient === 'desktop' || declaredClient === 'web') {
       run.clientType = declaredClient;
     } else {
       const ua = String(req.get('user-agent') ?? '');
@@ -2905,9 +2717,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       clientRequestId: run.clientRequestId ?? null,
       reused: preparedRun.creationKind === 'reused',
       resumed,
-      ...(analyticsAttributionMismatch
-        ? { analyticsAttributionMismatch: true }
-        : {}),
       ...(run.appliedPluginSnapshotId
         ? { appliedPluginSnapshotId: run.appliedPluginSnapshotId }
         : {}),
@@ -2946,20 +2755,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     };
     internalRuns.start(
       run,
-      {
-        body: requestBody,
-        requestAnalyticsContext,
-        snapshot: resolvedSnapshot,
-        // The decision this request evaluated, not the one stamped on the Run:
-        // an idempotent retry reuses a Run that already carries an earlier
-        // decision, and `run_created`'s rollout dimensions have always
-        // described the request. See `harnessAnalyticsFromRolloutDecision`,
-        // which deliberately reads the Run instead.
-        rolloutDecision: strategyRolloutDecision,
-        creationKind: preparedRun.creationKind,
-        resumed,
-        attributionMismatch: analyticsAttributionMismatch,
-      },
       () => startChatRun(executionMeta, run),
     );
   };
@@ -3020,33 +2815,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       );
     }
     const run = design.runs.findByPluginWorkflowId(pluginWorkflowId);
-    const analytics =
-      run?.externalPluginAnalytics
-      && run.externalPluginAnalytics.externalPluginId
-        === OPEN_DESIGN_PLUGIN_ID
-        ? run.externalPluginAnalytics
-        : null;
-    if (!run || !analytics) {
-      return sendApiError(
-        res,
-        404,
-        'NOT_FOUND',
-        'plugin workflow run not found',
-      );
+    const provenance = run?.pluginWorkflowProvenance;
+    if (!run || !provenance) {
+      return sendApiError(res, 404, 'NOT_FOUND', 'plugin workflow run not found');
     }
-    res.json({
-      runId: run.id,
-      projectId: run.projectId,
-      pluginWorkflowId,
-      logicalRequestDigest: analytics.logicalRequestDigest,
-      logicalRequestDigestVersion: analytics.logicalRequestDigestVersion,
-      externalPluginContext: {
-        id: analytics.externalPluginId,
-        version: analytics.externalPluginVersion,
-        distributionMechanism: analytics.distributionMechanism,
-        publisherClass: analytics.publisherClass,
-      },
-    });
+    res.json({ runId: run.id, projectId: run.projectId, ...provenance });
   });
 
   app.get('/api/runs/:id/result-package', async (req: ApiRequest, res: ApiResponse) => {
@@ -3339,6 +3112,21 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
     const requestBody = toJsonRecord(req.body);
+    if (requestBody.pluginWorkflowProvenance !== undefined) {
+      try {
+        const provenance = validatePluginWorkflowProvenance(
+          requestBody.pluginWorkflowProvenance, validatePluginRequestId(requestBody.clientRequestId),
+        );
+        requestBody.pluginWorkflowProvenance = provenance;
+        const boundRun = design.runs.findByPluginWorkflowId(provenance.pluginWorkflowId);
+        if (boundRun && boundRun.clientRequestId !== requestBody.clientRequestId) {
+          return sendApiError(res, 409, 'PLUGIN_WORKFLOW_CONFLICT',
+            'pluginWorkflowId is already bound to a different logical run request');
+        }
+      } catch (error) {
+        return sendApiError(res, 400, 'PLUGIN_CONTRACT_REJECTED', error instanceof Error ? error.message : 'Invalid plugin workflow provenance');
+      }
+    }
     const mediaExecution = parseMediaExecutionPolicyInput(requestBody.mediaExecution);
     if (!mediaExecution.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', mediaExecution.message);
@@ -3572,7 +3360,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (preparedRun.kind === 'ready' && preparedRun.creationKind === 'created') {
       const blockingRun = activeRunBlockingDesignSystemEnrichment(design.runs, {
         conversationId: meta.conversationId,
-        analyticsHints: meta.analyticsHints,
+        designSystemEnrichment: meta.designSystemEnrichment,
         excludeRunId: preparedRun.run.id,
       });
       if (blockingRun) {
@@ -3673,7 +3461,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     };
     internalRuns.start(
       run,
-      { body: requestBody, requestAnalyticsContext: readAnalyticsContext(req) },
       () => startChatRun(executionMeta, run),
     );
   });

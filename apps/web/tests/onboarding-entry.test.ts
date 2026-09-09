@@ -2,10 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   consumeOnboardingEntryForProject,
-  hasCompletedFirstOnboardingGeneration,
-  hasSentFirstOnboardingPrompt,
-  markFirstOnboardingGenerationCompleted,
-  markFirstOnboardingPromptSent,
   stashOnboardingEntryForProject,
 } from '../src/onboarding/onboarding-entry';
 
@@ -159,47 +155,5 @@ describe('onboarding entry (id-keyed session hand-off)', () => {
       }),
     ).not.toThrow();
     expect(consumeOnboardingEntryForProject('')).toBeNull();
-  });
-});
-
-// The two onboarding funnel events must fire once per recommendation-started
-// project. ProjectView remounts on every leave/reopen and the entry survives
-// via the cache, so mount-local guards would let them re-fire on a later
-// conversation/run. These project-scoped flags (PR #5111 review) hold across
-// those remounts.
-describe('onboarding funnel once-per-project guards', () => {
-  it('first-prompt-sent guard stays set across ProjectView remounts', () => {
-    const id = nextProjectId();
-    expect(hasSentFirstOnboardingPrompt(id)).toBe(false);
-    // First conversation's first send.
-    markFirstOnboardingPromptSent(id);
-    expect(hasSentFirstOnboardingPrompt(id)).toBe(true);
-    // A later remount (fresh conversation on the same project) still sees the
-    // guard set, so the send-through event does not re-fire.
-    expect(hasSentFirstOnboardingPrompt(id)).toBe(true);
-  });
-
-  it('first-generation-completed guard stays set across ProjectView remounts', () => {
-    const id = nextProjectId();
-    expect(hasCompletedFirstOnboardingGeneration(id)).toBe(false);
-    markFirstOnboardingGenerationCompleted(id);
-    expect(hasCompletedFirstOnboardingGeneration(id)).toBe(true);
-    // A later HTML-producing run on a remounted project stays suppressed.
-    expect(hasCompletedFirstOnboardingGeneration(id)).toBe(true);
-  });
-
-  it('guards are isolated per project id', () => {
-    const a = nextProjectId();
-    const b = nextProjectId();
-    markFirstOnboardingPromptSent(a);
-    markFirstOnboardingGenerationCompleted(a);
-    expect(hasSentFirstOnboardingPrompt(b)).toBe(false);
-    expect(hasCompletedFirstOnboardingGeneration(b)).toBe(false);
-  });
-
-  it('treats a missing project id as never-marked', () => {
-    expect(hasSentFirstOnboardingPrompt('')).toBe(false);
-    markFirstOnboardingPromptSent('');
-    expect(hasSentFirstOnboardingPrompt('')).toBe(false);
   });
 });

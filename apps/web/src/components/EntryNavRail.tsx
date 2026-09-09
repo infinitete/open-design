@@ -43,16 +43,6 @@ import { ENTRY_RAIL_TOGGLE_EVENT } from './entryRailBridge';
 import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 import type { EntryHomeView } from '../router';
-import type { TrackingWorkspacePage } from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackAccountMenuClick,
-  trackEntryNavigationClick,
-} from '../analytics/events';
-import {
-  entryViewToTracking,
-  stableAnalyticsErrorCode,
-} from '../analytics/workspace';
 import { workspaceChromeAccountActionsHost } from './workspaceChromeActions';
 
 // ---- Single-machine build shims -------------------------------------------
@@ -92,10 +82,6 @@ const resolvePlanLabelTier = (_o?: unknown): string | null => null;
 const planBadgeTierForWorkspace = (_o?: unknown): string | null => null;
 const shouldShowCreditsBalance = (_b?: unknown): boolean => false;
 const canUpgradeFromPlanTier = (_p?: string | null): boolean => false;
-const trackWorkspaceSurfaceView = (..._a: unknown[]): void => {};
-const trackWorkspaceSwitcherClick = (..._a: unknown[]): void => {};
-const trackWorkspaceSwitchResult = (..._a: unknown[]): void => {};
-const workspaceAnalyticsDimensions = (_c?: unknown): Record<string, unknown> => ({});
 function notifyWorkspaceBillingRefresh(): void {}
 function notifyWorkspaceContextRefresh(): void {}
 function resetCloudSignInTipDismissal(): void {}
@@ -526,7 +512,7 @@ function formatBillingTier(tier: string, t: ReturnType<typeof useI18n>['t']): st
 interface EntryTopRightClusterProps {
   /** Analytics page the cluster reports from: the entry views map through
    *  `entryViewToTracking`, the workspace mount reports 'project'. */
-  page: TrackingWorkspacePage;
+  page?: string;
   context: WorkspaceCollabContext | null;
   billing?: WorkspaceBillingSummary | null;
   balanceUsd?: string | null;
@@ -577,7 +563,6 @@ export function EntryTopRightCluster({
   );
 }
 
-
 /** Project-view variant. Bound projects pass their route-owned Workspace
  *  authority explicitly; an unbound local project deliberately falls back to
  *  the shell's ambient account context. */
@@ -592,7 +577,6 @@ export function WorkspaceTopRightAccountCluster(_props: {
 }) {
   return null;
 }
-
 
 export function EntryNavRail({
   view,
@@ -611,9 +595,7 @@ export function EntryNavRail({
   footerNotice,
 }: Props) {
   const { t } = useI18n();
-  const analytics = useAnalytics();
-  const analyticsPage = entryViewToTracking(view);
-  const workspaceDimensions = workspaceAnalyticsDimensions(context);
+
   const communityLabel = t('pluginsHome.title');
   // #5517 renamed the rail's first item from 最近 (Recents) to 首页 (Home) —
   // the key keeps its historical name, the VALUE now reads Home in every
@@ -631,14 +613,6 @@ export function EntryNavRail({
   const workspaceSettingsUrl = context?.workspaceSettingsUrl?.trim() || null;
 
   const [teamOpen, setTeamOpen] = useState(false);
-  useEffect(() => {
-    if (!teamOpen) return;
-    trackWorkspaceSurfaceView(analytics.track, {
-      page_name: analyticsPage,
-      area: 'workspace_switcher',
-      ...workspaceDimensions,
-    });
-  }, [teamOpen, analytics.track, analyticsPage, workspaceDimensions.workspace_key]);
   const railRef = useRef<HTMLElement | null>(null);
   const selectView = onViewChange;
   return (
@@ -651,7 +625,6 @@ export function EntryNavRail({
       <div className="entry-nav-rail__panel">
       <div className="entry-nav-rail__group">
 
-
         {/* Search + the rail-collapse control in one row. The collapse button
             moved here from the chrome corner (per product: 收起按钮放在输入框
             后边) — the corner slot is the brand logo now, and re-opening a
@@ -661,14 +634,6 @@ export function EntryNavRail({
             type="button"
             className="entry-nav-rail__search"
             onClick={() => {
-              trackEntryNavigationClick(analytics.track, {
-                page_name: analyticsPage,
-                area: 'entry_nav',
-                element: 'search',
-                target: 'search',
-                entry_from: 'sidebar',
-                ...workspaceDimensions,
-              });
               onOpenSearch?.();
             }}
             aria-label={t('common.search')}
@@ -773,14 +738,6 @@ export function EntryNavRail({
                 aria-label={t('entry.navWorkspaceSettings')}
                 data-testid="entry-nav-workspace-settings"
                 onClick={() => {
-                  trackEntryNavigationClick(analytics.track, {
-                    page_name: analyticsPage,
-                    area: 'entry_nav',
-                    element: 'nav_item',
-                    target: undefined,
-                    entry_from: 'sidebar',
-                    ...workspaceDimensions,
-                  });
                 }}
               >
                 <span className="entry-nav-rail__btn-icon" aria-hidden>
@@ -822,11 +779,6 @@ export function EntryNavRail({
               ariaLabel={t('entry.accountSettings')}
               label={t('entry.accountSettings')}
               onClick={() => {
-                trackAccountMenuClick(analytics.track, {
-                  page_name: analyticsPage,
-                  area: 'account_menu',
-                  element: 'settings',
-                });
                 onOpenSettings?.();
               }}
               testId="entry-settings-button"
@@ -847,7 +799,7 @@ export function EntryNavRail({
           route can mount the same cluster without the rail (see
           `EntryTopRightCluster`). */}
       <EntryTopRightCluster
-        page={analyticsPage}
+
         leadingSlot={topRightSlot}
         updaterSlot={updaterSlot}
         onOpenSettings={onOpenSettings}

@@ -16,13 +16,6 @@ afterEach(async () => {
 
 async function startChatServer(options: {
   authorizeProjectRequest: any;
-  run?: {
-    id: string;
-    projectId: string | null;
-    conversationId: string | null;
-    assistantMessageId: string | null;
-  } | null;
-  reportFeedback?: any;
   onArtifact?: any;
   onInterrupt?: any;
   projectGitCoordination?: any;
@@ -30,9 +23,6 @@ async function startChatServer(options: {
 }) {
   const app = express();
   app.use(express.json());
-  const reportFeedback =
-    options.reportFeedback ??
-    vi.fn(async () => ({ status: 'accepted' as const }));
   const onArtifact = options.onArtifact ?? vi.fn();
   const onInterrupt = options.onInterrupt ?? vi.fn();
   const projectGitCoordination = options.projectGitCoordination ?? {
@@ -48,11 +38,6 @@ async function startChatServer(options: {
   const getProject = options.getProject ?? vi.fn((_db: unknown, id: string) => ({ id, metadata: {} }));
   registerChatRoutes(app, {
     db: {},
-    design: {
-      runs: {
-        get: () => options.run ?? null,
-      },
-    },
     http: {
       createSseResponse: (res: express.Response) => ({
         send: (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
@@ -88,7 +73,6 @@ async function startChatServer(options: {
     appConfig: { readAppConfig: async () => ({}) },
     validation: {},
     lifecycle: { isDaemonShuttingDown: () => false },
-    telemetry: { reportFeedback },
     authorizeProjectRequest: options.authorizeProjectRequest,
   } as any);
 
@@ -98,7 +82,6 @@ async function startChatServer(options: {
   if (!address || typeof address === 'string') throw new Error('server did not bind');
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
-    reportFeedback,
     onArtifact,
     onInterrupt,
     projectGitCoordination,
@@ -328,115 +311,4 @@ describe('chat-owned project route authority', () => {
     );
   });
 
-  it('authorizes feedback against the run authoritative project before telemetry', async () => {
-    const authorizeProjectRequest = vi.fn(
-      async (_req, res: express.Response) => {
-        res.status(403).json({ error: 'WORKSPACE_PROJECT_PERMISSION_DENIED' });
-        return false;
-      },
-    );
-    const api = await startChatServer({
-      authorizeProjectRequest,
-      run: {
-        id: 'run-a',
-        projectId: 'project-a',
-        conversationId: 'conversation-a',
-        assistantMessageId: 'message-a',
-      },
-    });
-
-    const response = await fetch(`${api.baseUrl}/api/runs/run-a/feedback`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-od-workspace-id': 'workspace-a',
-        'x-od-workspace-member-id': 'member-a',
-      },
-      body: JSON.stringify({
-        rating: 'positive',
-        reasonCodes: ['matched_request'],
-        hasCustomReason: false,
-        customReason: '',
-      }),
-    });
-
-    expect(response.status).toBe(403);
-    expect(api.reportFeedback).not.toHaveBeenCalled();
-    expect(authorizeProjectRequest).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      'project-a',
-      { mode: 'write', capability: 'writeFiles' },
-    );
-  });
-
-  it('rejects caller-owned feedback identity fields instead of accepting spoofed metadata', async () => {
-    const authorizeProjectRequest = vi.fn(async () => true);
-    const api = await startChatServer({
-      authorizeProjectRequest,
-      run: {
-        id: 'run-a',
-        projectId: 'project-a',
-        conversationId: 'conversation-a',
-        assistantMessageId: 'message-a',
-      },
-    });
-
-    const response = await fetch(`${api.baseUrl}/api/runs/run-a/feedback`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        projectId: 'project-b',
-        conversationId: 'conversation-b',
-        assistantMessageId: 'message-b',
-        rating: 'negative',
-        reasonCodes: ['missed_request'],
-        hasCustomReason: false,
-        customReason: '',
-      }),
-    });
-
-    expect(response.status).toBe(400);
-    expect(api.reportFeedback).not.toHaveBeenCalled();
-  });
-
-  it('derives feedback metadata from the run after exact authorization', async () => {
-    const authorizeProjectRequest = vi.fn(async () => true);
-    const api = await startChatServer({
-      authorizeProjectRequest,
-      run: {
-        id: 'run-a',
-        projectId: 'project-a',
-        conversationId: 'conversation-a',
-        assistantMessageId: 'message-a',
-      },
-    });
-
-    const response = await fetch(`${api.baseUrl}/api/runs/run-a/feedback`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-od-workspace-id': 'workspace-a',
-        'x-od-workspace-member-id': 'member-a',
-      },
-      body: JSON.stringify({
-        rating: 'positive',
-        reasonCodes: ['matched_request'],
-        hasCustomReason: true,
-        customReason: 'clear result',
-      }),
-    });
-
-    expect(response.status).toBe(202);
-    expect(api.reportFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      runId: 'run-a',
-      scoreMetadata: {
-        projectId: 'project-a',
-        conversationId: 'conversation-a',
-        assistantMessageId: 'message-a',
-        hasCustomReason: true,
-        customReason: 'clear result',
-      },
-    }));
-  });
 });

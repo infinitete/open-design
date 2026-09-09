@@ -313,11 +313,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
-  POSTHOG_KEY: ${{ inputs.publish && secrets.POSTHOG_KEY || '' }}
-  POSTHOG_HOST: ${{ inputs.publish && vars.POSTHOG_HOST || '' }}
-  POSTHOG_CLI_API_KEY: ${{ inputs.publish && secrets.POSTHOG_CLI_API_KEY || '' }}
-  POSTHOG_CLI_PROJECT_ID: ${{ inputs.publish && vars.POSTHOG_CLI_PROJECT_ID || '' }}
   RELEASE_BRANCH: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
   RELEASE_REPOSITORY: ${{ github.repository }}
   RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}

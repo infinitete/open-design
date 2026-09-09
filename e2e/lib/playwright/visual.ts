@@ -29,7 +29,6 @@ type VisualConfig = {
   agentCliEnv?: Record<string, Record<string, string>>;
   agentNetwork?: AgentNetworkPrefs;
   privacyDecisionAt: number | null;
-  telemetry: { metrics?: boolean; content?: boolean; artifactManifest?: boolean };
 };
 
 const VISUAL_CONFIG = {
@@ -43,7 +42,6 @@ const VISUAL_CONFIG = {
   onboardingCompleted: true,
   agentModels: {},
   privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
 } satisfies VisualConfig;
 
 const visualStableTimeoutMs = 10_000;

@@ -16,8 +16,6 @@ import { canDuplicatePluginPreview } from './plugins-home/duplicate';
 import { PluginDetailsModal } from './PluginDetailsModal';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { useInView } from './plugins-home/useInView';
-import { useAnalytics } from '../analytics/provider';
-import { trackCommunityTemplateClick, trackPageView } from '../analytics/events';
 
 export interface CommunityTemplateUseTarget {
   templateId: string;
@@ -78,7 +76,6 @@ interface CommunityViewProps {
 
 export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: CommunityViewProps) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const pageViewRecordedRef = useRef(false);
   useEffect(() => {
     // React StrictMode replays mount effects in development. Keep one
@@ -86,8 +83,7 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     // dashboards share the same one-view/one-event contract.
     if (pageViewRecordedRef.current) return;
     pageViewRecordedRef.current = true;
-    trackPageView(analytics.track, { page_name: 'community' });
-  }, [analytics.track]);
+  }, []);
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   // The gallery card opens the FULL plugin details modal (Use split action +
   // Share + close) — the same surface the plugin library uses — while the
@@ -167,24 +163,12 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     // whether a request goes out. See the remixingIdRef comment above for
     // why the state flag alone cannot gate this.
     if (remixingIdRef.current) return;
-    trackCommunityTemplateClick(analytics.track, {
-      page_name: 'community',
-      area: 'community_templates',
-      element: 'use_template',
-      template_kind: template.id,
-    });
     remixingIdRef.current = template.id;
     setRemixingId(template.id);
     onRemixTemplate?.({ templateId: template.id, prompt: template.prompt });
   };
   const handleCardUse = (template: TemplateDemo) => {
     const target = templateUseTarget(template);
-    trackCommunityTemplateClick(analytics.track, {
-      page_name: 'community',
-      area: 'community_templates',
-      element: 'use_template',
-      template_kind: template.id,
-    });
     const record = pluginById.get(template.id);
     if (record && onUsePlugin) {
       onUsePlugin(record, 'use-with-query', target);
@@ -203,12 +187,6 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   /** Card body → FULL details modal. Templates are a projection of the plugin
    *  catalogue, so the record behind a card is always present in `plugins`. */
   const openTemplateDetails = (template: TemplateDemo) => {
-    trackCommunityTemplateClick(analytics.track, {
-      page_name: 'community',
-      area: 'community_templates',
-      element: 'use_template',
-      template_kind: template.id,
-    });
     const record = plugins.find((row) => row.id === template.id) ?? null;
     setDetailsRecord(record);
   };

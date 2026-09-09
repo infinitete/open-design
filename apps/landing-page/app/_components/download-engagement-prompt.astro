@@ -96,8 +96,6 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
   <script
     is:inline
     define:vars={{
-      pageName,
-      locale,
       SCROLL_DWELL_SECONDS,
       DISMISS_COOLDOWN_MS,
       DOWNLOAD_COOLDOWN_MS,
@@ -110,14 +108,12 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
       const cta = dialog.querySelector('[data-download-prompt-cta]');
 
       const KEYS = {
-        pageViews: 'od_download_prompt_page_views_v2',
         activeSeconds: 'od_download_prompt_active_seconds_v1',
         shown: 'od_download_prompt_shown_v1',
         dismissedAt: 'od_download_prompt_dismissed_at_v1',
         downloadedAt: 'od_download_prompt_downloaded_at_v1',
       };
       let timer = 0;
-      let dismissReason = '';
       let shownTrigger = '';
 
       const read = (storage, key) => {
@@ -137,14 +133,6 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
         if (recent(KEYS.dismissedAt, DISMISS_COOLDOWN_MS)) return false;
         if (recent(KEYS.downloadedAt, DOWNLOAD_COOLDOWN_MS)) return false;
         return true;
-      };
-      const track = (name, props) => {
-        if (typeof window.__odTrack !== 'function') return;
-        window.__odTrack(name, Object.assign({
-          page_name: pageName,
-          locale,
-          area: 'engagement_download_prompt',
-        }, props || {}));
       };
 
       // Resolve every high-intent CTA on the page (the modal and the homepage
@@ -226,28 +214,12 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
         if (typeof dialog.showModal === 'function') dialog.showModal();
         else dialog.setAttribute('open', '');
         document.documentElement.classList.add('download-prompt-open');
-        track('surface_view', {
-          element: 'engagement_modal',
-          trigger,
-          page_count: pageViews,
-          active_seconds: activeSeconds,
-        });
         return true;
       };
-      const dismiss = (reason) => {
-        dismissReason = reason;
+      const dismiss = () => {
         if (typeof dialog.close === 'function') dialog.close('dismiss');
         else dialog.removeAttribute('open');
       };
-
-      // Count actual navigations within the session, including reloads and
-      // repeat visits to the same route. The conversion rule is "three page
-      // views", not "three distinct route names".
-      const storedPageViews = Number(read(sessionStorage, KEYS.pageViews) || 0);
-      const pageViews = (Number.isFinite(storedPageViews) && storedPageViews > 0
-        ? storedPageViews
-        : 0) + 1;
-      write(sessionStorage, KEYS.pageViews, String(pageViews));
 
       let activeSeconds = Math.max(0, Number(read(sessionStorage, KEYS.activeSeconds) || 0) || 0);
 
@@ -300,18 +272,15 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
         const target = event.target instanceof Element ? event.target : null;
         const dismissButton = target?.closest('[data-download-prompt-dismiss]');
         if (dismissButton) {
-          dismiss(dismissButton.getAttribute('data-download-prompt-dismiss') || 'dismiss');
+          dismiss();
           return;
         }
-        if (event.target === dialog) dismiss('backdrop');
+        if (event.target === dialog) dismiss();
       });
-      dialog.addEventListener('cancel', () => { dismissReason = 'escape'; });
       dialog.addEventListener('close', () => {
         document.documentElement.classList.remove('download-prompt-open');
         if (dialog.returnValue === 'download') return;
-        const reason = dismissReason || 'escape';
         write(localStorage, KEYS.dismissedAt, String(Date.now()));
-        track('ui_click', { element: 'dismiss', action: reason, trigger: shownTrigger });
       });
 
       if (cta) {

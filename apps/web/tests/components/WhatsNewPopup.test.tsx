@@ -38,15 +38,12 @@ vi.mock('../../src/providers/registry', () => ({
 // only becomes the running version once /api/version resolves. Tests drive that
 // through this mutable holder so both sides of the race are reachable.
 const appVersion = vi.hoisted(() => ({ current: '0.16.1' }));
-const track = vi.hoisted(() => vi.fn());
 
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track }),
-  // The running version the daemon reports. Deliberately different from the
-  // highlight payload's `version` field so the suite can tell which one the
-  // dialog renders.
+vi.mock('../../src/hooks/useAppVersion', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/hooks/useAppVersion')>(),
   useAppVersion: () => appVersion.current,
 }));
+
 
 const RUNNING_APP_VERSION = '0.16.1';
 
@@ -177,7 +174,7 @@ describe('WhatsNewPopup fetch/show lifecycle', () => {
 
 // /api/version and /api/whats-new are independent round-trips, and
 // `useAppVersion()` deliberately boots on the '0.0.0' placeholder until the
-// former lands (see analytics/app-version.ts). A highlights fetch that wins
+// former lands (see hooks/useAppVersion.ts). A highlights fetch that wins
 // that race must never make this dialog state the placeholder — that is the
 // exact invented version the surface exists to stop telling.
 describe('WhatsNewPopup version resolution', () => {
@@ -198,19 +195,6 @@ describe('WhatsNewPopup version resolution', () => {
     // The daemon stamps the highlights document with the running version for
     // exactly this display purpose, so it is a real source to name meanwhile.
     expect(screen.getByText(`OpenDesign ${SHOW_PAYLOAD.version} is here`)).toBeTruthy();
-  });
-
-  it('keeps the placeholder out of the surface-view analytics too', async () => {
-    renderCard(true);
-
-    await waitFor(() => {
-      expect(track).toHaveBeenCalled();
-    });
-    const versions = track.mock.calls
-      .map(([, props]) => (props as { app_version?: string } | undefined)?.app_version)
-      .filter((value): value is string => typeof value === 'string');
-    expect(versions.length).toBeGreaterThan(0);
-    expect(versions).not.toContain(PLACEHOLDER_VERSION);
   });
 
   it('switches to the running version once /api/version resolves', async () => {

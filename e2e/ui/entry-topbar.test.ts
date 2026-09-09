@@ -43,7 +43,6 @@ test.beforeEach(async ({ page }) => {
         onboardingCompleted: true,
         agentModels: { codex: { model: 'default', reasoning: 'default' } },
         privacyDecisionAt: 1,
-        telemetry: { metrics: false, content: false, artifactManifest: false },
       }),
     );
   }, STORAGE_KEY);
@@ -91,7 +90,6 @@ test.beforeEach(async ({ page }) => {
           mode: 'daemon',
           agentModels: { codex: { model: 'default', reasoning: 'default' } },
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
         },
       },
     });

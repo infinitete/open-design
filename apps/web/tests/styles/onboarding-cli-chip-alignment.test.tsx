@@ -18,23 +18,6 @@ const GLOBAL_STYLESHEETS = [
   '../../src/styles/home/entry-layout.css',
 ];
 
-const analyticsMocks = vi.hoisted(() => ({ track: vi.fn() }));
-
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      newRequestId: vi.fn(() => 'request-1'),
-      setConfigureGlobals: vi.fn(),
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-      track: analyticsMocks.track,
-    }),
-    useAppVersion: () => null,
-  };
-});
-
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = globalThis.ResizeObserver;
 
@@ -159,7 +142,6 @@ afterEach(() => {
   document.head.querySelectorAll('style[data-stylesheet]').forEach((node) => node.remove());
   globalThis.fetch = originalFetch;
   globalThis.ResizeObserver = originalResizeObserver;
-  analyticsMocks.track.mockReset();
   window.sessionStorage.clear();
 });
 

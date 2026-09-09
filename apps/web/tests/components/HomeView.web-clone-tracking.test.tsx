@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Web-clone example-card analytics (埋点文档 row 116, element=example_prompt).
+// Web-clone example-card rendering and logo fallback.
 // The Website-clone examples are plain text prompt cards (no embedded HTML / no
 // Remix — dropped to avoid reproducing copyrighted site markup). Picking one must
 // still fire a home chat_composer ui_click with chip_id=web-clone so the
@@ -14,30 +14,9 @@ import { HomeView } from '../../src/components/HomeView';
 import { I18nProvider } from '../../src/i18n';
 import { writeHomeGuideStage } from '../../src/components/home-hero/firstRunGuide';
 
-const analyticsMocks = vi.hoisted(() => ({ track: vi.fn() }));
-
 // `send()` forwards a trailing request-id arg, so match on (event, props) and
 // ignore any extra positional args rather than asserting exact arity.
-function lastClickProps(element: string): Record<string, unknown> | undefined {
-  const call = [...analyticsMocks.track.mock.calls]
-    .reverse()
-    .find((args) => args[0] === 'ui_click' && (args[1] as { element?: string })?.element === element);
-  return call?.[1] as Record<string, unknown> | undefined;
-}
 
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      track: analyticsMocks.track,
-      newRequestId: () => 'request-1',
-      setConfigureGlobals: vi.fn(),
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-    }),
-  };
-});
 
 // The Website-clone chip's base scenario (its action.pluginId). It only needs to
 // exist so clicking the chip binds; the site examples themselves are static text
@@ -98,7 +77,6 @@ function renderHome() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  analyticsMocks.track.mockClear();
   cleanup();
   window.localStorage.clear();
 });
@@ -112,7 +90,7 @@ async function pickHomeTemplate(id: string) {
   fireEvent.click(await screen.findByTestId(`home-hero-template-wedge-${id}`));
 }
 
-describe('web-clone example-card tracking', () => {
+describe('web-clone example-card rendering', () => {
   it('renders the Website-clone examples as text prompt cards (no plugin preview / no remix)', async () => {
     writeHomeGuideStage('done');
     stubPlugins();
@@ -181,25 +159,5 @@ describe('web-clone example-card tracking', () => {
 
     fireEvent.error(remoteFallback!);
     expect(siteCard.querySelector('.home-hero__site-monogram')?.textContent).toBe('O');
-  });
-
-  it('fires element=example_prompt with chip_id=web-clone when a text example is picked', async () => {
-    writeHomeGuideStage('done');
-    stubPlugins();
-    renderHome();
-
-    await pickHomeTemplate('web-clone');
-    const textCards = await screen.findAllByTestId('home-hero-prompt-example');
-    analyticsMocks.track.mockClear(); // ignore the chip-pick ui_click; assert the card event
-    fireEvent.click(textCards[0]!);
-
-    await waitFor(() => {
-      expect(lastClickProps('example_prompt')).toMatchObject({
-        page_name: 'home',
-        area: 'chat_composer',
-        element: 'example_prompt',
-        chip_id: 'web-clone',
-      });
-    });
   });
 });

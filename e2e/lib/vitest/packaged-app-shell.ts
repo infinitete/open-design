@@ -151,9 +151,9 @@ const PACKAGED_ONBOARDING_CONFIG_PROBE = `
         return { error: 'daemon response carried no config object', kind: 'no-config', ok: false, status };
       }
       // Absent is not malformed. A daemon whose app-config.json does not exist
-      // returns {} plus telemetry defaults, so the key is simply missing — a
-      // legitimate reading of a fresh install. A key present with the wrong type
-      // is corruption. They get different outcomes because different scenarios
+      // returns {} plus defaults, so the key is simply missing — a legitimate
+      // reading of a fresh install. A key present with the wrong type is
+      // corruption. They get different outcomes because different scenarios
       // may accept them.
       if (!('onboardingCompleted' in config)) {
         return { kind: 'absent', ok: false, status };

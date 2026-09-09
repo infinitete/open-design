@@ -9,8 +9,6 @@ import { describe, expect, it } from "vitest";
 const LAUNCHER_SCHEMA_VERSION = 1;
 const PACKAGED_SOURCE = "packaged";
 const UPDATE_DOWNLOADED = "downloaded";
-const HISTORICAL_OUTER_RELAY_URL = "https://relay.outer.example/v1";
-const PAYLOAD_RELAY_URL = "https://relay.payload.example/v2";
 
 type PackagedConfigLike = {
   amrProfile: null;
@@ -20,10 +18,7 @@ type PackagedConfigLike = {
   namespace: string;
   namespaceBaseRoot: string;
   nodeCommand: null;
-  posthogHost: null;
-  posthogKey: null;
   resourceRoot: string;
-  telemetryRelayUrl: string | null;
   webOutputMode: "server";
   webSidecarEntry: null;
   webStandaloneRoot: null;
@@ -75,10 +70,7 @@ type PackagedLauncherRuntime = {
     daemonCliEntry: string | null;
     daemonSidecarEntry: string | null;
     nodeCommand: string | null;
-    posthogHost: string | null;
-    posthogKey: string | null;
     resourceRoot: string;
-    telemetryRelayUrl: string | null;
     velaWebUrl: string | null;
     velaWebUrls?: Record<string, string>;
     webOutputMode: "server" | "standalone";
@@ -122,10 +114,7 @@ type PackagedSidecarsModule = {
       mcpBootstrapArgs: readonly string[];
       mcpBootstrapCommand: string | null;
       nodeCommand: string | null;
-      posthogHost: string | null;
-      posthogKey: string | null;
       requireDesktopAuth: boolean;
-      telemetryRelayUrl: string | null;
       velaWebUrl: string | null;
       velaWebUrls?: Record<string, string>;
       webOutputMode: "server" | "standalone";
@@ -197,10 +186,6 @@ if (app === "daemon") {
   const dataRoot = process.env.OD_DATA_DIR;
   if (dataRoot == null) throw new Error("missing daemon data root");
   await mkdir(dataRoot, { recursive: true });
-  await writeFile(
-    join(dataRoot, "captured-daemon-env.json"),
-    JSON.stringify({ telemetryRelayUrl: process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL ?? null }),
-  );
 }
 if (!socketPath.startsWith("\\\\.\\pipe\\")) {
   await mkdir(dirname(socketPath), { recursive: true });
@@ -245,10 +230,7 @@ function fakePackagedConfig(root: string, testCase: PlatformCase): PackagedConfi
     namespace: testCase.namespace,
     namespaceBaseRoot: join(root, "namespaces"),
     nodeCommand: null,
-    posthogHost: null,
-    posthogKey: null,
     resourceRoot: join(root, "installed", "resources", "open-design"),
-    telemetryRelayUrl: HISTORICAL_OUTER_RELAY_URL,
     webOutputMode: "server",
     webSidecarEntry: null,
     webStandaloneRoot: null,
@@ -345,7 +327,6 @@ async function writeExtractedWindowsPayload(destinationRoot: string, testCase: P
       appVersion: testCase.promotedVersion,
       daemonSidecarEntryRelative: "prebundled/daemon/daemon-sidecar.mjs",
       nodeCommandRelative: "open-design/bin/node.exe",
-      telemetryRelayUrl: PAYLOAD_RELAY_URL,
       webOutputMode: "standalone",
       webSidecarEntryRelative: "prebundled/web/web-sidecar.mjs",
     })}\n`,
@@ -381,7 +362,6 @@ async function writeExtractedMacPayload(destinationRoot: string, testCase: Platf
       appVersion: testCase.promotedVersion,
       daemonSidecarEntryRelative: "prebundled/daemon/daemon-sidecar.mjs",
       nodeCommandRelative: "open-design/bin/node",
-      telemetryRelayUrl: PAYLOAD_RELAY_URL,
       webOutputMode: "standalone",
       webSidecarEntryRelative: "prebundled/web/web-sidecar.mjs",
     })}\n`,
@@ -551,8 +531,12 @@ describe("packaged launcher payload update loop", () => {
       expect(promoted.targetVersion).toBe(testCase.promotedVersion);
       expect(promoted.config.appVersion).toBe(testCase.promotedVersion);
       expect(promoted.config.resourceRoot).toBe(testCase.expectedResourceRoot(paths.installationRoot, config.namespace));
-      expect(promoted.config.telemetryRelayUrl).toBe(PAYLOAD_RELAY_URL);
-      const sidecarNamespace = `payload-relay-${process.pid}-${Date.now()}`;
+      // The payload's open-design-config.json must replace the outer's: the
+      // synthetic payload flips webOutputMode to standalone and installs the
+      // prebundled daemon sidecar entry, neither of which the outer carried.
+      expect(promoted.config.webOutputMode).toBe("standalone");
+      expect(promoted.config.daemonSidecarEntry).toContain("prebundled/daemon/daemon-sidecar.mjs");
+      const sidecarNamespace = `payload-sidecars-${process.pid}-${Date.now()}`;
       const sidecars = await startPackagedSidecars({
         app: "desktop",
         base: promoted.paths.runtimeRoot,
@@ -572,24 +556,14 @@ describe("packaged launcher payload update loop", () => {
         // binary. Use the test process's Node while preserving the real
         // startPackagedSidecars -> spawnSidecarChild environment path.
         nodeCommand: process.execPath,
-        posthogHost: promoted.config.posthogHost,
-        posthogKey: promoted.config.posthogKey,
         requireDesktopAuth: true,
-        telemetryRelayUrl: promoted.config.telemetryRelayUrl,
         velaWebUrl: promoted.config.velaWebUrl,
         ...(promoted.config.velaWebUrls == null ? {} : { velaWebUrls: promoted.config.velaWebUrls }),
         webOutputMode: promoted.config.webOutputMode,
         webSidecarEntry: promoted.config.webSidecarEntry,
         webStandaloneRoot: promoted.config.webStandaloneRoot,
       });
-      try {
-        const daemonEnv = JSON.parse(
-          await readFile(join(promoted.paths.dataRoot, "captured-daemon-env.json"), "utf8"),
-        ) as { telemetryRelayUrl: string | null };
-        expect(daemonEnv.telemetryRelayUrl).toBe(PAYLOAD_RELAY_URL);
-      } finally {
-        await sidecars.close();
-      }
+      await sidecars.close();
       expect(JSON.parse(await readFile(promoted.launcherPaths.attemptsPath, "utf8"))).toMatchObject({
         generation: 1,
         version: testCase.promotedVersion,
@@ -1041,10 +1015,7 @@ async function checkPackagedUpdate(scenario: FloorScenario): Promise<{
       namespace: "default",
       namespaceBaseRoot: join(root, "namespaces"),
       nodeCommand: null,
-      posthogHost: null,
-      posthogKey: null,
       resourceRoot: join(root, "installed", "resources", "open-design"),
-      telemetryRelayUrl: null,
       webOutputMode: "server",
       webSidecarEntry: null,
       webStandaloneRoot: null,

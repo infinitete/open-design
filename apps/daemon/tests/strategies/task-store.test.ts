@@ -1195,10 +1195,7 @@ describe('durable strategy task store', () => {
     }));
 
     const result = await reconcileDurableRunTerminals({
-      analytics: { capture: vi.fn() },
-      appVersion: '0.18.2',
       db,
-      reportLangfuse: vi.fn(),
       runsLogDir: path.join(tempDir, 'runs'),
     });
 
@@ -1245,10 +1242,7 @@ describe('durable strategy task store', () => {
 
     db = openDatabase(tempDir, { dataDir: tempDir });
     await expect(reconcileDurableRunTerminals({
-      analytics: { capture: vi.fn() },
-      appVersion: '0.19.2',
       db,
-      reportLangfuse: vi.fn(),
       runsLogDir: path.join(tempDir, 'runs'),
     })).resolves.toMatchObject({ strategyTasksReconciled: 1 });
 
@@ -1286,11 +1280,8 @@ describe('durable strategy task store', () => {
 
       db = openDatabase(tempDir, { dataDir: tempDir });
       const result = await reconcileDurableRunTerminals({
-        analytics: { capture: vi.fn() },
-        appVersion: '0.18.2',
-        db,
-        reportLangfuse: vi.fn(),
-        runsLogDir: path.join(tempDir, 'runs'),
+            db,
+          runsLogDir: path.join(tempDir, 'runs'),
       });
 
       expect(result.strategyTasksReconciled).toBe(1);
@@ -1301,11 +1292,8 @@ describe('durable strategy task store', () => {
       });
 
       const repeated = await reconcileDurableRunTerminals({
-        analytics: { capture: vi.fn() },
-        appVersion: '0.18.2',
-        db,
-        reportLangfuse: vi.fn(),
-        runsLogDir: path.join(tempDir, 'runs'),
+            db,
+          runsLogDir: path.join(tempDir, 'runs'),
       });
       expect(repeated).toMatchObject({ interrupted: 0, strategyTasksReconciled: 0 });
       expect(getStrategyTaskExecution(db, task.taskExecutionId)).toMatchObject({
@@ -1337,10 +1325,7 @@ describe('durable strategy task store', () => {
 
     db = openDatabase(tempDir, { dataDir: tempDir });
     await reconcileDurableRunTerminals({
-      analytics: { capture: vi.fn() },
-      appVersion: '0.18.2',
       db,
-      reportLangfuse: vi.fn(),
       runsLogDir: path.join(tempDir, 'runs'),
     });
 

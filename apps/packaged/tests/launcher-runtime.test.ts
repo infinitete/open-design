@@ -25,10 +25,7 @@ function fakeConfig(root: string, appVersion = "1.2.3-beta.4"): PackagedConfig {
     namespace: "release-beta",
     namespaceBaseRoot: join(root, "namespaces"),
     nodeCommand: null,
-    posthogHost: null,
-    posthogKey: null,
     resourceRoot: join(root, "installed", "resources", "open-design"),
-    telemetryRelayUrl: null,
     updateMetadataUrl: null,
     webOutputMode: "server",
     webSidecarEntry: null,
@@ -39,7 +36,6 @@ function fakeConfig(root: string, appVersion = "1.2.3-beta.4"): PackagedConfig {
 async function writeActiveMacPayloadFixture(
   root: string,
   config: PackagedConfig,
-  telemetryRelayUrl?: string,
 ): Promise<void> {
   const version = "1.2.3-beta.5";
   const versionPaths = resolveLauncherVersionPaths({
@@ -57,7 +53,6 @@ async function writeActiveMacPayloadFixture(
     join(resourcesPath, "open-design-config.json"),
     `${JSON.stringify({
       appVersion: version,
-      ...(telemetryRelayUrl == null ? {} : { telemetryRelayUrl }),
       webOutputMode: "server",
     })}\n`,
   );
@@ -98,47 +93,6 @@ async function writeActiveMacPayloadFixture(
 }
 
 describe("resolvePackagedLauncherRuntime", () => {
-  it.each([
-    {
-      expected: "https://relay.payload.example/v1",
-      name: "uses a payload relay when the historical outer has none",
-      outer: null,
-      payload: "https://relay.payload.example/v1",
-    },
-    {
-      expected: "https://relay.payload.example/v2",
-      name: "lets a payload relay replace the historical outer relay",
-      outer: "https://relay.outer.example/v1",
-      payload: "https://relay.payload.example/v2",
-    },
-    {
-      expected: "https://relay.outer.example/v1",
-      name: "inherits the historical outer relay when the payload omits it",
-      outer: "https://relay.outer.example/v1",
-      payload: undefined,
-    },
-    {
-      expected: "https://relay.outer.example/v1",
-      name: "inherits the historical outer relay when the payload relay is blank",
-      outer: "https://relay.outer.example/v1",
-      payload: "   ",
-    },
-  ] as const)("$name", async ({ expected, outer, payload }) => {
-    const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-relay-"));
-    try {
-      const config = { ...fakeConfig(root), telemetryRelayUrl: outer };
-      const paths = resolvePackagedNamespacePaths(config);
-      await writeActiveMacPayloadFixture(root, config, payload);
-
-      const runtime = await resolvePackagedLauncherRuntime(config, paths);
-
-      expect(runtime.source).toBe("payload");
-      expect(runtime.config.telemetryRelayUrl).toBe(expected);
-    } finally {
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
   it("initializes launcher runtime state without replacing the current installed package", async () => {
     const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-runtime-"));
     try {

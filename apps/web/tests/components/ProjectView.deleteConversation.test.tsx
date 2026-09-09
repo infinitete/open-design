@@ -8,11 +8,6 @@ import type { QuestionForm } from '../../src/artifacts/question-form';
 import type { ChatMessage } from '../../src/types';
 import { ProjectConversationsHttpError } from '../../src/state/projects';
 
-const analyticsMocks = vi.hoisted(() => ({
-  newRequestId: vi.fn(() => 'fork-request-1'),
-  track: vi.fn(),
-}));
-
 const listConversations = vi.fn();
 const listMessages = vi.fn();
 const fetchPreviewComments = vi.fn();
@@ -69,16 +64,6 @@ vi.mock('../../src/i18n', () => ({
 
 vi.mock('../../src/providers/anthropic', () => ({
   streamMessage: vi.fn(),
-}));
-
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({
-    newRequestId: analyticsMocks.newRequestId,
-    setConfigureGlobals: vi.fn(),
-    setConsent: vi.fn(),
-    setIdentity: vi.fn(),
-    track: analyticsMocks.track,
-  }),
 }));
 
 vi.mock('../../src/providers/daemon', () => ({
@@ -208,7 +193,6 @@ describe('ProjectView conversation delete', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     vi.clearAllMocks();
     vi.unstubAllGlobals();
-    analyticsMocks.newRequestId.mockReturnValue('fork-request-1');
     chatPaneProps.onDeleteConversation = undefined;
     chatPaneProps.onForkFromMessage = undefined;
     chatPaneProps.onSubmitQuestionForm = undefined;
@@ -353,7 +337,7 @@ describe('ProjectView conversation delete', () => {
     });
 
     await waitFor(() =>
-      expect(createConversation).toHaveBeenCalledWith('project-1', undefined, {}),
+      expect(createConversation).toHaveBeenCalledWith('project-1', undefined),
     );
     await waitFor(() => expect(chatPaneProps.activeConversationId).toBe('conv-fresh'));
     expect(chatPaneProps.conversations?.map((conversation) => conversation.id)).toEqual(['conv-fresh']);
@@ -444,10 +428,6 @@ describe('ProjectView conversation delete', () => {
       runId: 'run-request',
       runStatus: 'succeeded',
       strategyTaskExecutionId: 'task-strategy-1',
-      taskAnalytics: {
-        taskExecutionId: 'analytics-task-1',
-        taskRunIndex: 0,
-      },
     };
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation 1' }]);
     listMessages.mockResolvedValue([assistantMessage]);
@@ -482,7 +462,7 @@ describe('ProjectView conversation delete', () => {
   });
 });
 
-describe('ProjectView conversation fork analytics', () => {
+describe('ProjectView conversation fork recovery', () => {
   const sourceMessages: ChatMessage[] = [
     { id: 'user-1', role: 'user', content: 'First request' },
     {
@@ -505,8 +485,6 @@ describe('ProjectView conversation fork analytics', () => {
   ];
 
   beforeEach(() => {
-    analyticsMocks.newRequestId.mockReturnValue('fork-request-1');
-    analyticsMocks.track.mockClear();
   });
 
   afterEach(async () => {
@@ -534,7 +512,7 @@ describe('ProjectView conversation fork analytics', () => {
     reattachDaemonRun.mockResolvedValue(undefined);
   }
 
-  it('tracks the fork click and successful result with one request id', async () => {
+  it('creates a fork containing messages up to the selected response', async () => {
     prepareForkHarness();
     createConversation.mockResolvedValue({ id: 'conv-fork', title: 'Conversation 1 fork' });
 
@@ -544,41 +522,10 @@ describe('ProjectView conversation fork analytics', () => {
     await act(async () => {
       await chatPaneProps.onForkFromMessage?.(sourceMessages[1]!);
     });
-
-    expect(analyticsMocks.newRequestId).toHaveBeenCalledTimes(1);
-    expect(analyticsMocks.track).toHaveBeenCalledWith(
-      'ui_click',
-      expect.objectContaining({
-        page_name: 'chat_panel',
-        area: 'chat_panel',
-        element: 'assistant_fork_button',
-        action: 'fork_conversation',
-        project_id: 'project-1',
-        conversation_id: 'conv-1',
-        assistant_message_id: 'assistant-1',
-        source_run_id: 'run-1',
-        source_agent_id: 'claude',
-        agent_provider_id: 'claude_code',
-        fork_point: 'historical',
-        seed_message_count: 2,
-        conversation_message_count: 4,
-        messages_after_fork_count: 2,
-        session_mode: 'design',
-      }),
-      { requestId: 'fork-request-1' },
-    );
-    expect(analyticsMocks.track).toHaveBeenCalledWith(
-      'conversation_fork_result',
-      expect.objectContaining({
-        result: 'success',
-        target_conversation_id: 'conv-fork',
-        duration_ms: expect.any(Number),
-      }),
-      { requestId: 'fork-request-1' },
-    );
+    expect(createConversation).toHaveBeenCalledWith('project-1', expect.any(String), expect.objectContaining({ seedFromConversationId: 'conv-1', forkAfterMessageId: 'assistant-1', forkFallbackMessage: sourceMessages[1] }));
   });
 
-  it('tracks a failed fork result without reporting success', async () => {
+  it('preserves the current conversation when creating a fork fails', async () => {
     prepareForkHarness();
     createConversation.mockRejectedValue(new TypeError('Failed to fetch'));
 
@@ -588,26 +535,11 @@ describe('ProjectView conversation fork analytics', () => {
     await act(async () => {
       await chatPaneProps.onForkFromMessage?.(sourceMessages[3]!);
     });
-
-    expect(analyticsMocks.track).toHaveBeenCalledWith(
-      'conversation_fork_result',
-      expect.objectContaining({
-        fork_point: 'latest',
-        seed_message_count: 4,
-        messages_after_fork_count: 0,
-        result: 'failed',
-        target_conversation_id: null,
-        error_code: 'network_error',
-        duration_ms: expect.any(Number),
-      }),
-      { requestId: 'fork-request-1' },
-    );
-    expect(
-      analyticsMocks.track.mock.calls.filter(([event]) => event === 'conversation_fork_result'),
-    ).toHaveLength(1);
+    expect(createConversation).toHaveBeenCalled();
+    expect(chatPaneProps.messages).toEqual(sourceMessages);
   });
 
-  it('classifies daemon body-limit failures for rollout monitoring', async () => {
+  it('preserves the current conversation after a daemon body-limit failure', async () => {
     prepareForkHarness();
     createConversation.mockRejectedValue(
       new ProjectConversationsHttpError(413, 'request body too large'),
@@ -619,14 +551,7 @@ describe('ProjectView conversation fork analytics', () => {
     await act(async () => {
       await chatPaneProps.onForkFromMessage?.(sourceMessages[3]!);
     });
-
-    expect(analyticsMocks.track).toHaveBeenCalledWith(
-      'conversation_fork_result',
-      expect.objectContaining({
-        result: 'failed',
-        error_code: 'payload_too_large',
-      }),
-      { requestId: 'fork-request-1' },
-    );
+    expect(createConversation).toHaveBeenCalled();
+    expect(chatPaneProps.messages).toEqual(sourceMessages);
   });
 });

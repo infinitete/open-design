@@ -1,9 +1,4 @@
-import { useCallback, useEffect } from 'react';
-import {
-  trackDeepSeekCampaignBadgeClick,
-  trackDeepSeekCampaignBadgeSurfaceView,
-} from '../analytics/events';
-import { useAnalytics } from '../analytics/provider';
+import { useCallback } from 'react';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import { goPlanPricingUrl } from '../campaigns/go-plan';
 import { useI18n } from '../i18n';
@@ -26,51 +21,23 @@ import { Icon } from './Icon';
 export function WorkbenchCampaignBadge({
   audience,
   page,
-  metricsConsent,
-  installationId,
   loggedIn,
 }: {
   audience: Exclude<DeepSeekV4FlashCampaignAudience, 'unknown'>;
   page: 'home' | 'project';
-  metricsConsent: boolean;
-  installationId?: string | null;
   loggedIn: boolean | null | undefined;
 }) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
 
-  useEffect(() => {
-    if (loggedIn !== true) return;
-    // The current campaign analytics contract scopes badge impressions to
-    // Home. Project-detail visibility is intentionally UI-only until that
-    // contract gains a project page variant.
-    if (page !== 'home') return;
-    trackDeepSeekCampaignBadgeSurfaceView(analytics.track, {
-      page_name: 'home',
-      area: 'campaign_badge',
-      element: 'deepseek_v4_pro',
-      campaign_id: 'deepseek_v4_pro',
-      user_state: audience,
-    });
-  }, [analytics.track, audience, loggedIn, page]);
 
   const openCampaignPricing = useCallback(() => {
     const pricingUrl = goPlanPricingUrl(locale);
-    if (page === 'home') {
-      trackDeepSeekCampaignBadgeClick(analytics.track, {
-        page_name: 'home',
-        area: 'campaign_badge',
-        element: 'open_pricing',
-        campaign_id: 'deepseek_v4_pro',
-        user_state: audience,
-      });
-    }
     window.open(
       pricingUrl,
       '_blank',
       'noopener,noreferrer',
     );
-  }, [analytics.track, audience, locale, page]);
+  }, [audience, locale, page]);
 
   if (loggedIn !== true) return null;
 

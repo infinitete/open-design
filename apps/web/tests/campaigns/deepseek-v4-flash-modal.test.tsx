@@ -19,22 +19,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeepSeekV4FlashCampaign } from '../../src/components/DeepSeekV4FlashCampaign';
 import { I18nProvider } from '../../src/i18n';
 
-const trackSpy = vi.fn();
-
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track: trackSpy }),
-}));
-
-vi.mock('../../src/analytics/client', () => ({
-  getResolvedDeviceId: () => null,
-}));
-
 const DIALOG = 'deepseek-v4-flash-campaign-dialog';
 
 beforeEach(() => {
   window.localStorage.clear();
   window.history.replaceState({}, '', '/');
-  trackSpy.mockClear();
 });
 
 afterEach(() => {
@@ -65,14 +54,6 @@ describe('paid 立即使用 switches the workbench onto the campaign model', () 
   it('dismisses on use_now without selecting the retired hosted runtime', () => {
     render(<DeepSeekV4FlashCampaign audience="paid" active />);
     fireEvent.click(screen.getByRole('button', { name: 'Use now' }));
-
-    // The hosted runtime is retired: the CTA must not select any agent. It
-    // only records the use_now click and closes.
-    expect(trackSpy).toHaveBeenCalledWith(
-      'ui_click',
-      expect.objectContaining({ element: 'use_now' }),
-      undefined,
-    );
     expect(screen.queryByTestId(DIALOG)).toBeNull();
   });
 });

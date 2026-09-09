@@ -10,17 +10,6 @@ vi.mock('../../src/i18n', () => ({
   useT: () => (k: string) => k,
 }));
 
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track: vi.fn() }),
-}));
-
-vi.mock('../../src/analytics/events', () => ({
-  trackPageView: vi.fn(),
-  trackProjectsListClick: vi.fn(),
-  trackProjectsListControlsClick: vi.fn(),
-  trackProjectsMorePopoverClick: vi.fn(),
-}));
-
 vi.mock('../../src/providers/registry', () => ({
   deleteLiveArtifact: vi.fn(),
   fetchLiveArtifacts: vi.fn(async () => []),

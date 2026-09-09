@@ -156,15 +156,12 @@ import {
 import {
   createRunSideEffectLedger,
   foldEventIntoRunSideEffectLedger,
-  resolveRunProjectKindForAnalytics,
   retryFinalResultForRunStatus,
   runArtifactCountForRun,
   runDesignSystemCreatedForRun,
   runFilesWrittenForRun,
   runPreviewModuleCountForRun,
-  runRetryEventsForAnalytics,
   runSideEffectsForRun,
-  scanRunEventsForFinishedProps,
   scanRunEventsForRetrySideEffects,
 } from './runtimes/run-lifecycle-analytics.js';
 export {
@@ -206,10 +203,7 @@ export {
   pinAssistantMessageOnRunCreate,
 } from './runtimes/chat-run-messages.js';
 export {
-  resolveRunProjectKindForAnalytics as __forTestResolveRunProjectKindForAnalytics,
   retryFinalResultForRunStatus as __forTestRetryFinalResultForRunStatus,
-  runRetryEventsForAnalytics as __forTestRunRetryEventsForAnalytics,
-  scanRunEventsForFinishedProps as __forTestScanRunEventsForFinishedProps,
   scanRunEventsForRetrySideEffects as __forTestScanRunEventsForRetrySideEffects,
 } from './runtimes/run-lifecycle-analytics.js';
 
@@ -442,10 +436,6 @@ import { createChatRunService } from './runtimes/runs.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
 import { ProjectDomainError, createPassThroughProjectMutationCoordination } from './services/project-mutation.js';
 import {
-  createRunAnalyticsLifecycle,
-  inheritedRunLineageHints,
-} from './services/run-analytics-lifecycle.js';
-import {
   createOdNextRunInputProjection,
   OdNextTaskInputSnapshotError,
   removeOdNextRunInputProjection,
@@ -506,16 +496,10 @@ import {
   artifactOriginForRun,
   snapshotAiHtmlVersionsForRun,
 } from './run-html-version-snapshots.js';
-import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
-import {
-  describeRunTelemetrySink,
-  readRunTelemetrySinkConfig,
-} from './langfuse-trace.js';
 import { beginDurableRunTerminalReconciliation } from './runtimes/run-terminal-reconciliation.js';
 import { reconcileRunHtmlArtifactManifests } from './runtimes/run-html-artifact-reconciliation.js';
 import { completeActiveRunProjectTerminal } from './runtimes/run-project-terminal.js';
 import { recoverLegacyBrandTranscriptsAtStartup } from './runtimes/legacy-brand-transcript-recovery.js';
-import { createTaskObservationRolloutService } from './observability/task-observation-rollout.js';
 import { strategyTaskRunObservationId } from './observability/task-observation-aggregation.js';
 import { collectCodexChildEvidence } from './runtimes/codex-child-evidence.js';
 import {
@@ -527,11 +511,6 @@ import {
   bindOdNextExactSendPromptEvidence,
   buildPromptStackTelemetry,
 } from './prompt-telemetry.js';
-import { newInsertId, readAnalyticsContext, type AnalyticsService } from './analytics.js';
-import {
-  agentIdToTracking,
-  modelIdForTracking,
-} from '@open-design/contracts/analytics';
 import {
   mergeNoProxyWithLoopbackDefaults,
   redactSecrets,
@@ -668,7 +647,6 @@ import {
   getDeployment,
   getDeploymentById,
   getMessage,
-  getMessageTelemetryFinalizationState,
   getPreviewComment,
   getProjectCommentAnchorConversationId,
   getProjectPreviewComment,
@@ -771,7 +749,6 @@ import {
 import { registerConnectorRoutes } from './connectors/routes.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
-import { registerAttributionRoutes } from './routes/attribution.js';
 import { registerDaemonRoutes } from './routes/daemon.js';
 import { registerGenuiRoutes } from './routes/genui.js';
 import { registerDesignSystemRoutes } from './routes/design-systems.js';
@@ -802,6 +779,8 @@ import { registerSocialShareRoutes } from './routes/social-share.js';
 import { registerOpenDesignPublicMetadataRoutes } from './routes/open-design-public-metadata.js';
 import { registerWhatsNewRoutes } from './routes/whats-new.js';
 import { registerMemoryRoutes } from './routes/memory.js';
+
+
 const recordWorkspaceAuthorityDecision = () => {};
 const recordWorkspaceAuthorityInvalidation = () => {};
 const recordWorkspaceAuthorityRealtimeTransition = () => {};
@@ -868,7 +847,6 @@ const createEventRefreshCoordinator = (_opts?: any) => ({
 });
 const createTeamResourceShareService = (_opts: any) => ({}) as any;
 const createTeamResourceListCache = (_opts: any) => ({}) as any;
-import { registerTelemetryRoutes } from './routes/telemetry.js';
 import {
   assembleExample,
   registerAtomRoutes,
@@ -1676,7 +1654,6 @@ export function composeProjectDisplayStatus(
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
-const LANGFUSE_TERMINAL_FALLBACK_DELAY_MS = 15_000;
 
 // Fold per-run work-completeness signals off the agent event stream (#1247 /
 // #1060). Invoked for EVERY agent event via the single emitAgentEvent choke
@@ -1759,21 +1736,6 @@ function filesystemEmptyAnswerFallbackText(fileNames) {
 
 export function __forTestFilesystemEmptyAnswerFallbackText(fileNames) {
   return filesystemEmptyAnswerFallbackText(fileNames);
-}
-
-
-export function shouldReportRunCompletedFromMessage(saved, body = {}) {
-  return Boolean(
-    saved &&
-      saved.runId &&
-      typeof saved.runStatus === 'string' &&
-      TERMINAL_RUN_STATUSES.has(saved.runStatus) &&
-      body?.telemetryFinalized === true,
-  );
-}
-
-export function telemetryPromptFromRunRequest(message, currentPrompt) {
-  return typeof currentPrompt === 'string' ? currentPrompt : message;
 }
 
 // Keep this header grammar aligned with parseFormAnswers in @open-design/contracts.
@@ -1903,282 +1865,6 @@ export function composeChatUserRequestForAgent(
   ].join('\n\n');
 }
 
-export function createFinalizedMessageTelemetryReporter({
-  design,
-  db,
-  dataDir,
-  reportedRuns,
-  taskObservationRollout,
-  getAppVersion = () => null,
-  report = reportRunCompletedFromDaemon,
-}: {
-  design: any;
-  db: unknown;
-  dataDir: string;
-  reportedRuns: Set<string>;
-  taskObservationRollout?: {
-    modeForRun(runId: string): 'off' | 'observe' | 'send';
-    representationForRun(runId: string):
-      | 'single_run'
-      | 'task_pending'
-      | 'task_accepted'
-      | 'task_not_expected';
-    beginFinalizeForRun(runId: string): {
-      durableTaskTruth: boolean;
-      suppressSingleRun: boolean;
-      completion: Promise<unknown>;
-    };
-    finalizeForRun(runId: string): Promise<unknown>;
-  };
-  getAppVersion?: () => any;
-  report?: typeof reportRunCompletedFromDaemon;
-}) {
-  const appVersionForCapture = () => {
-    const appVersion = getAppVersion();
-    if (typeof appVersion === 'string') return appVersion;
-    if (appVersion && typeof appVersion.version === 'string') return appVersion.version;
-    if (typeof design?.getAppVersion === 'function') return design.getAppVersion();
-    return 'unknown';
-  };
-  const captureResult = ({
-    analyticsContext,
-    conversationId,
-    delivery,
-    durationMs,
-    projectId,
-    reportResult,
-    reportTrigger = 'final_message',
-    run,
-    runId,
-    skipReason,
-    status,
-  }) => {
-    const context = analyticsContext ?? run?.analyticsContext ?? null;
-    if (!context || !design?.analytics?.capture || !runId || !delivery) return;
-    const terminalResult = status ? runResultFromStatus(status) : undefined;
-    design.analytics.capture({
-      eventName: 'langfuse_report_result',
-      context,
-      appVersion: appVersionForCapture(),
-      properties: {
-        page_name: 'chat_panel',
-        area: 'chat_panel',
-        project_id: run?.projectId ?? projectId ?? null,
-        conversation_id: run?.conversationId ?? conversationId ?? null,
-        run_id: runId,
-        langfuse_trace_id: runId,
-        langfuse_expected: delivery.langfuse_expected,
-        langfuse_delivery_status: delivery.langfuse_delivery_status,
-        ...(delivery.langfuse_drop_reason
-          ? { langfuse_drop_reason: delivery.langfuse_drop_reason }
-          : {}),
-        langfuse_report_result: reportResult,
-        langfuse_report_trigger: reportTrigger,
-        ...(skipReason ? { langfuse_report_skip_reason: skipReason } : {}),
-        ...(durationMs !== undefined ? { report_duration_ms: durationMs } : {}),
-        ...(terminalResult ? { result: terminalResult } : {}),
-        ...(run?.errorCode ? { error_code: run.errorCode } : {}),
-        ...(run?.agentId ? { agent_provider_id: agentIdToTracking(run.agentId) } : {}),
-        ...(run?.model !== undefined || run?.resolvedModelId !== undefined
-          ? { model_id: modelIdForTracking(run.resolvedModelId ?? run.model) }
-          : {}),
-      },
-      insertId: `${runId}-langfuse-report-${reportTrigger}-${reportResult}${skipReason ? `-${skipReason}` : ''}`,
-    });
-  };
-  const reportFinalized = (saved, body = {}, options = {}) => {
-    if (!shouldReportRunCompletedFromMessage(saved, body)) return;
-    const runId = saved.runId;
-    const run = design.runs.get(runId);
-    if (!run) {
-      captureResult({
-        analyticsContext: options.analyticsContext,
-        conversationId: options.conversationId ?? saved.conversationId,
-        delivery: {
-          langfuse_expected: true,
-          langfuse_delivery_status: 'failed',
-          langfuse_drop_reason: 'network_error',
-        },
-        projectId: options.projectId,
-        reportTrigger: options.reportTrigger,
-        reportResult: 'skipped',
-        runId,
-        skipReason: 'run_not_found',
-        status: saved.runStatus,
-      });
-      return;
-    }
-    const reportTrigger = options.reportTrigger ?? 'final_message';
-    if (reportedRuns.has(run.id)) {
-      captureResult({
-        analyticsContext: options.analyticsContext,
-        conversationId: options.conversationId ?? saved.conversationId,
-        delivery: {
-          langfuse_expected: true,
-          langfuse_delivery_status: 'failed',
-          langfuse_drop_reason: 'network_error',
-        },
-        projectId: options.projectId,
-        reportTrigger: options.reportTrigger,
-        reportResult: 'skipped',
-        run,
-        runId: run.id,
-        skipReason: 'duplicate_run',
-        status: saved.runStatus,
-      });
-      return;
-    }
-    let taskObservationMode = 'off';
-    try {
-      taskObservationMode = taskObservationRollout?.modeForRun(run.id) ?? 'off';
-    } catch (error) {
-      // Representation persistence is a best-effort optimization. A SQLite
-      // claim/insert failure must leave the ordinary single-Run obligation
-      // intact instead of aborting the reporter before it reaches that path.
-      console.warn('[telemetry] task observation representation failed', String(error));
-    }
-    if (taskObservationMode === 'observe') {
-      void taskObservationRollout!.finalizeForRun(run.id).catch((error) => {
-        console.warn('[telemetry] task observation failed in observe mode', String(error));
-      });
-    } else if (taskObservationMode === 'send') {
-      let taskCompletion: Promise<unknown> | null = null;
-      try {
-        // Establish task-level durable truth before erasing the compatibility
-        // single-Run obligation. The returned completion may continue across
-        // network I/O, but the SQLite claim is already committed here.
-        const handle = taskObservationRollout!.beginFinalizeForRun(run.id);
-        if (handle.suppressSingleRun) taskCompletion = handle.completion;
-      } catch (error) {
-        // A claim/storage failure leaves this Run on the compatibility path;
-        // never suppress the only recoverable telemetry obligation.
-        console.warn('[telemetry] task observation claim failed', String(error));
-      }
-      if (!taskCompletion) {
-        // Fall through to the existing single-Run reporter below.
-      } else {
-        // The pending Task row owns this Run, but ownership alone is not a
-        // delivery checkpoint. Keep the Run unfinished until the Task is
-        // accepted/not-expected. A deterministic pre-network release removes
-        // the process-local gate and immediately resumes this same Run through
-        // the compatibility reporter.
-        reportedRuns.add(run.id);
-        void taskCompletion.then(() => {
-          if (taskObservationRollout!.representationForRun(run.id) !== 'single_run') {
-            return;
-          }
-          reportedRuns.delete(run.id);
-          reportFinalized(saved, body, options);
-        }).catch((error) => {
-          console.warn('[telemetry] task observation delivery failed', String(error));
-        });
-        return;
-      }
-    }
-    const existingDelivery = run.telemetryDelivery;
-    if (
-      existingDelivery?.status === 'in_flight'
-      || typeof existingDelivery?.finalizedAt === 'number'
-    ) {
-      reportedRuns.add(run.id);
-      const alreadyTerminal = typeof existingDelivery.finalizedAt === 'number';
-      captureResult({
-        analyticsContext: options.analyticsContext,
-        conversationId: options.conversationId ?? saved.conversationId,
-        delivery: {
-          langfuse_expected: alreadyTerminal
-            ? existingDelivery.status !== 'not_expected'
-            : true,
-          langfuse_delivery_status: alreadyTerminal
-            ? existingDelivery.status
-            : 'failed',
-          ...(alreadyTerminal && existingDelivery.dropReason
-            ? { langfuse_drop_reason: existingDelivery.dropReason }
-            : !alreadyTerminal
-              ? { langfuse_drop_reason: 'network_error' }
-              : {}),
-        },
-        projectId: options.projectId,
-        reportTrigger: options.reportTrigger,
-        reportResult: 'skipped',
-        run,
-        runId: run.id,
-        skipReason: 'duplicate_run',
-        status: saved.runStatus,
-      });
-      return;
-    }
-    const deliveryAttempt = design.runs.beginTelemetryDelivery?.(run);
-    reportedRuns.add(run.id);
-    void (async () => {
-      const start = Date.now();
-      let delivery;
-      try {
-        delivery = await report({
-          db,
-          dataDir,
-          run,
-          persistedRunStatus: saved.runStatus,
-          persistedEndedAt: saved.endedAt,
-          appVersion: getAppVersion(),
-          ...(deliveryAttempt?.idempotencyKey
-            ? { deliveryIdempotencyKey: deliveryAttempt.idempotencyKey }
-            : {}),
-          ...(design.runs.recordTelemetryDeliveryAttempt
-            ? {
-                onDeliveryAttempt: () => {
-                  design.runs.recordTelemetryDeliveryAttempt(run);
-                },
-              }
-            : {}),
-        });
-      } catch {
-        // The production bridge already converts provider and assembly errors
-        // into a failed result. Keep this final guard so an injected/custom
-        // reporter cannot reject out of the detached telemetry task or leave
-        // a normal failure looking like a daemon crash window.
-        delivery = {
-          langfuse_expected: true,
-          langfuse_delivery_status: 'failed',
-          langfuse_drop_reason: 'network_error',
-          langfuse_attempt_count: 0,
-          ...(deliveryAttempt?.idempotencyKey
-            ? { langfuse_idempotency_key: deliveryAttempt.idempotencyKey }
-            : {}),
-        };
-      }
-      const state = delivery ?? {
-        langfuse_expected: true,
-        langfuse_delivery_status: 'accepted',
-      };
-      captureResult({
-        analyticsContext: options.analyticsContext,
-        conversationId: options.conversationId ?? saved.conversationId,
-        delivery: state,
-        durationMs: Date.now() - start,
-        projectId: options.projectId,
-        reportTrigger,
-        reportResult: state.langfuse_expected === false
-          ? 'skipped'
-          : state.langfuse_delivery_status === 'accepted'
-            ? 'accepted'
-            : state.langfuse_delivery_status === 'failed'
-              ? 'failed'
-              : 'skipped',
-        run,
-        runId: run.id,
-        skipReason: state.langfuse_expected === false ? 'not_expected' : undefined,
-        status: saved.runStatus,
-      });
-      design.runs.finalizeTelemetryDelivery?.(run, state);
-    })();
-  };
-  return reportFinalized;
-}
-
-export function shouldReportRunCompletionTelemetryFallbackStatus(status: unknown): boolean {
-  return status === 'failed' || status === 'canceled';
-}
 
 const PROJECT_PREVIEW_SCOPE_TTL_MS = 60 * 60 * 1000;
 const PROJECT_PREVIEW_ASSET_PATH_RE = /^\/projects\/([^/]+)\/preview\/([^/]+)\/.+$/u;
@@ -2601,10 +2287,9 @@ export async function finalizeDaemonServices(input: {
   runs(): Promise<void>;
   terminals(): Promise<void>;
   browsers(): Promise<void>;
-  analytics(): Promise<void>;
 }): Promise<void> {
   let firstError: unknown;
-  for (const finalize of [input.runs, input.terminals, input.browsers, input.analytics]) {
+  for (const finalize of [input.runs, input.terminals, input.browsers]) {
     try { await finalize(); }
     catch (error) { firstError ??= error; }
   }
@@ -3363,6 +3048,11 @@ export async function startServer({
   ): Promise<any> => null;
   // [REMOVED: team resource versions - deleted collab module]
   const teamResourceVersions = { get: () => null, set: async () => {} } as any;
+  type ResourceHubPrincipal = {
+    teamId: string;
+    memberId: string;
+    [key: string]: unknown;
+  };
   const teamProjectContentResourceId = (
     projectId: string,
     scope: { resourceTeamId: string; ownerMemberId: string },
@@ -4104,7 +3794,6 @@ export async function startServer({
       freshAuthority: true,
     }).catch(() => undefined);
   };
-  let workspaceAnalyticsService: AnalyticsService | null = null;
   // [REMOVED: registerCollabContextRoutes - deleted collab module]
   // [REMOVED: scoped workspace invalidation pollers - deleted collab module]
   const scopedWorkspaceInvalidationPollers = new Map<string, any>();
@@ -4221,16 +3910,19 @@ export async function startServer({
   // follow-up — see reconcile decision log.
   // (legacy POST /api/projects body deleted — see registerProjectRoutes below.)
 
-  const telemetry = registerTelemetryRoutes(app, {
-    dataDir: RUNTIME_DATA_DIR,
-    readAppConfig,
-    writeAppConfig,
-  });
-  const { analyticsService } = telemetry;
+  // Cache the resolved app version once at boot so route surfaces can read it
+  // synchronously without re-reading disk per request.
+  let cachedAppVersionInfo: Awaited<ReturnType<typeof readCurrentAppVersionInfo>> | null = null;
+  void (async () => {
+    try {
+      cachedAppVersionInfo = await readCurrentAppVersionInfo();
+    } catch {
+      // Best-effort; callers fall back to '0.0.0'.
+    }
+  })();
+  const getAppVersion = () => cachedAppVersionInfo?.version ?? '0.0.0';
   registerStrategyRolloutRoutes(app, {
     db,
-    analytics: analyticsService,
-    getAppVersion: () => telemetry.getCachedAppVersion()?.version ?? '0.0.0',
     requireLocalDaemonRequest,
     // Uncaught on purpose: an operator asking which mode is in effect must get
     // an error when the config cannot be read, never `off` / `default`.
@@ -4239,25 +3931,10 @@ export async function startServer({
   const latchOdNextRolloutForRun = (run, mode, reasonCode) => {
     latchOdNextRolloutStopOperationally({
       db,
-      analytics: analyticsService,
-      analyticsContext: run.analyticsContext,
-      appVersion: telemetry.getCachedAppVersion()?.version ?? '0.0.0',
       mode,
       reasonCode,
-      // A thunk, not a value: the latch is the safety action and must land
-      // even if this read fails. Sync because run-terminal bookkeeping cannot
-      // await, and read at all so the reported effective mode matches the mode
-      // the run was admitted under.
-      readAppConfig: () => readAppConfigSync(RUNTIME_DATA_DIR),
     });
   };
-  workspaceAnalyticsService = analyticsService;
-  console.info(
-    '[telemetry] effective run sink',
-    describeRunTelemetrySink(
-      readRunTelemetrySinkConfig(process.env),
-    ),
-  );
   const design = {
     runs: createChatRunService({
       createSseResponse,
@@ -4303,57 +3980,14 @@ export async function startServer({
       },
       onSettled: () => {},
     }),
-    analytics: analyticsService,
-    getAppVersion: () => telemetry.getCachedAppVersion()?.version ?? '0.0.0',
-    readAnalyticsContext,
+    getAppVersion,
   };
-  const taskObservationRollout = createTaskObservationRolloutService({
-    db,
-    dataDir: RUNTIME_DATA_DIR,
-    getRun: (runId) => design.runs.get(runId),
-    readTelemetry: async () => {
-      const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
-      return {
-        prefs: appConfig.telemetry ?? {},
-        installationId: appConfig.installationId ?? null,
-        appVersionInfo: telemetry.getCachedAppVersion(),
-      };
-    },
-    checkpointMappedRun: (runId, reason) => {
-      const mappedRun = design.runs.get(runId);
-      if (!mappedRun) return;
-      design.runs.beginTelemetryDelivery?.(mappedRun);
-      design.runs.finalizeTelemetryDelivery?.(mappedRun, {
-        langfuse_expected: false,
-        langfuse_delivery_status: 'not_expected',
-        langfuse_drop_reason: reason,
-        langfuse_attempt_count: 0,
-      });
-    },
-  });
-  console.info(
-    '[telemetry] effective task observation rollout',
-    taskObservationRollout.diagnostic(),
-  );
 
   // Runs are process-local, but their terminal obligations are durable. On a
-  // fresh daemon boot, repair stale message rows and replay any PostHog or
-  // Langfuse terminal work whose checkpoint was not committed. Network work
-  // stays off the startup critical path.
+  // fresh daemon boot, repair stale message rows and run terminal state whose
+  // checkpoint was not committed.
   const runTerminalReconciliation = beginDurableRunTerminalReconciliation({
-    analytics: analyticsService,
-    appVersion: telemetry.getCachedAppVersion()?.version ?? '0.0.0',
-    appVersionInfo: telemetry.getCachedAppVersion(),
     db,
-    reportLangfuse: reportRunCompletedFromDaemon,
-    taskObservationModeForRun: (runId) => taskObservationRollout.modeForRun(runId),
-    taskObservationRepresentationForRun: (runId) =>
-      taskObservationRollout.representationForRun(runId),
-    taskObservationNotExpectedReasonForRun: (runId) =>
-      taskObservationRollout.notExpectedReasonForRun(runId),
-    seedTaskObservationRunFact: (runId, fact) =>
-      taskObservationRollout.seedRepresentationFromRunFact(runId, fact),
-    beginTaskObservationForRun: (runId) => taskObservationRollout.beginFinalizeForRun(runId),
     runsLogDir: path.join(RUNTIME_DATA_DIR, 'runs'),
     reconcileTerminalsWithLocalRepair: (group, repair) =>
       projectGitCoordination.runtime.reconcileTerminalsWithLocalRepair(group, repair),
@@ -4366,98 +4000,16 @@ export async function startServer({
   } catch (error) {
     console.warn('[runs] terminal local reconciliation failed', error);
   }
-  void runTerminalReconciliation.delivery.then(async () => {
-    const taskObservationsRecovered = await taskObservationRollout.reconcileCrashWindows();
-    if (taskObservationsRecovered > 0) {
-      console.warn('[telemetry] reconciled task observation crash windows', {
-        recovered: taskObservationsRecovered,
-      });
-    }
-  }).catch((error) => {
-    console.warn('[runs] terminal delivery reconciliation failed', error);
-  });
 
   // Interactive Terminal sessions (node-pty). In-memory, process-local, and
   // killed on daemon shutdown — see shutdownDaemonRuns below.
   const terminalService = createTerminalService();
   const browserSessionService = createBrowserSessionService();
 
-  // Tracks runs whose finalized assistant message has already been forwarded
-  // so repeated message updates only enter the reporter once. Terminal
-  // fallback and delayed final-message writes share this process-local gate;
-  // the durable delivery terminal keeps the same guarantee across restarts.
-  const reportedRuns = new Set();
-  const terminalTelemetryFallbackTimers = new Set<ReturnType<typeof setTimeout>>();
-
-  const reportFinalizedMessage = createFinalizedMessageTelemetryReporter({
-    design,
-    db,
-    dataDir: RUNTIME_DATA_DIR,
-    reportedRuns,
-    taskObservationRollout,
-    getAppVersion: telemetry.getCachedAppVersion,
-  });
-  const reportRunCompletionTelemetryFallback = ({
-    analyticsContext,
-    run,
-    status,
-  }: {
-    analyticsContext: any;
-    run: any;
-    status: string;
-  }) => {
-    if (!shouldReportRunCompletionTelemetryFallbackStatus(status)) return;
-    const timer = setTimeout(() => {
-      terminalTelemetryFallbackTimers.delete(timer);
-      if (reportedRuns.has(run.id)) return;
-      if (run.assistantMessageId) {
-        const messageTelemetry = getMessageTelemetryFinalizationState(db, run.assistantMessageId);
-        if (messageTelemetry.finalizedAt !== null) return;
-      }
-      reportFinalizedMessage(
-        {
-          id: run.assistantMessageId ?? `${run.id}-terminal`,
-          conversationId: run.conversationId,
-          endedAt: run.updatedAt,
-          role: 'assistant',
-          runId: run.id,
-          runStatus: status,
-        },
-        { telemetryFinalized: true },
-        {
-          analyticsContext,
-          conversationId: run.conversationId,
-          projectId: run.projectId,
-          reportTrigger: 'terminal_fallback',
-        },
-      );
-    }, LANGFUSE_TERMINAL_FALLBACK_DELAY_MS);
-    terminalTelemetryFallbackTimers.add(timer);
-    timer.unref?.();
-  };
-
-  // Every physical Run is started through this service so the analytics
-  // lifecycle is installed once, for whoever asked for the Run — an HTTP
-  // client, an OD Next automatic continuation, a scheduled Automation, or a
-  // live-artifact refresh. Starting a Run any other way drops its analytics
-  // silently, which is what OPEND-2365 was.
-  const runAnalyticsLifecycle = createRunAnalyticsLifecycle({
-    db,
-    design,
-    paths: { PROJECTS_DIR, RUNTIME_DATA_DIR },
-    agents: { detectAgents },
-    telemetry: {
-      reportRunCompletionTelemetryFallback,
-      resolveRunProjectKindForAnalytics,
-      runArtifactBaselines,
-      runRetryEventsForAnalytics,
-    },
-  });
   const internalRunCreation = createInternalRunCreationService({
     runs: design.runs,
     claimAssistantMessage: (run, options) =>
       pinAssistantMessageOnRunCreate(db, run, options),
-    analyticsLifecycle: runAnalyticsLifecycle,
     beginProjectRunAdmission: (projectId) =>
       projectGitCoordination.runtime.admit(projectId),
     attachProjectRun: (runId, projectId, admission, executionAttempt) =>
@@ -4473,7 +4025,6 @@ export async function startServer({
       projectGitCoordination.runtime.onSettled(runId);
     },
   });
-  const reportFeedback = telemetry.reportFeedback;
 
   // DNS-aware wrapper. The sync `validateBaseUrl` only inspects the literal
   // hostname string, so a public DNS name pointing at an internal address
@@ -4502,13 +4053,6 @@ export async function startServer({
     isLocalSameOrigin,
     resolvedPortRef,
   };
-  const attributionService = registerAttributionRoutes(app, {
-    analytics: analyticsService,
-    appConfig: { readAppConfig },
-    http: httpDeps,
-    paths: { RUNTIME_DATA_DIR },
-    env: process.env,
-  });
   const pathDeps = {
     PROJECT_ROOT,
     PROJECTS_DIR,
@@ -4808,9 +4352,6 @@ export async function startServer({
       // completed write so even an A -> B -> A transition with no intervening
       // directory/status read fences exact authority from the old A session.
       refreshWorkspaceHubAccountIdentity();
-      void attributionService.processPending().catch((err: unknown) => {
-        console.warn('[attribution] pending claim failed', err);
-      });
     },
   };
   const orbitDeps = { orbitService };
@@ -5012,30 +4553,6 @@ export async function startServer({
     },
     events: projectEventDeps,
     ids: idDeps,
-    telemetry: {
-      reportFinalizedMessage,
-      captureProductEvent: async (req, eventName, properties) => {
-        const analyticsContext = readAnalyticsContext(req);
-        if (!analyticsContext) return;
-        await analyticsService.capture({
-          eventName,
-          context: analyticsContext,
-          appVersion: telemetry.getCachedAppVersion()?.version ?? '0.0.0',
-          properties,
-          insertId: newInsertId(),
-        });
-      },
-      identifyWorkspaceGroup: async (req, workspaceId, properties) => {
-        const analyticsContext = readAnalyticsContext(req);
-        if (!analyticsContext) return;
-        await analyticsService.identifyGroup({
-          context: analyticsContext,
-          groupType: 'workspace',
-          groupKey: workspaceId,
-          properties,
-        });
-      },
-    },
     appConfig: appConfigDeps,
     agents: agentDeps,
     validation: validationDeps,
@@ -6747,7 +6264,7 @@ export async function startServer({
     // Hoisted verbatim out of the composeSystemPrompt() call so the exact same
     // object both composes the prompt and feeds section-level drift
     // attribution — a second, hand-maintained copy of these inputs would drift
-    // from the real ones and mislabel the telemetry it exists to explain.
+    // from the real ones and mislabel the diagnostics they exist to explain.
     const defaultSystemPromptInputs = {
       agentId,
       skillBody,
@@ -7200,11 +6717,11 @@ export async function startServer({
       cleanupOdNextRunInputProjection();
       return design.runs.fail(run, code, message);
     };
-    // Stash the original user prompt + per-turn config so the
-    // langfuse-bridge report path can include them without reaching back
-    // into chatBody across the createChatRunService boundary. Each field
-    // is optional and only set when the chat body actually carried it.
-    const telemetryPrompt = telemetryPromptFromRunRequest(message, currentPrompt);
+    // Stash the original user prompt + per-turn config so the run record
+    // carries it without reaching back into chatBody across the
+    // createChatRunService boundary. Each field is optional and only set when
+    // the chat body actually carried it.
+    const telemetryPrompt = typeof currentPrompt === 'string' ? currentPrompt : message;
     if (
       !pendingNativeSessionContinue &&
       typeof telemetryPrompt === 'string'
@@ -7860,7 +7377,7 @@ export async function startServer({
     const snapshotAiHtmlVersionsBeforeSuccess = async () => {
       const origin = artifactOriginForRun({
         runId: run.id,
-        externalPluginAnalytics: run.externalPluginAnalytics,
+        pluginWorkflowProvenance: run.pluginWorkflowProvenance,
       });
       if (origin) {
         // A successful Plugin run starts pessimistically. Only the exact
@@ -8249,9 +7766,9 @@ export async function startServer({
         ? [{ kind: 'odNextExactFinalText', content: composed }]
         : [
             { kind: 'formOverride', content: agentFormOverride },
-            // Phase 1 explicitly needs redactedContent for these aggregate prompts:
-            // they are the quickest way to inspect the system context sent to the
-            // model when diagnosing Langfuse traces.
+            // redactedContent for these aggregate prompts is the quickest way
+            // to inspect the system context sent to the model when diagnosing
+            // runs.
             { kind: 'daemonSystemPrompt', content: daemonSystemPrompt },
             { kind: 'runtimeToolPrompt', content: runtimeToolPrompt },
             { kind: 'researchCommandContract', content: researchCommandContract },
@@ -8487,34 +8004,18 @@ export async function startServer({
       persistRunEventToAssistantMessage(db, run, event, data);
       design.runs.emit(run, event, data);
     };
-    const retryAnalyticsBase = (decision, failure, errorCode) => {
-      const runProjectKind = resolveRunProjectKindForAnalytics({
-        hintProjectKind: null,
-        projectMetadata: projectRecord?.metadata,
-      });
-      const isDesignSystemRun =
-        runProjectKind === 'design_system' ||
-        (typeof designSystemId === 'string' && designSystemId.length > 0);
-      return {
-        page_name: isDesignSystemRun ? 'design_system_project' : 'chat_panel',
-        area: isDesignSystemRun ? 'design_system_generation' : 'chat_panel',
-        project_id: typeof projectId === 'string' ? projectId : run.projectId,
-        conversation_id:
-          typeof conversationId === 'string' ? conversationId : run.conversationId ?? null,
-        run_id: run.id,
-        retry_of_run_id: run.id,
-        retry_attempt_index: decision.retryAttemptIndex,
-        retry_max_attempts: decision.retryMaxAttempts,
-        retry_strategy: decision.retryStrategy,
-        agent_provider_id: agentIdToTracking(agentId),
-        model_id: modelIdForTracking(safeModel ?? model),
-        ...(failure?.failure_category ? { failure_category: failure.failure_category } : {}),
-        ...(failure?.failure_detail ? { failure_detail: failure.failure_detail } : {}),
-        ...(failure?.failure_stage ? { failure_stage: failure.failure_stage } : {}),
-        ...(failure?.terminal_trigger ? { terminal_trigger: failure.terminal_trigger } : {}),
-        ...(errorCode ? { error_code: errorCode } : {}),
-      };
-    };
+    const retryEventBase = (decision, failure, errorCode) => ({
+      run_id: run.id,
+      retry_of_run_id: run.id,
+      retry_attempt_index: decision.retryAttemptIndex,
+      retry_max_attempts: decision.retryMaxAttempts,
+      retry_strategy: decision.retryStrategy,
+      ...(failure?.failure_category ? { failure_category: failure.failure_category } : {}),
+      ...(failure?.failure_detail ? { failure_detail: failure.failure_detail } : {}),
+      ...(failure?.failure_stage ? { failure_stage: failure.failure_stage } : {}),
+      ...(failure?.terminal_trigger ? { terminal_trigger: failure.terminal_trigger } : {}),
+      ...(errorCode ? { error_code: errorCode } : {}),
+    });
     const destroyChildStdio = (child) => {
       // Best-effort cleanup of stdio streams on a child process we're about
       // to drop. The daemon-sidecar (apps/daemon) keeps listeners attached
@@ -8691,7 +8192,7 @@ export async function startServer({
       run.retryFinalResult = retryResult;
       run.retrySuppressedReason = retrySuppressedReason;
       design.runs.emit(run, 'run_retry_finished', {
-        ...retryAnalyticsBase(eventDecision, eventFailure, eventErrorCode),
+        ...retryEventBase(eventDecision, eventFailure, eventErrorCode),
         retry_result: retryResult,
         ...(retrySuppressedReason
           ? { retry_suppressed_reason: retrySuppressedReason }
@@ -8844,7 +8345,7 @@ export async function startServer({
         });
         publishNativeSessionRecoveryMetadata();
         design.runs.emit(run, 'run_retry_attempted', {
-          ...retryAnalyticsBase(postToolResumeDecision, failure, errorCode),
+          ...retryEventBase(postToolResumeDecision, failure, errorCode),
           retry_reason: postToolResumeDecision.retryReason,
           retry_delay_ms: postToolResumeDecision.retryDelayMs,
         });
@@ -8879,7 +8380,7 @@ export async function startServer({
         run.retryFinalResult = undefined;
         run.retrySuppressedReason = undefined;
         design.runs.emit(run, 'run_retry_attempted', {
-          ...retryAnalyticsBase(decision, failure, errorCode),
+          ...retryEventBase(decision, failure, errorCode),
           retry_reason: decision.retryReason,
           retry_delay_ms: decision.retryDelayMs,
         });
@@ -9342,7 +8843,7 @@ export async function startServer({
           newSessionId: agentResumeCtx.newSessionId,
           disablePlugins:
             def.id === 'codex'
-            && run.externalPluginAnalytics?.externalPluginId
+            && run.pluginWorkflowProvenance?.externalPluginContext.id
               === OPEN_DESIGN_PLUGIN_ID,
           ...(nativeBuildPackageBindings.length > 0
             ? { nativeBuildPackageBindings }
@@ -12130,13 +11631,6 @@ export async function startServer({
                   .digest('hex');
                 const meta = {
                   ...chatBody,
-                  // One logical task, several physical Runs. The chain is only
-                  // reassemblable downstream if each Run reports the lineage of
-                  // the Run that caused it.
-                  analyticsHints: {
-                    ...(chatBody.analyticsHints ?? {}),
-                    ...inheritedRunLineageHints(run, chatBody, taskRunIndex),
-                  },
                   projectId: strategyTaskAtStart.projectId,
                   conversationId: strategyTaskAtStart.conversationId,
                   agentId: strategyTaskAtStart.selectedAgentId,
@@ -12227,17 +11721,6 @@ export async function startServer({
         });
         internalRunCreation.start(
           continuation.run,
-          {
-            // The continuation is composed from the source Run's body, so it
-            // carries the same project, agent, plugin and Skill facts. Identity
-            // is inherited rather than re-derived: nobody made a request for
-            // this Run, and the task it continues is the user's.
-            body: continuation.chatBody,
-            requestAnalyticsContext:
-              run.analyticsContext ?? run.analyticsRecovery?.context ?? null,
-            creationKind: 'created',
-            resumed: false,
-          },
           async () => {
             try {
               return await startChatRun(continuation.chatBody, continuation.run);
@@ -12443,13 +11926,9 @@ export async function startServer({
         'Keep connector credentials and OD_TOOL_TOKEN private; never print or persist secrets.',
       ].join('\n'),
     };
-    // Nothing asked for this Run: it is a background refresh with no caller to
-    // attribute it to, so the analytics lifecycle finds no identity and stays
-    // silent. It still goes through the one start path, so the day a
-    // background Run gets an identity, it reports without further plumbing.
+    // Nothing asked for this Run: it is a background refresh with no caller.
     internalRunCreation.start(
       run,
-      { body: orbitRunBody, requestAnalyticsContext: null },
       () => startChatRun(orbitRunBody, run),
     );
 
@@ -12540,12 +12019,6 @@ export async function startServer({
         }
         return true;
       },
-    },
-    telemetry: {
-      reportRunCompletionTelemetryFallback,
-      resolveRunProjectKindForAnalytics,
-      runArtifactBaselines,
-      runRetryEventsForAnalytics,
     },
     messages: {
       pinAssistantMessageOnRunCreate,
@@ -12866,7 +12339,6 @@ export async function startServer({
       // note above. Same start path, same reason.
       internalRunCreation.start(
         run,
-        { body: routineRunBody, requestAnalyticsContext: null },
         () => startChatRun(routineRunBody, run),
       );
     };
@@ -13060,7 +12532,6 @@ export async function startServer({
     appConfig: { readAppConfig },
     validation: validationDeps,
     lifecycle: { isDaemonShuttingDown: () => daemonShuttingDown },
-    telemetry: { reportFinalizedMessage, reportFeedback },
   });
 
   registerStaticSpaFallback(app, staticDir);
@@ -13074,13 +12545,7 @@ export async function startServer({
   //   - `apps/daemon/tests/version-route.test.ts` → expects `{ url, server }`
   return await new Promise((resolve, reject) => {
     let daemonShutdownStarted = false;
-    const clearTerminalTelemetryFallbackTimers = () => {
-      for (const timer of terminalTelemetryFallbackTimers) clearTimeout(timer);
-      terminalTelemetryFallbackTimers.clear();
-    };
     const cleanupDaemonBackgroundWork = () => {
-      clearTerminalTelemetryFallbackTimers();
-      telemetry.disposeFatalHandlers();
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
       routineService?.stop();
@@ -13095,12 +12560,10 @@ export async function startServer({
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
-      clearTerminalTelemetryFallbackTimers();
       await finalizeDaemonServices({
         runs: () => design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() }),
         terminals: () => terminalService.shutdownActive(),
         browsers: () => browserSessionService.shutdownActive(),
-        analytics: () => design.analytics.shutdown(),
       });
     };
     const rejectStartup = (error: unknown) => {

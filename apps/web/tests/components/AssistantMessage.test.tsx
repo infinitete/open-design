@@ -1159,7 +1159,7 @@ describe('AssistantMessage question forms', () => {
         })}
         streaming={false}
         projectId="proj-1"
-        projectKind="slide_deck"
+        projectKind="deck"
         nextUserContent={'[form answers for discovery]\n- Visual tone: Editorial / magazine'}
       />,
     );
@@ -1174,42 +1174,50 @@ describe('AssistantMessage question forms', () => {
 
   it.each([
     {
-      projectKind: 'web_clone' as const,
+      projectKind: 'prototype' as const,
+      metadata: { kind: 'prototype' as const, intent: 'web-clone' as const },
       title: 'Quiet SaaS',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/prototype-quiet-saas-v1.webp',
     },
     {
-      projectKind: 'wireframe' as const,
+      projectKind: 'prototype' as const,
+      metadata: { kind: 'prototype' as const, fidelity: 'wireframe' as const },
       title: 'Quiet SaaS',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/prototype-quiet-saas-v1.webp',
     },
     {
-      projectKind: 'live_artifact' as const,
+      projectKind: 'prototype' as const,
+      metadata: { kind: 'prototype' as const, intent: 'live-artifact' as const },
       title: 'Quiet SaaS',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/prototype-quiet-saas-v1.webp',
     },
     {
-      projectKind: 'document' as const,
+      projectKind: 'other' as const,
+      metadata: { kind: 'other' as const, intent: 'document' as const },
       title: 'Docs reference',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/document-docs-reference-v1.webp',
     },
     {
       projectKind: 'image' as const,
+      metadata: { kind: 'image' as const },
       title: 'Editorial photo',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/image-photo-editorial-v1.webp',
     },
     {
       projectKind: 'video' as const,
+      metadata: { kind: 'video' as const },
       title: 'Swiss Pulse',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/video-swiss-pulse-v1.webp',
     },
     {
-      projectKind: 'hyperframes' as const,
+      projectKind: 'video' as const,
+      metadata: { kind: 'video' as const, videoModel: 'hyperframes-html' },
       title: 'Swiss Pulse',
       src: 'https://repo-assets.open-design.ai/style-catalog/v1/video-swiss-pulse-v1.webp',
     },
   ])('keeps selected $projectKind style previews in the answered summary', ({
     projectKind,
+    metadata,
     title,
     src,
   }) => {
@@ -1237,6 +1245,7 @@ describe('AssistantMessage question forms', () => {
         streaming={false}
         projectId="proj-1"
         projectKind={projectKind}
+        projectMetadata={metadata}
         nextUserContent={`[form answers for discovery]\n- Visual tone: ${title}`}
       />,
     );
@@ -1268,7 +1277,7 @@ describe('AssistantMessage question forms', () => {
         })}
         streaming={false}
         projectId="proj-1"
-        projectKind="slide_deck"
+        projectKind="deck"
         nextUserContent={[
           '[form answers for discovery]',
           '- Visual tone: Editorial / magazine, Luxury / refined',
@@ -1307,7 +1316,7 @@ describe('AssistantMessage question forms', () => {
         })}
         streaming={false}
         projectId="proj-1"
-        projectKind="slide_deck"
+        projectKind="deck"
         nextUserContent={[
           '[form answers for discovery]',
           '- Visual tone: Editorial / magazine, Warm Japanese editorial',

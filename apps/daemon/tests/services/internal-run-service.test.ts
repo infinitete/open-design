@@ -17,7 +17,6 @@ function createHarness(initial: {
   claimOk?: boolean;
   claimThrows?: boolean;
   restartOk?: boolean;
-  installThrows?: boolean;
   startThrows?: boolean;
   reserveRestartOk?: boolean;
 } = {}) {
@@ -91,9 +90,6 @@ function createHarness(initial: {
     options?.beforeClaimCommit?.();
     return { ok: true as const };
   });
-  const install = vi.fn(() => {
-    if (initial.installThrows) throw new Error('install failed');
-  });
   const preRunHandle = {
     projectId: 'project-1',
     release: vi.fn(),
@@ -109,7 +105,6 @@ function createHarness(initial: {
   const service = createInternalRunCreationService({
     runs: registry,
     claimAssistantMessage,
-    analyticsLifecycle: { install },
     releaseProjectRun,
     beginProjectRunAdmission,
     attachProjectRun,
@@ -123,7 +118,6 @@ function createHarness(initial: {
     clearRestartAttempt,
     drop,
     detachProjectRun,
-    install,
     persistState,
     coordinateProjectMutation,
     preRunHandle,
@@ -147,7 +141,6 @@ describe('internal run creation service', () => {
       currentPrompt: 'Build the page',
       appliedPluginSnapshotId: 'snapshot-1',
       sessionMode: 'design',
-      analyticsHints: { sourceRunId: 'run-0' },
     };
     const prepared = await harness.service.prepare({ meta });
 
@@ -162,57 +155,9 @@ describe('internal run creation service', () => {
 
     const starter = vi.fn(async () => undefined);
     if (prepared.kind !== 'ready') throw new Error('expected ready run');
-    harness.service.start(
-      prepared.run,
-      { body: { ...meta }, requestAnalyticsContext: null },
-      starter,
-    );
+    harness.service.start(prepared.run, starter);
     expect(harness.start).toHaveBeenCalledOnce();
     expect(starter).toHaveBeenCalledWith(harness.run);
-  });
-
-  // Every physical Run is started here, so this is the one place that can
-  // guarantee analytics without each caller remembering to ask for it. Four
-  // daemon-internal callers used to start Runs another way and reported
-  // nothing at all (OPEND-2365).
-  it('arms the analytics lifecycle for the run before it starts', async () => {
-    const harness = createHarness();
-    const starter = vi.fn(async () => undefined);
-    const facts = {
-      body: { projectId: 'project-1' },
-      requestAnalyticsContext: {
-        deviceId: 'device-1',
-        sessionId: 'session-1',
-        clientType: 'web' as const,
-        locale: 'en',
-        requestId: null,
-      },
-      creationKind: 'created' as const,
-      resumed: false,
-    };
-
-    const prepared = await harness.service.prepare({ meta: {} });
-    if (prepared.kind !== 'ready') throw new Error('expected ready run');
-    harness.service.start(prepared.run, facts, starter);
-
-    expect(harness.install).toHaveBeenCalledWith({ ...facts, run: harness.run });
-    expect(harness.install.mock.invocationCallOrder[0]!)
-      .toBeLessThan(harness.start.mock.invocationCallOrder[0]!);
-  });
-
-  it('starts the run even when no caller identity is available', async () => {
-    // A scheduled Automation has nobody to attribute the Run to. It still goes
-    // through the one start path so the Run is never silently uninstrumented
-    // for a reason other than "there was no identity".
-    const harness = createHarness();
-    const starter = vi.fn(async () => undefined);
-
-    const prepared = await harness.service.prepare({ meta: {} });
-    if (prepared.kind !== 'ready') throw new Error('expected ready run');
-    harness.service.start(prepared.run, { body: {}, requestAnalyticsContext: null }, starter);
-
-    expect(harness.install).toHaveBeenCalledOnce();
-    expect(harness.start).toHaveBeenCalledOnce();
   });
 
   it('admits and attaches the project run before claim or portable seeds', async () => {
@@ -433,10 +378,8 @@ describe('internal run creation service', () => {
 
     expect(() => harness.service.start(
       { ...harness.run, projectId: 'project-1' },
-      { body: {}, requestAnalyticsContext: null },
       starter,
     )).toThrow('must be prepared');
-    expect(harness.install).not.toHaveBeenCalled();
     expect(harness.start).not.toHaveBeenCalled();
     expect(starter).not.toHaveBeenCalled();
   });
@@ -506,7 +449,6 @@ describe('internal run creation service', () => {
   });
 
   it.each([
-    ['analytics install', { installThrows: true }, 'install failed'],
     ['registry start', { startThrows: true }, 'start failed'],
   ] as const)('fails a prepared run and releases its admission when %s throws synchronously', async (
     _label,
@@ -519,7 +461,6 @@ describe('internal run creation service', () => {
 
     expect(() => harness.service.start(
       prepared.run,
-      { body: {}, requestAnalyticsContext: null },
       async () => undefined,
     )).toThrow(message);
     expect(harness.releaseProjectRun).toHaveBeenCalledOnce();

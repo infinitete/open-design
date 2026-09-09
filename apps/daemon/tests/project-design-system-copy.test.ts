@@ -2,7 +2,6 @@ import type { Server } from 'node:http';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { register } from 'prom-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type StartedServer = {
@@ -23,7 +22,6 @@ let serverModule: ServerModule | null = null;
 describe('project design-system copy route', () => {
   afterEach(async () => {
     await stopServer();
-    register.clear();
     if (dataDir) await rm(dataDir, { recursive: true, force: true });
     dataDir = null;
     if (originalDataDir === undefined) delete process.env.OD_DATA_DIR;

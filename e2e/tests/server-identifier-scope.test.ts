@@ -12,9 +12,10 @@ import { describe, expect, it } from 'vitest';
  * file is bundled, not linted for scope, and a bad reference only surfaces as a
  * runtime `ReferenceError` on whichever request path happens to evaluate it.
  *
- * That is how `appVersionForCapture` shipped in 0.16.2-beta.148. The name is a
- * local of `createFinalizedMessageTelemetryReporter`; #6221 called it ~7,500
- * lines away inside `startChatRun`'s AMR workspace-scope telemetry, on the spawn
+ * That is how `appVersionForCapture` shipped in 0.16.2-beta.148. The name was
+ * a local of `createFinalizedMessageTelemetryReporter` (removed with the
+ * telemetry system); #6221 called it ~7,500 lines away inside `startChatRun`'s
+ * AMR workspace-scope telemetry, on the spawn
  * path, so every AMR run died with
  * `spawn failed: appVersionForCapture is not defined`.
  *

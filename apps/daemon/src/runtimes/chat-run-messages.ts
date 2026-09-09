@@ -1,7 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import type Database from 'better-sqlite3';
 import type { PersistedAgentEvent } from '@open-design/contracts';
-import type { RunFinishedProps } from '@open-design/contracts/analytics';
 import {
   appendMessageAgentEvents,
   clearMessageAgentEventBatches,
@@ -52,25 +51,6 @@ export type RunMessageEventPersistenceTelemetry = {
   persistenceErrorCount: number;
 };
 
-type RunMessageEventPersistenceAnalytics = Pick<
-  RunFinishedProps,
-  | 'message_event_storage_mode'
-  | 'message_event_input_count'
-  | 'message_event_delta_count'
-  | 'message_event_input_char_count'
-  | 'message_event_flush_count'
-  | 'message_event_batch_event_count'
-  | 'message_event_persisted_count'
-  | 'message_event_flush_total_ms'
-  | 'message_event_flush_max_ms'
-  | 'message_event_pending_char_peak'
-  | 'message_event_finalize_count'
-  | 'message_event_finalize_total_ms'
-  | 'message_event_finalize_max_ms'
-  | 'message_event_final_event_count'
-  | 'message_event_persistence_error_count'
->;
-
 export const RUN_MESSAGE_EVENT_FLUSH_INTERVAL_MS = 250;
 const RUN_MESSAGE_EVENT_FLUSH_CHARS = 64 * 1024;
 const pendingMessageEvents = new WeakMap<ChatRunMessageState, PendingMessageEvents>();
@@ -112,30 +92,6 @@ export function readRunMessageEventPersistenceTelemetry(
 ): RunMessageEventPersistenceTelemetry | null {
   const telemetry = messageEventPersistenceTelemetry.get(run);
   return telemetry ? { ...telemetry } : null;
-}
-
-export function runMessageEventPersistenceAnalytics(
-  run: ChatRunMessageState,
-): RunMessageEventPersistenceAnalytics | Record<string, never> {
-  const telemetry = readRunMessageEventPersistenceTelemetry(run);
-  if (!telemetry) return {};
-  return {
-    message_event_storage_mode: telemetry.storageMode,
-    message_event_input_count: telemetry.inputEventCount,
-    message_event_delta_count: telemetry.deltaEventCount,
-    message_event_input_char_count: telemetry.inputCharCount,
-    message_event_flush_count: telemetry.flushCount,
-    message_event_batch_event_count: telemetry.batchEventCount,
-    message_event_persisted_count: telemetry.persistedEventCount,
-    message_event_flush_total_ms: Math.round(telemetry.flushTotalMs),
-    message_event_flush_max_ms: Math.round(telemetry.flushMaxMs),
-    message_event_pending_char_peak: telemetry.pendingCharPeak,
-    message_event_finalize_count: telemetry.finalizeCount,
-    message_event_finalize_total_ms: Math.round(telemetry.finalizeTotalMs),
-    message_event_finalize_max_ms: Math.round(telemetry.finalizeMaxMs),
-    message_event_final_event_count: telemetry.finalEventCount,
-    message_event_persistence_error_count: telemetry.persistenceErrorCount,
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

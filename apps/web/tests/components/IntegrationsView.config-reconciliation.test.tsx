@@ -7,18 +7,6 @@ import { IntegrationsView } from '../../src/components/IntegrationsView';
 import { I18nProvider } from '../../src/i18n';
 import type { AppConfig } from '../../src/types';
 
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({
-    track: vi.fn(),
-    setConsent: vi.fn(),
-    setIdentity: vi.fn(),
-    setConfigureGlobals: vi.fn(),
-    anonymousId: 'test-anonymous',
-    sessionId: 'test-session',
-    newRequestId: () => 'test-request',
-  }),
-}));
-
 const baseConfig: AppConfig = {
   mode: 'daemon',
   apiKey: '',

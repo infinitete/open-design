@@ -37,7 +37,7 @@ Callers should mark scratch workspaces declaratively on project metadata:
 }
 ```
 
-The `orchestratorWorkspace` fields are provenance, not authority. OD may surface them in run status, diagnostics, result manifests, and telemetry. It must not infer permission to mutate an external source from them.
+The `orchestratorWorkspace` fields are provenance, not authority. OD may surface them in run status, diagnostics, and result manifests. It must not infer permission to mutate an external source from them.
 
 ## Git And Safety
 

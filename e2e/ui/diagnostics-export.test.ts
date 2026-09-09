@@ -27,7 +27,6 @@ test.beforeEach(async ({ page }) => {
         onboardingCompleted: true,
         agentModels: {},
         privacyDecisionAt: 1,
-        telemetry: { metrics: false, content: false, artifactManifest: false },
       }),
     );
   }, STORAGE_KEY);

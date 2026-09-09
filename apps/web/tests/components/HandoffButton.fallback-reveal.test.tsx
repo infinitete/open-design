@@ -113,7 +113,6 @@ describe('HandoffButton zero-editors fallback', () => {
           projectName="Landing"
           projectDir="/tmp/open-design/Landing"
           agents={agents}
-          metricsConsent
           installationId="od-install-abc"
         />
       </I18nProvider>,

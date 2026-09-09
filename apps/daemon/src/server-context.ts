@@ -111,50 +111,6 @@ interface ProjectPreviewScopeDeps {
   ) => { workspaceId: string; workspaceMemberId: string } | null | undefined;
 }
 
-interface TelemetryDeps {
-  reportFinalizedMessage: (
-    saved: any,
-    body?: any,
-    options?: {
-      analyticsContext?: any;
-      projectId?: string;
-      conversationId?: string;
-      reportTrigger?: 'final_message' | 'terminal_fallback';
-    },
-  ) => void;
-  /**
-   * Best-effort Langfuse score emission for assistant-turn user ratings.
-   * Returns the categorical outcome so the API surface in chat-routes can
-   * report back to the web client whether the report was accepted or
-   * skipped (consent off / no sink). The handler must not await this in
-   * the request hot path — fire-and-forget.
-   */
-  reportFeedback?: (req: {
-    runId: string;
-    rating: 'positive' | 'negative';
-    reasonCodes: string[];
-    hasCustomReason: boolean;
-    customReason: string;
-    scoreMetadata?: Record<string, unknown>;
-  }) => Promise<{ status: 'accepted' | 'skipped_consent' | 'skipped_no_sink' }>;
-  reportRunCompletionTelemetryFallback: (...args: any[]) => any;
-  resolveRunProjectKindForAnalytics: (...args: any[]) => any;
-  runArtifactBaselines: any;
-  runRetryEventsForAnalytics: (...args: any[]) => any;
-  /** Product-result capture for request-scoped, consented analytics. */
-  captureProductEvent?: (
-    req: any,
-    eventName: string,
-    properties: Record<string, unknown>,
-  ) => Promise<void> | void;
-  /** Update one PostHog Workspace group from an authoritative read. */
-  identifyWorkspaceGroup?: (
-    req: any,
-    workspaceId: string,
-    properties: Record<string, unknown>,
-  ) => Promise<void> | void;
-}
-
 export interface ServerContext {
   db: any;
   projectGitCoordination: ProjectMutationCoordination;
@@ -191,7 +147,6 @@ export interface ServerContext {
   resources: ResourceDeps;
   routines: RoutineDeps;
   projectPreviewScopes: ProjectPreviewScopeDeps;
-  telemetry: TelemetryDeps;
   validation: any;
   finalize: any;
   handoff: any;

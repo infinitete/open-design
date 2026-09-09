@@ -21,11 +21,6 @@ concurrency:
   group: main-prerelease-win-smoke
   cancel-in-progress: false
 
-env:
-  OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
-  POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
-  POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
-
 jobs:
   smoke:
     if: github.repository == 'nexu-io/open-design'

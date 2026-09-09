@@ -35,7 +35,7 @@ export function setUpDesktopCrashReporter(crashDumpsDir: string): void {
   try {
     crashReporter.start({ uploadToServer: false, compress: false });
   } catch {
-    // crashReporter is best-effort observability, never a startup blocker.
+    // crashReporter is best-effort diagnostics, never a startup blocker.
   }
 }
 

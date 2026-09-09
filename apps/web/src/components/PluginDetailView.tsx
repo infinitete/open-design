@@ -23,8 +23,6 @@ import {
 } from './home-hero/plugin-authoring';
 import { useI18n } from '../i18n';
 import { localizePluginDescription, localizePluginTitle } from './plugins-home/localization';
-import { useAnalytics } from '../analytics/provider';
-import { trackPluginDetailClick } from '../analytics/events';
 import { Icon } from './Icon';
 import { PluginMetaSections } from './plugin-details/PluginMetaSections';
 import { buildPluginInstallCommand } from './plugin-details/PluginShareMenu';
@@ -181,7 +179,6 @@ export function PluginDetailView(props: Props) {
     ? workspaceContextState.context
     : null;
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const [plugin, setPlugin] = useState<InstalledPluginRecord | null>(null);
   const [error, setError] = useState<{ kind: 'load' | 'apply'; message: string } | null>(null);
   const [applying, setApplying] = useState(false);
@@ -191,12 +188,6 @@ export function PluginDetailView(props: Props) {
   });
 
   const onBack = () => {
-    trackPluginDetailClick(analytics.track, {
-      page_name: 'plugins',
-      area: 'plugin_detail',
-      element: 'back',
-      plugin_id: props.pluginId,
-    });
     goBack({ kind: 'home', view: 'plugins' });
   };
 
@@ -283,12 +274,6 @@ export function PluginDetailView(props: Props) {
     : sourceLinks.sourceKindLabel;
 
   const onUse = async () => {
-    trackPluginDetailClick(analytics.track, {
-      page_name: 'plugins',
-      area: 'plugin_detail',
-      element: 'use_plugin',
-      plugin_id: plugin.id,
-    });
     setApplying(true);
     setError(null);
     const result = await applyPlugin(plugin.id, {

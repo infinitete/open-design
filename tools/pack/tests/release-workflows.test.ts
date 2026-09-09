@@ -121,10 +121,21 @@ describe("release workflows", () => {
     expect(beta).toContain("win_x64_update_metadata_url:");
     expect(beta).toContain("OD_PACKAGED_E2E_MAC_UPDATE_METADATA_URL: ${{ inputs.mac_arm64_update_metadata_url }}");
     expect(beta).toContain("OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}");
-    expect(beta).toContain("POSTHOG_KEY: ${{ inputs.publish && secrets.POSTHOG_KEY || '' }}");
-    expect(beta).toContain("POSTHOG_HOST: ${{ inputs.publish && vars.POSTHOG_HOST || '' }}");
-    expect(beta).toContain("POSTHOG_CLI_API_KEY: ${{ inputs.publish && secrets.POSTHOG_CLI_API_KEY || '' }}");
-    expect(beta).toContain("POSTHOG_CLI_PROJECT_ID: ${{ inputs.publish && vars.POSTHOG_CLI_PROJECT_ID || '' }}");
+    // Retired telemetry analytics inputs must stay out of every shipping
+    // lane: the daemon no longer reads them, so a leftover secret read is
+    // dead weight (and would imply baking analytics back into packages).
+    for (const lane of [beta, prerelease, stable]) {
+      for (const token of [
+        "POSTHOG_KEY",
+        "POSTHOG_HOST",
+        "POSTHOG_CLI_API_KEY",
+        "POSTHOG_CLI_PROJECT_ID",
+        "POSTHOG_CLI_HOST",
+        "OPEN_DESIGN_TELEMETRY_RELAY_URL",
+      ]) {
+        expect(lane, token).not.toContain(token);
+      }
+    }
     expect(beta).not.toContain("publish-beta-metadata.ts");
     expect(beta).not.toContain("verify-beta-metadata.ts");
     expect(beta).not.toContain("summary-beta.ts");

@@ -7098,12 +7098,10 @@ export function localeFromPath(pathname = '/'): LandingLocaleCode {
 }
 
 /**
- * Stable, locale-independent `page_name` for analytics (the 埋点文档 2.0
- * page_name/area/element triplet). The marketing trackers are injected on
- * every page, so each must report which page it is rather than a hardcoded
- * value. The home page is `landing_home`; every other route flattens its
- * locale-stripped path segments (e.g. `/zh/solutions/prototype/` →
- * `solutions_prototype`, `/download/` → `download`).
+ * Stable, locale-independent page identifier. The home page is `landing_home`;
+ * every other route flattens its locale-stripped path segments
+ * (e.g. `/zh/solutions/prototype/` → `solutions_prototype`,
+ * `/download/` → `download`).
  */
 export function pageNameFromPath(pathname = '/'): string {
   const { pathname: localPath } = stripLocaleFromPath(pathname);

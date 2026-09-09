@@ -1,6 +1,5 @@
 import type { Express } from 'express';
 import { type ChatSessionMode } from '@open-design/contracts';
-import { readAnalyticsContext } from '../../analytics.js';
 import type { RouteDeps } from '../../server-context.js';
 import {
   coordinateAuthorizedProjectMutation,
@@ -21,7 +20,7 @@ import {
   isProjectCommentAnchorConversationId,
 } from '../../db.js';
 
-export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'projectGitCoordination'> {
+export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'appConfig' | 'agents' | 'projectGitCoordination'> {
   /**
    * Threaded straight through to `registerProjectCommentRoutes` — a comment
    * has no workspace binding of its own, so it borrows its PARENT PROJECT's
@@ -335,7 +334,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
   // A web write that carries at least as many events and a non-regressing
   // status still flows through — which keeps mock-agent flows working (the
   // daemon never persisted events/status there, so the web is the legitimate
-  // writer) and lets UI metadata (feedback, comment attachments, telemetry)
+  // writer) and lets UI metadata (feedback, comment attachments)
   // land on every PUT.
   const mergeMessageWriteForDaemonBacked = (
     stored: ReturnType<typeof getMessage>,
@@ -589,11 +588,6 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       });
       // Bump the parent project's updatedAt so the project list re-orders.
       updateProject(db, req.params.id, {});
-      ctx.telemetry?.reportFinalizedMessage(saved, m, {
-        analyticsContext: readAnalyticsContext(req),
-        projectId: req.params.id,
-        conversationId: req.params.cid,
-      });
       res.json({ message: saved });
       });
     } catch (err) {

@@ -1,4 +1,11 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createChatRunService } from '../src/runtimes/runs.js';
+import { registerRunRoutes } from '../src/routes/runs.js';
+import { artifactOriginForRun } from '../src/run-html-version-snapshots.js';
+import { validatePluginWorkflowProvenance, decodeDurablePluginWorkflowProvenance } from '../src/mcp-observability.js';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,8 +18,6 @@ import {
   McpObservabilitySession,
   mcpDeliveryFacts,
   mcpFailureFacts,
-  normalizeExternalPluginRunAnalyticsHints,
-  resolvePluginGenerationSloWindowMs,
   validateExternalPluginContext,
   validateMcpToolArgs,
 } from '../src/mcp.js';
@@ -52,6 +57,30 @@ describe('local MCP plugin observability contract', () => {
         telemetrySchemaVersion: 2,
       }),
     ).toThrow(/PLUGIN_CONTRACT_REJECTED/u);
+  });
+
+  it('validates product provenance and only decodes bounded legacy durable metadata', () => {
+    const requestId = '018f6f2e-1111-7111-8111-111111111111';
+    const provenance = {
+      pluginWorkflowId: '018f6f2e-2222-7222-8222-222222222222',
+      externalPluginContext: pluginContext,
+      logicalRequestDigest: logicalPluginRequestDigest(requestId).digest,
+      logicalRequestDigestVersion: 1,
+    };
+    expect(validatePluginWorkflowProvenance(provenance, requestId)).toEqual(provenance);
+    expect(() => validatePluginWorkflowProvenance({ ...provenance, apiKey: 'secret' })).toThrow(/PLUGIN_CONTRACT_REJECTED/);
+    expect(() => validatePluginWorkflowProvenance({ ...provenance, logicalRequestDigest: 'a'.repeat(64) }, requestId)).toThrow(/does not match/);
+    expect(() => validatePluginWorkflowProvenance({ ...provenance, pluginWorkflowId: 'bad' })).toThrow(/canonical/);
+    const legacy = {
+      entrySurface: 'external_mcp', externalPluginId: pluginContext.id,
+      externalPluginVersion: pluginContext.version,
+      distributionMechanism: pluginContext.distributionMechanism, publisherClass: pluginContext.publisherClass,
+      pluginWorkflowId: provenance.pluginWorkflowId, logicalRequestDigest: provenance.logicalRequestDigest,
+      logicalRequestDigestVersion: 1, hostProduct: 'codex_unknown', briefState: 'confirmed',
+    };
+    expect(decodeDurablePluginWorkflowProvenance({ externalPluginAnalytics: legacy })).toEqual(provenance);
+    expect(decodeDurablePluginWorkflowProvenance({ analyticsHints: legacy })).toBeNull();
+    expect(decodeDurablePluginWorkflowProvenance({ externalPluginAnalytics: { ...legacy, logicalRequestDigest: 'invalid' } })).toBeNull();
   });
 
   it('issues plugin workflow ids server-side and rejects caller-created ids', () => {
@@ -102,61 +131,6 @@ describe('local MCP plugin observability contract', () => {
     );
   });
 
-  it('runtime-validates plugin run attribution and derives correlation quality server-side', () => {
-    const requestId = '018f6f2e-5555-7555-8555-555555555555';
-    const logical = logicalPluginRequestDigest(requestId);
-    const input = {
-      entrySurface: 'external_mcp',
-      hostProduct: 'codex_unknown',
-      externalPluginId: 'open-design',
-      externalPluginVersion: '0.5.0',
-      distributionMechanism: 'git_marketplace',
-      publisherClass: 'open_design_first_party',
-      attributionQuality: 'session_correlated',
-      pluginWorkflowId: '018f6f2e-4444-7444-8444-444444444444',
-      logicalRequestDigest: logical.digest,
-      logicalRequestDigestVersion: logical.version,
-      briefState: 'confirmed',
-    };
-
-    expect(normalizeExternalPluginRunAnalyticsHints(input, {
-      clientRequestId: requestId,
-      analyticsContext: {
-        deviceId: 'device-1',
-        sessionId: 'session-1',
-        clientType: 'external_mcp',
-        locale: 'en',
-        requestId,
-        entrySurface: 'external_mcp',
-        hostProduct: 'codex_unknown',
-        externalPluginId: 'open-design',
-        externalPluginVersion: '0.5.0',
-        distributionMechanism: 'git_marketplace',
-        publisherClass: 'open_design_first_party',
-        attributionQuality: 'self_reported',
-      },
-    })).toEqual({
-      ...input,
-      attributionQuality: 'session_correlated',
-    });
-
-    expect(() => normalizeExternalPluginRunAnalyticsHints({
-      ...input,
-      logicalRequestDigest: 'b'.repeat(64),
-    }, {
-      clientRequestId: requestId,
-      analyticsContext: null,
-    })).toThrow(/PLUGIN_CONTRACT_REJECTED/u);
-
-    expect(() => normalizeExternalPluginRunAnalyticsHints({
-      ...input,
-      externalPluginSecret: 'must-not-cross',
-    }, {
-      clientRequestId: requestId,
-      analyticsContext: null,
-    })).toThrow(/PLUGIN_CONTRACT_REJECTED/u);
-  });
-
   it('derives a versioned lower-case SHA-256 logical request digest', () => {
     const requestId = '018f6f2e-1111-7111-8111-111111111111';
     const expected = createHash('sha256')
@@ -167,27 +141,6 @@ describe('local MCP plugin observability contract', () => {
       version: 1,
       digest: expected,
     });
-  });
-
-  it('freezes a bounded generation SLO window above the active inactivity timeout', () => {
-    expect(
-      resolvePluginGenerationSloWindowMs({
-        inactivityTimeoutMs: 30 * 60 * 1000,
-        configuredValue: undefined,
-      }),
-    ).toBe(45 * 60 * 1000);
-    expect(
-      resolvePluginGenerationSloWindowMs({
-        inactivityTimeoutMs: 60 * 60 * 1000,
-        configuredValue: String(10 * 60 * 1000),
-      }),
-    ).toBe(61 * 60 * 1000);
-    expect(
-      resolvePluginGenerationSloWindowMs({
-        inactivityTimeoutMs: 30 * 60 * 1000,
-        configuredValue: 'not-a-number',
-      }),
-    ).toBe(45 * 60 * 1000);
   });
 
   it('binds plugin workflow context to a brief draft and inherits it on confirmation', () => {
@@ -487,11 +440,6 @@ describe('local MCP plugin observability contract', () => {
         pluginWorkflowId: '018f6f2e-4444-7444-8444-444444444444',
       },
       {
-        analyticsHeaders: {
-          'x-od-analytics-device-id': 'installation-1',
-          'x-od-analytics-client-type': 'external_mcp',
-          'x-od-analytics-host-product': 'codex_cli',
-        },
         pluginAttribution: {
           pluginWorkflowId: '018f6f2e-4444-7444-8444-444444444444',
           context: pluginContext,
@@ -507,19 +455,85 @@ describe('local MCP plugin observability contract', () => {
         && (init as RequestInit | undefined)?.method === 'POST',
     );
     const body = JSON.parse(String((runCall?.[1] as RequestInit)?.body));
-    expect(body.analyticsHints).toMatchObject({
-      entrySurface: 'external_mcp',
-      hostProduct: 'codex_cli',
-      externalPluginId: 'open-design',
-      externalPluginVersion: '0.5.0',
+    expect(body.analyticsHints).toBeUndefined();
+    expect(body.pluginWorkflowProvenance).toEqual({
       pluginWorkflowId: '018f6f2e-4444-7444-8444-444444444444',
+      externalPluginContext: pluginContext,
+      logicalRequestDigest: logicalPluginRequestDigest(requestId).digest,
       logicalRequestDigestVersion: 1,
-      briefState: 'confirmed',
     });
-    expect(body.analyticsHints.logicalRequestDigest).toMatch(/^[0-9a-f]{64}$/u);
-    expect((runCall?.[1] as RequestInit).headers).toMatchObject({
-      'x-od-analytics-client-type': 'external_mcp',
-      'x-od-analytics-device-id': 'installation-1',
-    });
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-provenance-'));
+    try {
+      const makeRuns = () => createChatRunService({
+        createSseResponse: vi.fn(), createSseErrorPayload: vi.fn(),
+        runsLogDir: root as unknown as null,
+      });
+      const originalRuns = makeRuns();
+      const created = originalRuns.create(body);
+      originalRuns.finish(created, 'succeeded');
+      const persisted = JSON.parse(fs.readFileSync(path.join(root, created.id, 'state.json'), 'utf8'));
+      expect(persisted.pluginWorkflowProvenance).toEqual(body.pluginWorkflowProvenance);
+      expect(persisted).not.toHaveProperty('externalPluginAnalytics');
+      expect(persisted).not.toHaveProperty('analyticsHints');
+      // A fresh daemon service must index the persisted binding, not session memory.
+      const runs = makeRuns();
+      const handlers = new Map<string, Function>();
+      registerRunRoutes({
+        get: (route: string, handler: Function) => handlers.set(route, handler),
+        post: vi.fn(),
+      } as never, {
+        design: { runs }, http: { sendApiError: (res: { status: Function }, status: number) => res.status(status) },
+        paths: { RUNTIME_DATA_DIR: root }, agents: {}, chat: {}, plugins: {}, messages: {},
+      } as never);
+      let binding: unknown;
+      const lookup = handlers.get('/api/runs/by-plugin-workflow/:workflowId')!;
+      lookup({ params: { workflowId: body.pluginWorkflowProvenance.pluginWorkflowId } }, {
+        json: (value: unknown) => { binding = value; },
+        status: (status: number) => { throw new Error(`workflow lookup returned ${status}`); },
+      });
+      expect(binding).toMatchObject({ runId: created.id, projectId: 'project-1', ...body.pluginWorkflowProvenance });
+      vi.stubGlobal('fetch', async () => new Response(JSON.stringify(binding)));
+      const freshSession = await McpObservabilitySession.create('http://127.0.0.1:17456', { name: 'codex' });
+      await expect(freshSession.resolveAttribution('get_run', {
+        pluginWorkflowId: body.pluginWorkflowProvenance.pluginWorkflowId,
+      }, createLocalMcpBriefStore())).resolves.toEqual({
+        pluginWorkflowId: body.pluginWorkflowProvenance.pluginWorkflowId, context: pluginContext,
+      });
+      const restored = runs.findByPluginWorkflowId(body.pluginWorkflowProvenance.pluginWorkflowId);
+      expect(runs.createOrReuse(body)).toMatchObject({ kind: 'reused', run: { id: created.id } });
+      const conflictingRequestId = '018f6f2e-7777-7777-8777-777777777777';
+      const conflicting = { ...body, clientRequestId: conflictingRequestId,
+        pluginWorkflowProvenance: { ...body.pluginWorkflowProvenance,
+          logicalRequestDigest: logicalPluginRequestDigest(conflictingRequestId).digest },
+      };
+      expect(() => runs.createOrReuse(conflicting)).toThrow(/already bound/);
+      expect(() => runs.create(conflicting)).toThrow(/already bound/);
+      expect(runs.findByPluginWorkflowId(body.pluginWorkflowProvenance.pluginWorkflowId).id).toBe(created.id);
+      expect(fs.readdirSync(root)).toEqual([created.id]);
+      const expectedOrigin = {
+        entrySurface: 'external_mcp', externalPluginId: 'open-design',
+        pluginWorkflowId: body.pluginWorkflowProvenance.pluginWorkflowId, runId: created.id,
+      };
+      expect(artifactOriginForRun({ runId: restored.id, pluginWorkflowProvenance: restored.pluginWorkflowProvenance })).toEqual(expectedOrigin);
+      // Older installations retain the former durable shape; decoding must also rebuild the index.
+      delete persisted.pluginWorkflowProvenance;
+      persisted.externalPluginAnalytics = {
+        entrySurface: 'external_mcp', externalPluginId: pluginContext.id,
+        externalPluginVersion: pluginContext.version,
+        distributionMechanism: pluginContext.distributionMechanism,
+        publisherClass: pluginContext.publisherClass,
+        pluginWorkflowId: body.pluginWorkflowProvenance.pluginWorkflowId,
+        logicalRequestDigest: body.pluginWorkflowProvenance.logicalRequestDigest,
+        logicalRequestDigestVersion: 1,
+      };
+      fs.writeFileSync(path.join(root, created.id, 'state.json'), JSON.stringify(persisted));
+      const legacyRun = makeRuns().findByPluginWorkflowId(body.pluginWorkflowProvenance.pluginWorkflowId);
+      expect(legacyRun.pluginWorkflowProvenance).toEqual(body.pluginWorkflowProvenance);
+      expect(legacyRun).not.toHaveProperty('externalPluginAnalytics');
+      expect(artifactOriginForRun({ runId: legacyRun.id, pluginWorkflowProvenance: legacyRun.pluginWorkflowProvenance })).toEqual(expectedOrigin);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

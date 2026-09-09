@@ -14,7 +14,6 @@ const STANDARD_CONFIG = {
   onboardingCompleted: true,
   agentModels: {},
   privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
 };
 
 const STANDARD_APP_CONFIG = {
@@ -24,7 +23,6 @@ const STANDARD_APP_CONFIG = {
   designSystemId: null,
   agentModels: {},
   privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
 };
 
 const STANDARD_MOCK_AGENT = {

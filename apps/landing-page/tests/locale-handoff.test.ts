@@ -115,13 +115,10 @@ async function runLocaleScript(
 }
 
 describe('locale handoff', () => {
-  it('applies an explicit source locale once and keeps other attribution', async () => {
+  it('applies an explicit source locale once and keeps the query string', async () => {
     const fixture = await runLocaleScript('/pricing/?od_locale=zh&utm_source=amr#plans');
 
     assert.deepEqual(fixture.assigned, ['/zh/pricing/?utm_source=amr#plans']);
-    const raw = fixture.sessionStorage.get('od.localeAttribution');
-    assert.ok(raw);
-    assert.equal(JSON.parse(raw).redirectReason, 'explicit_handoff');
   });
 
   it('consumes a matching handoff before a manual language switch', async () => {
@@ -154,69 +151,12 @@ describe('locale handoff', () => {
     assert.equal(layout.indexOf('<LocaleSwitcherScript />', script + 1), -1);
   });
 
-  it('hands an external acquisition source across an automatic locale redirect', async () => {
+  it('redirects a browser-detected locale to its localized root', async () => {
     const fixture = await runLocaleScript('/', {
       language: 'zh-CN',
       referrer: 'https://www.google.com/search?q=open+design&token=secret',
     });
 
     assert.deepEqual(fixture.assigned, ['/zh/']);
-    const raw = fixture.sessionStorage.get('od.localeAttribution');
-    assert.ok(raw);
-    const handoff = JSON.parse(raw);
-    assert.deepEqual({
-      referrer: handoff.referrer,
-      referringDomain: handoff.referringDomain,
-      entryPath: handoff.entryPath,
-      targetPath: handoff.targetPath,
-      redirectReason: handoff.redirectReason,
-      detectedLocale: handoff.detectedLocale,
-    }, {
-      referrer: 'https://www.google.com/search',
-      referringDomain: 'www.google.com',
-      entryPath: '/',
-      targetPath: '/zh/',
-      redirectReason: 'browser_detected',
-      detectedLocale: 'zh',
-    });
-    assert.equal(typeof handoff.createdAt, 'number');
-  });
-
-  it('hands direct and tagged traffic across an automatic locale redirect', async () => {
-    const fixture = await runLocaleScript('/?utm_source=newsletter&gclid=abc&token=secret', {
-      language: 'zh-CN',
-    });
-
-    const raw = fixture.sessionStorage.get('od.localeAttribution');
-    assert.ok(raw);
-    const handoff = JSON.parse(raw);
-    assert.equal(handoff.referrer, '');
-    assert.equal(handoff.referringDomain, '');
-    assert.equal(handoff.originalLandingUrl, '/?utm_source=newsletter&gclid=abc');
-    assert.deepEqual(handoff.attribution, { utm_source: 'newsletter', gclid: 'abc' });
-  });
-
-  it('distinguishes a saved preference from browser detection', async () => {
-    const fixture = await runLocaleScript('/', {
-      language: 'en',
-      savedLocale: 'ja',
-    });
-
-    const raw = fixture.sessionStorage.get('od.localeAttribution');
-    assert.ok(raw);
-    const handoff = JSON.parse(raw);
-    assert.equal(handoff.redirectReason, 'saved_preference');
-    assert.equal(handoff.detectedLocale, 'ja');
-    assert.equal(handoff.redirectTo, '/ja/');
-  });
-
-  it('does not replace a genuine same-site continuation with acquisition data', async () => {
-    const fixture = await runLocaleScript('/', {
-      language: 'zh-CN',
-      referrer: 'https://open-design.ai/pricing/',
-    });
-
-    assert.deepEqual(fixture.assigned, ['/zh/']);
-    assert.equal(fixture.sessionStorage.has('od.localeAttribution'), false);
   });
 });

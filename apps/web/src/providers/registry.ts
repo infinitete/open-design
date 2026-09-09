@@ -1,4 +1,4 @@
-import { boundedRequestErrorCode } from '../analytics/workspace';
+import { boundedRequestErrorCode } from '../runtime/request-error-code';
 import type {
   ConnectorAuthConfigPrepareResponse,
   ConnectorDetail,
@@ -72,7 +72,13 @@ import type {
   UpdateDeployConfigRequest,
 } from '../types';
 import type { ArtifactManifest } from '../artifacts/types';
-import { GENERIC_DEPLOY_ENVELOPE_CODES } from '../analytics/deploy-error-code';
+const GENERIC_DEPLOY_ENVELOPE_CODES = new Set([
+  'BAD_REQUEST',
+  'FILE_NOT_FOUND',
+  'INTERNAL',
+  'INTERNAL_ERROR',
+  'UNKNOWN',
+]);
 import {
   isOpenDesignHostAvailable,
   openHostExternalUrl,

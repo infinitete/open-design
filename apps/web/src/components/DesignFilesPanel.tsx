@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import { trackFileManagerClick } from '../analytics/events';
 import { useT } from '../i18n';
 import { LIBRARY_UI_VISIBLE } from '../features/libraryUi';
 import type { Dict } from '../i18n/types';
@@ -480,7 +478,6 @@ export function DesignFilesPanel({
   onNavStateChange,
 }: Props) {
   const t = useT();
-  const analytics = useAnalytics();
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [dropReadError, setDropReadError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
@@ -1352,13 +1349,6 @@ export function DesignFilesPanel({
                   role="menuitem"
                   disabled={createDesignSystemFromProjectBusy}
                   onClick={() => {
-                    trackFileManagerClick(analytics.track, {
-                      page_name: 'file_manager',
-                      area: 'file_manager',
-                      element: 'create_design_system_from_project',
-                      project_id: projectId,
-                      project_kind: projectKind,
-                    });
                     setProjectMenuOpen(false);
                     onCreateDesignSystemFromProject();
                   }}
@@ -1373,13 +1363,6 @@ export function DesignFilesPanel({
                   role="menuitem"
                   disabled={duplicateProjectBusy}
                   onClick={() => {
-                    trackFileManagerClick(analytics.track, {
-                      page_name: 'file_manager',
-                      area: 'file_manager',
-                      element: 'duplicate_project',
-                      project_id: projectId,
-                      project_kind: projectKind,
-                    });
                     setProjectMenuOpen(false);
                     onDuplicateProject();
                   }}
@@ -1500,13 +1483,6 @@ export function DesignFilesPanel({
                 <button
                   type="button"
                   onClick={() => {
-                    trackFileManagerClick(analytics.track, {
-                      page_name: 'file_manager',
-                      area: 'file_manager',
-                      element: 'download_as_zip',
-                      project_id: projectId,
-                      project_kind: projectKind,
-                    });
                     void handleBatchDownload();
                   }}
                   title={t('designFiles.downloadSelected', { n: selected.size })}

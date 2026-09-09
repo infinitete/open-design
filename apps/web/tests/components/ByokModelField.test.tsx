@@ -42,7 +42,6 @@ describe('ByokModelField', () => {
         azureModelFetchHint="Enter a deployment name."
         onCustomModelChange={onCustomModelChange}
         onCustomModelSelect={vi.fn()}
-        onFocus={vi.fn()}
         onModelSelect={vi.fn()}
       />,
     );

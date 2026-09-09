@@ -34,7 +34,6 @@ describe('dialog service error convergence', () => {
           designSystemId: null,
           onboardingCompleted: true,
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });
@@ -94,7 +93,6 @@ describe('dialog service error convergence', () => {
           designSystemId: null,
           onboardingCompleted: true,
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });
@@ -184,7 +182,6 @@ async function assertCodexFailureClassification(input: {
         designSystemId: null,
         onboardingCompleted: true,
         skillId: null,
-        telemetry: { artifactManifest: true, content: false, metrics: false },
       },
       method: 'PUT',
     });

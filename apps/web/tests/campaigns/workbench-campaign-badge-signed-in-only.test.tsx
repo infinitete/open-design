@@ -7,20 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkbenchCampaignBadge } from '../../src/components/WorkbenchCampaignBadge';
 import { I18nProvider } from '../../src/i18n';
 
-// The DeepSeek campaign badge is an upsell pinned into the top-right account
-// cluster, next to the plan chip, wallet balance and avatar — surfaces that
-// only exist once the client is signed in to Vela. It must never greet a
-// signed-out client, on any page that mounts the cluster.
-const trackSpy = vi.fn();
-
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track: trackSpy }),
-}));
-
-vi.mock('../../src/analytics/client', () => ({
-  getResolvedDeviceId: () => null,
-}));
-
 const badgeSource = readFileSync(
   resolve(process.cwd(), 'src/components/WorkbenchCampaignBadge.tsx'),
   'utf8',
@@ -36,7 +22,6 @@ function renderBadge(loggedIn: boolean | null | undefined) {
       <WorkbenchCampaignBadge
         audience="unpaid"
         page="home"
-        metricsConsent={false}
         loggedIn={loggedIn}
       />
     </I18nProvider>,
@@ -45,7 +30,6 @@ function renderBadge(loggedIn: boolean | null | undefined) {
 
 beforeEach(() => {
   window.localStorage.clear();
-  trackSpy.mockClear();
 });
 
 afterEach(() => {
@@ -66,19 +50,9 @@ describe('workbench campaign badge is signed-in only', () => {
     expect(screen.queryByTestId('deepseek-campaign-pricing-badge')).toBeNull();
   });
 
-  it('does not burn a campaign impression on a client that cannot see the badge', () => {
-    renderBadge(false);
-    expect(trackSpy).not.toHaveBeenCalled();
-  });
-
-  it('still renders and reports for a signed-in client', () => {
+  it('still renders for a signed-in client', () => {
     renderBadge(true);
     expect(screen.getByTestId('deepseek-campaign-pricing-badge')).toBeTruthy();
-    expect(trackSpy).toHaveBeenCalledWith(
-      'surface_view',
-      expect.objectContaining({ area: 'campaign_badge' }),
-      undefined,
-    );
   });
 
   it('makes `loggedIn` a required prop so a new mount point cannot forget it', () => {

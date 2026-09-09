@@ -462,14 +462,6 @@ export type DesktopRuntimeOptions = {
    */
   splashStartedAt?: number;
   updater?: DesktopUpdater;
-  /**
-   * Fired once the main window is actually revealed (the web app mounted and
-   * the window is shown) — the real "app is running" moment, distinct from
-   * `createDesktopRuntime` returning (which starts async bootstrap via
-   * `void tick()` and returns before the first load). Used to mark the session
-   * as having reached running for abnormal-exit detection.
-   */
-  onRevealed?: () => void;
   onUpdateMenuLabels?: (labels: OpenDesignHostUpdaterMenuLabels) => void;
 };
 
@@ -1896,50 +1888,6 @@ function checkOptionsFromHost(options: unknown): { autoDownload?: boolean } | un
   return { autoDownload: payload.autoDownload };
 }
 
-async function reportRendererCrash(
-  options: DesktopRuntimeOptions,
-  properties: {
-    reason: string;
-    exit_code: number | null;
-    loop_tripped?: boolean;
-    // Set on the bounded "recovery-attempt" signal (reason === "recovery-attempt"):
-    // the Nth time the breaker re-armed and tried to actively recover this
-    // session. Lets triage see chronic loopers (index keeps climbing) apart from
-    // devices that recovered (no further recovery-attempt events).
-    recovery_attempt?: number;
-  },
-): Promise<void> {
-  try {
-    // discoverDaemonUrl returns the real http://127.0.0.1:<port> URL the
-    // sidecar daemon listens on. In tools-dev callers omit it and fall back
-    // to discoverUrl (which is also http in dev). In packaged builds it's
-    // mandatory because the renderer-only `od://app/` scheme isn't
-    // reachable from main-process Node fetch.
-    const baseUrl = (await (options.discoverDaemonUrl?.() ?? options.discoverUrl())) ?? null;
-    if (!baseUrl) return;
-    const url = new URL("/api/observability/event", baseUrl).toString();
-    await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        event: "desktop_renderer_crash",
-        properties: {
-          reason: properties.reason,
-          exit_code: properties.exit_code,
-          // Marks the single crash that tripped the loop breaker, so a crash
-          // loop is one flagged event instead of thousands of anonymous ones.
-          loop_tripped: properties.loop_tripped ?? false,
-          // Present on the bounded recovery-attempt signal; null on real crashes.
-          recovery_attempt: properties.recovery_attempt ?? null,
-        },
-      }),
-    });
-  } catch {
-    // Best-effort. The user is already in a degraded state — failing to
-    // report the crash must not cascade into another failure path.
-  }
-}
-
 /**
  * Native directory picker, parented to the renderer window that initiated
  * the IPC call. Parenting makes the dialog window-modal and hands it
@@ -2180,14 +2128,14 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
   let ticking = false;
   // Bounds the reload loop when the renderer crashes deterministically (a
   // GPU/V8 CHECK, a corrupt profile): without it a wedged device reloads →
-  // crashes → reloads forever, staying blank and flooding telemetry (one
-  // 0.14.0 machine logged 26k renderer-crash events in a day). When it opens we
-  // park on a recoverable error screen and re-arm after a quiet cooldown.
+  // crashes → reloads forever, staying blank no matter how many times it
+  // reloads. When it opens we park on a recoverable error screen and re-arm
+  // after a quiet cooldown.
   const rendererCrashLoop = new RendererCrashLoopBreaker();
   // Monotonic per session: how many times the breaker re-armed and tried to
   // recover (a passive reload). Not reset on a successful load, so a chronic
   // looper's index keeps climbing while a recovered device simply stops
-  // emitting recovery-attempt events.
+  // logging recovery attempts.
   let rendererRecoveryAttempts = 0;
 
   const consoleEntries: DesktopConsoleEntry[] = [];
@@ -2323,13 +2271,12 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     });
   });
 
-  // Renderer-process crashes are completely invisible to the web bundle's
-  // own analytics surface (the renderer is dead — no JS can run, no
-  // window.error fires). The main process is the last layer that can
-  // observe them, so we forward the event to the daemon's safety-event
-  // bridge (`POST /api/observability/event`), which posts directly to
-  // PostHog with `device_id = installationId`. Best-effort: a failure to
-  // reach the daemon must not block the crash recovery flow.
+  // Renderer-process crashes are completely invisible to the web bundle
+  // itself (the renderer is dead — no JS can run, no window.error fires).
+  // The main process is the last layer that can observe them and drive
+  // recovery: it feeds the crash-loop breaker and either parks the window
+  // on the recoverable error screen or flags it for the poll loop to
+  // reload.
   window.webContents.on("render-process-gone", (_event, details) => {
     // During app quit / teardown the renderer goes away and the window (and its
     // webContents) can already be destroyed when this fires. Reading getURL()
@@ -2343,26 +2290,13 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       url: gone ? null : window.webContents.getURL(),
     });
     // During app quit / teardown the window is already destroyed; skip all
-    // crash-loop bookkeeping, telemetry, and recovery (mirrors the getURL guard
-    // above — a clean teardown must not look like a crash).
+    // crash-loop bookkeeping and recovery (mirrors the getURL guard above —
+    // a clean teardown must not look like a crash).
     if (gone) return;
     // A clean-exit is intentional teardown; only a crash / OOM / OS kill feeds
     // the crash-loop breaker and triggers recovery.
-    const isCrash = details.reason !== "clean-exit";
-    const outcome = isCrash
-      ? rendererCrashLoop.recordCrash(Date.now())
-      : { tripped: false, suppressTelemetry: rendererCrashLoop.isOpen(), justOpened: false };
-    // Report every crash up to and including the one that trips the breaker so
-    // the loop is visible in analytics, then go quiet — one wedged device must
-    // not emit tens of thousands of identical events.
-    if (!outcome.suppressTelemetry) {
-      void reportRendererCrash(options, {
-        reason: details.reason,
-        exit_code: typeof details.exitCode === "number" ? details.exitCode : null,
-        loop_tripped: outcome.tripped,
-      });
-    }
-    if (!isCrash) return;
+    if (details.reason === "clean-exit") return;
+    const outcome = rendererCrashLoop.recordCrash(Date.now());
     if (outcome.tripped) {
       // Breaker open: stop the poll loop from cycling a deterministic crash.
       // Show the recoverable error screen once (on the opening crash) instead
@@ -2752,13 +2686,6 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       pendingUpdateDialogRequest = null;
     }
     if (splash != null && !splash.isDestroyed()) splash.close();
-    // The app is now truly up (mounted + shown). Fire once — revealed guards
-    // re-entry — so callers can mark "reached running".
-    try {
-      options.onRevealed?.();
-    } catch {
-      // A callback fault must not break reveal.
-    }
   };
 
   // Hold the splash until BOTH (a) the web bundle reports it has mounted — it
@@ -2872,11 +2799,6 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
             "[open-design desktop] renderer crash-loop cooldown elapsed — attempting recovery reload",
             { attempt: rendererRecoveryAttempts },
           );
-          void reportRendererCrash(options, {
-            reason: "recovery-attempt",
-            exit_code: null,
-            recovery_attempt: rendererRecoveryAttempts,
-          });
           rendererFailed = true;
         } else {
           schedule(RUNNING_POLL_MS);

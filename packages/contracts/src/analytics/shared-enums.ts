@@ -1,8 +1,10 @@
 /**
- * @module analytics/events/shared-enums
- * Shared tracking enums and value unions used across analytics events.
+ * @module analytics/shared-enums
+ * Shared run/failure/retry taxonomy unions. These describe how the daemon
+ * classifies runs (failure categories, retry strategies, terminal triggers,
+ * agent/provider identities); the product retry, failure-classification, and
+ * run-diagnostics logic depends on them.
  */
-// ---- Shared enums --------------------------------------------------------
 
 export type TrackingProjectKind =
   | 'prototype'

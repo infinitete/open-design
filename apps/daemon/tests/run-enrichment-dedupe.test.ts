@@ -145,7 +145,7 @@ describe('design-system enrichment run dedupe', () => {
         projectId,
         conversationId,
         message: 'Refine the design system',
-        analyticsHints: { dsEnrichment: true },
+        designSystemEnrichment: true,
       };
       const first = await postRun('/api/runs', enrichment);
       expect(first.status).toBe(202);

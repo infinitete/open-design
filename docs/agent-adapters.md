@@ -496,7 +496,7 @@ defaults unless the configured wildcard bypass already disables proxying.
 
 Custom proxy passwords are write-only secrets stored in the daemon's local
 configuration under the resolved daemon data root. GET responses, the browser,
-human and JSON CLI output, diagnostics, telemetry, and exported logs expose at
+human and JSON CLI output, diagnostics, and exported logs expose at
 most `passwordConfigured`; they never return the password. Credentials are
 URL-encoded only when constructing the selected child process environment, and
 proxy URL userinfo is covered by the shared redaction boundaries.

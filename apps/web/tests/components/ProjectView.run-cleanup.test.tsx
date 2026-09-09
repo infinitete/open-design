@@ -54,7 +54,6 @@ const fetchProjectFileText = vi.fn();
 const cancelBrandExtraction = vi.fn();
 const continueBrandExtraction = vi.fn();
 const finalizeBrandProject = vi.fn();
-const analyticsTrack = vi.hoisted(() => vi.fn());
 const subscribeProjectEvents = vi.fn((
   _projectId: string,
   _listener: (event: ProjectEvent) => void,
@@ -132,23 +131,6 @@ vi.mock('../../src/i18n', () => ({
 vi.mock('../../src/providers/anthropic', () => ({
   streamMessage: vi.fn(),
 }));
-
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      track: analyticsTrack,
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-      setConfigureGlobals: vi.fn(),
-      setUserId: vi.fn(),
-      anonymousId: 'test',
-      sessionId: 'test',
-      newRequestId: () => 'request-test',
-    }),
-  };
-});
 
 vi.mock('../../src/providers/daemon', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/daemon')>(
@@ -956,11 +938,7 @@ describe('ProjectView daemon cleanup', () => {
     await waitFor(() => expect(saveMessage.mock.calls.filter(
       (call) => call[2]?.runId === 'run-stop' && call[2]?.runStatus === 'canceled',
     )).toHaveLength(1));
-    expect(saveMessage.mock.calls.find(
-      (call) => call[2]?.runId === 'run-stop' && call[2]?.runStatus === 'canceled',
-    )?.[3]).toEqual(expect.objectContaining({
-      telemetryFinalized: true,
-    }));
+
   });
 
   it('releases the stopped operation before a swallowed AbortError so artifact recovery can claim the slot', async () => {
@@ -1762,7 +1740,6 @@ describe('ProjectView daemon cleanup', () => {
           id: 'brand-assistant-1',
           runStatus: 'canceled',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
       );
     });
     expect(streamViaDaemon).not.toHaveBeenCalled();
@@ -3114,7 +3091,7 @@ describe('ProjectView daemon cleanup', () => {
           producedFiles: [existingArtifact],
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
     expect(reattachDaemonRun).not.toHaveBeenCalled();
@@ -3194,7 +3171,7 @@ describe('ProjectView daemon cleanup', () => {
           runStatus: 'failed',
           resumable: true,
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
     expect(reattachDaemonRun).not.toHaveBeenCalled();
@@ -3818,7 +3795,7 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-reattach-terminal-success',
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
     const recoveredSave = saveMessage.mock.calls.find(
@@ -3935,7 +3912,7 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-reattach-code-only-generic-disconnect',
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
   });
@@ -4419,18 +4396,15 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-reattach-canceled',
           runStatus: 'canceled',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
-    expect(saveMessage).not.toHaveBeenCalledWith(
-      'project-reattach-canceled',
-      'conv-1',
-      expect.objectContaining({
-        id: 'msg-reattach-canceled',
-        runStatus: 'succeeded',
-      }),
-      expect.objectContaining({ telemetryFinalized: true }),
-    );
+    expect(saveMessage.mock.calls.some((call) =>
+      call[0] === 'project-reattach-canceled' &&
+      call[1] === 'conv-1' &&
+      call[2]?.id === 'msg-reattach-canceled' &&
+      call[2]?.runStatus === 'succeeded',
+    )).toBe(false);
   });
 
   it('patches live generic-disconnect terminal metadata from a failed daemon status', async () => {
@@ -4684,7 +4658,7 @@ describe('ProjectView daemon cleanup', () => {
           producedFiles: [recoveredArtifact],
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
   });
@@ -4874,7 +4848,7 @@ describe('ProjectView daemon cleanup', () => {
           content: replayedContent,
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
   });
@@ -4957,7 +4931,7 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-recover-failed',
           producedFiles: [recoveredArtifact],
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
   });
@@ -5244,7 +5218,7 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-reattach-endedat-succeeded',
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
     const recoveredSave = saveMessage.mock.calls.find(
@@ -5527,7 +5501,7 @@ describe('ProjectView daemon cleanup', () => {
           id: 'msg-reload-active-run',
           runStatus: 'succeeded',
         }),
-        expect.objectContaining({ telemetryFinalized: true }),
+        undefined,
       );
     });
     const recoveredSave = saveMessage.mock.calls.find(

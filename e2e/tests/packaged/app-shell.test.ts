@@ -637,13 +637,12 @@ describe('packaged launch scenarios', () => {
 // PerishCode's seventh review on #6481. Round 4 made a missing
 // `onboardingCompleted` fail closed; round 6 then added a scenario that
 // produces exactly that, and they collide. `resetPackagedRuntimeDataRoot()`
-// deletes `app-config.json`; `readAppConfig` returns `{}` on ENOENT and adds
-// only telemetry defaults, so a fresh install's `/api/app-config` OMITS the key
-// rather than reporting `false`. **Absent is not malformed.**
+// deletes `app-config.json`; `readAppConfig` returns `{}` on ENOENT, so a
+// fresh install's `/api/app-config` OMITS the key rather than reporting
+// `false`. **Absent is not malformed.**
 describe('real fresh-install app-config response', () => {
-  // Byte-shaped like the daemon's actual fresh reply: `readAppConfig` ->
-  // `applyTelemetryDefaults({})`.
-  const FRESH_INSTALL_BODY = { config: { telemetry: { content: true, metrics: true } } };
+  // Byte-shaped like the daemon's actual fresh reply: `readAppConfig` -> `{}`.
+  const FRESH_INSTALL_BODY = { config: {} };
 
   const virtualClock = () => {
     let t = 0;

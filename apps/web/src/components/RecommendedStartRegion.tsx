@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackHomeRecommendationClick,
-  trackHomeRecommendationSurfaceView,
-} from '../analytics/events';
-import type { TrackingOnboardingProductType } from '@open-design/contracts/analytics';
 import type { ProjectMetadata } from '../types';
 import {
   nextStarter,
@@ -55,7 +49,6 @@ function projectNameFromPrompt(prompt: string, fallback: string): string {
 
 export function RecommendedStartRegion({ recommendation, onStart, onDismiss }: Props) {
   const t = useT();
-  const analytics = useAnalytics();
 
   // Currently surfaced starter within this path. Seeded from the primary and
   // resynced if the recommendation itself changes (e.g. a fresh session).
@@ -66,39 +59,11 @@ export function RecommendedStartRegion({ recommendation, onStart, onDismiss }: P
 
   const current =
     recommendation.options.find((option) => option.id === currentId) ?? recommendation.primary;
-  const productType = recommendation.productType as TrackingOnboardingProductType;
   const canChange = recommendation.options.length > 1;
 
-  // Fire the impression once per exposure so the funnel can divide the three
-  // actions by how often the card was actually seen.
-  const shownRef = useRef(false);
-  useEffect(() => {
-    if (shownRef.current) return;
-    shownRef.current = true;
-    trackHomeRecommendationSurfaceView(analytics.track, {
-      page_name: 'home',
-      area: 'onboarding_recommendation',
-      product_type: productType,
-      recommendation_id: recommendation.primary.id,
-      ...(recommendation.role ? { role: recommendation.role } : {}),
-      ...(recommendation.useCases.length > 0 ? { use_cases: recommendation.useCases } : {}),
-    });
-  }, [analytics.track, productType, recommendation.primary.id, recommendation.role, recommendation.useCases]);
 
   const copy = starterCopyFor(current.id);
   const firstPrompt = t(copy.firstPrompt);
-
-  function fireClick(element: 'enter_studio' | 'change' | 'browse_all', recommendationId: string) {
-    trackHomeRecommendationClick(analytics.track, {
-      page_name: 'home',
-      area: 'onboarding_recommendation',
-      element,
-      product_type: productType,
-      recommendation_id: recommendationId,
-      ...(recommendation.role ? { role: recommendation.role } : {}),
-      ...(recommendation.useCases.length > 0 ? { use_cases: recommendation.useCases } : {}),
-    });
-  }
 
   // Pending state for the create round-trip. The CTA disables while a start is
   // in flight and re-enables on failure so the user can retry (a successful
@@ -107,7 +72,6 @@ export function RecommendedStartRegion({ recommendation, onStart, onDismiss }: P
 
   async function handleEnter() {
     if (pending) return;
-    fireClick('enter_studio', current.id);
     // Hand the entry context to the create pipeline (session-only) so the
     // first-prompt / first-generation funnel events can attribute back to this
     // recommendation without persisting anything. The create success path
@@ -137,12 +101,10 @@ export function RecommendedStartRegion({ recommendation, onStart, onDismiss }: P
 
   function handleChange() {
     const next = nextStarter(recommendation.options, current.id);
-    fireClick('change', next.id);
     setCurrentId(next.id);
   }
 
   function handleBrowseAll() {
-    fireClick('browse_all', current.id);
     onDismiss();
   }
 

@@ -10,8 +10,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { useAnalytics } from '../analytics/provider';
-import { trackIntegrationsUseEverywhereTabClick } from '../analytics/events';
 import { Icon } from './Icon';
 import { useT } from '../i18n';
 import { modalOverlay, modalContent } from '../motion';
@@ -146,7 +144,6 @@ export function UseEverywhereGuidePanel({
   versionHint,
 }: Omit<Props, 'onClose'>) {
   const t = useT();
-  const analytics = useAnalytics();
   const [activeId, setActiveId] = useState<GuideSection['id']>('overview');
   const [guideCopy, setGuideCopy] = useState<CopyState>('idle');
   const [snippetCopy, setSnippetCopy] = useState<{ key: string; state: CopyState } | null>(null);
@@ -224,11 +221,6 @@ export function UseEverywhereGuidePanel({
   }
 
   async function onCopySnippet(key: string, snippet: CodeSnippet) {
-    trackIntegrationsUseEverywhereTabClick(analytics.track, {
-      page_name: 'integrations',
-      area: 'use_everywhere_tab',
-      element: 'copy',
-    });
     let installInfo = mcpInstallInfo;
     if (agentGuideSnippetUsesMcpInstallInfo(snippet) && !installInfo) {
       installInfo = await loadMcpInstallInfo();
@@ -260,11 +252,6 @@ export function UseEverywhereGuidePanel({
               aria-selected={active}
               className={`use-everywhere-modal__tab${active ? ' is-active' : ''}`}
               onClick={() => {
-                trackIntegrationsUseEverywhereTabClick(analytics.track, {
-                  page_name: 'integrations',
-                  area: 'use_everywhere_tab',
-                  element: useEverywhereSectionToElement(section.id),
-                });
                 setActiveId(section.id);
               }}
               data-testid={`use-everywhere-tab-${section.id}`}
@@ -298,11 +285,6 @@ export function UseEverywhereGuidePanel({
               type="button"
               className="use-everywhere-modal__secondary"
               onClick={() => {
-                trackIntegrationsUseEverywhereTabClick(analytics.track, {
-                  page_name: 'integrations',
-                  area: 'use_everywhere_tab',
-                  element: 'configure_mcp_server',
-                });
                 onOpenSettings();
               }}
               data-testid="use-everywhere-open-settings"
@@ -315,11 +297,6 @@ export function UseEverywhereGuidePanel({
             type="button"
             className="use-everywhere-modal__primary"
             onClick={() => {
-              trackIntegrationsUseEverywhereTabClick(analytics.track, {
-                page_name: 'integrations',
-                area: 'use_everywhere_tab',
-                element: 'copy_guide_for_agent',
-              });
               void onCopyGuide();
             }}
             data-testid="use-everywhere-copy-guide"

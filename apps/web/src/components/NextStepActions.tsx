@@ -4,8 +4,6 @@ import type { ChatSessionMode } from '@open-design/contracts';
 import { useI18n } from '../i18n';
 import { localizeSkillDescription, localizeSkillName } from '../i18n/content';
 import type { Dict } from '../i18n/types';
-import { useAnalytics } from '../analytics/provider';
-import { trackNextStepActionClick } from '../analytics/events';
 import { Icon, type IconName } from './Icon';
 import {
   DESIGN_TOOLBOX_ACTIONS,
@@ -339,17 +337,11 @@ export function NextStepActions({
   variant = 'default',
 }: Props) {
   const { t, locale } = useI18n();
-  const analytics = useAnalytics();
   const exposedRef = useRef(false);
   useEffect(() => {
     if (exposedRef.current) return;
     exposedRef.current = true;
-    trackNextStepActionClick(analytics.track, {
-      page_name: 'chat_panel',
-      area: 'next_step',
-      element: 'next_step_exposed',
-    });
-  }, [analytics.track]);
+  }, []);
 
   // Three-level cascading hover menu, all portaled to <body> with fixed
   // positioning so the narrow chat column never clips or occludes them:
@@ -430,14 +422,8 @@ export function NextStepActions({
 
   const track = useCallback(
     (element: 'share' | 'toolbox_action' | 'toolbox_more' | 'share_to_open_design', chipId?: string) => {
-      trackNextStepActionClick(analytics.track, {
-        page_name: 'chat_panel',
-        area: 'next_step',
-        element,
-        ...(chipId ? { chip_id: chipId } : {}),
-      });
     },
-    [analytics.track],
+    [],
   );
 
   const handleShare = useCallback(() => {

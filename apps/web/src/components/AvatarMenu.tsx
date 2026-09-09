@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { useAnalytics } from '../analytics/provider';
 import { useT } from '../i18n';
 import { AgentIcon } from './AgentIcon';
 import { modelProviderIconSrc } from './modelProviderIcon';
@@ -61,8 +60,7 @@ export function AvatarMenu({
 }: Props) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  // Toggle that reports the closed→open transition (for analytics) without
-  // firing on close.
+  // Toggle that reports the closed→open transition without firing on close.
   function toggleOpen() {
     setOpen((v) => {
       if (!v) onOpen?.();

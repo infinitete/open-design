@@ -2,7 +2,7 @@
 
 ## Naming
 
-- **Internal codename (engineering, code, prompts, env vars, modules, SSE event prefix, telemetry):** `Critique Theater`. Used in `apps/daemon/src/critique/`, `apps/web/src/components/Theater/`, `OD_CRITIQUE_*`, `critique.*` SSE events.
+- **Internal codename (engineering, code, prompts, env vars, modules, SSE event prefix):** `Critique Theater`. Used in `apps/daemon/src/critique/`, `apps/web/src/components/Theater/`, `OD_CRITIQUE_*`, `critique.*` SSE events.
 - **User-facing label (UI, settings, docs, README, marketing copy):** `Design Jury`. The string is sourced from a single i18n key `critiqueTheater.userFacingName` so the label can be swapped without touching code.
 
 The split is deliberate. Engineers reason about the system; users hire a jury.
@@ -506,7 +506,7 @@ Adapters that fail are marked `critique:degraded` in the adapter registry. The d
 | `open_design_critique_parser_errors_total` | counter | `kind`, `adapter` | Parser robustness. |
 | `open_design_critique_protocol_version` | gauge | `version` | Active protocol versions in use. |
 
-Structured logs use the existing daemon logger with namespace `critique`. Required events: `run_started`, `round_closed`, `run_shipped`, `degraded`, `parser_recover`, `run_failed`. OpenTelemetry traces wrap each run with spans `critique.run`, `critique.round.<n>`, `critique.parse_chunk`, `critique.scoreboard_eval`, `critique.persist_round`, `critique.ship.persist`.
+Structured logs use the existing daemon logger with namespace `critique`. Required events: `run_started`, `round_closed`, `run_shipped`, `degraded`, `parser_recover`, `run_failed`.
 
 A Grafana dashboard ships in `tools/dev/dashboards/critique.json` with three default views: fleet quality (composite p50/p90/p99 over time per adapter), adapter health (degraded ratio plus parser-error rate), and brief throughput (runs per hour, rounds per run, time-to-ship).
 

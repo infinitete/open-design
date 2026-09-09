@@ -14,12 +14,6 @@ import {
   clearHostBrowserData,
   isOpenDesignHostAvailable,
 } from '@open-design/host';
-import type { TrackingReferenceBoardCategory } from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackReferenceBoardClick,
-  trackReferenceBoardSurfaceView,
-} from '../analytics/events';
 import {
   openExternalUrl,
   projectRawUrl,
@@ -3266,18 +3260,12 @@ function DesignBrowserStart({
   projectId?: string;
 }) {
   const t = useT();
-  const analytics = useAnalytics();
   const [activeCategory, setActiveCategory] = useState<string>(REFERENCE_ALL_CATEGORY);
   const [query, setQuery] = useState('');
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    trackReferenceBoardSurfaceView(analytics.track, {
-      page_name: 'file_manager',
-      area: 'reference_board',
-      ...(projectId ? { project_id: projectId } : {}),
-    });
-  }, [analytics.track, projectId]);
+  }, [projectId]);
 
   const visibleGroups = useMemo(
     () => filterReferenceGroups(REFERENCE_GROUPS, activeCategory, query, t),
@@ -3294,23 +3282,9 @@ function DesignBrowserStart({
 
   const selectCategory = (categoryId: string) => {
     setActiveCategory(categoryId);
-    trackReferenceBoardClick(analytics.track, {
-      page_name: 'file_manager',
-      area: 'reference_board',
-      element: 'category_chip',
-      category_id: categoryId as TrackingReferenceBoardCategory,
-      ...(projectId ? { project_id: projectId } : {}),
-    });
   };
 
   const openSite = (site: ReferenceSite) => {
-    trackReferenceBoardClick(analytics.track, {
-      page_name: 'file_manager',
-      area: 'reference_board',
-      element: 'open_site',
-      site_id: referenceSiteId(site.url),
-      ...(projectId ? { project_id: projectId } : {}),
-    });
     onNavigate(site.url);
   };
 
@@ -3368,12 +3342,6 @@ function DesignBrowserStart({
             onFocus={() => {
               // Tracked on focus rather than every keystroke so each
               // engagement counts once.
-              trackReferenceBoardClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'reference_board',
-                element: 'search_input',
-                ...(projectId ? { project_id: projectId } : {}),
-              });
             }}
             onKeyDown={(event) => {
               if (event.key === 'Escape' && query) {
@@ -3536,8 +3504,8 @@ export function hostnameFromUrl(url: string): string {
   }
 }
 
-// Slugs a reference site URL into the snake_case `site_id` reported by
-// reference-board analytics: hostname minus the TLD, non-alphanumerics
+// Slugs a reference site URL into its localized reference-detail key.
+// Hostname minus the TLD, non-alphanumerics
 // folded into underscores (`land-book.com` → `land_book`,
 // `fonts.google.com` → `fonts_google`).
 function referenceSiteId(url: string): string {

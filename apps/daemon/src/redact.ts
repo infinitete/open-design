@@ -1,6 +1,6 @@
 // Lexical secret / PII scrubber for telemetry payloads.
 //
-// Runs before any prompt or assistant text is sent to Langfuse. The
+// Runs before any prompt or assistant text is persisted or exported. The
 // patterns here are intentionally conservative: each one matches a
 // well-defined token shape with extremely low false-positive rate (API
 // keys have a fixed prefix, JWTs have the "header.payload.signature"
@@ -11,12 +11,13 @@
 // problem the daemon can't take on.
 //
 // Output format: every match is replaced by `[REDACTED:<kind>]` so a
-// reviewer reading a Langfuse trace can see exactly which category
+// reviewer reading a diagnostics export can see exactly which category
 // fired without recovering the original value.
 //
 // References:
-// - Langfuse client-side masking guidance:
-//   https://langfuse.com/docs/observability/features/masking
+// - Client-side masking guidance for observability tools:
+//   https://langfuse.com/docs/observability/features/masking (historical
+//     reference; the taxonomy predates telemetry removal)
 // - GitHub token format:
 //   https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github
 // - AWS access key shape: 'AKIA' + 16 uppercase alphanumerics.
@@ -27,7 +28,7 @@ interface Pattern {
   regex: RegExp;
 }
 
-// Order matters: list specific rules before more general ones. Langfuse
+// Order matters: list specific rules before more general ones.
 // keys (`sk-lf-...`) would otherwise be eaten by the generic `sk-...`
 // rule and labeled as a generic OpenAI-style key.
 const PATTERNS: readonly Pattern[] = [

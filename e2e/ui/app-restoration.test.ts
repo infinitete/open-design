@@ -1733,7 +1733,6 @@ test('[P1] completed hidden-page run sends the configured desktop notification',
           onboardingCompleted: true,
           agentModels: {},
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
           notifications: notificationsConfig,
         }),
       );
@@ -1872,7 +1871,6 @@ test('[P0] failed foreground run does not send a desktop notification', async ({
           onboardingCompleted: true,
           agentModels: {},
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
           notifications: notificationsConfig,
         }),
       );
@@ -2376,7 +2374,6 @@ async function routeAppConfig(page: Page, override: Record<string, unknown>) {
           designSystemId: null,
           agentModels: {},
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
           ...override,
         },
       },

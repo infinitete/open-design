@@ -124,8 +124,9 @@ describe('resolveDaemonStatusTimeoutMs', () => {
   it('widens the baseline to 90 seconds on win32 for AV-scan-slow first launches', () => {
     // Windows Defender scanning freshly-written packaged binaries inflates the
     // daemon cold start (native better-sqlite3 load + first SQLite open + pipe
-    // bind) past 35s; PostHog showed ~90% of the status-timeout devices did open
-    // on a later launch, so the wider budget lets the first launch succeed.
+    // bind) past 35s; startup-crash reports showed ~90% of the status-timeout
+    // devices did open on a later launch, so the wider budget lets the first
+    // launch succeed.
     expect(resolveDaemonStatusTimeoutMs({}, 'win32')).toBe(90_000);
   });
 
@@ -906,29 +907,20 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     );
   });
 
-  it('forwards the packaged telemetry relay URL to the daemon when configured', () => {
-    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
-      appVersion: null,
-      daemonCliEntry: null,
-      legacyDataDir: null,
-      requireDesktopAuth: true,
-      telemetryRelayUrl: 'https://telemetry.open-design.ai/api/langfuse',
-    });
-    expect(env.OPEN_DESIGN_TELEMETRY_RELAY_URL).toBe(
-      'https://telemetry.open-design.ai/api/langfuse',
-    );
-  });
-
   // A pre-removal caller or bundle may still carry the retired AMR profile /
-  // Vela web origin options. The daemon spawn env must contain none of the
-  // retired workspace variables, no matter what legacy inputs are handed in.
+  // Vela web origin options or the retired telemetry/posthog options. The
+  // daemon spawn env must contain none of the retired workspace or
+  // observability variables, no matter what legacy inputs are handed in.
   const RETIRED_DAEMON_ENV_KEYS = [
     'OPEN_DESIGN_AMR_PROFILE',
     'OD_VELA_WEB_URL',
     'OD_WORKSPACE_CONTEXT_SOURCE',
+    'OPEN_DESIGN_TELEMETRY_RELAY_URL',
+    'POSTHOG_KEY',
+    'POSTHOG_HOST',
   ] as const;
 
-  it('emits none of the retired AMR/Vela workspace env into the daemon spawn env', () => {
+  it('emits none of the retired AMR/Vela/telemetry env into the daemon spawn env', () => {
     // Built as a variable (not a fresh literal) on purpose: the legacy keys are
     // no longer part of the options contract, and a non-fresh object documents
     // that a stale caller passing them is ignored rather than type-legal.
@@ -937,7 +929,10 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
+      posthogHost: 'https://us.i.posthog.com',
+      posthogKey: 'phc_packaged_test',
       requireDesktopAuth: true,
+      telemetryRelayUrl: 'https://telemetry.open-design.ai/api/langfuse',
       velaWebUrl: 'https://vela.example.invalid',
       velaWebUrls: {
         'feature-test': 'https://feature-test.example.invalid',
@@ -955,32 +950,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     expect('OD_TEAM_PROJECTS_TRANSPORT' in env).toBe(false);
     expect('OD_COLLAB_TRANSPORT' in env).toBe(false);
     expect('OD_RESOURCE_TRANSPORT' in env).toBe(false);
-  });
-
-  it('forwards POSTHOG_KEY/POSTHOG_HOST to the daemon spawn env when baked into the bundle', () => {
-    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
-      appVersion: null,
-      daemonCliEntry: null,
-      legacyDataDir: null,
-      requireDesktopAuth: true,
-      posthogKey: 'phc_packaged_test',
-      posthogHost: 'https://us.i.posthog.com',
-    });
-    expect(env.POSTHOG_KEY).toBe('phc_packaged_test');
-    expect(env.POSTHOG_HOST).toBe('https://us.i.posthog.com');
-  });
-
-  it('omits POSTHOG_KEY/POSTHOG_HOST for fork builds that lack the secret', () => {
-    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
-      appVersion: null,
-      daemonCliEntry: null,
-      legacyDataDir: null,
-      requireDesktopAuth: true,
-      posthogKey: null,
-      posthogHost: null,
-    });
-    expect(env.POSTHOG_KEY).toBeUndefined();
-    expect(env.POSTHOG_HOST).toBeUndefined();
   });
 });
 

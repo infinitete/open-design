@@ -68,7 +68,7 @@ describe('buildRecommendation', () => {
     expect(rec.options.length).toBeGreaterThan(1);
   });
 
-  it('echoes normalized inputs for telemetry', () => {
+  it('normalizes recommendation inputs', () => {
     const rec = buildRecommendation({ role: ' designer ', useCases: ['prototype', '  '] });
     expect(rec.role).toBe('designer');
     expect(rec.useCases).toEqual(['prototype']);
@@ -92,7 +92,7 @@ describe('buildRecommendation', () => {
     const b = buildRecommendation({ role: 'ops', useCases: ['deck', 'product', 'landing'] });
     expect(a).toEqual(b);
     // Echoed use-cases are canonicalized (questionnaire order), not click order,
-    // so telemetry for the same survey state is stable too.
+    // so the same survey state produces stable recommendations.
     expect(a.useCases).toEqual(['product', 'landing', 'deck']);
     expect(a.productType).toBe('product_ui');
   });

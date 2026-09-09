@@ -1,3 +1,5 @@
+// TODO(contracts): keep — `terminalTrigger` is the durable Run's product
+// close-status classification, not a telemetry payload.
 import type { TrackingRunTerminalTrigger } from '@open-design/contracts/analytics';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled']);

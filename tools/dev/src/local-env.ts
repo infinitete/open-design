@@ -2,8 +2,6 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 const DEFAULT_LOCAL_ENV_FILE_NAMES = [".env.development.local", ".env.local", ".env.development", ".env"] as const;
-export const LOCAL_DEVELOPMENT_TELEMETRY_ENV = "local_development";
-export const TELEMETRY_ENV_KEY = "OD_TELEMETRY_ENV";
 
 export interface LoadWorkspaceLocalEnvResult {
   envPath: string | null;
@@ -50,10 +48,6 @@ export function loadWorkspaceLocalEnv(options: {
     return { envPath: null, loaded: false, loadedFiles, keys: [], skippedFiles };
   }
 
-  if (env[TELEMETRY_ENV_KEY] == null || env[TELEMETRY_ENV_KEY]?.trim() === "") {
-    env[TELEMETRY_ENV_KEY] = LOCAL_DEVELOPMENT_TELEMETRY_ENV;
-    loadedKeys.add(TELEMETRY_ENV_KEY);
-  }
   if (!flags.json) {
     options.log?.(`tools-dev env: loaded ${loadedFiles.join(", ")}`);
   }

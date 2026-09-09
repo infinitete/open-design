@@ -14,20 +14,11 @@ import type { MediaExecutionPolicy } from './media.js';
 import type { AppliedPluginSnapshot } from '../plugins/apply.js';
 import type { McpAuthMode, McpServerConfig, McpTransport } from './mcp';
 import type {
-  AnalyticsAttributionQuality,
-  AnalyticsDistributionMechanism,
-  AnalyticsEntrySurface,
-  AnalyticsHostProduct,
-  AnalyticsPublisherClass,
-  TrackingRuntimeType,
-} from '../analytics/public-params.js';
-import type {
   TrackingRunCancelOrigin,
   TrackingRunFailureCategory,
   TrackingRunFailureDetail,
-  TrackingRunRecoveryActionType,
   TrackingRunTerminalTrigger,
-} from '../analytics/events.js';
+} from '../analytics/shared-enums.js';
 import type { StrategyTaskProjectionV2 } from '../plugins/strategy-v2.js';
 import type { OdNextRolloutDecision } from './strategy-rollout.js';
 
@@ -77,7 +68,24 @@ export interface ByokMediaDefaults {
   speechVoice?: string;
 }
 
+/** Bounded local plugin identity used for workflow recovery and artifact origin. */
+export interface ExternalPluginContext {
+  id: 'open-design';
+  version: string;
+  distributionMechanism: 'git_marketplace' | 'local_repo' | 'manual' | 'unknown';
+  publisherClass: 'open_design_first_party' | 'third_party' | 'unknown';
+}
+
+/** Product binding persisted with a Run; never telemetry or an outbound event. */
+export interface PluginWorkflowProvenance {
+  pluginWorkflowId: string;
+  externalPluginContext: ExternalPluginContext;
+  logicalRequestDigest: string;
+  logicalRequestDigestVersion: 1;
+}
+
 export interface ChatRequest {
+  pluginWorkflowProvenance?: PluginWorkflowProvenance;
   agentId: string;
   message: string;
   /**
@@ -129,6 +137,12 @@ export interface ChatRequest {
   byokMediaDefaults?: ByokMediaDefaults;
   /** UI locale selected by the client, used by prompt composition for user-visible generated UI. */
   locale?: string;
+  /**
+   * Marks the product's design-system AI enrichment pass. The daemon uses this
+   * execution signal to admit at most one active enrichment run per
+   * conversation; it is not analytics or telemetry metadata.
+   */
+  designSystemEnrichment?: boolean;
   research?: ResearchOptions;
   context?: RunContextSelection;
   appliedPluginSnapshotId?: string | null;
@@ -152,134 +166,6 @@ export interface ChatRequest {
    * and are never written into the persistent Settings MCP registry.
    */
   toolBundle?: RunScopedToolBundle;
-  /**
-   * Optional analytics context for the current run_created / run_finished
-   * events. The daemon never trusts these for behavior — they only
-   * shape PostHog props. `entryFrom` is one of the documented
-   * `entry_from` enums; `designSystemRunContext` carries the
-   * DS-variant context (source counts, brand description length
-   * bucket, DS origin) used by the design_system_project run shape.
-   */
-  analyticsHints?: ChatAnalyticsHints;
-}
-
-export type ChatAnalyticsEntryFrom =
-  | 'new_project'
-  | 'chat_composer'
-  | 'design_system_create'
-  | 'onboarding_design_system'
-  | 'regenerate_from_review'
-  // A turn started by the "Continue the run" affordance on a resumable failed
-  // run. Lets run_created / run_finished isolate resume-continuations so the
-  // recovery mechanism's usage and success rate are measurable.
-  | 'resume_continue'
-  // A turn started from a preview annotation: `comment` is the comment/board
-  // pin flow (chat-new-line tool), `mark` is the Mark draw-overlay flow
-  // (mark-pen tool). Both edit an existing artifact, so isolating them lets the
-  // dashboard separate annotation-driven runs from plain composer sends.
-  | 'comment'
-  | 'mark'
-  // A turn whose composer was seeded by a guided Next-step action (the
-  // next-step card prefills a skill/prompt; the run fires on the following
-  // Send). Best-effort: the pending tag is consumed by the next send.
-  | 'next_step'
-  // A turn that submits answers to an inline `<question-form>` clarification
-  // (the question still being clarified, not a fresh create/edit intent).
-  | 'question_answer';
-
-export type ChatAnalyticsLengthBucket =
-  | '0'
-  | '1_50'
-  | '51_200'
-  | '201_500'
-  | '500_plus';
-
-export type ChatAnalyticsDesignSystemOrigin =
-  | 'onboarding'
-  | 'manual_create'
-  | 'source_url'
-  | 'github_repo'
-  | 'local_code'
-  | 'fig'
-  | 'assets'
-  | 'official_preset'
-  | 'enterprise'
-  | 'template'
-  | 'mixed'
-  | 'unknown';
-
-export interface ChatAnalyticsDesignSystemRunContext {
-  origin?: ChatAnalyticsDesignSystemOrigin;
-  sourceCount?: number;
-  hasBrandDescription?: boolean;
-  brandDescriptionLengthBucket?: ChatAnalyticsLengthBucket;
-  githubRepoCount?: number;
-  localFolderCount?: number;
-  figFileCount?: number;
-  assetFileCount?: number;
-}
-
-export interface ChatAnalyticsHints {
-  entryFrom?: ChatAnalyticsEntryFrom;
-  projectKind?:
-    | 'prototype'
-    | 'live_artifact'
-    | 'slide_deck'
-    | 'template'
-    | 'image'
-    | 'video'
-    | 'audio'
-    | 'design_system'
-    | 'other';
-  designSystemRunContext?: ChatAnalyticsDesignSystemRunContext;
-  // Session-dimension run context, computed client-side and stamped onto
-  // run_created / run_finished so a session's run sequence is analysable
-  // ("did this session reach an artifact, and on which turn?").
-  // `turnIndex` is 0-based within the browser analytics session;
-  // `isFirstRun` === (turnIndex === 0). `hasExistingArtifact` is true when the
-  // project already had a generated artifact when this run was started
-  // (project-scoped) — the run is an edit rather than a first creation.
-  turnIndex?: number;
-  isFirstRun?: boolean;
-  hasExistingArtifact?: boolean;
-  // Per-project run turn index (0-based, project-lifetime on this device):
-  // "within THIS project, which prompt / follow-up number is this?". Unlike
-  // `turnIndex` (session-wide, spans all projects and resets each browser
-  // session), this persists in localStorage keyed by project id. Optional:
-  // omitted when storage is unavailable (SSR / privacy mode).
-  projectTurnIndex?: number;
-  /** Stable task lineage shared by the initial Run and all recovery Runs. */
-  taskExecutionId?: string;
-  initialRunId?: string;
-  sourceRunId?: string;
-  taskRunIndex?: number;
-  recoveryActionType?: TrackingRunRecoveryActionType;
-  recoveryActionInstanceId?: string;
-  // Active execution runtime for THIS run, computed client-side at launch
-  // (the only layer that can tell BYOK from a plain local CLI run). The
-  // daemon stamps it onto run_created / run_finished, overriding its own
-  // BYOK-blind derivation. Omitted means "let the daemon keep its derived
-  // value".
-  runtimeType?: TrackingRuntimeType;
-  // Analytics-only marker that THIS run is the AI-optimize ("enrich") pass on a
-  // programmatically-extracted design system. The web AI-optimize path sets it;
-  // the daemon uses it to emit `design_system_enrich_result` and to stamp the
-  // `ai_refined` enrichment metadata on success. It carries no execution
-  // semantics — omitting it just means the run is not an enrichment pass.
-  dsEnrichment?: boolean;
-  /** Bounded source attribution for local MCP/plugin initiated runs. */
-  entrySurface?: AnalyticsEntrySurface;
-  hostProduct?: AnalyticsHostProduct;
-  externalPluginId?: string;
-  externalPluginVersion?: string;
-  distributionMechanism?: AnalyticsDistributionMechanism;
-  publisherClass?: AnalyticsPublisherClass;
-  attributionQuality?: AnalyticsAttributionQuality;
-  pluginWorkflowId?: string;
-  logicalRequestDigest?: string;
-  logicalRequestDigestVersion?: number;
-  /** Daemon-computed and frozen for Plugin generation maturity queries. */
-  generationSloWindowMs?: number;
 }
 
 export interface RunScopedMcpServerConfig extends Omit<McpServerConfig, 'enabled'> {
@@ -357,6 +243,7 @@ export interface ChatRunCreateRequest extends ChatRequest {
  * is bound and owned by `projectId`.
  */
 export interface McpRunCreateRequest {
+  pluginWorkflowProvenance?: PluginWorkflowProvenance;
   projectId: string;
   /** Optional bound conversation; when set without assistantMessageId the daemon mints a pin. */
   conversationId?: string;
@@ -374,9 +261,10 @@ export interface McpRunCreateRequest {
   serviceTier?: string;
   pluginInputs?: Record<string, unknown>;
   mediaExecution?: MediaExecutionPolicy;
+  /** See ChatRequest.designSystemEnrichment. */
+  designSystemEnrichment?: boolean;
   toolBundle?: RunScopedToolBundle;
   resume?: boolean;
-  analyticsHints?: ChatAnalyticsHints;
 }
 
 export const CHAT_RUN_STATUSES = [
@@ -414,35 +302,6 @@ export interface ChatMessageFeedback {
   reasonsSubmittedAt?: number;
   createdAt: number;
   updatedAt?: number;
-}
-
-
-/**
- * POST /api/runs/:runId/feedback — relays the user's assistant-turn rating
- * to Langfuse as a `score-create` so evals can filter traces by feedback.
- * The daemon is the single network egress point for telemetry (web never
- * talks to Langfuse directly), and gates this on `telemetry.metrics +
- * telemetry.content` consent independently of what the browser thinks.
- *
- * `customReason` ships the raw free text the user typed in the "other"
- * input (trimmed). Product confirmed on 2026-05-13 that analysts need the
- * text to make sense of the feedback; this is consent-gated behind
- * `telemetry.content` like the rest of the message-content telemetry.
- */
-export interface ChatRunFeedbackRequest {
-  projectId: string;
-  conversationId: string;
-  assistantMessageId: string;
-  rating: ChatMessageFeedbackRating;
-  reasonCodes: ChatMessageFeedbackReasonCode[];
-  hasCustomReason: boolean;
-  /** Raw "other" free text (trimmed). Empty string when no custom reason. */
-  customReason: string;
-}
-
-export interface ChatRunFeedbackResponse {
-  /** `'accepted'` once the daemon has enqueued (or skipped due to consent). */
-  status: 'accepted' | 'skipped_consent' | 'skipped_no_sink';
 }
 
 export interface ChatRunCreateResponse {
@@ -951,24 +810,15 @@ export interface ChatMessage {
    * already-delivered work (see continuableUnfinishedTodos).
    */
   strategyTaskDelivered?: boolean;
-  /** Analytics-only task lineage persisted with the message so retries,
-   *  resumes and clarification answers survive reloads without splitting one
-   *  user intent into unrelated failures. */
-  taskAnalytics?: ChatTaskExecutionAnalytics;
   appliedPluginSnapshot?: AppliedPluginSnapshot;
   attachments?: ChatAttachment[];
   commentAttachments?: ChatCommentAttachment[];
   producedFiles?: ProjectFile[];
+  /** Local evidence of files created or modified by this turn, including existing files. */
   traceObjectFiles?: ProjectFile[];
   // Diff baseline so reattach can rebuild producedFiles after reload.
   preTurnFileNames?: string[];
   feedback?: ChatMessageFeedback;
-  /**
-   * Request-only marker for the final assistant-message persistence pass.
-   * The daemon does not store or return this field; it only uses it to
-   * avoid telemetry reads before content and producedFiles are finalized.
-   */
-  telemetryFinalized?: boolean;
   /**
    * Request-only marker claiming this row exactly once.
    *
@@ -982,13 +832,4 @@ export interface ChatMessage {
    * The daemon does not store or return this field.
    */
   createOnly?: boolean;
-}
-
-export interface ChatTaskExecutionAnalytics {
-  taskExecutionId: string;
-  initialRunId?: string;
-  sourceRunId?: string;
-  taskRunIndex: number;
-  recoveryActionType?: TrackingRunRecoveryActionType;
-  recoveryActionInstanceId?: string;
 }

@@ -12,7 +12,6 @@
 import type { AgentEvent, ChatCommentAttachment, ChatMessage } from '../types';
 import type {
   ApiErrorResponse,
-  ChatAnalyticsHints,
   ChatRunCreateResponse,
   ChatRunListResponse,
   ChatRunStatus,
@@ -31,28 +30,11 @@ import type {
 } from '@open-design/contracts';
 import type { StreamHandlers } from './anthropic';
 
-/**
- * Returns the front-end carrier that's about to send this request:
- * - 'desktop' when running inside the Electron shell
- * - 'web' when running in a regular browser
- * - 'unknown' in non-browser test environments (jsdom without a UA)
- *
- * The daemon uses this to label telemetry traces. Cheap, called once per
- * run so caching isn't worth the complexity.
- */
-function detectClientType(): 'desktop' | 'web' | 'unknown' {
-  if (typeof navigator === 'undefined') return 'unknown';
-  const ua = navigator.userAgent ?? '';
-  if (ua.includes('Electron/')) return 'desktop';
-  if (ua) return 'web';
-  return 'unknown';
-}
 import { parseSseFrame } from './sse';
 import {
   summarizeArtifactsForTranscript,
   type PersistedArtifactFileRef,
 } from '../artifacts/strip';
-import { trackRunProgress, trackRunStart, trackRunTerminal } from '../observability/stuck-run';
 
 const MAX_TRANSCRIPT_MESSAGE_CHARS = 12_000;
 const LARGE_TOOL_RESULT_CHARS = 8_000;
@@ -332,16 +314,12 @@ export interface DaemonStreamOptions {
   mediaExecution?: MediaExecutionPolicy;
   titleGeneration?: { enabled?: boolean };
   locale?: string;
+  designSystemEnrichment?: boolean;
   initialLastEventId?: string | null;
   onRunStatus?: (status: ChatRunStatus) => void;
   /** Authoritative project-relative artifacts created or modified by the run. */
   onArtifactPaths?: (paths: string[]) => void;
   onRunEventId?: (eventId: string) => void;
-  // v2 analytics context propagated to run_created / run_finished.
-  // Optional; the daemon only consumes these to shape PostHog props
-  // (page_name / area / entry_from / DS context). Behavior never
-  // depends on them.
-  analyticsHints?: ChatAnalyticsHints;
   /** Daemon-issued continuation handle used only for an explicit task reply. */
   taskExecutionId?: string;
   /** Called for the initial Run and every daemon-projected successor Run. */
@@ -679,12 +657,12 @@ export async function streamViaDaemon({
   mediaExecution,
   titleGeneration,
   locale,
+  designSystemEnrichment,
   initialLastEventId,
   onRunCreated,
   onRunStatus,
   onArtifactPaths,
   onRunEventId,
-  analyticsHints,
   taskExecutionId,
   onStrategyTaskSettled,
 }: DaemonStreamOptions): Promise<void> {
@@ -724,7 +702,7 @@ export async function streamViaDaemon({
     ...(research ? { research } : {}),
     ...(mediaExecution ? { mediaExecution } : {}),
     ...(titleGeneration?.enabled ? { titleGeneration: { enabled: true } } : {}),
-    ...(analyticsHints ? { analyticsHints } : {}),
+    ...(designSystemEnrichment ? { designSystemEnrichment: true } : {}),
   };
   const body = JSON.stringify(request);
 
@@ -733,11 +711,6 @@ export async function streamViaDaemon({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Tells the daemon which front-end carrier started the run so the
-        // telemetry trace can be tagged 'client:desktop' vs 'client:web'.
-        // The daemon falls back to a User-Agent sniff when this header is
-        // absent (e.g. third-party clients), so omitting it in tests is OK.
-        'X-OD-Client': detectClientType(),
       },
       body,
       signal,
@@ -754,15 +727,6 @@ export async function streamViaDaemon({
     const runId = created.runId;
     if (created.strategyTask) onRunCreated?.(runId, created.strategyTask);
     else onRunCreated?.(runId);
-    // Start the stuck-run watchdog. trackRunProgress is called inside the
-    // SSE consumer below on every event; trackRunTerminal fires when the
-    // stream resolves to a terminal state (or errors out).
-    trackRunStart(runId, {
-      agent_id: agentId,
-      project_id: projectId ?? undefined,
-      conversation_id: conversationId ?? undefined,
-      client_type: detectClientType(),
-    });
     notifyRunsChanged();
     emitRunStatus('queued');
     await consumeDaemonRun({
@@ -849,31 +813,6 @@ export async function launchAntigravityOauth(): Promise<LaunchAntigravityOauthRe
   }
 }
 
-// Forwards the user's assistant-turn rating to the daemon so it can emit
-// a Langfuse `score-create`. Fire-and-forget — failures are not surfaced
-// to the UI (the rating is already persisted on the message itself via
-// the PUT /messages/:id round-trip).
-export async function reportChatRunFeedback(req: {
-  runId: string;
-  rating: 'positive' | 'negative';
-  reasonCodes: string[];
-  hasCustomReason: boolean;
-  customReason: string;
-}): Promise<void> {
-  try {
-    const { runId, ...feedback } = req;
-    await fetch(`/api/runs/${encodeURIComponent(runId)}/feedback`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(feedback),
-    });
-  } catch {
-    // Best-effort.
-  }
-}
-
 export async function listActiveChatRuns(
   projectId: string,
   conversationId: string,
@@ -934,12 +873,6 @@ async function consumeDaemonRun(options: DaemonReattachOptions): Promise<void> {
     if (!result?.nextRunId) return;
     runId = result.nextRunId;
     initialLastEventId = null;
-    trackRunStart(runId, {
-      agent_id: options.agentId,
-      project_id: options.projectId ?? undefined,
-      conversation_id: options.conversationId ?? undefined,
-      client_type: detectClientType(),
-    });
     options.onRunCreated?.(runId, result.strategyTask);
   }
 }
@@ -954,8 +887,6 @@ async function consumeDaemonPhysicalRun({
   onRunStatus,
   onArtifactPaths,
   onRunEventId,
-  projectId,
-  conversationId,
   onStrategyTaskSettled,
 }: DaemonReattachOptions): Promise<DaemonPhysicalRunResult | void> {
   let acc = '';
@@ -1062,12 +993,10 @@ async function consumeDaemonPhysicalRun({
           if (!parsed) continue;
           if (parsed.kind === 'comment') {
             sawStreamProgress = true;
-            trackRunProgress(runId);
             continue;
           }
           if (parsed.kind !== 'event') continue;
           sawStreamProgress = true;
-          trackRunProgress(runId);
           if (parsed.id) {
             lastEventId = parsed.id;
             onRunEventId?.(parsed.id);
@@ -1312,11 +1241,6 @@ async function consumeDaemonPhysicalRun({
     handlers.onDone(acc);
   } finally {
     cancelSignal?.removeEventListener('abort', cancelRun);
-    // Settle the stuck-run watchdog with whatever terminal state we
-    // resolved. If the watchdog was never armed (reattach paths that
-    // hit the daemon for an already-finished run), trackRunTerminal
-    // is a no-op for unknown runIds.
-    trackRunTerminal(runId, endStatus ?? (canceled ? 'canceled' : 'unknown'));
   }
 }
 

@@ -83,8 +83,6 @@ describe('design-system post-create project bootstrap', () => {
       composioConfigured: false,
       githubConnector: null,
       onProjectPrepared,
-      analyticsTrack: vi.fn(),
-      ingestEntryFrom: 'design_systems_page',
       designSystemId: 'user:design-system',
     });
 

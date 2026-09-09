@@ -24,8 +24,10 @@ Used by:
 - **Regression harness** — replay the same trace before and after a
   charter / parser change; diff the events the daemon surfaces.
 
-The recordings are anonymized exports from open-design's Langfuse
-project (179 traces across 9 agents and 5+ skills as of this commit).
+The recordings are anonymized exports captured from open-design's
+(since-removed) Langfuse telemetry project (179 traces across 9 agents and
+5+ skills as of this commit). The replay harness is plain JSONL and works
+independently of where recordings come from.
 
 ---
 
@@ -481,10 +483,10 @@ under any Node ≥18.
 
 ## Provenance / safety
 
-All recordings come from open-design's own Langfuse project (the
-`open-design` project under the `powerformer` org). Users opted into
-telemetry when they installed the desktop client. The anonymizer
-removed user-identifying paths and project UUIDs before checking in.
+All recordings come from open-design's own former Langfuse project (the
+`open-design` project under the `powerformer` org), captured while the
+product still had consent-gated telemetry. The anonymizer removed
+user-identifying paths and project UUIDs before checking in.
 
 If you find a recording that includes content that should be redacted,
 follow the [Removing a recording](#removing-a-recording) flow above.

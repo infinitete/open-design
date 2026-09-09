@@ -17,12 +17,11 @@ test.beforeEach(async ({ page }) => {
       mode: 'api', apiProtocol: 'openai', apiKey: 'sk-test', baseUrl: 'https://api.deepseek.com',
       model: 'deepseek-v4-flash', agentId: null, skillId: null, designSystemId: null,
       onboardingCompleted: true, agentModels: {}, privacyDecisionAt: 1,
-      telemetry: { metrics: false, content: false, artifactManifest: false },
     }));
   }, STORAGE_KEY);
   await page.route('**/api/app-config', async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
-    await route.fulfill({ json: { config: { onboardingCompleted: true, agentId: null, skillId: null, designSystemId: null, agentModels: {}, privacyDecisionAt: 1, telemetry: { metrics: false, content: false, artifactManifest: false } } } });
+    await route.fulfill({ json: { config: { onboardingCompleted: true, agentId: null, skillId: null, designSystemId: null, agentModels: {}, privacyDecisionAt: 1 } } });
   });
 });
 

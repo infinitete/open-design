@@ -1,5 +1,12 @@
 # Run Reliability Optimization Plan
 
+> **Status note (2026-09):** the product telemetry stack this plan measured
+> with (PostHog run events, Langfuse traces) has been removed from the app.
+> The implemented outcomes that survive are the failure-classification, retry,
+> and diagnostics code in the daemon. The PostHog/Langfuse-based observation
+> and alerting items below are historical; re-derive a measurement strategy
+> before relying on them.
+
 ## Purpose
 
 Define the post-PR1 reliability optimization plan for issue

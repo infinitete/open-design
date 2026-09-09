@@ -6,8 +6,8 @@
 // the CLI can rely on it without re-checking each release.
 
 import type http from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startServer } from '../src/server.js';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { finalizeDaemonServices, startServer } from '../src/server.js';
 
 let server: http.Server;
 let baseUrl: string;
@@ -27,6 +27,26 @@ beforeAll(async () => {
 afterAll(async () => {
   await Promise.resolve(shutdown?.());
   await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+describe('daemon service finalization', () => {
+  it('calls all three finalizers even when one fails', async () => {
+    const calls: string[] = [];
+    const failure = new Error('terminal shutdown failed');
+    const runs = vi.fn(async () => { calls.push('runs'); });
+    const terminals = vi.fn(async () => {
+      calls.push('terminals');
+      throw failure;
+    });
+    const browsers = vi.fn(async () => { calls.push('browsers'); });
+
+    await expect(finalizeDaemonServices({ runs, terminals, browsers })).rejects.toBe(failure);
+
+    expect(calls).toEqual(['runs', 'terminals', 'browsers']);
+    expect(runs).toHaveBeenCalledTimes(1);
+    expect(terminals).toHaveBeenCalledTimes(1);
+    expect(browsers).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('GET /api/daemon/status', () => {

@@ -1,7 +1,6 @@
 import path from 'node:path';
 import type { Express, RequestHandler } from 'express';
 import { readCurrentAppVersionInfo } from '../app-version.js';
-import { getCritiqueMetrics, register } from '../metrics/index.js';
 import { readConformanceHistory } from '../critique/conformance-history.js';
 import { evaluateRollout } from '../critique/ratchet.js';
 import { parseRolloutPhase } from '../critique/rollout.js';
@@ -163,13 +162,6 @@ export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDep
       }
     });
   });
-
-  if (env.OD_METRICS_ENDPOINT !== 'disabled') {
-    app.get('/api/metrics', async (_req, res) => {
-      res.setHeader('Content-Type', register.contentType);
-      res.send(await getCritiqueMetrics());
-    });
-  }
 
   const parsePositiveInt = (raw: unknown, fallback: number): number => {
     if (typeof raw !== 'string' || raw.length === 0) return fallback;

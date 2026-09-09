@@ -20,7 +20,6 @@ interface ByokProviderBaseUrlProps {
   onBlur: () => void;
   onChange: (value: string) => void;
   onCustomize: () => void;
-  onFocus: () => void;
 }
 
 export function ByokProviderBaseUrl({
@@ -35,7 +34,6 @@ export function ByokProviderBaseUrl({
   onBlur,
   onChange,
   onCustomize,
-  onFocus,
 }: ByokProviderBaseUrlProps) {
   const stateClassName = baseUrlReadOnly
     ? ' settings-base-url-readonly'
@@ -74,7 +72,6 @@ export function ByokProviderBaseUrl({
           aria-describedby={
             hasBaseUrlError ? 'settings-base-url-error' : undefined
           }
-          onFocus={onFocus}
           onBlur={onBlur}
           onChange={(e) => onChange(e.target.value)}
         />

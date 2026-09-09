@@ -132,7 +132,6 @@ function runPromptEnhancer(options: {
       if (options.runPageCountTimeout && delay === 1200) callback();
       return 1;
     },
-    __odTrack: undefined,
     __odDownloadPrompt: undefined,
   };
   const navigator = {
@@ -455,19 +454,15 @@ test('download prompt: repeat visits alone never open the modal (page-count trig
   assert.equal(first.dialog.open, false);
   assert.equal(second.dialog.open, false);
   assert.equal(third.dialog.open, false);
-  assert.equal(sessionStorage.getItem('od_download_prompt_page_views_v2'), '3');
 });
 
-test('download prompt: CTA attribution and modal lifecycle are tracked', () => {
+test('download prompt: CTA resolves the newest direct installer and exposes the QA preview hook', () => {
   assert.match(componentSource, /data-download-placement="engagement_prompt"/);
   assert.match(componentSource, /data-direct-download/);
   assert.doesNotMatch(componentSource, /data-download-page/);
   assert.match(componentSource, /getLatestRelease/);
   assert.match(componentSource, /applyDirectAsset\(directAssets\[platform\.key\]/);
   assert.match(componentSource, /releases\/latest/);
-  assert.match(componentSource, /track\('surface_view'/);
-  assert.match(componentSource, /element: 'engagement_modal'/);
-  assert.match(componentSource, /track\('ui_click', \{ element: 'dismiss'/);
   assert.match(componentSource, /data-download-prompt-trigger/);
   assert.match(componentSource, /download_prompt'\) === 'preview'/);
 });

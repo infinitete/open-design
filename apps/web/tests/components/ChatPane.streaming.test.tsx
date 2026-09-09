@@ -303,7 +303,7 @@ describe('ChatPane streaming state', () => {
 
   it('balances finished transcripts near the composer without affecting active turns', () => {
     const baseProps = {
-      projectKindForTracking: 'prototype' as const,
+      projectKind: 'prototype' as const,
       streaming: false,
       error: null,
       projectId: 'project-1',
@@ -413,7 +413,7 @@ describe('ChatPane streaming state', () => {
 
     const { container } = render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={restartError}
@@ -468,7 +468,7 @@ describe('ChatPane streaming state', () => {
 
     const { container } = render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={restartError}
@@ -504,7 +504,7 @@ describe('ChatPane streaming state', () => {
 
     const { container } = render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error="Could not load the conversation."
@@ -548,7 +548,7 @@ describe('ChatPane streaming state', () => {
 
     const { container } = render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={currentError}
@@ -616,7 +616,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -696,7 +696,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -831,7 +831,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -886,7 +886,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -936,7 +936,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -979,7 +979,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1022,7 +1022,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1058,7 +1058,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1096,7 +1096,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1143,7 +1143,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1215,7 +1215,7 @@ Expected output:
 
     render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -1252,7 +1252,7 @@ Expected output:
       completedAssistant,
     ];
     const commonProps = {
-      projectKindForTracking: 'prototype' as const,
+      projectKind: 'prototype' as const,
       streaming: false,
       error: null,
       projectId: 'project-1',
@@ -1308,7 +1308,7 @@ Expected output:
     const onSend = vi.fn();
     const { container } = render(
       <ChatPane
-        projectKindForTracking="prototype"
+        projectKind="prototype"
         messages={[
           { id: 'user-1', role: 'user', content: 'Make the landing page', createdAt: 1 },
           { id: 'assistant-1', role: 'assistant', content: 'Done', createdAt: 2 },

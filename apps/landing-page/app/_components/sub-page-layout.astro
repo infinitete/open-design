@@ -19,7 +19,6 @@ import '../sub-pages.css';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import FaviconLinks from './favicon-links.astro';
-import SiteAnalytics from './site-analytics.astro';
 import ResourceHints from './resource-hints.astro';
 import HeaderEnhancer from './header-enhancer.astro';
 import { Header, type HeaderProps } from './header';
@@ -151,8 +150,6 @@ const ldArray = jsonLd ? (Array.isArray(jsonLd) ? jsonLd : [jsonLd]) : [];
 
     <FaviconLinks />
     <ResourceHints />
-
-    <SiteAnalytics />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="OpenDesign" />

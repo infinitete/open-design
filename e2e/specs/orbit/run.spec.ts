@@ -42,7 +42,6 @@ describe('orbit run spec', () => {
           onboardingCompleted: true,
           orbit: { enabled: false, templateSkillId: null, time: '08:00' },
           skillId: null,
-          telemetry: { artifactManifest: true, content: false, metrics: false },
         },
         method: 'PUT',
       });

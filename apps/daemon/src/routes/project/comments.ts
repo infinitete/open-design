@@ -2,7 +2,6 @@ import type { Express, Request } from 'express';
 import type {
   PreviewComment,
 } from '@open-design/contracts';
-import { projectKindFromMetadataToTrackingOrLegacyDefault } from '@open-design/contracts/analytics';
 import type { RouteDeps } from '../../server-context.js';
 
 // Collab types removed - define locally
@@ -19,7 +18,7 @@ type WorkspaceCollabContext = {
   seatSummary?: { isSeatFull?: boolean } | null;
 } | null;
 type BoundWorkspaceResourceMutationGate = any;
-import { getProject, isProjectCommentAnchorConversationId } from '../../db.js';
+import { isProjectCommentAnchorConversationId } from '../../db.js';
 
 export type ProjectCommentWorkspaceContextResolution =
   | { ok: true; context: WorkspaceCollabContext | null }
@@ -32,8 +31,6 @@ export type ProjectCommentWorkspaceContextResolution =
     };
 
 export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'projectStore' | 'conversations'> {
-  /** Optional in focused CRUD fixtures; production supplies request-scoped analytics. */
-  telemetry?: RouteDeps<'telemetry'>['telemetry'];
   /**
    * Gate POST (create/edit)/PATCH status/DELETE on the caller's WORKSPACE
    * identity, before the author-identity logic below ever runs (spec 04 §10
@@ -487,56 +484,6 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         }
         return saved;
       })();
-      // Only a genuinely new, successfully persisted comment is counted.
-      // Edits reuse this POST route with an id and must not inflate creation.
-      if (comment && !requestedId) {
-        const project = getProject(db, req.params.id);
-        const localBinding = typeof getWorkspaceProjectByProjectId === 'function'
-          ? getWorkspaceProjectByProjectId(db, req.params.id) as
-              | { createdByWorkspaceMemberId?: string | null }
-              | undefined
-          : undefined;
-        let ownerMemberId = localBinding?.createdByWorkspaceMemberId ?? null;
-        if (!ownerMemberId && ctx.resolveProjectOwnerMemberId) {
-          ownerMemberId = await ctx.resolveProjectOwnerMemberId(
-            req.params.id,
-            workspaceContext,
-          ).catch(() => null);
-        }
-        const targetProjectRelation =
-          authorMemberId && ownerMemberId
-            ? authorMemberId === ownerMemberId
-              ? 'self'
-              : 'other'
-            : 'unknown';
-        const planId = workspaceContext?.planId?.trim().toLowerCase();
-        void ctx.telemetry?.captureProductEvent?.(
-          req,
-          'project_comment_create_result',
-          {
-            page_name: 'artifact',
-            area: 'comments',
-            result: 'success',
-            target_project_relation: targetProjectRelation,
-            comment_level: 'top_level',
-            project_id: req.params.id,
-            project_kind: projectKindFromMetadataToTrackingOrLegacyDefault(project?.metadata),
-            ...(workspaceContext
-              ? {
-                  workspace_key: workspaceContext.workspaceId,
-                  workspace_type: workspaceContext.workspaceType,
-                  workspace_role: workspaceContext.role,
-                  workspace_lifecycle: workspaceContext.lifecycleState,
-                  billing_state: workspaceContext.billingState,
-                  plan_bucket: !planId || planId === 'free' ? 'free' : 'paid',
-                  provider_mode: workspaceContext.providerMode,
-                  seat_state: workspaceContext.seatSummary?.isSeatFull ? 'full' : 'available',
-                  $groups: { workspace: workspaceContext.workspaceId },
-                }
-              : {}),
-          },
-        );
-      }
       res.json({ comment });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message || err) });

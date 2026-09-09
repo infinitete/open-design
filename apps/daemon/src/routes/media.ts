@@ -4,9 +4,7 @@ import type {
   HyperFramesScaffoldRequest,
   HyperFramesScaffoldResponse,
   MediaExecutionPolicy,
-  MediaGenerationResultProps,
 } from '@open-design/contracts';
-import type { AnalyticsContext } from '../analytics.js';
 import { defaultMediaExecutionPolicy, mediaPolicyDenial } from '../media/policy.js';
 import { formatMediaTaskDiagnostic } from '../media/diagnostics.js';
 import { findMediaModel } from '../media/models.js';
@@ -162,39 +160,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     return { ok: true, policy: run.mediaExecution ?? defaultMediaExecutionPolicy() };
   };
 
-  const mediaAnalyticsContext = async (
-    req: any,
-    grant: ToolTokenGrant | null,
-  ): Promise<AnalyticsContext | null> => {
-    const requestContext = design.readAnalyticsContext(req);
-    if (requestContext) return requestContext;
-
-    const runContext = grant?.runId
-      ? design.runs.get(grant.runId)?.analyticsContext ?? null
-      : null;
-    if (runContext) return runContext;
-
-    // Standalone `od media generate` requests do not carry browser analytics
-    // headers or a parent run. Match the updater's daemon-internal identity
-    // fallback, but only after explicit metrics consent; capture() re-checks
-    // the same consent before sending.
-    const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch(() => null);
-    const installationId =
-      appConfig?.telemetry?.metrics === true
-      && typeof appConfig.installationId === 'string'
-      && appConfig.installationId
-        ? appConfig.installationId
-        : null;
-    if (!installationId) return null;
-    return {
-      deviceId: installationId,
-      sessionId: installationId,
-      clientType: 'desktop',
-      locale: 'en',
-      requestId: null,
-    };
-  };
-
   const handleGenerate = async (
     req: any,
     res: any,
@@ -233,11 +198,10 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       start: async () => {
       let task: ReturnType<typeof createMediaTask> | null = null;
       try {
-      const taskId = randomUUID();
-      const analyticsContext = await mediaAnalyticsContext(req, options.grant);
-      let providerRequestSummary:
-        | (ImageGenerationRequestSummary & { providerId: string })
-        | null = null;
+        const taskId = randomUUID();
+        let providerRequestSummary:
+          | (ImageGenerationRequestSummary & { providerId: string })
+          | null = null;
       task = createMediaTask(taskId, projectId, {
         surface: req.body?.surface,
         model: req.body?.model,
@@ -315,19 +279,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
           task.file = meta;
           task.endedAt = Date.now();
           persistMediaTask(task);
-          if (analyticsContext && providerRequestSummary) {
-            captureMediaGenerationResult({
-              analyticsContext,
-              durationMs: task.endedAt - task.startedAt,
-              meta,
-              model,
-              projectId,
-              providerRequestSummary,
-              ...(options.grant?.runId ? { runId: options.grant.runId } : {}),
-              surface,
-              taskId,
-            });
-          }
           notifyTaskWaiters(task);
           console.error(formatMediaTaskDiagnostic({
             ...diagnosticContext,
@@ -344,18 +295,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
           task.error = mediaTaskErrorFromFailure(err);
           task.endedAt = Date.now();
           persistMediaTask(task);
-          if (analyticsContext && providerRequestSummary) {
-            captureMediaGenerationResult({
-              analyticsContext,
-              durationMs: task.endedAt - task.startedAt,
-              model,
-              projectId,
-              providerRequestSummary,
-              ...(options.grant?.runId ? { runId: options.grant.runId } : {}),
-              surface,
-              taskId,
-            });
-          }
           notifyTaskWaiters(task);
           console.error(formatMediaTaskDiagnostic({
             ...diagnosticContext,
@@ -431,62 +370,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     return res.status(201).json(result);
   };
 
-  const captureMediaGenerationResult = (input: {
-    analyticsContext: AnalyticsContext;
-    durationMs: number;
-    meta?: { providerError?: string | null; usedStubFallback?: boolean };
-    model: string;
-    projectId: string;
-    providerRequestSummary: ImageGenerationRequestSummary & { providerId: string };
-    runId?: string;
-    surface: 'image' | 'video' | 'audio';
-    taskId: string;
-  }) => {
-    const summary = input.providerRequestSummary;
-    const props = {
-      page_name: 'studio',
-      area: 'media_generation',
-      project_id: input.projectId,
-      task_id: input.taskId,
-      ...(input.runId ? { run_id: input.runId } : {}),
-      surface: input.surface,
-      provider_id: summary.providerId,
-      model_id: input.model,
-      result: input.meta && !input.meta.providerError && !input.meta.usedStubFallback
-        ? 'success'
-        : 'failed',
-      ...(summary.initialResponseStatus !== undefined
-        ? { initial_response_status: summary.initialResponseStatus }
-        : {}),
-      ...(summary.responseStatus !== undefined
-        ? { response_status: summary.responseStatus }
-        : {}),
-      attempt_count: summary.attemptCount,
-      retry_count: summary.retryCount,
-      ...(summary.retryReason ? { retry_reason: summary.retryReason } : {}),
-      ...(summary.retryAfterMs !== undefined
-        ? { retry_after_ms: summary.retryAfterMs }
-        : {}),
-      ...(summary.retryDelayMs !== undefined
-        ? { retry_delay_ms: summary.retryDelayMs }
-        : {}),
-      retry_final_result: summary.retryFinalResult,
-      duration_ms: Math.max(0, input.durationMs),
-      used_stub_fallback: input.meta?.usedStubFallback === true,
-    } satisfies MediaGenerationResultProps;
-
-    try {
-      design.analytics.capture({
-        eventName: 'media_generation_result',
-        context: input.analyticsContext,
-        appVersion: design.getAppVersion(),
-        properties: props,
-        insertId: `media_generation_result:${input.taskId}`,
-      });
-    } catch {
-      // Analytics is best-effort and must not change the media task outcome.
-    }
-  };
   app.get('/api/media/models', (_req, res) => {
     res.json({
       providers: MEDIA_PROVIDERS,

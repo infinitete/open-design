@@ -73,7 +73,5 @@ export * from './prompts/atom-block.js';
 export * from './critique.js';
 export * from './plugins/index.js';
 export * from './agent-tools/index.js';
-export * from './analytics/events.js';
-export * from './analytics/public-params.js';
-export * from './analytics/observability.js';
+export * from './analytics/index.js';
 export * from './observability/index.js';

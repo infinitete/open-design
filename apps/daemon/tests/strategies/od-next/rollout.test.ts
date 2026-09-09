@@ -18,8 +18,6 @@ import {
 import {
   rolloutStopSignalForBlockedContinuation,
 } from '../../../src/strategies/od-next/automatic-continuation-service.js';
-import { latchOdNextRolloutStopOperationally } from '../../../src/strategies/od-next/rollout-control-telemetry.js';
-import { odNextRolloutAnalyticsProperties } from '../../../src/strategies/od-next/rollout-analytics.js';
 
 function syntheticPolicy() {
   return readOdNextRolloutPolicy({
@@ -161,32 +159,6 @@ describe('OD Next controlled rollout', () => {
     }
   });
 
-  it('projects one decision into a fixed low-cardinality analytics allowlist', () => {
-    const decision = evaluateOdNextRollout({
-      policy: syntheticPolicy(),
-      assignmentIdentity: 'project:conversation',
-      taskType: 'prototype',
-      agentId: 'codex',
-      agentVersion: 'codex-e2e 0.0.0',
-      sourceKind: 'bundled',
-    });
-    expect(Object.keys(odNextRolloutAnalyticsProperties(decision)).sort()).toEqual([
-      'strategy_rollout_assignment_class',
-      'strategy_rollout_decision_class',
-      'strategy_rollout_effective_mode',
-      'strategy_rollout_primary_reason_code',
-      'strategy_rollout_requested_mode',
-      'strategy_rollout_synthetic_canary',
-      'strategy_rollout_task_profile',
-    ]);
-    expect(odNextRolloutAnalyticsProperties(decision)).not.toHaveProperty(
-      'strategy_rollout_assignment_bucket',
-    );
-    expect(odNextRolloutAnalyticsProperties(decision)).not.toHaveProperty(
-      'strategy_rollout_reason_codes',
-    );
-  });
-
   it('requires complete capability evidence without using CLI version as an admission pin', () => {
     const base = {
       assignmentIdentity: 'project:conversation',
@@ -306,89 +278,6 @@ describe('OD Next controlled rollout', () => {
       .toBe('threshold_exceeded');
     expect(odNextRolloutSignalForRun({ durationMs: 100, maxDurationMs: 100 }))
       .toBeNull();
-  });
-
-  it('emits a bounded operational event when a run latches the instance', async () => {
-    const db = new Database(':memory:');
-    migrateOdNextRolloutStore(db);
-    const capture = vi.fn().mockResolvedValue(undefined);
-    latchOdNextRolloutStopOperationally({
-      db,
-      analytics: {
-        capture,
-        captureSafety: vi.fn(),
-        mergeAnonymousPerson: vi.fn(),
-        identifyGroup: vi.fn(),
-        shutdown: vi.fn(),
-      },
-      analyticsContext: {
-        deviceId: 'device',
-        sessionId: 'session',
-        clientType: 'web',
-        locale: 'en',
-        requestId: null,
-      },
-      appVersion: '0.19.2',
-      mode: 'observe',
-      reasonCode: 'native_resume_failed',
-      // The latch only means anything on an installation that opted in, so the
-      // event has to report the mode that run was admitted under rather than
-      // the unconfigured default.
-      readAppConfig: () => ({ odNextStrategyMode: 'active' }),
-    });
-    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(1));
-    expect(capture).toHaveBeenCalledWith(expect.objectContaining({
-      eventName: 'strategy_rollout_control_changed',
-      properties: {
-        strategy_id: 'od-next-strategy',
-        action: 'latch',
-        scope: 'daemon_instance',
-        requested_latch_mode: 'observe',
-        effective_latch_mode: 'observe',
-        reason_code: 'native_resume_failed',
-        effective_mode: 'observe',
-      },
-    }));
-    db.close();
-  });
-
-  it('still latches when the app config cannot be read, and stays silent', async () => {
-    // The latch is the safety stop. It must land whether or not this daemon
-    // can read its own config — and the event must not claim the installation
-    // is `off` when what actually happened is that the disk did not answer.
-    const db = new Database(':memory:');
-    migrateOdNextRolloutStore(db);
-    const capture = vi.fn().mockResolvedValue(undefined);
-    latchOdNextRolloutStopOperationally({
-      db,
-      analytics: {
-        capture,
-        captureSafety: vi.fn(),
-        mergeAnonymousPerson: vi.fn(),
-        identifyGroup: vi.fn(),
-        shutdown: vi.fn(),
-      },
-      analyticsContext: {
-        deviceId: 'device',
-        sessionId: 'session',
-        clientType: 'web',
-        locale: 'en',
-        requestId: null,
-      },
-      appVersion: '0.19.2',
-      mode: 'off',
-      reasonCode: 'machine_contract_leak',
-      readAppConfig: () => {
-        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-      },
-    });
-    expect(readOdNextRolloutStop(db)).toEqual({
-      mode: 'off',
-      reasonCode: 'machine_contract_leak',
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(capture).not.toHaveBeenCalled();
-    db.close();
   });
 
   it('does not stop the whole daemon for one agent-side protocol defect', () => {

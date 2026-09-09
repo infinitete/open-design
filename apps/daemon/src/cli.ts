@@ -7260,7 +7260,6 @@ Common options:
         projectId: status.projectId,
         conversationId: status.conversationId,
         message,
-        analyticsHints: { entryFrom: 'resume_continue' },
         ...(status.agentId ? { agentId: status.agentId } : {}),
       };
       const data = await postJsonToDaemon(base, '/api/runs', body, mutationHeaders);

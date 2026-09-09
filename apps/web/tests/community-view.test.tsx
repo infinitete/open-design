@@ -10,12 +10,6 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommunityView } from '../src/components/CommunityView';
 
-const analytics = vi.hoisted(() => ({ track: vi.fn() }));
-
-vi.mock('../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track: analytics.track }),
-}));
-
 type PluginFixture = {
   id: string;
   title: string;
@@ -104,7 +98,6 @@ const CATALOGUE = [PITCH_DECK, SALES_DECK, LANDING_PROTOTYPE, IMAGE_TEMPLATE, HI
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  analytics.track.mockReset();
   fetchMock = vi.fn(async (url: unknown) => {
     if (url === '/api/plugins') {
       return new Response(JSON.stringify({ plugins: CATALOGUE }), {
@@ -176,24 +169,6 @@ async function renderCommunity(props: Parameters<typeof CommunityView>[0] = {}) 
   render(<CommunityView {...props} />);
   await waitFor(() => expect(readFacets().length).toBeGreaterThan(0));
 }
-
-describe('CommunityView analytics', () => {
-  it('records one page exposure when StrictMode replays mount effects', async () => {
-    render(
-      <StrictMode>
-        <CommunityView />
-      </StrictMode>,
-    );
-    await waitFor(() => expect(readFacets().length).toBeGreaterThan(0));
-
-    expect(analytics.track).toHaveBeenCalledTimes(1);
-    expect(analytics.track).toHaveBeenCalledWith(
-      'page_view',
-      expect.objectContaining({ page_name: 'community' }),
-      undefined,
-    );
-  });
-});
 
 describe('CommunityView catalogue source', () => {
   it('builds the grid from GET /api/plugins', async () => {

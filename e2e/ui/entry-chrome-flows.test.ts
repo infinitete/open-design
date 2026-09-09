@@ -320,7 +320,6 @@ test('[P1] onboarding lands on the home composer without a recommended-start str
         onboardingCompleted: false,
         agentModels: {},
         privacyDecisionAt: 1,
-        telemetry: { metrics: false, content: false, artifactManifest: false },
       }),
     );
   }, STORAGE_KEY);
@@ -339,7 +338,6 @@ test('[P1] onboarding lands on the home composer without a recommended-start str
             designSystemId: null,
             agentModels: {},
             privacyDecisionAt: 1,
-            telemetry: { metrics: false, content: false, artifactManifest: false },
           },
         },
       });
@@ -498,7 +496,6 @@ test('[P1] design systems page is reachable from entry nav and supports search, 
             designSystemId: 'agentic',
             agentModels: {},
             privacyDecisionAt: 1,
-            telemetry: { metrics: false, content: false, artifactManifest: false },
           },
         },
       });
@@ -566,7 +563,6 @@ test('[P1] disabled design systems are filtered from entry creation surfaces', a
             disabledDesignSystems: ['airbnb'],
             agentModels: {},
             privacyDecisionAt: 1,
-            telemetry: { metrics: false, content: false, artifactManifest: false },
           },
         },
       });
@@ -642,7 +638,6 @@ test('[P0] @critical entry execution pill opens the Local CLI and BYOK switcher 
         onboardingCompleted: true,
         agentModels: { codex: { model: 'default' } },
         privacyDecisionAt: 1,
-        telemetry: { metrics: false, content: false, artifactManifest: false },
       }),
     );
   }, STORAGE_KEY);
@@ -704,7 +699,6 @@ test('[P0] @critical entry execution pill opens the Local CLI and BYOK switcher 
           designSystemId: null,
           agentModels: { codex: { model: 'default' } },
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
         },
       },
     });
@@ -909,7 +903,7 @@ test('[P1] Settings About surfaces prerelease updater check failures with retry 
     .toEqual(['check']);
 });
 
-test('[P1] Settings BYOK connection failures emit a classified analytics error code', async ({ page }) => {
+test('[P1] Settings BYOK connection failures surface the provider error detail', async ({ page }) => {
   const byokConfig = {
     mode: 'api',
     apiKey: 'sk-openai-e2e',
@@ -923,7 +917,6 @@ test('[P1] Settings BYOK connection failures emit a classified analytics error c
     designSystemId: null,
     onboardingCompleted: true,
     privacyDecisionAt: 1,
-    telemetry: { metrics: true, content: false, artifactManifest: false },
     agentModels: { codex: { model: 'default' } },
   };
   await page.addInitScript(
@@ -940,26 +933,6 @@ test('[P1] Settings BYOK connection failures emit a classified analytics error c
     }
     await route.fulfill({ json: { config: byokConfig } });
   });
-  await page.route('**/api/analytics/config', async (route) => {
-    const origin = new URL(route.request().url()).origin;
-    await route.fulfill({
-      json: {
-        enabled: true,
-        key: 'phc_e2e',
-        host: origin,
-        env: 'test',
-        installationId: 'e2e-byok-error-device',
-      },
-    });
-  });
-
-  const analyticsPayloads: string[] = [];
-  for (const pattern of ['**/e/**', '**/batch/**', '**/capture/**', '**/decide/**']) {
-    await page.route(pattern, async (route) => {
-      analyticsPayloads.push(route.request().postData() ?? route.request().url());
-      await route.fulfill({ json: { status: 1 } });
-    });
-  }
 
   await page.route('**/api/test/connection', async (route) => {
     expect(route.request().method()).toBe('POST');
@@ -993,13 +966,6 @@ test('[P1] Settings BYOK connection failures emit a classified analytics error c
   await expect(connectionTest).toBeVisible();
   await connectionTest.getByRole('button', { name: /^Test$/ }).click();
   await expect(dialog.getByRole('alert')).toContainText(/insufficient credits/i);
-
-  await expect
-    .poll(() => analyticsPayloads.join('\n'), { timeout: 15_000 })
-    .toContain('settings_byok_test_result');
-  const captured = analyticsPayloads.join('\n');
-  expect(captured).toContain('HTTP_402');
-  expect(captured).toContain('unknown');
 });
 
 
@@ -1340,7 +1306,6 @@ test('[P1] disabled skills are filtered from the home hero mention picker', asyn
           disabledSkills: ['disabled-home-skill'],
           agentModels: {},
           privacyDecisionAt: 1,
-          telemetry: { metrics: false, content: false, artifactManifest: false },
         },
       },
     });

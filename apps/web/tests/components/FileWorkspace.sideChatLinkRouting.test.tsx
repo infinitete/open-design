@@ -19,26 +19,6 @@ import type { AppConfig, ChatMessage, Conversation, ProjectFile } from '../../sr
 const launcherCapture = vi.hoisted(() => ({ context: null as null | {
   createTerminal?: () => Promise<string | null>;
 } }));
-const analyticsTrack = vi.hoisted(() => vi.fn());
-
-vi.mock('../../src/analytics/provider', async () => {
-  const actual = await vi.importActual<typeof import('../../src/analytics/provider')>(
-    '../../src/analytics/provider',
-  );
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      track: analyticsTrack,
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-      setConfigureGlobals: vi.fn(),
-      setUserId: vi.fn(),
-      anonymousId: 'test',
-      sessionId: 'test',
-      newRequestId: () => 'request-test',
-    }),
-  };
-});
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -217,7 +197,7 @@ function renderDesignSystemWorkspace(
     <I18nProvider>
       <FileWorkspace
         projectId="project-1"
-        projectKind="design_system"
+        projectKind="brand"
         files={[]}
         liveArtifacts={[]}
         onRefreshFiles={vi.fn()}

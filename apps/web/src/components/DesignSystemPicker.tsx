@@ -19,7 +19,6 @@ import {
 } from '../i18n/content';
 import type { DesignSystemSummary } from '../types';
 import { navigate } from '../router';
-import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { useBrandsByDesignSystemId } from '../runtime/brands';
 import { DesignSystemKitPreview } from './DesignSystemKitPreview';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
@@ -277,7 +276,6 @@ export function DesignSystemPicker({
   };
   const createDesignSystem = () => {
     setOpen(false);
-    setPendingDesignSystemCreateEntry('composer_picker');
     navigate({ kind: 'design-system-create' });
   };
 

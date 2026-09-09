@@ -20,17 +20,6 @@ import {
 } from 'react';
 import { VisuallyHidden } from '@open-design/components';
 import { useT } from '../i18n';
-import {
-  agentIdToTracking,
-  byokProtocolToTracking,
-  modelIdForTracking,
-} from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import { getResolvedDeviceId } from '../analytics/client';
-import {
-  trackDeepSeekCampaignModelBenefitSurfaceView,
-  trackExecutionSettingsPopoverClick,
-} from '../analytics/events';
 import { KNOWN_PROVIDERS } from '../state/config';
 import { fetchProviderModels } from '../providers/provider-models';
 import { SUGGESTED_MODELS_BY_PROTOCOL } from '../state/apiProtocols';
@@ -123,7 +112,6 @@ export function InlineModelSwitcher({
   onOpenSettings,
 }: Props) {
   const t = useT();
-  const analytics = useAnalytics();
   // Both flags are reserved presentation branches with no trigger wired yet:
   // `campaignRestricted` (已暂停 badge) is reserved for the backend
   // usage-limit signal — no trigger wired yet — and `campaignNeedsUpgrade`
@@ -218,15 +206,9 @@ export function InlineModelSwitcher({
 
   const handleAgentButtonClick = useCallback(
     (agentId: string) => {
-      trackExecutionSettingsPopoverClick(analytics.track, {
-        page_name: 'home',
-        area: 'execution_settings_popover',
-        element: 'agent_card',
-        cli_provider_id: agentIdToTracking(agentId),
-      });
       onAgentChange?.(agentId);
     },
-    [analytics.track, onAgentChange],
+    [onAgentChange],
   );
 
   useEffect(() => {
@@ -315,12 +297,7 @@ export function InlineModelSwitcher({
   const currentChoice =
     (config.agentId && config.agentModels?.[config.agentId]) || {};
   const effectiveCurrentChoice = effectiveAgentModelChoice(currentAgent, currentChoice) ?? currentChoice;
-  const currentAgentId = currentAgent?.id ?? null;
-  const normalizedCurrentModelId = effectiveCurrentChoice.model ?? null;
-  const normalizedCurrentReasoning = effectiveCurrentChoice.reasoning;
-  const normalizedCurrentServiceTier = effectiveCurrentChoice.serviceTier;
   const currentAgentModels = currentAgent?.models ?? [];
-  const currentAgentModelIds = currentAgentModels.map((m) => m.id);
   const configuredModelId =
     typeof effectiveCurrentChoice.model === 'string' && effectiveCurrentChoice.model
       ? effectiveCurrentChoice.model
@@ -365,7 +342,6 @@ export function InlineModelSwitcher({
       deepSeekCampaignVisibleForCurrentExecution,
     ],
   );
-
 
   const currentModelLabel =
     currentModelOption?.label ?? null;
@@ -428,24 +404,14 @@ export function InlineModelSwitcher({
     if (visibleCampaignModelIds.length === 0) return;
     campaignBenefitTrackedForOpenRef.current = true;
     for (const modelId of visibleCampaignModelIds) {
-      trackDeepSeekCampaignModelBenefitSurfaceView(analytics.track, {
-        page_name: 'home',
-        area: 'execution_settings_popover',
-        element: 'deepseek_v4_pro_benefit',
-        campaign_id: 'deepseek_v4_pro',
-        user_state: campaignNeedsUpgrade ? 'unpaid' : 'paid',
-        model_id: modelId,
-      });
     }
   }, [
-    analytics.track,
     campaignNeedsUpgrade,
     compact,
     compactModelRows,
     deepSeekCampaignVisibleForCurrentExecution,
     open,
   ]);
-
 
   const apiProtocol = config.apiProtocol ?? 'anthropic';
   const providerForProtocol = useMemo(
@@ -709,11 +675,6 @@ export function InlineModelSwitcher({
                 data-testid="inline-model-switcher-mode-daemon"
                 disabled={!daemonLive && config.mode !== 'daemon'}
                 onClick={() => {
-                  trackExecutionSettingsPopoverClick(analytics.track, {
-                    page_name: 'home',
-                    area: 'execution_settings_popover',
-                    element: 'mode_local_cli',
-                  });
                   // Optional-call so a transient Fast Refresh state where a
                   // parent has not yet re-rendered with the new prop signature
                   // does not crash the entire entry view. The same defensive
@@ -742,11 +703,6 @@ export function InlineModelSwitcher({
                 }
                 data-testid="inline-model-switcher-mode-api"
                 onClick={() => {
-                  trackExecutionSettingsPopoverClick(analytics.track, {
-                    page_name: 'home',
-                    area: 'execution_settings_popover',
-                    element: 'mode_byok',
-                  });
                   onModeChange?.('api');
                 }}
                 title={t('inlineSwitcher.useByok')}
@@ -788,13 +744,6 @@ export function InlineModelSwitcher({
                           // Unlike Settings (which skips unmapped protocols),
                           // report the click even when the protocol has no v2
                           // provider_id (e.g. aihubmix) — just omit the field.
-                          trackExecutionSettingsPopoverClick(analytics.track, {
-                            page_name: 'home',
-                            area: 'execution_settings_popover',
-                            element: 'byok_provider_tab',
-                            provider_id:
-                              byokProtocolToTracking(tab.id) ?? undefined,
-                          });
                           onApiProtocolChange?.(tab.id);
                         }}
                       >
@@ -823,15 +772,6 @@ export function InlineModelSwitcher({
                     models={apiModelChoices}
                     value={config.model}
                     onChange={(nextValue) => {
-                      trackExecutionSettingsPopoverClick(analytics.track, {
-                        page_name: 'home',
-                        area: 'execution_settings_popover',
-                        element: 'model_dropdown',
-                        execution_mode: 'byok',
-                        provider_id:
-                          byokProtocolToTracking(apiProtocol) ?? undefined,
-                        model_id: modelIdForTracking(nextValue),
-                      });
                       onApiModelChange?.(nextValue);
                     }}
                     additionalOptions={
@@ -886,13 +826,6 @@ export function InlineModelSwitcher({
                             if (!applyAgentModel(m.id)) {
                               return;
                             }
-                            trackExecutionSettingsPopoverClick(analytics.track, {
-                              page_name: 'home',
-                              area: 'execution_settings_popover',
-                              element: 'model_dropdown',
-                              execution_mode: 'local_cli',
-                              model_id: modelIdForTracking(m.id),
-                            });
                             setOpen(false);
                           }}
                         >
@@ -1031,13 +964,6 @@ export function InlineModelSwitcher({
                       ) {
                         return;
                       }
-                      trackExecutionSettingsPopoverClick(analytics.track, {
-                        page_name: 'home',
-                        area: 'execution_settings_popover',
-                        element: 'model_dropdown',
-                        execution_mode: 'local_cli',
-                        model_id: modelIdForTracking(nextValue),
-                      });
                     }}
                     additionalOptions={
                       currentModelId &&
@@ -1061,11 +987,6 @@ export function InlineModelSwitcher({
             className="inline-switcher__more"
             data-testid="inline-model-switcher-open-settings"
             onClick={() => {
-              trackExecutionSettingsPopoverClick(analytics.track, {
-                page_name: 'home',
-                area: 'execution_settings_popover',
-                element: 'open_execution_settings',
-              });
               setOpen(false);
               onOpenSettings?.('execution');
             }}

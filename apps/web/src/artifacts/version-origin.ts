@@ -1,20 +1,23 @@
 import type { ArtifactOrigin, ProjectFileVersion } from '@open-design/contracts';
-import type { ArtifactExportResultProps } from '@open-design/contracts/analytics';
 
 const CONTENT_DIGEST_RE = /^[a-f0-9]{64}$/u;
 const ORIGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const EXTERNAL_PLUGIN_IDS = new Set(['open-design']);
 
-export type ArtifactExportOriginProps = Pick<
-  ArtifactExportResultProps,
-  | 'entry_surface'
-  | 'artifact_origin_status'
-  | 'artifact_version_id'
-  | 'origin_entry_surface'
-  | 'origin_external_plugin_id'
-  | 'origin_plugin_workflow_id'
-  | 'origin_run_id'
->;
+export interface ArtifactExportOriginProps {
+  entry_surface: 'open_design_ui';
+  artifact_origin_status:
+    | 'missing_version'
+    | 'unknown'
+    | 'digest_mismatch'
+    | 'invalid_origin'
+    | 'matched';
+  artifact_version_id?: string;
+  origin_entry_surface: ArtifactOrigin['entrySurface'];
+  origin_external_plugin_id?: string;
+  origin_plugin_workflow_id?: string;
+  origin_run_id?: string;
+}
 
 function safeOriginId(value: unknown): value is string {
   return typeof value === 'string' && ORIGIN_ID_RE.test(value);

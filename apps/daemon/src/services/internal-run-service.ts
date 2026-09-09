@@ -7,18 +7,8 @@
  * coordinator can reuse the same create -> claim -> start transaction without
  * calling the daemon through HTTP.
  */
-import type { RunAnalyticsFacts } from './run-analytics-lifecycle.js';
 import type { ProjectRunAdmission as ProjectRunAdmissionHandle } from './project-mutation.js';
 
-/**
- * `RunAnalyticsFacts` is a REQUIRED argument of `start` on purpose. Analytics
- * used to be installed by whichever caller remembered to do it, and four
- * daemon-internal Run creators silently reported nothing (OPEND-2365). Making
- * the facts part of the start contract means a new caller has to state its
- * analytics identity — including stating that it has none — instead of dropping
- * the Run. The type is owned by the lifecycle so the choke point and the
- * lifecycle cannot drift apart.
- */
 export interface InternalRunCreateInput extends Record<string, unknown> {
   projectId?: string;
   conversationId?: string;
@@ -32,7 +22,6 @@ export interface InternalRunCreateInput extends Record<string, unknown> {
   message?: string;
   currentPrompt?: string;
   sessionMode?: string;
-  analyticsHints?: Record<string, unknown>;
   /** Daemon-owned immutable OD Next task input descriptor; never accepted from callers. */
   odNextTaskInputSnapshot?: {
     taskExecutionId: string;
@@ -47,10 +36,6 @@ export interface InternalPhysicalRun {
   projectId?: string | null;
   manualResumeAttemptCount?: number;
   pendingManualResumeAttemptCount?: number;
-}
-
-export interface InternalRunAnalyticsLifecycle<TRun> {
-  install(input: RunAnalyticsFacts & { run: TRun }): void;
 }
 
 export interface InternalRunRegistry<
@@ -129,7 +114,6 @@ export interface InternalRunCreationService<
   discard(run: TRun): void;
   start(
     run: TRun,
-    analytics: RunAnalyticsFacts,
     starter: (run: TRun) => Promise<unknown>,
   ): TRun;
 }
@@ -143,13 +127,6 @@ export function createInternalRunCreationService<
     run: TRun,
     options?: AssistantRunClaimOptions,
   ) => AssistantRunClaimResult;
-  /**
-   * Armed for every physical Run this service starts, whoever asked for it.
-   * Required: an optional dependency would let a future factory construct this
-   * service, satisfy the `.runs.start` guard, and still emit nothing. A harness
-   * that wants silence injects a no-op lifecycle and says so.
-   */
-  analyticsLifecycle: InternalRunAnalyticsLifecycle<TRun>;
   beginProjectRunAdmission: (projectId: string) => Promise<ProjectRunAdmissionHandle>;
   attachProjectRun: (
     runId: string,
@@ -362,17 +339,13 @@ export function createInternalRunCreationService<
       if (prepared.admitted) deps.releaseProjectRun(run.id);
       deps.runs.drop(run);
     },
-    start(run, analytics, starter) {
+    start(run, starter) {
       const prepared = preparedRuns.get(run);
       if (!prepared) {
         throw new Error(`Run ${run.id} must be prepared before start`);
       }
       preparedRuns.delete(run);
-      // Before the child is spawned: `run_created` describes a Run that has
-      // been accepted, and the terminal half must already be attached when the
-      // Run settles — including a Run that fails on its first tick.
       try {
-        deps.analyticsLifecycle.install({ ...analytics, run });
         return deps.runs.start(run, () => starter(run));
       } catch (error) {
         try {

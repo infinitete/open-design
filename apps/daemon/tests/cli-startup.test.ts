@@ -125,6 +125,14 @@ describe('CLI startup boundaries', () => {
     const projectId = 'project-real-process-restart';
     const runDir = join(dataDir, 'runs', runId);
     const statePath = join(runDir, 'state.json');
+    function readRecoveredMessage(): Record<string, unknown> {
+      const db = new Database(join(dataDir, 'app.sqlite'), { readonly: true });
+      try {
+        return db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId) as Record<string, unknown>;
+      } finally {
+        db.close();
+      }
+    }
 
     try {
       await waitForStdoutLine(first, /\[od\] listening on (http:\/\/[^\s]+)/u);
@@ -159,11 +167,6 @@ describe('CLI startup boundaries', () => {
         status: 'running',
         createdAt: Date.now() - 1_000,
         updatedAt: Date.now(),
-        analyticsRecovery: {
-          context: {},
-          properties: { project_id: projectId, conversation_id: conversationId, run_id: runId },
-          insertId: 'restart-fixture-created',
-        },
       })}\n`);
 
       // SIGKILL models the process-loss case; graceful SIGTERM would run the
@@ -178,14 +181,15 @@ describe('CLI startup boundaries', () => {
         await waitFor(() => {
           const state = JSON.parse(readFileSync(statePath, 'utf8')) as {
             status?: string;
-            analyticsRecovery?: { completedAt?: number };
+            terminalAt?: number;
           };
           const checkDb = new Database(join(dataDir, 'app.sqlite'), { readonly: true });
           try {
-            const row = checkDb.prepare(`SELECT run_status AS status FROM messages WHERE id = ?`).get(messageId) as { status?: string } | undefined;
+            const row = checkDb.prepare(`SELECT run_status AS status, ended_at AS endedAt FROM messages WHERE id = ?`).get(messageId) as { status?: string; endedAt?: number } | undefined;
             return state.status === 'failed'
               && row?.status === 'failed'
-              && typeof state.analyticsRecovery?.completedAt === 'number';
+              && typeof state.terminalAt === 'number'
+              && typeof row.endedAt === 'number';
           } finally {
             checkDb.close();
           }
@@ -194,16 +198,20 @@ describe('CLI startup boundaries', () => {
           status: string;
           errorCode?: string;
           terminalRecoveryReason?: string;
-          analyticsRecovery?: { completedAt?: number };
+          terminalAt: number;
         };
         expect(recoveredState).toMatchObject({
           status: 'failed',
           errorCode: 'DAEMON_RESTARTED',
           terminalRecoveryReason: 'daemon_restart',
-          analyticsRecovery: { completedAt: expect.any(Number) },
+          terminalAt: expect.any(Number),
         });
 
-        const checkpoint = recoveredState.analyticsRecovery?.completedAt;
+        const recoveredMessage = readRecoveredMessage();
+        expect(recoveredMessage).toMatchObject({
+          run_status: 'failed',
+          ended_at: expect.any(Number),
+        });
         await terminateChild(second);
         const reconciliationSentinelId = 'run-third-boot-reconciliation-sentinel';
         const reconciliationSentinelDir = join(dataDir, 'runs', reconciliationSentinelId);
@@ -219,7 +227,6 @@ describe('CLI startup boundaries', () => {
           status: 'running',
           createdAt: Date.now() - 1_000,
           updatedAt: Date.now(),
-          langfuseCompletedAt: Date.now(),
         })}\n`);
         const third = spawn(process.execPath, args, { cwd: daemonRoot, env });
         try {
@@ -229,14 +236,15 @@ describe('CLI startup boundaries', () => {
           ]);
           const replayedState = JSON.parse(await readFile(statePath, 'utf8')) as {
             status?: string;
-            analyticsRecovery?: { completedAt?: number };
+            terminalAt?: number;
           };
           const sentinelState = JSON.parse(await readFile(reconciliationSentinelPath, 'utf8')) as {
             status?: string;
           };
           expect(sentinelState.status).toBe('failed');
           expect(replayedState.status).toBe('failed');
-          expect(replayedState.analyticsRecovery?.completedAt).toBe(checkpoint);
+          expect(replayedState).toEqual(recoveredState);
+          expect(readRecoveredMessage()).toEqual(recoveredMessage);
         } finally {
           await terminateChild(third);
         }

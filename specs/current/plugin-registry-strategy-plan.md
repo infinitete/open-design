@@ -722,7 +722,7 @@ Additional validation by area:
 - Should `official` marketplace trust be allowed for user-added URLs, or only for built-in source ids shipped by OpenDesign? Recommendation: only built-in sources can be `official`; user-added sources can be `trusted` or `restricted`.
 - Should lockfile be project-local or user-global? Recommendation: project-local for reproducible runs, with user-global cache as an implementation detail. This plan MUST NOT define daemon data paths; read root [`AGENTS.md`](../../AGENTS.md) → **Daemon data directory contract**.
 - Should `od plugin publish --to marketplace-json` mutate a local catalog file directly or create a branch/PR when the catalog URL maps to GitHub? Recommendation: support both, but default to PR when a GitHub remote is detectable.
-- How much popularity/ranking data should the official site show before telemetry policy is settled? Recommendation: show stars/downloads only when sourced from public GitHub or explicit registry events; keep install telemetry opt-in.
+- How much popularity/ranking data should the official site show before telemetry policy is settled? Recommendation: show stars/downloads only when sourced from public GitHub or explicit registry events; no install telemetry.
 
 ## Resolved Decisions
 

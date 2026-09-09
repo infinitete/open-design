@@ -1,3 +1,4 @@
+import type { ProjectKind } from '@open-design/contracts';
 import {
   Fragment,
   memo,
@@ -15,19 +16,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { hasOdCard, OD_NEXT_STRATEGY_ID } from '@open-design/contracts';
-import { useAnalytics } from '../analytics/provider';
-import { getResolvedDeviceId } from '../analytics/client';
-import {
-  trackChatPanelClick,
-  trackMessageQueueClick,
-  trackRunFailedToastSurfaceView,
-  trackRunRecoveryActionClick,
-  trackRunRecoveryActionSurfaceView,
-} from '../analytics/events';
-import {
-  buildRecoveryTaskAnalytics,
-  runAgentProviderId,
-} from '../analytics/run-task';
 import { useI18n, useT } from '../i18n';
 import { startersForProduct, type ProductType } from '../onboarding/recommendation';
 import { starterCopyFor } from '../onboarding/starter-copy';
@@ -56,10 +44,6 @@ import type {
   RunContextSelection,
   WorkspaceContextItem,
 } from '@open-design/contracts';
-import type {
-  TrackingProjectKind,
-  TrackingRunRecoveryActionType,
-} from '@open-design/contracts/analytics';
 import {
   DESIGN_SYSTEM_WORKSPACE_DISPLAY_DESCRIPTION,
   DESIGN_SYSTEM_WORKSPACE_DISPLAY_TITLE,
@@ -519,11 +503,8 @@ interface Props {
   projectId: string | null;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
-  // Analytics-only — forwarded to AssistantMessage so the feedback
-  // events know which project surface the rating applies to. Optional
-  // (defaults to null/'prototype') so unit tests can mount ChatPane
-  // without project context.
-  projectKindForTracking?: TrackingProjectKind | null;
+  // Product kind selects context-appropriate visual-style suggestions.
+  projectKind?: ProjectKind | null;
   projectFiles: ProjectFile[];
   activeProjectFileName?: string | null;
   hasActiveDesignSystem?: boolean;
@@ -559,7 +540,7 @@ interface Props {
   ) => ChatSendOutcome | Promise<ChatSendOutcome>;
   onRetry?: (
     assistantMessage: ChatMessage,
-    recoveryActionType?: TrackingRunRecoveryActionType,
+    recoveryActionType?: ('manual_retry' | 'resume_run'),
   ) => void;
   onResumeRun?: (assistantMessage: ChatMessage) => void;
   onStop: () => void;
@@ -927,7 +908,7 @@ export function ChatPane({
   projectId,
   sessionMode = 'design',
   onSessionModeChange,
-  projectKindForTracking = null,
+  projectKind = null,
   projectFiles,
   activeProjectFileName = null,
   hasActiveDesignSystem = false,
@@ -1038,7 +1019,6 @@ export function ChatPane({
 }: Props) {
   const workspaceContext = null;
   const { t, locale } = useI18n();
-  const analytics = useAnalytics();
   const displayMessages = useMemo(
     () => foldStrategyTaskTurns(
       messages.filter((message) => !shouldHideEmptyBrandAssistantMessage(message, projectMetadata)),
@@ -1054,8 +1034,6 @@ export function ChatPane({
   const pinnedTodoRef = useRef<HTMLDivElement | null>(null);
   const queuedSendStripRef = useRef<HTMLDivElement | null>(null);
   const didInitialScrollRef = useRef(false);
-  const runFailedToastSurfaceKeysRef = useRef<Set<string>>(new Set());
-  const runRecoverySurfaceKeysRef = useRef<Set<string>>(new Set());
   // Tracks whether the user is glued close enough to the bottom that
   // streamed content should auto-follow. Distinct from the jump-button
   // state below, which uses a wider threshold (120px) so the affordance
@@ -1128,7 +1106,6 @@ export function ChatPane({
       onSessionModeChange?.(options.sessionMode);
     }
     composerRef.current?.setDraft(prompt, {
-      entryFrom: 'next_step',
       sessionMode: options?.sessionMode,
     });
   }, [onSessionModeChange, sessionMode]);
@@ -1415,108 +1392,6 @@ export function ChatPane({
   const showByokRecoveryCta =
     showByokRecoveryAction && Boolean(onSwitchToLocalCli) && !runFailureHasAction;
   const showErrorActions = showByokRecoveryCta || runFailureHasAction;
-  const visibleRecoveryActionTypes = useMemo(() => {
-    const actions: TrackingRunRecoveryActionType[] = [];
-    if (!retryAssistant || !onRetry || !runFailureUi) return actions;
-    if (canResumeFailedRun) actions.push('resume_run');
-    else if (runFailureUi.primaryAction === 'retry' || runFailureUi.secondaryRetry) {
-      actions.push('manual_retry');
-    }
-    return actions;
-  }, [
-    canResumeFailedRun,
-    onRetry,
-    retryAssistant,
-    runFailureUi,
-  ]);
-  const recoveryAnalyticsProps = useCallback((
-    assistantMessage: ChatMessage,
-    actionType: TrackingRunRecoveryActionType,
-  ) => {
-    const task = buildRecoveryTaskAnalytics(displayMessages, assistantMessage, actionType);
-    return {
-      task_execution_id: task.taskExecutionId,
-      recovery_action_instance_id: task.recoveryActionInstanceId!,
-      recovery_action_type: actionType,
-      ...(task.sourceRunId ? { source_run_id: task.sourceRunId } : {}),
-      ...(assistantMessage.agentId
-        ? { source_agent_provider_id: runAgentProviderId(assistantMessage.agentId) }
-        : {}),
-      ...(failedRunErrorEvent?.failureCategory
-        ? { failure_category: failedRunErrorEvent.failureCategory }
-        : {}),
-      ...(failedRunErrorEvent?.failureDetail
-        ? { failure_reason: failedRunErrorEvent.failureDetail }
-        : {}),
-    };
-  }, [displayMessages, failedRunErrorEvent]);
-  useEffect(() => {
-    if (!retryAssistant) return;
-    for (const actionType of visibleRecoveryActionTypes) {
-      const props = recoveryAnalyticsProps(retryAssistant, actionType);
-      const key = `${props.recovery_action_instance_id}:surface`;
-      if (runRecoverySurfaceKeysRef.current.has(key)) continue;
-      runRecoverySurfaceKeysRef.current.add(key);
-      trackRunRecoveryActionSurfaceView(analytics.track, {
-        page_name: 'chat_panel',
-        area: 'chat_panel',
-        element: 'run_recovery_action',
-        ...props,
-      });
-    }
-  }, [analytics.track, recoveryAnalyticsProps, retryAssistant, visibleRecoveryActionTypes]);
-  const trackRecoveryClick = useCallback((
-    assistantMessage: ChatMessage,
-    actionType: TrackingRunRecoveryActionType,
-    target?: { agentProviderId?: string; modelId?: string },
-  ) => {
-    trackRunRecoveryActionClick(analytics.track, {
-      page_name: 'chat_panel',
-      area: 'chat_panel',
-      element: 'run_recovery_action',
-      ...recoveryAnalyticsProps(assistantMessage, actionType),
-      ...(target?.agentProviderId
-        ? { target_agent_provider_id: target.agentProviderId }
-        : {}),
-      ...(target?.modelId ? { target_model_id: target.modelId } : {}),
-    });
-  }, [analytics.track, recoveryAnalyticsProps]);
-  useEffect(() => {
-    if (!displayError || !failedRunErrorEvent?.code || !retryAssistant) return;
-    // The chat error card itself is the visible run_failed_toast surface for
-    // every failed-run guidance path (sign-in, quota, upstream outage,
-    // generic retry).
-
-    const key = [
-      projectId ?? '',
-      activeConversationId ?? '',
-      retryAssistant.id,
-      retryAssistant.runId ?? '',
-      failedRunErrorEvent.code,
-    ].join(':');
-    if (runFailedToastSurfaceKeysRef.current.has(key)) return;
-    runFailedToastSurfaceKeysRef.current.add(key);
-
-    trackRunFailedToastSurfaceView(analytics.track, {
-      page_name: 'chat_panel',
-      area: 'chat_panel',
-      element: 'run_failed_toast',
-      error_code: failedRunErrorEvent.code,
-      project_id: projectId ?? '',
-      project_kind: projectKindForTracking,
-      conversation_id: activeConversationId,
-      assistant_message_id: retryAssistant.id,
-      run_id: retryAssistant.runId ?? null,
-    });
-  }, [
-    activeConversationId,
-    analytics.track,
-    displayError,
-    failedRunErrorEvent?.code,
-    projectId,
-    projectKindForTracking,
-    retryAssistant,
-  ]);
   const importedFolderArtifacts = useMemo(
     () =>
       projectMetadata?.importedFrom === 'folder'
@@ -2353,11 +2228,6 @@ export function ChatPane({
               setShowConvList((v) => {
                 const next = !v;
                 if (next) {
-                  trackChatPanelClick(analytics.track, {
-                    page_name: 'chat_panel',
-                    area: 'chat_panel',
-                    element: 'history',
-                  });
                 }
                 return next;
               });
@@ -2386,11 +2256,6 @@ export function ChatPane({
                     disabled={newConversationDisabled}
                     onClick={() => {
                       if (newConversationDisabled) return;
-                      trackChatPanelClick(analytics.track, {
-                        page_name: 'chat_panel',
-                        area: 'chat_panel',
-                        element: 'new_chat',
-                      });
                       onNewConversation();
                       setShowConvList(false);
                     }}
@@ -2535,7 +2400,7 @@ export function ChatPane({
                 streaming={streaming}
                 liveToolInput={liveToolInput}
                 projectId={projectId}
-                projectKindForTracking={projectKindForTracking}
+                projectKind={projectKind}
                 activeConversationId={activeConversationId}
                 activeConversationKey={activeConversationId ?? 'no-conversation'}
                 projectFiles={projectFiles}
@@ -2669,7 +2534,6 @@ export function ChatPane({
                               className="chat-error-action"
                               onClick={() =>
                                 {
-                                  trackRecoveryClick(retryAssistant, 'resume_run');
                                   if (onResumeRun) onResumeRun(retryAssistant);
                                   else onSend(RESUME_CONTINUE_PROMPT, [], []);
                                 }
@@ -2683,7 +2547,6 @@ export function ChatPane({
                               type="button"
                               className="chat-error-action chat-error-retry"
                               onClick={() => {
-                                trackRecoveryClick(retryAssistant, 'manual_retry');
                                 onRetry(retryAssistant, 'manual_retry');
                               }}
                             >
@@ -2731,37 +2594,16 @@ export function ChatPane({
             items={queuedItems}
             editingId={editingQueuedSendId}
             onEdit={(item) => {
-              trackMessageQueueClick(analytics.track, {
-                page_name: 'chat_panel',
-                area: 'message_queue',
-                element: 'edit',
-                project_id: projectId ?? '',
-                queue_length: queuedItems.length,
-              });
               restoreQueuedSendToComposer(item);
             }}
             onRemove={onRemoveQueuedSend
               ? (id) => {
-                  trackMessageQueueClick(analytics.track, {
-                    page_name: 'chat_panel',
-                    area: 'message_queue',
-                    element: 'delete',
-                    project_id: projectId ?? '',
-                    queue_length: queuedItems.length,
-                  });
                   onRemoveQueuedSend(id);
                 }
               : undefined}
             onReorder={onReorderQueuedSends}
             onSendNow={onSendQueuedNow
               ? (id) => {
-                  trackMessageQueueClick(analytics.track, {
-                    page_name: 'chat_panel',
-                    area: 'message_queue',
-                    element: 'send_now',
-                    project_id: projectId ?? '',
-                    queue_length: queuedItems.length,
-                  });
                   onSendQueuedNow(id);
                 }
               : undefined}
@@ -3099,7 +2941,7 @@ function ChatRows({
   streaming,
   liveToolInput,
   projectId,
-  projectKindForTracking,
+  projectKind,
   activeConversationId,
   activeConversationKey,
   projectFiles,
@@ -3155,7 +2997,7 @@ function ChatRows({
   streaming: boolean;
   liveToolInput?: Record<string, { name: string; text: string; seq?: number }>;
   projectId: string | null;
-  projectKindForTracking: TrackingProjectKind | null;
+  projectKind: ProjectKind | null;
   activeConversationId: string | null;
   activeConversationKey: string;
   projectFiles: ProjectFile[];
@@ -3333,7 +3175,7 @@ function ChatRows({
         // comparator re-renders just this row per `tool_input_delta`, not all N.
         liveToolInput={messageStreaming ? liveToolInput : undefined}
         projectId={projectId}
-        projectKind={projectKindForTracking}
+        projectKind={projectKind}
         conversationId={activeConversationId}
         projectFiles={projectFiles}
         projectMetadata={projectMetadata}

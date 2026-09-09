@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackDesignSystemsTemplatesModalClick,
-  trackDesignSystemsTemplatesModalSharePopoverClick,
-  trackDesignSystemsTemplatesModalSurfaceView,
-} from '../analytics/events';
 import { useT } from '../i18n';
 import {
   fetchDesignSystem,
@@ -36,18 +30,11 @@ export function DesignSystemPreviewModal({
   initialViewId = 'kit',
 }: Props) {
   const t = useT();
-  const analytics = useAnalytics();
   const surfaceViewFiredRef = useRef<string | null>(null);
   useEffect(() => {
     if (surfaceViewFiredRef.current === system.id) return;
     surfaceViewFiredRef.current = system.id;
-    trackDesignSystemsTemplatesModalSurfaceView(analytics.track, {
-      page_name: 'design_systems',
-      area: 'templates_modal',
-      templates_id: system.id,
-      templates_type: system.source ?? 'library',
-    });
-  }, [analytics.track, system.id, system.source]);
+  }, [system.id, system.source]);
 
   const [showcaseHtml, setShowcaseHtml] = useState<string | null | undefined>(undefined);
   const [tokensHtml, setTokensHtml] = useState<string | null | undefined>(undefined);
@@ -77,13 +64,6 @@ export function DesignSystemPreviewModal({
       } else if (initialViewIdRef.current !== viewId) {
         initialViewIdRef.current = viewId;
         if (viewId === 'showcase' || viewId === 'kit' || viewId === 'tokens') {
-          trackDesignSystemsTemplatesModalClick(analytics.track, {
-            page_name: 'design_systems',
-            area: 'templates_modal',
-            element: viewId === 'kit' ? 'open_design_set' : viewId,
-            templates_id: system.id,
-            templates_type: system.source ?? 'library',
-          });
         }
       }
       if (viewId === 'showcase' && showcaseHtml === undefined) {
@@ -99,7 +79,7 @@ export function DesignSystemPreviewModal({
         });
       }
     },
-    [analytics.track, system.id, system.source, showcaseHtml, tokensHtml],
+    [system.id, system.source, showcaseHtml, tokensHtml],
   );
 
   const handleSidebarToggle = useCallback(
@@ -148,42 +128,6 @@ export function DesignSystemPreviewModal({
       onView={handleView}
       exportTitleFor={(viewId) => (viewId === 'kit' ? system.title : `${system.title} - ${viewId}`)}
       onClose={onClose}
-      onFullscreenClick={() =>
-        trackDesignSystemsTemplatesModalClick(analytics.track, {
-          page_name: 'design_systems',
-          area: 'templates_modal',
-          element: 'fullscreen',
-          templates_id: system.id,
-          templates_type: system.source ?? 'library',
-        })
-      }
-      onShareClick={() =>
-        trackDesignSystemsTemplatesModalClick(analytics.track, {
-          page_name: 'design_systems',
-          area: 'templates_modal',
-          element: 'share',
-          templates_id: system.id,
-          templates_type: system.source ?? 'library',
-        })
-      }
-      onSidebarToggleClick={() =>
-        trackDesignSystemsTemplatesModalClick(analytics.track, {
-          page_name: 'design_systems',
-          area: 'templates_modal',
-          element: 'design_md',
-          templates_id: system.id,
-          templates_type: system.source ?? 'library',
-        })
-      }
-      onSharePopoverItemClick={(item) =>
-        trackDesignSystemsTemplatesModalSharePopoverClick(analytics.track, {
-          page_name: 'design_systems',
-          area: 'templates_modal_share_popover',
-          element: item,
-          templates_id: system.id,
-          templates_type: system.source ?? 'library',
-        })
-      }
       sidebar={{
         label: t('ds.specToggle'),
         defaultOpen: true,

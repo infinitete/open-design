@@ -219,9 +219,6 @@ AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
   skip 用例已删除，现行 Community 页面由
   `community-template-modal-mapping.test.ts` 覆盖浏览、分类过滤、详情和 Use handoff。
 - Community 搜索框当前为只读展示，尚不存在可自动化的搜索行为。
-- Run analytics v4 已有失败卡到 Retry 成功的 UI 恢复闭环，但尚缺真实
-  `/api/runs` line-protocol、真实 PostHog dot-path 查询和新旧字段样本对账；详见
-  [`../../../specs/current/run-analytics-v4-test-plan.md`](../../../specs/current/run-analytics-v4-test-plan.md)。
 - Media 长任务已覆盖 token/task 生命周期边界，但仍缺一条从 UI 发起 run、
   agent 调用 media tool、daemon 调用 fake Vela、轮询终态并校验产物文件的完整
   跨层自动化闭环。
@@ -264,7 +261,6 @@ pnpm --filter @open-design/e2e exec playwright test -c playwright.config.ts ui/a
 - 用单独 UI fix PR 收敛 Provider 6、Context 3、resize 3、Updater 1、billing 1，避免
   再次与 release-gate PR 的作用域清理互相覆盖
 - 补一条 fake Vela 驱动的 UI → run → media tool → task 终态 → artifact 跨层闭环
-- 补齐 run analytics v4 的本地 receiver、真实 PostHog 查询与样本对账
 - 为 Community 搜索提供真实产品行为后再补搜索 E2E
 - 每补完一批，就做一次 grouped validation
 - 只有有明确产品语义、且当前架构仍支持的场景才保留在 UI E2E；过时的 DOM/交互模型应删除或迁移到更合适的测试层

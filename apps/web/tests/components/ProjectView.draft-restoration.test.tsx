@@ -26,23 +26,6 @@ vi.mock('../../src/i18n', () => ({
   useT: () => ((value: string) => value),
 }));
 
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      track: vi.fn(),
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-      setConfigureGlobals: vi.fn(),
-      setUserId: vi.fn(),
-      anonymousId: 'test',
-      sessionId: 'test',
-      newRequestId: () => 'request-test',
-    }),
-  };
-});
-
 vi.mock('../../src/providers/anthropic', () => ({ streamMessage: vi.fn() }));
 
 vi.mock('../../src/providers/daemon', async (importOriginal) => {

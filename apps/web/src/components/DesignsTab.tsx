@@ -1,15 +1,7 @@
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from "@open-design/components";
-import { projectKindFromMetadataToTracking } from "@open-design/contracts/analytics";
 import type { OpenDesignHostProjectImportSuccess } from "@open-design/host";
-import { useAnalytics } from "../analytics/provider";
-import {
-  trackPageView,
-  trackProjectsListClick,
-  trackProjectsListControlsClick,
-  trackProjectsMorePopoverClick,
-} from "../analytics/events";
 import { useT } from "../i18n";
 import {
 	getProjectCoverSnapshot,
@@ -143,7 +135,6 @@ export function DesignsTab({
 	const renameTitleId = useId();
 	const confirmTitleId = useId();
 	const t = useT();
-	const analytics = useAnalytics();
 	const folderImport = useOpenFolderImport({
 		onImportFolder,
 		onImportFolderResponse,
@@ -156,8 +147,7 @@ export function DesignsTab({
 	useEffect(() => {
 		if (projectsPageViewFiredRef.current) return;
 		projectsPageViewFiredRef.current = true;
-		trackPageView(analytics.track, { page_name: 'projects' });
-	}, [analytics.track]);
+	}, []);
 	const [filter, setFilter] = useState("");
 	const [sub, setSub] = useState<SubTab>("recent");
 	const [liveArtifactsByProject, setLiveArtifactsByProject] = useState<
@@ -356,11 +346,6 @@ export function DesignsTab({
 			projectsRefreshInFlightRef.current = true;
 			setProjectsRefreshing(true);
 			if (source === "manual") {
-				trackProjectsListControlsClick(analytics.track, {
-					page_name: "projects",
-					area: "list_controls",
-					element: "refresh",
-				});
 			}
 			try {
 				await onRefresh();
@@ -378,7 +363,7 @@ export function DesignsTab({
 				setProjectsRefreshing(false);
 			}
 		},
-		[analytics.track, onRefresh, t],
+		[onRefresh, t],
 	);
 
 	const refreshProjectsListRef = useRef(refreshProjectsList);
@@ -650,11 +635,6 @@ export function DesignsTab({
 							aria-pressed={sub === "recent"}
 							className={sub === "recent" ? "active" : ""}
 							onClick={() => {
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "recent",
-								});
 								setSub("recent");
 							}}
 						>
@@ -664,11 +644,6 @@ export function DesignsTab({
 							aria-pressed={sub === "yours"}
 							className={sub === "yours" ? "active" : ""}
 							onClick={() => {
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "your_designs",
-								});
 								setSub("yours");
 							}}
 						>
@@ -683,11 +658,6 @@ export function DesignsTab({
 							className="designs-new-project-button"
 							data-testid="designs-new-project"
 							onClick={() => {
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "create_project",
-								});
 								onNewProject();
 							}}
 						>
@@ -723,11 +693,6 @@ export function DesignsTab({
 								// P0 ui_click area=list_controls element=search_input.
 								// Tracked on focus rather than every keystroke so each
 								// engagement counts once.
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "search_input",
-								});
 							}}
 						/>
 					</div>
@@ -786,11 +751,6 @@ export function DesignsTab({
 							type="button"
 							className="designs-select-toggle"
 							onClick={() => {
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "select",
-								});
 								setSelectMode(true);
 							}}
 						>
@@ -807,11 +767,6 @@ export function DesignsTab({
 							aria-pressed={view === "grid"}
 							className={view === "grid" ? "active" : ""}
 							onClick={() => {
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "grid_view",
-								});
 								setView("grid");
 							}}
 							title={t("designs.viewGrid")}
@@ -825,11 +780,6 @@ export function DesignsTab({
 							onClick={() => {
 								// Kanban view substitutes for the contract's
 								// list_view element.
-								trackProjectsListControlsClick(analytics.track, {
-									page_name: "projects",
-									area: "list_controls",
-									element: "list_view",
-								});
 								setView("kanban");
 							}}
 							title={t("designs.viewKanban")}
@@ -853,11 +803,6 @@ export function DesignsTab({
 									className="primary designs-empty-cta"
 									data-testid="designs-empty-new-project"
 									onClick={() => {
-										trackProjectsListControlsClick(analytics.track, {
-											page_name: "projects",
-											area: "list_controls",
-											element: "create_project",
-										});
 										onNewProject();
 									}}
 								>
@@ -984,15 +929,6 @@ export function DesignsTab({
 									if (selectMode) {
 										toggleSelected(p.id);
 									} else {
-										// P0 ui_click area=list element=project_card.
-										const projectKind = projectKindFromMetadataToTracking(p.metadata);
-										trackProjectsListClick(analytics.track, {
-											page_name: "projects",
-											area: "list",
-											element: "project_card",
-											project_id: p.id,
-											...(projectKind ? { project_kind: projectKind } : {}),
-										});
 										onOpen(p.id);
 									}
 								}}
@@ -1026,14 +962,6 @@ export function DesignsTab({
 											e.stopPropagation();
 											const opening = menuOpenId !== p.id;
 											if (opening) {
-												const projectKind = projectKindFromMetadataToTracking(p.metadata);
-												trackProjectsListClick(analytics.track, {
-													page_name: "projects",
-													area: "list",
-													element: "more",
-													project_id: p.id,
-													...(projectKind ? { project_kind: projectKind } : {}),
-												});
 											}
 											setMenuOpenId(opening ? p.id : null);
 											}}
@@ -1050,14 +978,6 @@ export function DesignsTab({
 												type="button"
 												role="menuitem"
 												onClick={() => {
-													const projectKind = projectKindFromMetadataToTracking(p.metadata);
-													trackProjectsMorePopoverClick(analytics.track, {
-														page_name: "projects",
-														area: "projects_more_popover",
-														element: "rename",
-														project_id: p.id,
-														...(projectKind ? { project_kind: projectKind } : {}),
-													});
 													setMenuOpenId(null);
 													handleRenameProject(p);
 												}}
@@ -1070,14 +990,6 @@ export function DesignsTab({
 													type="button"
 													role="menuitem"
 													onClick={() => {
-														const projectKind = projectKindFromMetadataToTracking(p.metadata);
-														trackProjectsMorePopoverClick(analytics.track, {
-															page_name: "projects",
-															area: "projects_more_popover",
-															element: "duplicate",
-															project_id: p.id,
-															...(projectKind ? { project_kind: projectKind } : {}),
-														});
 														setMenuOpenId(null);
 														handleDuplicateProject(p);
 													}}
@@ -1091,14 +1003,6 @@ export function DesignsTab({
 												role="menuitem"
 												className="danger"
 												onClick={() => {
-													const projectKind = projectKindFromMetadataToTracking(p.metadata);
-													trackProjectsMorePopoverClick(analytics.track, {
-														page_name: "projects",
-														area: "projects_more_popover",
-														element: "delete",
-														project_id: p.id,
-														...(projectKind ? { project_kind: projectKind } : {}),
-													});
 													setMenuOpenId(null);
 													handleDeleteProject(p);
 												}}
@@ -1431,7 +1335,6 @@ function isOrbitProject(project: Project): boolean {
   const metadata = project.metadata as { kind?: unknown } | undefined;
   return metadata?.kind === 'orbit';
 }
-
 
 function projectCover(
 	project: Project,

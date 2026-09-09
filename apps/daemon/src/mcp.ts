@@ -19,21 +19,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import {
-  ANALYTICS_HEADER_ATTRIBUTION_QUALITY,
-  ANALYTICS_HEADER_CLIENT_TYPE,
-  ANALYTICS_HEADER_DEVICE_ID,
-  ANALYTICS_HEADER_DISTRIBUTION_MECHANISM,
-  ANALYTICS_HEADER_ENTRY_SURFACE,
-  ANALYTICS_HEADER_EXTERNAL_PLUGIN_ID,
-  ANALYTICS_HEADER_EXTERNAL_PLUGIN_VERSION,
-  ANALYTICS_HEADER_HOST_PRODUCT,
-  ANALYTICS_HEADER_LOCALE,
-  ANALYTICS_HEADER_MCP_SESSION_ID,
-  ANALYTICS_HEADER_PUBLISHER_CLASS,
-  ANALYTICS_HEADER_REQUEST_ID,
-  ANALYTICS_HEADER_SESSION_ID,
   buildProjectRawFileUrl,
-  type McpAnalyticsContextResponse,
 } from '@open-design/contracts';
 
 // Type removed from contracts - define locally
@@ -56,10 +42,8 @@ import {
   type ExternalPluginContext,
   logicalPluginRequestDigest,
   mapMcpHostProduct,
-  normalizeExternalPluginRunAnalyticsHints,
   OPEN_DESIGN_PLUGIN_ID,
   pluginContractError,
-  resolvePluginGenerationSloWindowMs,
   validateExternalPluginContext,
   validatePluginRequestId,
   validatePluginWorkflowId,
@@ -99,7 +83,6 @@ interface BundleInput { project: ProjectPayload | ProjectSummary; entry: string;
 interface ErrorWithCode { message?: string; code?: string; cause?: { code?: string } }
 interface HandleMcpToolCallOptions {
   briefStore?: LocalMcpBriefStore;
-  analyticsHeaders?: Record<string, string>;
   pluginAttribution?: McpPluginAttribution | null;
   briefState?: 'confirmed' | 'skipped' | 'not_applicable';
 }
@@ -1131,7 +1114,6 @@ export class McpObservabilitySession {
 
   private constructor(
     private baseUrl: string,
-    private readonly identity: McpAnalyticsContextResponse,
     clientInfo: { name?: unknown; version?: unknown } | null | undefined,
   ) {
     this.hostProduct = mapMcpHostProduct(clientInfo);
@@ -1145,25 +1127,7 @@ export class McpObservabilitySession {
     baseUrl: string,
     clientInfo: { name?: unknown; version?: unknown } | null | undefined,
   ): Promise<McpObservabilitySession> {
-    let identity: McpAnalyticsContextResponse = {
-      enabled: false,
-      deviceId: null,
-      locale: 'en',
-    };
-    try {
-      identity = await postJson<McpAnalyticsContextResponse>(
-        `${baseUrl}/api/analytics/mcp/context`,
-        {},
-      );
-    } catch {
-      // A telemetry bootstrap failure must not block the MCP server.
-    }
-    const session = new McpObservabilitySession(baseUrl, identity, clientInfo);
-    await session.emit('mcp_session_initialized', null, {
-      mcp_session_id: session.id,
-      host_product: session.hostProduct,
-    });
-    return session;
+    return new McpObservabilitySession(baseUrl, clientInfo);
   }
 
   private async restoreAcceptedWorkflow(
@@ -1355,88 +1319,6 @@ export class McpObservabilitySession {
     }
     return { correlation_status: 'matched' };
   }
-
-  async emit(
-    event:
-      | 'mcp_session_initialized'
-      | 'mcp_tool_started'
-      | 'mcp_tool_finished',
-    attribution: McpPluginAttribution | null,
-    properties: Record<string, unknown>,
-  ): Promise<void> {
-    if (!this.identity.enabled || !this.identity.deviceId) return;
-    try {
-      const attributionQuality =
-        properties.attribution_quality === 'session_correlated'
-          ? 'session_correlated'
-          : 'self_reported';
-      await postJson(
-        `${this.baseUrl}/api/analytics/mcp/event`,
-        {
-          event,
-          eventId: randomUUID(),
-          occurredAt: new Date().toISOString(),
-          properties,
-        },
-        this.headers(attribution, undefined, attributionQuality),
-      );
-    } catch {
-      // Analytics is deliberately best-effort.
-    }
-  }
-
-  headers(
-    attribution: McpPluginAttribution | null,
-    requestId?: string,
-    attributionQuality: 'self_reported' | 'session_correlated' = 'self_reported',
-  ): Record<string, string> {
-    if (!this.identity.enabled || !this.identity.deviceId) return {};
-    return {
-      [ANALYTICS_HEADER_DEVICE_ID]: this.identity.deviceId,
-      [ANALYTICS_HEADER_SESSION_ID]: this.id,
-      [ANALYTICS_HEADER_CLIENT_TYPE]: 'external_mcp',
-      [ANALYTICS_HEADER_ENTRY_SURFACE]: 'external_mcp',
-      [ANALYTICS_HEADER_HOST_PRODUCT]: this.hostProduct,
-      [ANALYTICS_HEADER_LOCALE]: this.identity.locale || 'en',
-      [ANALYTICS_HEADER_MCP_SESSION_ID]: this.id,
-      ...(requestId ? { [ANALYTICS_HEADER_REQUEST_ID]: requestId } : {}),
-      ...(attribution
-        ? {
-            [ANALYTICS_HEADER_EXTERNAL_PLUGIN_ID]:
-              attribution.context.id,
-            [ANALYTICS_HEADER_EXTERNAL_PLUGIN_VERSION]:
-              attribution.context.version,
-            [ANALYTICS_HEADER_DISTRIBUTION_MECHANISM]:
-              attribution.context.distributionMechanism,
-            [ANALYTICS_HEADER_PUBLISHER_CLASS]:
-              attribution.context.publisherClass,
-            [ANALYTICS_HEADER_ATTRIBUTION_QUALITY]: attributionQuality,
-          }
-        : {}),
-    };
-  }
-}
-
-function mcpSourceProperties(
-  session: McpObservabilitySession,
-  attribution: McpPluginAttribution | null,
-  attributionQuality: 'self_reported' | 'session_correlated' = 'self_reported',
-): Record<string, unknown> {
-  return {
-    mcp_session_id: session.id,
-    host_product: session.hostProduct,
-    ...(attribution
-      ? {
-          external_plugin_id: attribution.context.id,
-          external_plugin_version: attribution.context.version,
-          distribution_mechanism:
-            attribution.context.distributionMechanism,
-          publisher_class: attribution.context.publisherClass,
-          attribution_quality: attributionQuality,
-          plugin_workflow_id: attribution.pluginWorkflowId,
-        }
-      : {}),
-  };
 }
 
 function parseMcpResult(result: McpToolCallResult): JsonObject | null {
@@ -1515,8 +1397,6 @@ async function observeMcpToolCall(
   args: McpArgs,
 ): Promise<McpToolCallResult> {
   const name = typeof nameValue === 'string' ? nameValue : 'unknown';
-  const startedAt = Date.now();
-  const toolAttemptId = randomUUID();
   let attribution: McpPluginAttribution | null = null;
   try {
     attribution = await session.resolveAttribution(name, args, briefStore);
@@ -1531,73 +1411,13 @@ async function observeMcpToolCall(
       );
     }
   } catch (error) {
-    const observed = session.beginCall(name, args, null);
-    const rawPlugin =
-      args.externalPluginContext
-      && typeof args.externalPluginContext === 'object'
-      && !Array.isArray(args.externalPluginContext)
-      && (args.externalPluginContext as JsonObject).id
-        === OPEN_DESIGN_PLUGIN_ID;
-    const rejected = errorResult(errorMessage(error));
-    const common = {
-      ...mcpSourceProperties(session, null),
-      ...(rawPlugin
-        ? {
-            external_plugin_id: OPEN_DESIGN_PLUGIN_ID,
-            attribution_quality: 'self_reported',
-          }
-        : {}),
-      tool_name: name,
-      tool_attempt_id: toolAttemptId,
-      attempt_number: observed.attemptNumber,
-    };
-    await session.emit('mcp_tool_started', null, common);
-    await session.emit('mcp_tool_finished', null, {
-      ...common,
-      result: 'failed',
-      duration_ms: Math.max(0, Date.now() - startedAt),
-      ...mcpFailureFacts(name, rejected),
-    });
-    return rejected;
+    return errorResult(errorMessage(error));
   }
-
-  const observed = session.beginCall(name, args, attribution);
-  const requestId =
-    typeof args.requestId === 'string' && args.requestId ? args.requestId : undefined;
-  const logical =
-    attribution && requestId
-      ? logicalPluginRequestDigest(requestId)
-      : null;
-  const startedAttributionQuality = session.attributionQuality(
-    name,
-    args,
-    attribution,
-    null,
-  );
-  const common = {
-    ...mcpSourceProperties(
-      session,
-      attribution,
-      startedAttributionQuality,
-    ),
-    tool_name: name,
-    tool_attempt_id: toolAttemptId,
-    attempt_number: observed.attemptNumber,
-    ...(typeof args.runId === 'string' ? { run_id: args.runId } : {}),
-    ...(logical
-      ? {
-          logical_request_digest: logical.digest,
-          logical_request_digest_version: logical.version,
-        }
-      : {}),
-  };
-  await session.emit('mcp_tool_started', attribution, common);
 
   const result = await daemonTarget.call(name, args, async (baseUrl) => {
     session.updateBaseUrl(baseUrl);
     return await handleMcpToolCall(baseUrl, name, args, {
       briefStore,
-      analyticsHeaders: session.headers(attribution, requestId),
       pluginAttribution: attribution,
       ...(attribution
         ? {
@@ -1613,7 +1433,6 @@ async function observeMcpToolCall(
     name === 'start_run'
     && attribution
     && typeof payload?.runId === 'string'
-    && payload.analyticsAttributionMismatch !== true
   ) {
     session.rememberRun(
       payload.runId,
@@ -1621,32 +1440,6 @@ async function observeMcpToolCall(
       attribution,
     );
   }
-  const delivery = mcpDeliveryFacts(
-    name,
-    result,
-    payload,
-    observed.pollAttemptCount,
-  );
-  const finishedAttributionQuality = session.attributionQuality(
-    name,
-    args,
-    attribution,
-    payload,
-  );
-  await session.emit('mcp_tool_finished', attribution, {
-    ...common,
-    ...(attribution
-      ? { attribution_quality: finishedAttributionQuality }
-      : {}),
-    result: result.isError === true ? 'failed' : 'success',
-    duration_ms: Math.max(0, Date.now() - startedAt),
-    ...(observed.pollAttemptCount
-      ? { poll_attempt_count: observed.pollAttemptCount }
-      : {}),
-    ...mcpFailureFacts(name, result),
-    ...delivery,
-    ...session.correlationFacts(name, args, attribution, payload),
-  });
   return result;
 }
 
@@ -2491,25 +2284,12 @@ async function startRun(
   const body: JsonObject = { projectId: id, clientRequestId: requestId };
   if (options.pluginAttribution) {
     validatePluginRequestId(requestId);
-    const logical = logicalPluginRequestDigest(requestId);
-    body.analyticsHints = {
-      entrySurface: 'external_mcp',
-      hostProduct:
-        options.analyticsHeaders?.[ANALYTICS_HEADER_HOST_PRODUCT] ?? 'unknown',
-      externalPluginId: options.pluginAttribution.context.id,
-      externalPluginVersion:
-        options.pluginAttribution.context.version,
-      distributionMechanism:
-        options.pluginAttribution.context.distributionMechanism,
-      publisherClass: options.pluginAttribution.context.publisherClass,
-      // This payload is client-supplied. The daemon validates it against the
-      // request identity/digest and upgrades to session_correlated only after
-      // the Run/workflow binding is accepted.
-      attributionQuality: 'self_reported',
-      pluginWorkflowId: options.pluginAttribution.pluginWorkflowId,
-      logicalRequestDigest: logical.digest,
-      logicalRequestDigestVersion: logical.version,
-      briefState: options.briefState ?? 'not_applicable',
+    const digest = logicalPluginRequestDigest(requestId);
+    body.pluginWorkflowProvenance = {
+      pluginWorkflowId: validatePluginWorkflowId(options.pluginAttribution.pluginWorkflowId),
+      externalPluginContext: validateExternalPluginContext(options.pluginAttribution.context),
+      logicalRequestDigest: digest.digest,
+      logicalRequestDigestVersion: digest.version,
     };
   }
   if (args.resume !== undefined) {
@@ -2537,7 +2317,7 @@ async function startRun(
   const created = await postJson<JsonObject>(
     `${baseUrl}/api/runs`,
     body,
-    { ...options.analyticsHeaders, ...headers },
+    headers,
   );
   // Build studioUrl (conversation-level — no entry file yet) so the
   // outer agent has a URL to give the user right away. The daemon
@@ -3430,10 +3210,8 @@ export {
   handleMcpToolCall,
   logicalPluginRequestDigest,
   mapMcpHostProduct,
-  normalizeExternalPluginRunAnalyticsHints,
   mcpDeliveryFacts,
   mcpFailureFacts,
-  resolvePluginGenerationSloWindowMs,
   resolveProjectArg,
   resolveProjectId,
   validateExternalPluginContext,

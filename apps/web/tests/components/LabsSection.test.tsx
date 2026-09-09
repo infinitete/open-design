@@ -12,10 +12,6 @@ import type {
 import { LabsSection } from '../../src/components/LabsSection';
 import { I18nProvider } from '../../src/i18n';
 
-const track = vi.fn();
-vi.mock('../../src/analytics/provider', () => ({
-  useAnalytics: () => ({ track }),
-}));
 
 function status(overrides: {
   requestedMode?: OdNextRolloutMode;
@@ -110,7 +106,6 @@ describe('LabsSection', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
-    track.mockClear();
   });
 
   it('renders the harness row off and operable on a machine that never configured it', async () => {
@@ -217,206 +212,6 @@ describe('LabsSection', () => {
     expect(switchEl().getAttribute('aria-checked')).toBe('false');
   });
 
-  it('reports the toggle only after the preference is persisted', async () => {
-    const { writes } = stubFetch();
-    renderSection();
-    await waitFor(() => expect(switchEl().getAttribute('aria-disabled')).toBe('false'));
-
-    fireEvent.click(switchEl());
-
-    await waitFor(() => expect(writes).toHaveLength(1));
-    await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
-    expect(track.mock.calls[0]?.[0]).toBe('labs_item_toggled');
-    expect(track.mock.calls[0]?.[1]).toEqual({
-      item_id: 'design_harness',
-      to: 'on',
-      source: 'settings',
-    });
-  });
-
-  it('reports the opt-out direction on the way back off', async () => {
-    stubFetch({ rolloutStatus: status({ requestedMode: 'active', requestedModeSource: 'app_config' }) });
-    renderSection();
-    await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'));
-
-    fireEvent.click(switchEl());
-
-    await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
-    expect(track.mock.calls[0]?.[1]).toMatchObject({ to: 'off', source: 'settings' });
-  });
-
-  it('reports nothing when the write fails', async () => {
-    // The switch rolls back, so the install does not hold the preference the
-    // event would have asserted.
-    stubFetch({ writeFails: true });
-    const onAutosaveStatus = vi.fn();
-    renderSection(onAutosaveStatus);
-    await waitFor(() => expect(switchEl().getAttribute('aria-disabled')).toBe('false'));
-
-    fireEvent.click(switchEl());
-
-    await waitFor(() => expect(onAutosaveStatus).toHaveBeenCalledWith('error'));
-    expect(track).not.toHaveBeenCalled();
-  });
-
-  describe('opt-out reason', () => {
-    async function optOut() {
-      stubFetch({ rolloutStatus: status({ requestedMode: 'active', requestedModeSource: 'app_config' }) });
-      renderSection();
-      await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'));
-      fireEvent.click(switchEl());
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
-      await screen.findByText('Switched back to the previous approach. What did not work?');
-    }
-
-    function reasonEvents() {
-      return track.mock.calls.filter((c) => (c[1] as { reason?: unknown }).reason);
-    }
-
-    it('asks only after an opt-out, never after opting in', async () => {
-      stubFetch();
-      renderSection();
-      await waitFor(() => expect(switchEl().getAttribute('aria-disabled')).toBe('false'));
-
-      fireEvent.click(switchEl());
-
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
-      expect(screen.queryByText('Switched back to the previous approach. What did not work?')).toBeNull();
-    });
-
-    it('reports a chosen reason as a second event, leaving the opt-out count intact', async () => {
-      await optOut();
-
-      fireEvent.click(screen.getByText('Too slow'));
-
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(2));
-      expect(track.mock.calls[0]?.[1]).toEqual({ item_id: 'design_harness', to: 'off', source: 'settings' });
-      expect(track.mock.calls[1]?.[1]).toEqual({
-        item_id: 'design_harness',
-        to: 'off',
-        source: 'settings',
-        reason: ['too_slow'],
-        has_custom_reason: false,
-      });
-      expect(screen.queryByText('Switched back to the previous approach. What did not work?')).toBeNull();
-    });
-
-    it('records an explicit skip', async () => {
-      await optOut();
-
-      fireEvent.click(screen.getByText('Skip'));
-
-      await waitFor(() => expect(reasonEvents()).toHaveLength(1));
-      expect(reasonEvents()[0]?.[1]).toMatchObject({ reason: ['skipped'], has_custom_reason: false });
-    });
-
-    it('carries the free text when the user picks other', async () => {
-      await optOut();
-
-      fireEvent.click(screen.getByText('Other'));
-      const input = screen.getByLabelText('What specifically did not work?') as HTMLInputElement;
-      fireEvent.change(input, { target: { value: '  layout drifts on long decks  ' } });
-      fireEvent.click(screen.getByText('Submit'));
-
-      await waitFor(() => expect(reasonEvents()).toHaveLength(1));
-      expect(reasonEvents()[0]?.[1]).toMatchObject({
-        reason: ['other'],
-        has_custom_reason: true,
-        custom_reason: 'layout drifts on long decks',
-      });
-    });
-
-    it('keeps submit unavailable until the free text has content', async () => {
-      await optOut();
-
-      fireEvent.click(screen.getByText('Other'));
-      const submit = screen.getByText('Submit') as HTMLButtonElement;
-      expect(submit.disabled).toBe(true);
-
-      fireEvent.change(screen.getByLabelText('What specifically did not work?'), {
-        target: { value: '   ' },
-      });
-      expect(submit.disabled).toBe(true);
-
-      fireEvent.change(screen.getByLabelText('What specifically did not work?'), {
-        target: { value: 'x' },
-      });
-      expect(submit.disabled).toBe(false);
-    });
-
-    it('records a skip when the question times out unanswered', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      try {
-        await optOut();
-        expect(reasonEvents()).toHaveLength(0);
-
-        await vi.advanceTimersByTimeAsync(120_000);
-
-        await waitFor(() => expect(reasonEvents()).toHaveLength(1));
-        expect(reasonEvents()[0]?.[1]).toMatchObject({ reason: ['skipped'] });
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it('stops the clock once the user starts writing a custom reason', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      try {
-        await optOut();
-        fireEvent.click(screen.getByText('Other'));
-
-        await vi.advanceTimersByTimeAsync(300_000);
-
-        // Taking the panel away mid-sentence would discard what they typed.
-        expect(reasonEvents()).toHaveLength(0);
-        expect(screen.getByLabelText('What specifically did not work?')).toBeTruthy();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it('retracts the question when the user turns the switch back on', async () => {
-      // A fumbled off/on used to leave the panel asking about a switch that was
-      // already back on, and reported two opt-outs against a single reason row
-      // once the stale question finally settled.
-      await optOut();
-
-      fireEvent.click(switchEl());
-
-      await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'));
-      await waitFor(() =>
-        expect(screen.queryByText('Switched back to the previous approach. What did not work?')).toBeNull());
-
-      const offs = track.mock.calls.filter((c) => (c[1] as { to?: string }).to === 'off');
-      const ons = track.mock.calls.filter((c) => (c[1] as { to?: string }).to === 'on');
-      // One reported opt-out, one reason row for it, one opt-in.
-      expect(offs).toHaveLength(2);
-      expect(offs.filter((c) => (c[1] as { reason?: unknown }).reason)).toHaveLength(1);
-      expect(ons).toHaveLength(1);
-    });
-
-    it('records a skip when the user leaves the page with the question open', async () => {
-      // Otherwise every abandoned question is a silent gap, and the share of
-      // people who declined to answer reads lower than it is.
-      await optOut();
-
-      cleanup();
-
-      await waitFor(() => expect(reasonEvents()).toHaveLength(1));
-      expect(reasonEvents()[0]?.[1]).toMatchObject({ reason: ['skipped'] });
-    });
-
-    it('answers exactly once even when two paths out race', async () => {
-      await optOut();
-
-      fireEvent.click(screen.getByText('Too slow'));
-      cleanup();
-
-      await waitFor(() => expect(reasonEvents()).toHaveLength(1));
-      expect(reasonEvents()[0]?.[1]).toMatchObject({ reason: ['too_slow'] });
-    });
-  });
-
   it('clears the saved confirmation instead of leaving it up', async () => {
     // The dialog's autosave pill is shared and has no timer of its own, so the
     // confirmation used to sit there for the rest of the session and follow the
@@ -454,11 +249,7 @@ describe('LabsSection', () => {
     expect(onAutosaveStatus).toHaveBeenCalledWith('idle');
   });
 
-  // OPEND-2365 (P2). Leaving Labs mid-write is the ordinary case — the user
-  // flips the switch and immediately clicks another settings section. The
-  // write still lands, so the installation holds the preference the event
-  // asserts; a `mounted` guard that also swallows the report turns every one
-  // of those into a silently missing data point.
+  // Pending writes must settle without stealing another settings section’s indicator.
   describe('left while the write is still in flight', () => {
     function heldWrite() {
       let release = () => {};
@@ -467,26 +258,6 @@ describe('LabsSection', () => {
       });
       return { gate, release };
     }
-
-    it('still reports the toggle once the successful write lands', async () => {
-      const { gate, release } = heldWrite();
-      const { writes } = stubFetch({ writeGate: gate });
-      renderSection();
-      await waitFor(() => expect(switchEl().getAttribute('aria-disabled')).toBe('false'));
-
-      fireEvent.click(switchEl());
-      await waitFor(() => expect(writes).toHaveLength(1));
-      cleanup();
-      release();
-
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
-      expect(track.mock.calls[0]?.[0]).toBe('labs_item_toggled');
-      expect(track.mock.calls[0]?.[1]).toEqual({
-        item_id: 'design_harness',
-        to: 'on',
-        source: 'settings',
-      });
-    });
 
     it('settles the dialog autosave pill instead of leaving it on saving', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -524,7 +295,6 @@ describe('LabsSection', () => {
       release();
 
       await waitFor(() => expect(onAutosaveStatus).toHaveBeenCalledWith('error'));
-      expect(track).not.toHaveBeenCalled();
     });
 
     it('cannot take the shared save indicator back from a newer section', async () => {
@@ -546,43 +316,13 @@ describe('LabsSection', () => {
       onAutosaveStatus.mockClear();
       release();
 
-      // The toggle still reports — the preference did land.
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(1));
+      await gate;
+      // Flush the pending response and state settlement before checking ownership.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(onAutosaveStatus).not.toHaveBeenCalled();
     });
 
-    it('keeps an opt-out paired with exactly one reason row', async () => {
-      // The reason panel cannot be shown to a section that is gone, and the
-      // unmount settler has already run by the time the write lands. Without
-      // an immediate skip the opt-out would be counted with no reason row at
-      // all, which is the one thing the pairing invariant exists to prevent.
-      const { gate, release } = heldWrite();
-      const { writes } = stubFetch({
-        rolloutStatus: status({ requestedMode: 'active', requestedModeSource: 'app_config' }),
-        writeGate: gate,
-      });
-      renderSection();
-      await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'));
 
-      fireEvent.click(switchEl());
-      await waitFor(() => expect(writes).toHaveLength(1));
-      cleanup();
-      release();
-
-      await waitFor(() => expect(track).toHaveBeenCalledTimes(2));
-      expect(track.mock.calls[0]?.[1]).toEqual({
-        item_id: 'design_harness',
-        to: 'off',
-        source: 'settings',
-      });
-      expect(track.mock.calls[1]?.[1]).toMatchObject({
-        item_id: 'design_harness',
-        to: 'off',
-        source: 'settings',
-        reason: ['skipped'],
-        has_custom_reason: false,
-      });
-    });
   });
 
   it('locks the switch and explains when an environment variable owns the mode', async () => {

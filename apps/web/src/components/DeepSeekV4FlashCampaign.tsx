@@ -7,11 +7,6 @@ import {
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { goPlanPricingUrl } from '../campaigns/go-plan';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackDeepSeekCampaignModalClick,
-  trackDeepSeekCampaignModalSurfaceView,
-} from '../analytics/events';
 import { useI18n } from '../i18n';
 import { Icon } from './Icon';
 import { modelProviderIconSrc } from './modelProviderIcon';
@@ -103,7 +98,6 @@ export function DeepSeekV4FlashCampaign({
   active = true,
 }: Props) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const [modalOpen, setModalOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const dialogId = useId();
@@ -131,13 +125,6 @@ export function DeepSeekV4FlashCampaign({
 
   useEffect(() => {
     if (!modalOpen) return;
-    trackDeepSeekCampaignModalSurfaceView(analytics.track, {
-      page_name: 'home',
-      area: 'deepseek_campaign_modal',
-      element: 'modal',
-      campaign_id: 'deepseek_v4_pro',
-      user_state: paid ? 'paid' : 'unpaid',
-    });
     const panel = document.getElementById(dialogId);
     if (!panel) return;
     const previouslyFocused =
@@ -150,7 +137,7 @@ export function DeepSeekV4FlashCampaign({
       document.body.style.overflow = previousBodyOverflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, [analytics.track, audience, dialogId, modalOpen, paid]);
+  }, [audience, dialogId, modalOpen, paid]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -179,24 +166,14 @@ export function DeepSeekV4FlashCampaign({
         cta: t('campaign.deepseekV4Flash.unpaid.cta'),
       };
   const trackModalClick = (element: 'close' | 'later' | 'use_now' | 'upgrade') => {
-    trackDeepSeekCampaignModalClick(analytics.track, {
-      page_name: 'home',
-      area: 'deepseek_campaign_modal',
-      element,
-      campaign_id: 'deepseek_v4_pro',
-      user_state: paid ? 'paid' : 'unpaid',
-    });
   };
   const closeModal = () => {
-    trackModalClick('close');
     dismissModal();
   };
   const postponeModal = () => {
-    trackModalClick('later');
     dismissModal();
   };
   const takeAction = () => {
-    trackModalClick(paid ? 'use_now' : 'upgrade');
     dismissModal();
     if (paid) {
       // The campaign's hosted runtime is retired, so the paid CTA no longer

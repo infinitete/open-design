@@ -18,6 +18,7 @@ import {
   OPEN_DESIGN_GITHUB_REPO_URL,
   type AgentInfo,
   type ProjectFileVersion,
+  type ProjectKind,
   type SocialShareRequest,
   type SocialShareResponse,
 } from '@open-design/contracts';
@@ -27,54 +28,10 @@ import {
   isPreviewRuntimeState,
   type PreviewRuntimeState,
 } from '@open-design/contracts/runtime/preview-runtime-state';
-import {
-  anonymizeArtifactId,
-  artifactKindToTracking,
-  type ArtifactPublishResultProps,
-  type ArtifactEditResultProps,
-  type TrackingArtifactEditKind,
-  type TrackingFileVersionSource,
-  type TrackingArtifactKind,
-  type TrackingProjectKind,
-  type TrackingDeployProvider,
-} from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import { exportErrorCode } from '../analytics/export-error-code';
-import { deployErrorCode } from '../analytics/deploy-error-code';
-import {
-  reportPreviewIframeMessage,
-  reportPreviewTransportRecovery,
-  subscribePreviewIframeMessages,
-  trackIframeLoad,
-  type PreviewTransportDocumentState,
-  type PreviewTransportRecoverySignal,
-} from '../observability/iframe-error';
-import {
-  trackArtifactExportResult,
-  trackArtifactEditResult,
-  trackArtifactDeployResult,
-  trackArtifactPublishResult,
-  trackArtifactHeaderClick,
-  trackArtifactToolbarClick,
-  trackCommentPopoverClick,
-  trackDrawToolbarClick,
-  trackFileVersionModalClick,
-  trackFileVersionModalSurfaceView,
-  trackFileVersionRestoreResult,
-  trackPageView,
-  trackPresentPopoverClick,
-  trackDeckViewerSurfaceView,
-  trackDeckViewerClick,
-  trackSpeakerNotesSaveResult,
-  trackShareOptionPopoverClick,
-} from '../analytics/events';
-import { recordFirstLoopStep } from '../onboarding/first-loop';
 import { MarkdownRenderer, artifactRendererRegistry } from '../artifacts/renderer-registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import {
-  artifactExportOriginProps,
   matchingArtifactVersionId,
-  type ArtifactExportOriginProps,
 } from '../artifacts/version-origin';
 import {
   buildScrollAnchors,
@@ -219,7 +176,6 @@ import {
   PreviewDrawOverlay,
   ANNOTATION_EVENT,
   type AnnotationEventDetail,
-  type DrawToolbarElement,
 } from './PreviewDrawOverlay';
 import {
   buildBoardCommentAttachments,
@@ -275,7 +231,6 @@ import {
   setHtmlSourceSnapshot,
 } from './html-source-snapshot-cache';
 
-
 // ---- Single-machine build stubs -------------------------------------------
 // Workspace identity, team sharing and public-file publishing were removed
 // with the user system. These local no-op shims keep the file/JSX plumbing
@@ -288,7 +243,6 @@ function appendResourceQuery(path: string, query: string): string {
 const canPublishPublicFile = (_ctx: unknown) => false;
 const publicFileManualRevokePublication = (_err: unknown) => undefined;
 const publicFilePublishFailureKey = (_err: unknown) => 'fileViewer.publishFileRequiresWorkspace' as const;
-const publishErrorCode = (_err: unknown) => 'publish_failed' as const;
 const publishProjectFilePublic = async (..._args: unknown[]): Promise<never> => {
   throw new Error('Public file publishing is not available.');
 };
@@ -1706,7 +1660,7 @@ function getPreviewDocumentEpoch(key: string): string {
 
 interface Props {
   projectId: string;
-  projectKind: TrackingProjectKind;
+  projectKind: ProjectKind;
   file: ProjectFile;
   liveHtml?: string;
   filesRefreshKey?: number;
@@ -1748,10 +1702,6 @@ interface Props {
   projectName?: string;
   projectDir?: string | null;
   agents?: AgentInfo[];
-  artifactId?: string;
-  artifactKind?: TrackingArtifactKind;
-  metricsConsent?: boolean;
-  installationId?: string | null;
   /** False while this viewer is retained offscreen for an instant tab revisit. */
   workspaceActive?: boolean;
   /** Pin viewers that still own an in-progress edit so LRU eviction cannot drop work. */
@@ -1832,10 +1782,6 @@ export const FileViewer = memo(function FileViewer({
   projectName,
   projectDir,
   agents,
-  artifactId,
-  artifactKind,
-  metricsConsent,
-  installationId,
   workspaceActive = true,
   onRetainActivityChange,
   onManualEditExitHandlerChange,
@@ -1849,22 +1795,6 @@ export const FileViewer = memo(function FileViewer({
     file,
     isDeckHint: Boolean(isDeck),
   });
-
-  // studio_view artifact — fire once per (project, file) pair so the
-  // activation funnel can attribute "user opened the produced artifact"
-  // even when the sub-viewer below is HtmlViewer / MarkdownViewer / etc.
-  // artifact_id is anonymized to satisfy the CSV's no-filename rule.
-  const analytics = useAnalytics();
-  const studioViewKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!workspaceActive) return;
-    const key = `${projectId}::${file.name}`;
-    if (studioViewKeyRef.current === key) return;
-    studioViewKeyRef.current = key;
-    trackPageView(analytics.track, {
-      page_name: 'artifact',
-    });
-  }, [projectId, projectKind, file.name, file.kind, rendererMatch?.renderer.id, analytics.track, workspaceActive]);
   useEffect(() => {
     if (projectResourceReadAllowed) return;
     invalidateHtmlSourceSnapshotProject(projectId);
@@ -1912,10 +1842,6 @@ export const FileViewer = memo(function FileViewer({
         projectName={projectName}
         projectDir={projectDir}
         agents={agents}
-        artifactId={artifactId}
-        artifactKind={artifactKind}
-        metricsConsent={metricsConsent}
-        installationId={installationId}
         workspaceActive={workspaceActive}
         onRetainActivityChange={onRetainActivityChange}
         onManualEditExitHandlerChange={onManualEditExitHandlerChange}
@@ -1933,10 +1859,6 @@ export const FileViewer = memo(function FileViewer({
         projectName={projectName}
         projectDir={projectDir}
         agents={agents}
-        artifactId={artifactId}
-        artifactKind={artifactKind}
-        metricsConsent={metricsConsent}
-        installationId={installationId}
         viewerOnly={viewerOnly}
         workspaceActive={workspaceActive}
       />
@@ -2180,22 +2102,6 @@ export function LiveArtifactViewer({
     [projectId, liveArtifact.artifactId, reloadKey, workspaceContext],
   );
   const previewScale = zoom / 100;
-
-  // Instrument the live-artifact iframe so failed loads — usually a
-  // missing artifact file or a stuck `od://` resolver — surface in
-  // PostHog. iframe load errors don't propagate to window.error, so
-  // observability/install.ts cannot catch them globally.
-  useEffect(() => {
-    if (mode !== 'preview') return undefined;
-    const node = iframeRef.current;
-    if (!node) return undefined;
-    return trackIframeLoad({
-      iframe: node,
-      surface: 'live_artifact_preview',
-      artifactId: liveArtifact.artifactId,
-      projectId,
-    });
-  }, [mode, previewUrl, liveArtifact.artifactId, projectId]);
 
   async function handleRefresh() {
     if (refreshing) return;
@@ -3251,28 +3157,6 @@ function fileVersionSourceClassName(version: ProjectFileVersion): string {
   return 'ai';
 }
 
-// Any unknown/legacy source value counts as 'ai', matching the label and
-// class-name fallbacks above.
-function fileVersionSourceToTracking(version: ProjectFileVersion): TrackingFileVersionSource {
-  if (version.source === 'manual') return 'manual';
-  if (version.source === 'restore') return 'restore';
-  return 'ai';
-}
-
-function manualEditPatchKindToTracking(patch: ManualEditPatch): TrackingArtifactEditKind {
-  switch (patch.kind) {
-    case 'set-text': return 'text';
-    case 'set-link': return 'link';
-    case 'set-image': return 'image';
-    case 'remove-element': return 'element_remove';
-    case 'set-token': return 'token';
-    case 'set-style': return 'style';
-    case 'set-attributes': return 'attributes';
-    case 'set-outer-html': return 'html';
-    case 'set-full-source': return 'source';
-  }
-}
-
 function sourceLooksLikeDeckPreview(source: string | null | undefined): boolean {
   if (!source) return false;
   return (
@@ -3353,10 +3237,8 @@ function normalizeDeckVisualSource(source: string): string {
 
 function FileVersionManagerModal({
   projectId,
-  projectKind,
   file,
   currentSource,
-  entryFrom,
   onExportPdf,
   onOpenImageExport,
   onExportZip,
@@ -3368,10 +3250,8 @@ function FileVersionManagerModal({
   viewerOnly = false,
 }: {
   projectId: string;
-  projectKind: TrackingProjectKind;
   file: ProjectFile;
   currentSource: string | null;
-  entryFrom: 'toolbar' | 'more_menu';
   onExportPdf?: (context: HtmlVersionExportContext) => void;
   onOpenImageExport?: (context: HtmlVersionExportContext) => Promise<void> | void;
   onExportZip?: (context: HtmlVersionExportContext) => void;
@@ -3384,7 +3264,6 @@ function FileVersionManagerModal({
   viewerOnly?: boolean;
 }) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const workspaceContext: unknown = null;
   const tRef = useRef(t);
   const [versions, setVersions] = useState<ProjectFileVersion[]>([]);
@@ -3415,52 +3294,6 @@ function FileVersionManagerModal({
   // zero-reparse). `inFlightRef` dedupes concurrent hover-prefetch + click.
   const contentCacheRef = useRef<Map<string, string>>(new Map());
   const inFlightRef = useRef<Map<string, Promise<void>>>(new Map());
-  const trackingArtifactId = useMemo(
-    () => anonymizeArtifactId({ projectId, fileName: file.name }),
-    [projectId, file.name],
-  );
-  const trackingArtifactKind = artifactKindToTracking({ fileKind: file.kind ?? null });
-  const fireModalClick = (
-    element:
-      | 'version_item'
-      | 'open_in_new_tab'
-      | 'restore'
-      | 'restore_confirm'
-      | 'restore_cancel',
-    extra?: {
-      version_source?: TrackingFileVersionSource;
-      version_is_current?: boolean;
-      viewport?: PreviewViewportId;
-    },
-  ) => {
-    trackFileVersionModalClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'file_version_modal',
-      element,
-      artifact_id: trackingArtifactId,
-      artifact_kind: trackingArtifactKind,
-      project_id: projectId,
-      project_kind: projectKind,
-      version_count: versions.length,
-      ...extra,
-    });
-  };
-  // One impression per modal open. The component unmounts on close, so a
-  // fire-once ref is enough — no dependency bookkeeping needed.
-  const surfaceViewFiredRef = useRef(false);
-  useEffect(() => {
-    if (surfaceViewFiredRef.current) return;
-    surfaceViewFiredRef.current = true;
-    trackFileVersionModalSurfaceView(analytics.track, {
-      page_name: 'artifact',
-      area: 'file_version_modal',
-      entry_from: entryFrom,
-      artifact_id: trackingArtifactId,
-      artifact_kind: trackingArtifactKind,
-      project_id: projectId,
-      project_kind: projectKind,
-    });
-  }, [analytics.track, entryFrom, projectId, projectKind, trackingArtifactId, trackingArtifactKind]);
   const versionById = useMemo(() => {
     const map = new Map<string, ProjectFileVersion>();
     for (const version of versions) map.set(version.id, version);
@@ -3876,9 +3709,6 @@ function FileVersionManagerModal({
 
   function openVersionInNewTab() {
     if (loadingContent || !selectedContentMatchesVersion || !selectedContent || !selectedVersion) return;
-    fireModalClick('open_in_new_tab', {
-      version_source: fileVersionSourceToTracking(selectedVersion),
-    });
     openSandboxedPreviewInNewTab(
       selectedContent,
       `${file.name} · v${selectedVersion.version}`,
@@ -3891,25 +3721,6 @@ function FileVersionManagerModal({
     setRestoring(true);
     setError(null);
     let closingAfterRestore = false;
-    const restoreStarted = performance.now();
-    // `versions` is sorted newest-first, so the index is "how many versions
-    // back from the newest" the restore target sits.
-    const fireRestoreResult = (result: 'success' | 'failed', errorCode?: string) => {
-      trackFileVersionRestoreResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'file_version_modal',
-        artifact_id: trackingArtifactId,
-        artifact_kind: trackingArtifactKind,
-        project_id: projectId,
-        project_kind: projectKind,
-        version_source: fileVersionSourceToTracking(selectedVersion),
-        version_gap: Math.max(0, versions.findIndex((version) => version.id === selectedVersion.id)),
-        version_count: versions.length,
-        result,
-        ...(errorCode ? { error_code: errorCode } : {}),
-        restore_duration_ms: Math.round(performance.now() - restoreStarted),
-      });
-    };
     try {
       const result = await restoreProjectFileVersion(
         projectId,
@@ -3917,11 +3728,9 @@ function FileVersionManagerModal({
         selectedVersion,
       );
       if (!result) {
-        fireRestoreResult('failed', 'restore_request_failed');
         setError(t('fileViewer.versions.restoreFailed'));
         return;
       }
-      fireRestoreResult('success', result.versionWarning?.code);
       const restoredVersion = result.version ?? selectedVersion;
       await onRestored(selectedContent, restoredVersion);
       if (result.versionWarning) {
@@ -4054,12 +3863,6 @@ function FileVersionManagerModal({
                 void primeVersionContent(version.id);
               };
               const selectVersion = () => {
-                if (!selected) {
-                  fireModalClick('version_item', {
-                    version_source: fileVersionSourceToTracking(version),
-                    version_is_current: Boolean(version.current),
-                  });
-                }
                 setSelectedId(version.id);
               };
               // The daemon fills an absent label with a hardcoded English
@@ -4121,11 +3924,6 @@ function FileVersionManagerModal({
             aria-controls={confirmRestore ? restorePopoverId : undefined}
             onClick={() => {
               if (!selectedVersion) return;
-              if (!confirmRestore) {
-                fireModalClick('restore', {
-                  version_source: fileVersionSourceToTracking(selectedVersion),
-                });
-              }
               setConfirmRestore((value) => !value);
             }}
           >
@@ -4165,9 +3963,6 @@ function FileVersionManagerModal({
                 type="button"
                 className="viewer-action"
                 onClick={() => {
-                  fireModalClick('restore_cancel', {
-                    version_source: fileVersionSourceToTracking(selectedVersion),
-                  });
                   setConfirmRestore(false);
                 }}
               >
@@ -4178,9 +3973,6 @@ function FileVersionManagerModal({
                 className="viewer-action primary"
                 disabled={restoreDisabled}
                 onClick={() => {
-                  fireModalClick('restore_confirm', {
-                    version_source: fileVersionSourceToTracking(selectedVersion),
-                  });
                   setConfirmRestore(false);
                   void restoreVersion();
                 }}
@@ -6361,29 +6153,20 @@ function ReactComponentViewer({
   projectName,
   projectDir,
   agents,
-  artifactId,
-  artifactKind: handoffArtifactKind,
-  metricsConsent = false,
-  installationId,
   viewerOnly = false,
   workspaceActive = true,
 }: {
   projectId: string;
-  projectKind: TrackingProjectKind;
+  projectKind: ProjectKind;
   file: ProjectFile;
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
   projectName?: string;
   projectDir?: string | null;
   agents?: AgentInfo[];
-  artifactId?: string;
-  artifactKind?: TrackingArtifactKind;
-  metricsConsent?: boolean;
-  installationId?: string | null;
   viewerOnly?: boolean;
   workspaceActive?: boolean;
 }) {
   const t = useT();
-  const analytics = useAnalytics();
   // `FileWorkspace` keeps a non-active viewer mounted, so an in-flight publish
   // can settle after the user has switched away. The ref carries the LIVE value
   // into those continuations; the captured prop would still read the
@@ -6490,7 +6273,6 @@ function ReactComponentViewer({
     };
   }, [shareAccess]);
 
-
   // Collapse the nested workspace-access listbox whenever the share popover
   // itself closes, so it never re-opens mid-flight.
   useEffect(() => {
@@ -6528,70 +6310,16 @@ function ReactComponentViewer({
     // render as unpublished.
   }, [projectId, file.name, canPublishPublic, viewerOnly]);
 
-  // Shared identity fields for the publish-flow events (ReactComponentViewer copy).
-  // `artifactKindToTracking` only recognises HTML through the renderer id — a React
-  // component's `file.kind` is `code`, which would degrade to `unknown` — and this
-  // viewer is reached only through the `react-component` renderer match, so its
-  // renderer identity is a constant.
-  function publishTrackingIdentity() {
-    return {
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({
-        rendererId: 'react-component',
-        fileKind: file.kind ?? null,
-      }),
-      project_id: projectId,
-      project_kind: projectKind,
-    } as const;
-  }
-
-  // Retained (inert) viewers must never report analytics — same rule the
-  // HtmlViewer copy of this flow follows. Only the tracking is gated; the
-  // publish/unpublish calls themselves stay unconditional.
-  const firePublishFlowClick = (element: 'publish_file' | 'copy_publish_link') => {
-    if (!workspaceActive) return;
-    trackShareOptionPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      element,
-      ...publishTrackingIdentity(),
-    });
-  };
-
-  const firePublishResult = (
-    outcome: Pick<
-      ArtifactPublishResultProps,
-      'action' | 'result' | 'error_code' | 'publish_duration_ms'
-    >,
-  ) => {
-    // Read the live ref, not the captured prop: a request can start while this
-    // viewer is active and settle after the user switches tabs.
-    if (!workspaceActiveRef.current) return;
-    trackArtifactPublishResult(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      ...outcome,
-      ...publishTrackingIdentity(),
-    });
-  };
-
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
-    firePublishFlowClick('publish_file');
-    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName);
-      firePublishResult({
-        action: 'publish',
-        result: 'success',
-        publish_duration_ms: Math.round(performance.now() - publishStarted),
-      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6605,12 +6333,6 @@ function ReactComponentViewer({
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
       const recoveryPublication = publicFileManualRevokePublication(error);
-      firePublishResult({
-        action: 'publish',
-        result: 'failed',
-        error_code: publishErrorCode(error),
-        publish_duration_ms: Math.round(performance.now() - publishStarted),
-      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         if (false) {
           setPublishedFileUrl('');
@@ -6633,17 +6355,11 @@ function ReactComponentViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
-    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug);
-      firePublishResult({
-        action: 'unpublish',
-        result: 'success',
-        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6656,12 +6372,6 @@ function ReactComponentViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
-      firePublishResult({
-        action: 'unpublish',
-        result: 'failed',
-        error_code: publishErrorCode(error),
-        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -6672,7 +6382,6 @@ function ReactComponentViewer({
   }
 
   async function copyPublishedFileLink() {
-    firePublishFlowClick('copy_publish_link');
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -7071,10 +6780,6 @@ function ReactComponentViewer({
                   projectName={projectName}
                   projectDir={projectDir}
                   agents={agents}
-                  artifactId={artifactId}
-                  artifactKind={handoffArtifactKind}
-                  metricsConsent={metricsConsent}
-                  installationId={installationId}
                 />
               )}
             </>
@@ -7256,17 +6961,13 @@ function HtmlViewer({
   projectName,
   projectDir,
   agents,
-  artifactId,
-  artifactKind: handoffArtifactKind,
-  metricsConsent = false,
-  installationId,
   workspaceActive = true,
   onRetainActivityChange,
   onManualEditExitHandlerChange,
   manualEditEntryAllowed = true,
 }: {
   projectId: string;
-  projectKind: TrackingProjectKind;
+  projectKind: ProjectKind;
   file: ProjectFile;
   liveHtml?: string;
   filesRefreshKey?: number;
@@ -7292,10 +6993,6 @@ function HtmlViewer({
   projectName?: string;
   projectDir?: string | null;
   agents?: AgentInfo[];
-  artifactId?: string;
-  artifactKind?: TrackingArtifactKind;
-  metricsConsent?: boolean;
-  installationId?: string | null;
   workspaceActive?: boolean;
   onRetainActivityChange?: (fileName: string, retain: boolean) => void;
   onManualEditExitHandlerChange?: (
@@ -7355,34 +7052,14 @@ function HtmlViewer({
   workspaceActiveRef.current = workspaceActive;
   const filesRefreshPending = filesRefreshKey !== 0
     && appliedFilesRefreshKeyRef.current !== filesRefreshKey;
-  const analytics = useAnalytics();
   // Team collaboration: resolve comment anchors through the drift ladder when
   // the viewer is a team member of a shared project. Off (exact-match, single
   // user) otherwise. From the ProjectView-provided collab context — no props to
   // thread, no second collab client.
   const collab: { workspaceContext: null; workspaceContextLoading: boolean; member: null; present: unknown[]; enabled: boolean; ownerDisplayName?: string | null } | null = null;
   // Latest per-slide capture progress for the programmatic exporters, read by
-  // the loading-toast ticker in fireShareExport to render elapsed time + ETA.
+  // the loading-toast ticker in runShareExport to render elapsed time + ETA.
   const exportProgressRef = useRef<{ done: number; total: number } | null>(null);
-  const unknownExportOrigin = (
-    status: ArtifactExportOriginProps['artifact_origin_status'] = 'missing_version',
-  ): ArtifactExportOriginProps => ({
-    entry_surface: 'open_design_ui',
-    artifact_origin_status: status,
-    origin_entry_surface: 'unknown',
-  });
-  const resolveArtifactExportOrigin = async (
-    context?: HtmlVersionExportContext | null,
-  ): Promise<ArtifactExportOriginProps> => {
-    const content = context?.content ?? sourceRef.current;
-    if (content == null) return unknownExportOrigin();
-    let version = context?.version ?? null;
-    if (!version) {
-      const result = await fetchProjectFileVersions(projectId, file.name);
-      version = result?.versions.find((candidate) => candidate.current) ?? null;
-    }
-    return artifactExportOriginProps(content, version);
-  };
   const resolveManualEditParentVersionId = async (
     content: string,
   ): Promise<string | undefined> => {
@@ -7396,12 +7073,8 @@ function HtmlViewer({
       return undefined;
     }
   };
-  // Shared helper for the share menu: emit studio_click share_option on
-  // entry and artifact_export_result on resolution. Sync exports report
-  // success immediately after the call returns; async exports get .then
-  // / .catch. The same request_id threads both events so PostHog can
-  // stitch click → result via $insert_id correlation.
-  const fireShareExport = (
+  // Run exports with progress, cancellation and user-visible error feedback.
+  const runShareExport = (
     format:
       | 'pdf'
       | 'pptx'
@@ -7413,53 +7086,8 @@ function HtmlViewer({
       | 'share_link'
       | 'share_page',
     fn: () => Promise<unknown> | unknown,
-    context?: HtmlVersionExportContext | null,
   ) => {
     if (!workspaceActive) return;
-    const requestId = analytics.newRequestId();
-    const artifactId = anonymizeArtifactId({ projectId, fileName: file.name });
-    const artifactKind = artifactKindToTracking({ fileKind: file.kind ?? null });
-    const trackingFormat = format;
-    trackShareOptionPopoverClick(
-      analytics.track,
-      {
-        page_name: 'artifact',
-        area: 'share_option_popover',
-        artifact_id: artifactId,
-        artifact_kind: artifactKind,
-        element: trackingFormat,
-        project_id: projectId,
-        project_kind: projectKind,
-      },
-      { requestId },
-    );
-    const started = performance.now();
-    const originPromise = resolveArtifactExportOrigin(context)
-      .catch(() => unknownExportOrigin());
-    const finish = async (result: 'success' | 'failed' | 'cancelled', errorCode?: string) => {
-      const originProps = await originPromise;
-      trackArtifactExportResult(
-        analytics.track,
-        {
-          page_name: 'artifact',
-          area: 'share_option_popover',
-          artifact_id: artifactId,
-          artifact_kind: artifactKind,
-          project_id: projectId,
-          project_kind: projectKind,
-          export_format: trackingFormat,
-          result,
-          ...originProps,
-          ...(errorCode ? { error_code: errorCode } : {}),
-          export_duration_ms: Math.round(performance.now() - started),
-        },
-        { requestId },
-      );
-      // Onboarding first-loop 交付 step (spec §8.3): only a SUCCESSFUL export
-      // closes the loop. Project-scoped — a no-op unless the project was
-      // started from the Home recommendation.
-      if (result === 'success') recordFirstLoopStep(analytics.track, 'delivered', projectId);
-    };
     const toastFormats = new Set(['pdf', 'pptx', 'zip', 'html', 'image', 'markdown']);
     // Programmatic exports compute in-browser and can take a while (one render
     // per deck slide), so the loading toast ticks every second with elapsed time
@@ -7511,30 +7139,24 @@ function HtmlViewer({
           (result) => {
             stopTicker();
             if (result === 'cancelled') {
-              void finish('cancelled');
               if (toastFormats.has(format)) setExportToast(null);
               return;
             }
-            void finish('success');
             if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
           },
           (err) => {
-            void finish('failed', exportErrorCode(err));
             failToast(err);
           },
         );
       } else {
         stopTicker();
         if (out === 'cancelled') {
-          void finish('cancelled');
           if (toastFormats.has(format)) setExportToast(null);
           return;
         }
-        void finish('success');
         if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
       }
     } catch (err) {
-      void finish('failed', exportErrorCode(err));
       failToast(err);
     }
   };
@@ -7542,160 +7164,6 @@ function HtmlViewer({
   // (apps/web/src/runtime/exports.ts drives this for the PDF exporter).
   const onExportProgress: ExportProgress = (done, total) => {
     exportProgressRef.current = { done, total };
-  };
-  // P0 helpers — keep the artifact_id + artifact_kind derivation in one place
-  // so each per-button onClick stays a one-liner. We compute lazily inside the
-  // closure because `file.kind` / `file.name` can change as the user navigates
-  // tabs without remounting HtmlViewer.
-  const fireArtifactToolbarClick = (
-    element:
-      | 'reload'
-      | 'preview'
-      | 'source'
-      | 'screenshot'
-      | 'edit_screenshot'
-      | 'tweaks'
-      | 'mark'
-      | 'comment'
-      | 'pods'
-      | 'inspect'
-      | 'edit'
-      | 'zoom_out'
-      | 'zoom_level_dropdown'
-      | 'zoom_in'
-      | 'versions',
-    entryFrom?: 'toolbar' | 'more_menu',
-  ) => {
-    if (!workspaceActive) return;
-    trackArtifactToolbarClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'artifact_toolbar',
-      element,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-      ...(entryFrom ? { entry_from: entryFrom } : {}),
-    });
-  };
-  const fireDrawToolbarClick = (
-    element: DrawToolbarElement,
-    submitAction?: 'draft' | 'queue' | 'send',
-  ) => {
-    if (!workspaceActive) return;
-    trackDrawToolbarClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'draw_toolbar',
-      element,
-      ...(submitAction ? { submit_action: submitAction } : {}),
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-    });
-  };
-  const fireArtifactHeaderClick = (
-    element:
-      | 'back'
-      | 'edit'
-      | 'present_dropdown'
-      | 'download_dropdown'
-      | 'share_dropdown'
-      | 'settings',
-  ) => {
-    if (!workspaceActive) return;
-    trackArtifactHeaderClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'artifact_header',
-      element,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-    });
-  };
-  const firePresentPopoverClick = (
-    element: 'in_this_tab' | 'fullscreen' | 'new_tab',
-  ) => {
-    if (!workspaceActive) return;
-    trackPresentPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'present_popover',
-      element,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-    });
-  };
-  const fireDeckViewerClick = (
-    element:
-      | 'slide_prev'
-      | 'slide_next'
-      | 'slide_reset'
-      | 'thumbnail_select'
-      | 'thumbnail_rail_toggle'
-      | 'speaker_notes_edit',
-    extra?: {
-      action?: 'expand' | 'collapse';
-      slide_index?: number;
-      slide_count?: number;
-    },
-  ) => {
-    if (!workspaceActive) return;
-    trackDeckViewerClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'deck_viewer',
-      element,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-      ...(extra?.action ? { action: extra.action } : {}),
-      ...(typeof extra?.slide_index === 'number'
-        ? { slide_index: extra.slide_index }
-        : {}),
-      ...(typeof extra?.slide_count === 'number'
-        ? { slide_count: extra.slide_count }
-        : {}),
-    });
-  };
-  const fireCommentPopoverClick = (
-    element: 'save_comment' | 'send_to_chat' | 'add_note',
-  ) => {
-    if (!workspaceActive) return;
-    trackCommentPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'comment_popover',
-      element,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-    });
-  };
-  const fireArtifactEditResult = (
-    action: ArtifactEditResultProps['action'],
-    patch: ManualEditPatch,
-    startedAt: number,
-    result: ArtifactEditResultProps['result'],
-    errorCode?: ArtifactEditResultProps['error_code'],
-  ) => {
-    // A retained viewer can become inactive while an edit write is in flight.
-    // Read the live ref so the async continuation does not emit from the
-    // background tab after it settles.
-    if (!workspaceActiveRef.current) return;
-    trackArtifactEditResult(analytics.track, {
-      page_name: 'artifact',
-      area: 'manual_edit',
-      action,
-      edit_kind: manualEditPatchKindToTracking(patch),
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-      result,
-      ...(errorCode ? { error_code: errorCode } : {}),
-      duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
-    });
   };
   // Single-machine build: workspace sharing / public publishing removed.
   // Keep the share-menu state shape so the JSX stays simple; everything is
@@ -7792,13 +7260,11 @@ function HtmlViewer({
   // preselect the tab and open this one popover.
   const [deployMenuOpen, setDeployMenuOpen] = useState(false);
   const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
-  // False when closed; otherwise records which entry opened the modal so the
-  // surface_view impression can carry entry_from.
   const [toolbarMoreOpen, setToolbarMoreOpen] = useState(false);
   const toolbarMoreRef = useRef<HTMLDivElement | null>(null);
   const toolbarMoreTriggerRef = useRef<HTMLButtonElement | null>(null);
   useDismissOnOutsideInteraction(toolbarMoreOpen, toolbarMoreRef, () => setToolbarMoreOpen(false));
-  const [versionModalOpen, setVersionModalOpen] = useState<false | 'toolbar' | 'more_menu'>(false);
+  const [versionModalOpen, setVersionModalOpen] = useState(false);
   const [exportReadyNudge, setExportReadyNudge] = useState(false);
   const exportReadyNudgeSeenRef = useRef<Set<string>>(new Set());
   // Template save UX. We surface a transient "Saved" pill in the share
@@ -7925,71 +7391,16 @@ function HtmlViewer({
     sourceAuthorizationScopeKey,
   ]);
 
-  // Shared identity fields for the publish-flow events (HtmlViewer copy).
-  // `artifactKindToTracking` only recognises HTML through the renderer id — an HTML
-  // artifact's `file.kind` is `html`, which would degrade to `unknown` — and this
-  // viewer is reached only through the `html` / `deck-html` renderer matches, which
-  // is exactly what the `isDeck` prop is derived from.
-  function publishTrackingIdentity() {
-    return {
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({
-        rendererId: isDeck ? 'deck-html' : 'html',
-        fileKind: file.kind ?? null,
-      }),
-      project_id: projectId,
-      project_kind: projectKind,
-    } as const;
-  }
-
-  // Background (inert) HtmlViewer instances must never report analytics, same
-  // as every other emission site in this component. Only the tracking is
-  // gated — the publish/unpublish calls themselves stay unconditional.
-  const firePublishFlowClick = (element: 'publish_file' | 'copy_publish_link') => {
-    if (!workspaceActive) return;
-    trackShareOptionPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      element,
-      ...publishTrackingIdentity(),
-    });
-  };
-
-  const firePublishResult = (
-    outcome: Pick<
-      ArtifactPublishResultProps,
-      'action' | 'result' | 'error_code' | 'publish_duration_ms'
-    >,
-  ) => {
-    // Read the live ref, not the captured prop: a publish/unpublish request can
-    // start while this viewer is active and settle after the user switches tabs,
-    // and the in-flight continuation still holds the render-time `true`.
-    if (!workspaceActiveRef.current) return;
-    trackArtifactPublishResult(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      ...outcome,
-      ...publishTrackingIdentity(),
-    });
-  };
-
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
-    firePublishFlowClick('publish_file');
-    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName);
-      firePublishResult({
-        action: 'publish',
-        result: 'success',
-        publish_duration_ms: Math.round(performance.now() - publishStarted),
-      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -8003,12 +7414,6 @@ function HtmlViewer({
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
       const recoveryPublication = publicFileManualRevokePublication(error);
-      firePublishResult({
-        action: 'publish',
-        result: 'failed',
-        error_code: publishErrorCode(error),
-        publish_duration_ms: Math.round(performance.now() - publishStarted),
-      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         if (false) {
           setPublishedFileUrl('');
@@ -8031,17 +7436,11 @@ function HtmlViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
-    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug);
-      firePublishResult({
-        action: 'unpublish',
-        result: 'success',
-        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -8054,12 +7453,6 @@ function HtmlViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
-      firePublishResult({
-        action: 'unpublish',
-        result: 'failed',
-        error_code: publishErrorCode(error),
-        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -8070,7 +7463,6 @@ function HtmlViewer({
   }
 
   async function copyPublishedFileLink() {
-    firePublishFlowClick('copy_publish_link');
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -8277,10 +7669,9 @@ function HtmlViewer({
     previewContentMeasurementHostInstanceRef.current =
       nextPreviewContentMeasurementHostInstance();
   }
-  const srcDocPreviewFrameName = `${SRC_DOC_PREVIEW_FRAME_NAME_PREFIX}${anonymizeArtifactId({
-    projectId,
-    fileName: file.name,
-  })}`;
+  // A stable, project-scoped frame identity lets the host route navigation
+  // failures to this preview and remount it when the file identity changes.
+  const srcDocPreviewFrameName = `${SRC_DOC_PREVIEW_FRAME_NAME_PREFIX}${encodeURIComponent(JSON.stringify([projectId, file.name]))}`;
   const previewContentMeasurementGenerationRef = useRef(
     `${previewContentMeasurementHostInstanceRef.current}:generation-0`,
   );
@@ -9060,25 +8451,6 @@ function HtmlViewer({
   }, [deployMenuOpen, unifiedActionTab, pptxExportModalOpen]);
   const [pptxExportMode, setPptxExportMode] = useState<'editable' | 'screenshot'>('editable');
   const imageExportSnapshotDataUrlRef = useRef<string | null>(null);
-  // Threads the share-popover click → artifact_export_result(image) pair, the
-  // same correlation other export formats get via fireShareExport. The image
-  // export is a separate modal flow, so it owns its own request id / start.
-  const imageExportRequestIdRef = useRef<string | null>(null);
-  const imageExportStartedRef = useRef(0);
-  const imageExportOriginPromiseRef = useRef<Promise<ArtifactExportOriginProps> | null>(null);
-  // Guards against double-emitting the image export result: each modal
-  // session (reset in openImageExportModal) resolves to exactly one
-  // success / failed / cancelled, no matter which exit path runs.
-  const imageExportResolvedRef = useRef(false);
-  // Same click→result correlation for Save as template, which now reports the
-  // export result only after the template is actually saved (not on open).
-  const templateExportRequestIdRef = useRef<string | null>(null);
-  const templateExportStartedRef = useRef(0);
-  const templateExportOriginPromiseRef = useRef<Promise<ArtifactExportOriginProps> | null>(null);
-  // Same one-terminal-result guard as image export: a template session
-  // (reset in openSaveAsTemplateModal) emits exactly one success/failed/
-  // cancelled, whether it ends in a save or a modal dismiss.
-  const templateExportResolvedRef = useRef(false);
   const screenshotInFlightRef = useRef(false);
   const imageExportInFlightRef = useRef(false);
   // "Screenshot to chat" uploads the captured PNG into the project's own file
@@ -9721,29 +9093,6 @@ function HtmlViewer({
   const showSpeakerNotesPanel = source !== null && effectiveDeck && mode === 'preview';
   const activeSpeakerNote = speakerNotes[activeDeckSlideIndex] ?? '';
   const deckSlideTotal = Math.max(deckSlideCount, speakerNotes.length, showDeckNavigation ? 1 : 0);
-  // Fire the deck_viewer surface_view once per opened artifact, the first time
-  // its HTML is recognized as a slide deck and the slide chrome mounts. This is
-  // the entry/denominator for the deck experience funnel. Keyed by
-  // project+file so navigating between decks re-arms it.
-  const deckSurfaceSeenRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!effectiveDeck || source === null) return;
-    const key = `${projectId}::${file.name}`;
-    if (deckSurfaceSeenRef.current === key) return;
-    deckSurfaceSeenRef.current = key;
-    trackDeckViewerSurfaceView(analytics.track, {
-      page_name: 'artifact',
-      area: 'deck_viewer',
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-      slide_count: deckSlideTotal,
-    });
-    // deckSlideTotal intentionally omitted from deps: we snapshot it at first
-    // recognition and don't want later count updates to refire the view.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics.track, effectiveDeck, source, projectId, projectKind, file.name, file.kind]);
   useEffect(() => {
     setSpeakerNotesDraft(activeSpeakerNote);
     setSpeakerNotesEditMode(false);
@@ -10392,27 +9741,6 @@ function HtmlViewer({
     setPreviewSrcUrl(effectiveBasePreviewSrcUrl);
     setUrlSelectionBridgeReady(false);
   }, [effectiveBasePreviewSrcUrl, filesRefreshPending, previewSrcCarriesCurrentRefresh]);
-  const previewObservabilitySeenRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    previewObservabilitySeenRef.current = new Set();
-  }, [projectId, file.name, reloadKey]);
-  useEffect(() => {
-    if (mode !== 'preview') return undefined;
-    return subscribePreviewIframeMessages(({ source: messageSource, data }) => {
-      if (!workspaceActiveRef.current) return;
-      const activeFrame = useUrlLoadPreview
-        ? urlPreviewIframeRef.current
-        : srcDocPreviewIframeRef.current;
-      if (!activeFrame || messageSource !== activeFrame.contentWindow) return;
-      reportPreviewIframeMessage(data, {
-        surface: 'artifact_preview',
-        renderMode: useUrlLoadPreview ? 'url_load' : 'srcdoc',
-        artifactId: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifactKind: handoffArtifactKind ?? artifactKindToTracking({ fileKind: file.kind ?? null }),
-        projectId,
-      }, previewObservabilitySeenRef.current);
-    });
-  }, [file.kind, file.name, handoffArtifactKind, mode, projectId, useUrlLoadPreview]);
   useEffect(() => {
     const activeFrame = useUrlLoadPreview
       ? urlPreviewIframeRef.current
@@ -10946,8 +10274,6 @@ function HtmlViewer({
   const [srcDocRecoveryGeneration, setSrcDocRecoveryGeneration] = useState<string | null>(null);
   const recoverUnacknowledgedSrcDocTransport = useCallback((
     generation: string,
-    signal: PreviewTransportRecoverySignal,
-    documentState?: PreviewTransportDocumentState,
   ) => {
     if (
       !workspaceActiveRef.current
@@ -10965,24 +10291,7 @@ function HtmlViewer({
       && recoveryAttempt.activationEpoch === activationEpoch
     ) return;
     srcDocRecoveryAttemptRef.current = { generation, activationEpoch };
-    const ready = readySrcDocTransportRef.current;
     cancelPendingSrcDocTransport();
-    reportPreviewTransportRecovery({
-      surface: 'artifact_preview',
-      renderMode: 'srcdoc',
-      artifactId: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifactKind:
-        handoffArtifactKind
-        ?? artifactKindToTracking({ fileKind: file.kind ?? null }),
-      projectId,
-      signal,
-      activationAcknowledged:
-        ready?.frame === frame && ready.generation === generation,
-      documentState,
-      viewportWidth: frame?.clientWidth,
-      viewportHeight: frame?.clientHeight,
-      timeoutMs: signal === 'probe_timeout' ? SRC_DOC_READY_PROBE_TIMEOUT_MS : undefined,
-    });
     verifiedSrcDocTransportRef.current = null;
     readySrcDocTransportRef.current = null;
     activatedSrcDocTransportHtmlRef.current = null;
@@ -10996,10 +10305,6 @@ function HtmlViewer({
     setSrcDocTransportResetKey((key) => key + 1);
   }, [
     cancelPendingSrcDocTransport,
-    file.kind,
-    file.name,
-    handoffArtifactKind,
-    projectId,
     usesPersistentSrcDocTransport,
   ]);
   useEffect(() => {
@@ -11018,7 +10323,7 @@ function HtmlViewer({
     // hidden. Treat returning to the file/project as a new bounded navigation
     // epoch and replace the still-unverified shell immediately. Waiting for a
     // second probe timeout leaves the user staring at the aborted white frame.
-    recoverUnacknowledgedSrcDocTransport(generation, 'reactivation_unverified');
+    recoverUnacknowledgedSrcDocTransport(generation);
   }, [
     mode,
     recoverUnacknowledgedSrcDocTransport,
@@ -11080,7 +10385,7 @@ function HtmlViewer({
       }
       pendingSrcDocTransportProbeRef.current = null;
       if (pending.recoverOnFailure) {
-        recoverUnacknowledgedSrcDocTransport(generation, 'probe_timeout');
+        recoverUnacknowledgedSrcDocTransport(generation);
       }
     }, SRC_DOC_READY_PROBE_TIMEOUT_MS);
   }, [
@@ -11133,7 +10438,7 @@ function HtmlViewer({
       // the active Open Design Blob URL identifies the navigation that owns
       // this frame. Recover immediately instead of adding the fixed 1.5s
       // probe timeout to every affected file-tab activation.
-      recoverUnacknowledgedSrcDocTransport(generation, 'host_navigation_abort');
+      recoverUnacknowledgedSrcDocTransport(generation);
       return;
     }
     // An independently unverified document is challenged immediately. When
@@ -11318,15 +10623,7 @@ function HtmlViewer({
               };
           srcDocParsingGraceRef.current = grace;
           if (now >= grace.deadline) {
-            recoverUnacknowledgedSrcDocTransport(data.generation, 'body_incomplete', {
-              readyState: 'loading',
-              bodyPresent: typeof data.bodyPresent === 'boolean' ? data.bodyPresent : undefined,
-              bodyChildCount: typeof data.bodyChildCount === 'number' ? data.bodyChildCount : undefined,
-              documentElementChildCount:
-                typeof data.documentElementChildCount === 'number'
-                  ? data.documentElementChildCount
-                  : undefined,
-            });
+            recoverUnacknowledgedSrcDocTransport(data.generation);
             return;
           }
           scheduleSrcDocTransportTimeout(() => {
@@ -11341,24 +10638,7 @@ function HtmlViewer({
         // the inert marker placed after all authored body content. This is the
         // characteristic half-document state from an aborted about:srcdoc;
         // recover immediately instead of waiting for the probe timeout.
-        recoverUnacknowledgedSrcDocTransport(data.generation, 'body_incomplete', {
-          readyState:
-            typeof data.documentReadyState === 'string'
-              ? data.documentReadyState
-              : undefined,
-          bodyPresent:
-            typeof data.bodyPresent === 'boolean'
-              ? data.bodyPresent
-              : undefined,
-          bodyChildCount:
-            typeof data.bodyChildCount === 'number'
-              ? data.bodyChildCount
-              : undefined,
-          documentElementChildCount:
-            typeof data.documentElementChildCount === 'number'
-              ? data.documentElementChildCount
-              : undefined,
-        });
+        recoverUnacknowledgedSrcDocTransport(data.generation);
         return;
       }
       const verified = verifiedSrcDocTransportRef.current;
@@ -13095,22 +12375,10 @@ function HtmlViewer({
   }
 
   async function applyManualEdit(patch: ManualEditPatch, label: string): Promise<boolean> {
-    const startedAt = performance.now();
-    let resultTracked = false;
-    const finish = (
-      result: ArtifactEditResultProps['result'],
-      errorCode?: ArtifactEditResultProps['error_code'],
-    ) => {
-      if (resultTracked) return;
-      resultTracked = true;
-      fireArtifactEditResult('apply', patch, startedAt, result, errorCode);
-    };
     if (manualEditSavingRef.current) {
-      finish('failed', 'edit_busy');
       return false;
     }
     if (sourceRef.current == null) {
-      finish('failed', 'source_unavailable');
       return false;
     }
     manualEditSavingRef.current = true;
@@ -13121,14 +12389,12 @@ function HtmlViewer({
       const result = applyManualEditPatch(baseSource, patch);
       if (!result.ok) {
         setManualEditError(result.error ?? 'Could not apply edit.');
-        finish('failed', 'patch_invalid');
         return false;
       }
       if (!(await confirmManualEditHistorySource(
         baseSource,
         'The file changed outside manual edit mode. Refreshing before applying manual edits.',
       ))) {
-        finish('failed', 'source_conflict');
         return false;
       }
       const parentVersionId = await resolveManualEditParentVersionId(baseSource);
@@ -13153,7 +12419,6 @@ function HtmlViewer({
         setManualEditError(
           `Could not save the edited file${status ? ` (${status}${code ? ` ${code}` : ''})` : ''}: ${message}`,
         );
-        finish('failed', 'save_failed');
         return false;
       }
       const entry: ManualEditHistoryEntry = {
@@ -13221,11 +12486,9 @@ function HtmlViewer({
       // they do not yet have a live bridge equivalent.
       syncRetainedManualEditDocument(result.source, patch);
       setManualEditError(null);
-      finish('success');
       await onFileSaved?.();
       return true;
     } catch (error) {
-      finish('failed', 'unknown');
       throw error;
     } finally {
       manualEditSavingRef.current = false;
@@ -13262,18 +12525,7 @@ function HtmlViewer({
   async function undoManualEdit() {
     const [latest, ...rest] = manualEditHistory;
     if (!latest) return;
-    const startedAt = performance.now();
-    let resultTracked = false;
-    const finish = (
-      result: ArtifactEditResultProps['result'],
-      errorCode?: ArtifactEditResultProps['error_code'],
-    ) => {
-      if (resultTracked) return;
-      resultTracked = true;
-      fireArtifactEditResult('undo', latest.patch, startedAt, result, errorCode);
-    };
     if (manualEditSavingRef.current) {
-      finish('failed', 'edit_busy');
       return;
     }
     manualEditSavingRef.current = true;
@@ -13283,7 +12535,6 @@ function HtmlViewer({
         latest.afterSource,
         'The file changed outside manual edit mode. History was cleared to avoid overwriting newer content.',
       ))) {
-        finish('failed', 'source_conflict');
         return;
       }
       const parentVersionId = await resolveManualEditParentVersionId(latest.afterSource);
@@ -13295,7 +12546,6 @@ function HtmlViewer({
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the undo result', saved));
-        finish('failed', 'save_failed');
         return;
       }
       // Same srcDoc rebuild as a committed patch — keep the scroll position
@@ -13312,10 +12562,8 @@ function HtmlViewer({
       setManualEditHistory(rest);
       setManualEditUndone((current) => [latest, ...current]);
       setManualEditDraft((current) => ({ ...current, fullSource: latest.beforeSource }));
-      finish('success');
       await onFileSaved?.();
     } catch (error) {
-      finish('failed', 'unknown');
       throw error;
     } finally {
       manualEditSavingRef.current = false;
@@ -13326,18 +12574,7 @@ function HtmlViewer({
   async function redoManualEdit() {
     const [latest, ...rest] = manualEditUndone;
     if (!latest) return;
-    const startedAt = performance.now();
-    let resultTracked = false;
-    const finish = (
-      result: ArtifactEditResultProps['result'],
-      errorCode?: ArtifactEditResultProps['error_code'],
-    ) => {
-      if (resultTracked) return;
-      resultTracked = true;
-      fireArtifactEditResult('redo', latest.patch, startedAt, result, errorCode);
-    };
     if (manualEditSavingRef.current) {
-      finish('failed', 'edit_busy');
       return;
     }
     manualEditSavingRef.current = true;
@@ -13347,7 +12584,6 @@ function HtmlViewer({
         latest.beforeSource,
         'The file changed outside manual edit mode. History was cleared to avoid overwriting newer content.',
       ))) {
-        finish('failed', 'source_conflict');
         return;
       }
       const parentVersionId = await resolveManualEditParentVersionId(latest.beforeSource);
@@ -13359,7 +12595,6 @@ function HtmlViewer({
       });
       if (!saved.ok) {
         setManualEditError(describeManualEditSaveFailure('Could not save the redo result', saved));
-        finish('failed', 'save_failed');
         return;
       }
       // Same srcDoc rebuild as a committed patch — keep the scroll position
@@ -13376,10 +12611,8 @@ function HtmlViewer({
       setManualEditUndone(rest);
       setManualEditHistory((current) => [latest, ...current]);
       setManualEditDraft((current) => ({ ...current, fullSource: latest.afterSource }));
-      finish('success');
       await onFileSaved?.();
     } catch (error) {
-      finish('failed', 'unknown');
       throw error;
     } finally {
       manualEditSavingRef.current = false;
@@ -13430,15 +12663,6 @@ function HtmlViewer({
   }, [inspectMode, isOurPreviewIframeSource, workspaceActive]);
 
   function postSlide(action: 'next' | 'prev' | 'first' | 'last' | 'go', index?: number) {
-    // Track prev/next here so every entry point (top toolbar, floating nav,
-    // more-menu, keyboard) reports a single deck_viewer slide move. Tracked on
-    // intent, before the iframe-readiness guard below.
-    if (action === 'prev' || action === 'next') {
-      fireDeckViewerClick(action === 'prev' ? 'slide_prev' : 'slide_next', {
-        slide_index: activeDeckSlideIndex,
-        slide_count: deckSlideTotal,
-      });
-    }
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({
@@ -13475,39 +12699,13 @@ function HtmlViewer({
     syncCachedSlideStateToIframe(srcDocPreviewIframeRef.current);
   }, [effectiveDeck, mode, previewStateKey, useUrlLoadPreview, workspaceActive]);
 
-  function fireSpeakerNotesSaveResult(
-    editSurface: 'preview' | 'presenter',
-    result: 'success' | 'failed',
-    hasContent: boolean,
-    errorCode?: string,
-  ) {
-    trackSpeakerNotesSaveResult(analytics.track, {
-      page_name: 'artifact',
-      area: 'deck_viewer',
-      edit_surface: editSurface,
-      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-      project_id: projectId,
-      project_kind: projectKind,
-      slide_count: deckSlideTotal,
-      has_content: hasContent,
-      result,
-      ...(errorCode ? { error_code: errorCode } : {}),
-    });
-  }
-
   async function saveSpeakerNotes(
     nextNotes: readonly string[],
-    options?: { editSurface?: 'preview' | 'presenter' },
   ) {
-    const editSurface = options?.editSurface ?? 'preview';
     const currentSource = sourceRef.current ?? source;
     if (!currentSource) return false;
     const normalized = normalizeSpeakerNotes(nextNotes, Math.max(deckSlideCount, nextNotes.length));
     const nextSource = upsertSpeakerNotesInHtml(currentSource, normalized);
-    // "has content" = the note for the slide being edited is non-empty, so we
-    // can separate real authoring from clearing a note.
-    const hasContent = (normalized[activeDeckSlideIndex] ?? '').trim().length > 0;
     setSpeakerNotesSaving(true);
     setSpeakerNotesStatus(null);
     try {
@@ -13520,17 +12718,10 @@ function HtmlViewer({
       setInlinedSource(null);
       setSpeakerNotesStatus('saved');
       await onFileSaved?.();
-      fireSpeakerNotesSaveResult(editSurface, 'success', hasContent);
       return true;
     } catch (err) {
       console.error('[speaker-notes] save failed:', err);
       setSpeakerNotesStatus('error');
-      fireSpeakerNotesSaveResult(
-        editSurface,
-        'failed',
-        hasContent,
-        err instanceof Error ? err.message : 'speaker_notes_save_failed',
-      );
       return false;
     } finally {
       setSpeakerNotesSaving(false);
@@ -13541,16 +12732,12 @@ function HtmlViewer({
     const next = normalizeSpeakerNotes(speakerNotes, Math.max(deckSlideCount, activeDeckSlideIndex + 1));
     while (next.length <= activeDeckSlideIndex) next.push('');
     next[activeDeckSlideIndex] = speakerNotesDraft;
-    const ok = await saveSpeakerNotes(next, { editSurface: 'preview' });
+    const ok = await saveSpeakerNotes(next);
     if (ok && options?.close !== false) setSpeakerNotesEditMode(false);
     return ok;
   }
 
   function beginSpeakerNotesEdit() {
-    fireDeckViewerClick('speaker_notes_edit', {
-      slide_index: activeDeckSlideIndex,
-      slide_count: deckSlideTotal,
-    });
     setSpeakerNotesEditMode(true);
     setSpeakerNotesDraft(activeSpeakerNote);
     setSpeakerNotesStatus(null);
@@ -13713,10 +12900,6 @@ function HtmlViewer({
         postSlide('last');
       } else if (shortcut === 'reset') {
         e.preventDefault();
-        fireDeckViewerClick('slide_reset', {
-          slide_index: activeDeckSlideIndex,
-          slide_count: deckSlideTotal,
-        });
         goToSlide(0);
       }
     }
@@ -13749,7 +12932,7 @@ function HtmlViewer({
         return;
       }
       if (data.type === 'od:presenter-notes-save' && Array.isArray(data.notes)) {
-        void saveSpeakerNotes(data.notes, { editSurface: 'presenter' });
+        void saveSpeakerNotes(data.notes);
       }
     }
     window.addEventListener('message', onPresenterMessage);
@@ -13995,27 +13178,6 @@ function HtmlViewer({
   // from the same artifact output surface as files.
   function openSaveAsTemplateModal() {
     setDeployMenuOpen(false);
-    // Start the template click→result correlation; the result fires later from
-    // handleSaveAsTemplate once the save actually resolves.
-    const requestId = analytics.newRequestId();
-    templateExportRequestIdRef.current = requestId;
-    templateExportStartedRef.current = performance.now();
-    templateExportOriginPromiseRef.current = resolveArtifactExportOrigin()
-      .catch(() => unknownExportOrigin());
-    templateExportResolvedRef.current = false;
-    trackShareOptionPopoverClick(
-      analytics.track,
-      {
-        page_name: 'artifact',
-        area: 'share_option_popover',
-        artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-        element: 'template',
-        project_id: projectId,
-        project_kind: projectKind,
-      },
-      { requestId },
-    );
     const defaultName =
       file.name.replace(/\.html?$/i, '') || t('fileViewer.templateNameDefault');
     setTemplateName(defaultName);
@@ -14024,42 +13186,6 @@ function HtmlViewer({
     setTemplateModalOpen(true);
   }
 
-  // Component-scoped so both the save flow and the modal Cancel button emit
-  // the one terminal result for a template export session.
-  const fireTemplateExportResult = (
-    result: 'success' | 'failed' | 'cancelled',
-    errorCode?: string,
-  ) => {
-    if (templateExportResolvedRef.current) return;
-    templateExportResolvedRef.current = true;
-    const requestId = templateExportRequestIdRef.current ?? analytics.newRequestId();
-    const started = templateExportStartedRef.current || performance.now();
-    const originPromise = templateExportOriginPromiseRef.current
-      ?? resolveArtifactExportOrigin().catch(() => unknownExportOrigin());
-    void originPromise.then((originProps) => {
-      trackArtifactExportResult(
-        analytics.track,
-        {
-          page_name: 'artifact',
-          area: 'share_option_popover',
-          artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-          artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-          export_format: 'template',
-          result,
-          ...originProps,
-          ...(errorCode ? { error_code: errorCode } : {}),
-          export_duration_ms: Math.round(performance.now() - started),
-          project_id: projectId,
-          project_kind: projectKind,
-        },
-        { requestId },
-      );
-    });
-    // Onboarding first-loop 交付 step (spec §8.3): only a SUCCESSFUL template
-    // export closes the loop. Project-scoped no-op unless started from Home.
-    if (result === 'success') recordFirstLoopStep(analytics.track, 'delivered', projectId);
-  };
-
   async function handleSaveAsTemplate() {
     const name = templateName.trim();
     if (!name) return;
@@ -14067,11 +13193,6 @@ function HtmlViewer({
     setTemplateNote(null);
     setTemplateSaveError(null);
     let savedName: string | null = null;
-    // Default to failed; flips to success only when the save resolves. The
-    // finally block reports exactly one artifact_export_result(template),
-    // covering the !tpl branch and any thrown error too.
-    let templateOutcome: 'success' | 'failed' = 'failed';
-    let templateErrorCode: string | undefined = 'UNKNOWN';
     try {
       const tpl = await saveTemplate({
         name,
@@ -14080,7 +13201,6 @@ function HtmlViewer({
       });
       if (!tpl) {
         setTemplateSaveError(t('fileViewer.savedTemplateFail'));
-        templateErrorCode = 'SAVE_FAILED';
         return;
       }
       savedName = tpl.name;
@@ -14090,11 +13210,8 @@ function HtmlViewer({
       setTemplateNote(t('fileViewer.savedTemplate', { name: tpl.name }));
       // Show success toast
       setTemplateSavedToast(t('fileViewer.savedTemplate', { name: tpl.name }));
-      templateOutcome = 'success';
-      templateErrorCode = undefined;
     } finally {
       setSavingTemplate(false);
-      fireTemplateExportResult(templateOutcome, templateErrorCode);
       if (savedName) {
         // Auto-clear the note so the menu doesn't keep stale state next open.
         setTimeout(() => setTemplateNote(null), 4000);
@@ -14179,38 +13296,10 @@ function HtmlViewer({
     setDeployError(null);
     setDeployActionToast(null);
     setCopiedDeployLink(null);
-    // Real-deploy analytics: report success only after the provider actually
-    // accepts the publish, failed on any hard error / missing config. This is
-    // distinct from the share-popover "opened" signal (artifact_export_result).
-    const deployStarted = performance.now();
-    const providerForTracking: TrackingDeployProvider =
-      deployProviderId === CLOUDFLARE_PAGES_PROVIDER_ID ? 'cloudflare_pages' : 'vercel';
-    const firstConfigure = !deployConfig?.configured;
-    let savedNewToken = false;
-    const fireDeployResult = (
-      result: 'success' | 'failed' | 'cancelled',
-      errorCode?: string,
-    ) => {
-      trackArtifactDeployResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'deploy_modal',
-        artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-        provider: providerForTracking,
-        result,
-        saved_new_token: savedNewToken,
-        first_configure: firstConfigure,
-        ...(errorCode ? { error_code: errorCode } : {}),
-        deploy_duration_ms: Math.round(performance.now() - deployStarted),
-        project_id: projectId,
-        project_kind: projectKind,
-      });
-    };
     try {
       const cloudflarePagesSelection = buildCloudflarePagesDeploySelection();
       const typedToken = deployToken.trim();
       const hasNewToken = typedToken && typedToken !== deployConfig?.tokenMask;
-      savedNewToken = Boolean(hasNewToken);
       const cloudflareHints = cloudflareConfigHintsFromForm();
       const cloudflareHintsChanged = deployProviderId === CLOUDFLARE_PAGES_PROVIDER_ID && Boolean(
         cloudflareHints?.lastZoneId !== deployConfig?.cloudflarePages?.lastZoneId ||
@@ -14227,9 +13316,6 @@ function HtmlViewer({
       if (needsConfigSave) {
         const nextConfig = await saveDeployConfig();
         if (!nextConfig) {
-          // saveDeployConfig bailed (missing/invalid token, e.g. user clicked
-          // Deploy without entering a key) — count as a failed deploy attempt.
-          fireDeployResult('failed', 'CONFIG_REQUIRED');
           return;
         }
         if (!nextConfig?.configured) {
@@ -14252,7 +13338,6 @@ function HtmlViewer({
       setDeployment(next);
       setDeployResult(next);
       if (deployResultState(next.status) !== 'failed') {
-        fireDeployResult('success');
         setDeploySavedToast({
           message: t('fileViewer.deploySuccessToast'),
           details: t('fileViewer.deploySuccessToastDetails', {
@@ -14260,8 +13345,6 @@ function HtmlViewer({
             url: next.url,
           }),
         });
-      } else {
-        fireDeployResult('failed', `STATUS_${next.status ?? 'UNKNOWN'}`);
       }
     } catch (err) {
       const option = getDeployProviderOption(deployProviderId);
@@ -14276,10 +13359,6 @@ function HtmlViewer({
       } else {
         setDeployError(message);
       }
-      fireDeployResult(
-        'failed',
-        tokenRequired ? 'CONFIG_REQUIRED' : deployErrorCode(err),
-      );
     } finally {
       setDeploying(false);
       setDeployPhase('idle');
@@ -14370,7 +13449,6 @@ function HtmlViewer({
   }
 
   async function reloadHtmlPreview() {
-    fireArtifactToolbarClick('reload');
     // Reload is also an Edit-session boundary. Settle pending text/style work
     // before replacing the active document, then release Edit's srcDoc latch
     // so a normal HTML artifact reloads through its canonical URL transport.
@@ -14483,7 +13561,6 @@ function HtmlViewer({
 
   function activateBoardPicker(nextTool: BoardTool) {
     clearBoardComposer();
-    fireArtifactToolbarClick(nextTool === 'pod' ? 'pods' : 'comment');
     setCommentPanelOpen(false);
     setCommentCreateMode(false);
     activateBoard(nextTool);
@@ -14518,8 +13595,7 @@ function HtmlViewer({
   }
 
   function activateDrawTool() {
-    if (viewerOnly) return; // read-only viewer: mark (annotate) is an edit action
-    fireArtifactToolbarClick('mark');
+    if (viewerOnly) return;
     const next = !drawOverlayOpen;
     if (!next) {
       setDrawOverlayOpen(false);
@@ -14547,7 +13623,6 @@ function HtmlViewer({
   }
 
   function activateCommentTool() {
-    fireArtifactToolbarClick('comment');
     void capturePreviewScrollPosition();
     if (boardMode && !commentCreateMode && boardTool === 'inspect') {
       setBoardMode(false);
@@ -14577,7 +13652,6 @@ function HtmlViewer({
 
   function activateCommentCreateTool(returnFocusTarget?: HTMLElement | null) {
     if (returnFocusTarget) commentPanelReturnFocusRef.current = returnFocusTarget;
-    fireArtifactToolbarClick('comment');
     void capturePreviewScrollPosition();
     if (boardMode && commentCreateMode) {
       setBoardMode(false);
@@ -14624,7 +13698,6 @@ function HtmlViewer({
 
   function activateManualEditTool() {
     if (viewerOnly || (!manualEditMode && !manualEditEntryAllowed)) return;
-    fireArtifactToolbarClick('edit');
     void capturePreviewScrollPosition();
     if (!manualEditMode) {
       if (manualEditActivationPendingRef.current) return;
@@ -14835,7 +13908,7 @@ function HtmlViewer({
   const rendererId = file.artifactManifest?.renderer ?? null;
   const isDeckArtifact =
     isDeck ||
-    projectKind === 'slide_deck' ||
+    projectKind === 'deck' ||
     artifactKind === 'deck' ||
     rendererId === 'deck-html' ||
     file.kind === 'presentation';
@@ -14928,26 +14001,26 @@ function HtmlViewer({
   }
 
   function triggerPdfExport(context?: HtmlVersionExportContext) {
-    fireShareExport('pdf', () => exportHtmlPdf(context), context);
+    runShareExport('pdf', () => exportHtmlPdf(context));
   }
 
   function triggerZipExport(context?: HtmlVersionExportContext) {
-    fireShareExport('zip', () => exportProjectAsZip({
+    runShareExport('zip', () => exportProjectAsZip({
       projectId,
       filePath: file.name,
       fallbackHtml: context?.content ?? source ?? '',
       fallbackTitle: context?.title ?? exportTitle,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }), context);
+    }));
   }
 
   function triggerHtmlExport(context?: HtmlVersionExportContext) {
-    fireShareExport('html', () => exportProjectAsHtml({
+    runShareExport('html', () => exportProjectAsHtml({
       projectId,
       filePath: file.name,
       fallbackTitle: context?.title ?? exportTitle,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }), context);
+    }));
   }
 
   useEffect(() => {
@@ -15025,9 +14098,7 @@ function HtmlViewer({
   // popover shell so switching between them keeps the menu anchored in place.
   const openUnifiedActionMenu = (
     tab: 'share' | 'export',
-    sourceLabel: 'share_dropdown' | 'download_dropdown',
   ) => {
-    fireArtifactHeaderClick(sourceLabel);
     setExportReadyNudge(false);
     markExportReadyNudgeSeen(projectId, file.name);
     setDeployMenuOpen((v) => {
@@ -15036,13 +14107,12 @@ function HtmlViewer({
       return !(v && unifiedActionTab === nextTab);
     });
   };
-  const openShareMenu = () => openUnifiedActionMenu('share', 'share_dropdown');
-  const openDownloadMenu = () => openUnifiedActionMenu('export', 'download_dropdown');
+  const openShareMenu = () => openUnifiedActionMenu('share');
+  const openDownloadMenu = () => openUnifiedActionMenu('export');
   const captureExportImageSnapshot = useCallback(async (
     options?: { wholeDeck?: boolean; context?: HtmlVersionExportContext | null },
   ) => {
     const exportContext = options?.context ?? null;
-    captureFailureStageRef.current = null;
     const imageDeckSignal = deckExportSignalForContext(exportContext);
     // The host compositor grabs on-screen pixels, so any transient hover chrome
     // over the preview leaks into the capture. The screenshot control's own
@@ -15094,10 +14164,7 @@ function HtmlViewer({
         // NOT silently downgrade to a partial visible-viewport screenshot. Only when
         // the off-screen renderer is genuinely unavailable do we fall through.
         if ('error' in rendered) {
-          // Attach the daemon's own code/status to the error so
-          // `exportErrorCode` can report it verbatim instead of falling back
-          // to message-regex guessing (and ultimately to the useless
-          // `err.name === 'Error'`).
+          // Preserve the daemon's structured failure alongside its user-facing message.
           throw Object.assign(new Error(rendered.error), {
             ...(rendered.code ? { code: rendered.code } : {}),
             ...(rendered.status ? { status: rendered.status } : {}),
@@ -15107,7 +14174,6 @@ function HtmlViewer({
     }
 
     if (exportContext?.versionId) {
-      captureFailureStageRef.current = 'VERSIONED_NO_RENDERER';
       return null;
     }
 
@@ -15122,7 +14188,6 @@ function HtmlViewer({
     if (!useUrlLoadPreview) {
       const activeIframe = srcDocPreviewIframeRef.current ?? iframeRef.current;
       if (!activeIframe) {
-        captureFailureStageRef.current = 'NO_SRCDOC_IFRAME';
         return null;
       }
       await waitForIframeLoadOrTimeout(activeIframe, 250);
@@ -15142,7 +14207,6 @@ function HtmlViewer({
     if (!srcDocIframe) {
       const activeIframe = iframeRef.current;
       if (!activeIframe) {
-        captureFailureStageRef.current = 'NO_URL_IFRAME';
         return null;
       }
       return requestPreviewSnapshotWithRetry(activeIframe);
@@ -15185,7 +14249,6 @@ function HtmlViewer({
   // users actually come here to do — a clipboard copy leaves them to find a
   // paste target themselves.
   const handleScreenshotToChat = useCallback(async () => {
-    fireArtifactToolbarClick('edit_screenshot');
     if (screenshotInFlightRef.current) return;
     screenshotInFlightRef.current = true;
     try {
@@ -15225,34 +14288,11 @@ function HtmlViewer({
   }, [captureExportImageSnapshot, file.name, t]);
 
   const openImageExportModal = async (context?: HtmlVersionExportContext) => {
-    // Don't reopen while an export is still running: reopening resets the shared
-    // request/result bookkeeping refs, which would mis-attribute or drop the
-    // in-flight export's analytics result.
+    // Do not reset the snapshot or context while an export is running.
     if (imageExportInFlightRef.current) return;
     flushSync(() => {
       setDeployMenuOpen(false);
     });
-    // Start the image export's own click→result correlation (separate modal
-    // flow, so it can't ride fireShareExport).
-    const requestId = analytics.newRequestId();
-    imageExportRequestIdRef.current = requestId;
-    imageExportStartedRef.current = performance.now();
-    imageExportOriginPromiseRef.current = resolveArtifactExportOrigin(context)
-      .catch(() => unknownExportOrigin());
-    imageExportResolvedRef.current = false;
-    trackShareOptionPopoverClick(
-      analytics.track,
-      {
-        page_name: 'artifact',
-        area: 'share_option_popover',
-        artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-        element: 'image',
-        project_id: projectId,
-        project_kind: projectKind,
-      },
-      { requestId },
-    );
     setImageExportError(null);
     imageExportSnapshotDataUrlRef.current = null;
     setImageExportContext(context ?? null);
@@ -15263,50 +14303,6 @@ function HtmlViewer({
 
   const changeImageExportFormat = (format: ImageExportFormat) => {
     setImageExportFormat(format);
-  };
-
-  // Component-scoped so both the save flow and the modal Cancel button can
-  // emit the one terminal result for an image export session.
-  // Which step of the capture fallback chain gave up. `captureExportImageSnapshot`
-  // can return null from five different places — no active iframe, a version-scoped
-  // export with no off-screen render, or any of the bridge snapshot attempts — and
-  // they all used to report the same flat `CAPTURE_FAILED` (90 events / 37 users in
-  // 14 days), which says a capture failed but never which stage. Recording the stage
-  // makes the bucket actionable.
-  const captureFailureStageRef = useRef<string | null>(null);
-
-  const fireImageExportResult = (
-    result: 'success' | 'failed' | 'cancelled',
-    errorCode?: string,
-  ) => {
-    if (imageExportResolvedRef.current) return;
-    imageExportResolvedRef.current = true;
-    const requestId = imageExportRequestIdRef.current ?? analytics.newRequestId();
-    const started = imageExportStartedRef.current || performance.now();
-    const originPromise = imageExportOriginPromiseRef.current
-      ?? resolveArtifactExportOrigin().catch(() => unknownExportOrigin());
-    void originPromise.then((originProps) => {
-      trackArtifactExportResult(
-        analytics.track,
-        {
-          page_name: 'artifact',
-          area: 'share_option_popover',
-          artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-          artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-          export_format: 'image',
-          result,
-          ...originProps,
-          ...(errorCode ? { error_code: errorCode } : {}),
-          export_duration_ms: Math.round(performance.now() - started),
-          project_id: projectId,
-          project_kind: projectKind,
-        },
-        { requestId },
-      );
-    });
-    // Onboarding first-loop 交付 step (spec §8.3): only a SUCCESSFUL image
-    // export closes the loop. Project-scoped no-op unless started from Home.
-    if (result === 'success') recordFirstLoopStep(analytics.track, 'delivered', projectId);
   };
 
   async function handleImageExportSave() {
@@ -15338,12 +14334,6 @@ function HtmlViewer({
         const snap = await captureExportImageSnapshot({ wholeDeck: true, context });
         if (!snap) {
           setExportToast({ message: t('fileViewer.exportImageFailed'), tone: 'error' });
-          fireImageExportResult(
-            'failed',
-            // The bridge attempts return null without a stage of their own; they
-            // are the "we tried and got nothing back" case.
-            `CAPTURE_FAILED_${captureFailureStageRef.current ?? 'BRIDGE_EMPTY'}`,
-          );
           return;
         }
         dataUrl = snap.dataUrl;
@@ -15352,14 +14342,12 @@ function HtmlViewer({
       const blob = await imageDataUrlToBlob(dataUrl, imageExportFormat);
       if (blob.size <= 0) {
         setExportToast({ message: t('fileViewer.exportImageFailed'), tone: 'error' });
-        fireImageExportResult('failed', 'EMPTY_IMAGE');
         return;
       }
       const target = await prepareImageExportTarget(targetTitle, imageExportFormat, { useNativePicker: false });
       if (!target) {
         // User dismissed the save picker — clear the loading toast.
         setExportToast(null);
-        fireImageExportResult('cancelled');
         return;
       }
       if (target.method === 'download' && imageExportFormat === 'png' && dataUrl) {
@@ -15367,7 +14355,6 @@ function HtmlViewer({
       } else {
         await target.save(blob);
       }
-      fireImageExportResult('success');
       setExportToast({
         message:
           target.method === 'picker'
@@ -15379,7 +14366,6 @@ function HtmlViewer({
       console.warn('[exportAsImage] failed to save snapshot:', err);
       const message = err instanceof Error && err.message ? err.message : t('fileViewer.exportImageFailed');
       setExportToast({ message, tone: 'error' });
-      fireImageExportResult('failed', exportErrorCode(err));
     } finally {
       imageExportInFlightRef.current = false;
     }
@@ -15844,8 +14830,8 @@ function HtmlViewer({
         setQueuedBoardNotes((current) => current.filter((_, currentIndex) => currentIndex !== index))
       }
       onClose={clearBoardComposer}
-      onSaveComment={() => { fireCommentPopoverClick('save_comment'); return savePersistentComment(); }}
-      onSendBatch={() => { fireCommentPopoverClick('send_to_chat'); return sendBoardBatch(); }}
+      onSaveComment={savePersistentComment}
+      onSendBatch={sendBoardBatch}
       images={boardImagePreviews}
       existingImages={
         activeComposerAttachments.map((attachment) => ({
@@ -16015,7 +15001,6 @@ function HtmlViewer({
           ),
         );
         if (selected.length === 0) return;
-        fireCommentPopoverClick('send_to_chat');
         setSendingBoardBatch(true);
         try {
           const result = await onSendBoardCommentAttachments(
@@ -16136,11 +15121,6 @@ function HtmlViewer({
               data-tooltip={deckThumbnailsCollapsed ? t('designFiles.expandGroup') : t('designFiles.collapseGroup')}
               data-tooltip-placement="bottom"
               onClick={() => {
-                fireDeckViewerClick('thumbnail_rail_toggle', {
-                  action: deckThumbnailsCollapsed ? 'expand' : 'collapse',
-                  slide_index: activeDeckSlideIndex,
-                  slide_count: deckSlideTotal,
-                });
                 setDeckThumbnailsCollapsed((value) => !value);
               }}
             >
@@ -16176,7 +15156,6 @@ function HtmlViewer({
                 disabled={viewerOnly && id === 'source'}
                 title={viewerOnly && id === 'source' ? viewerOnlyDisabledTitle : undefined}
                 onClick={() => {
-                  fireArtifactToolbarClick(id);
                   selectMode(id);
                 }}
               >
@@ -16324,7 +15303,6 @@ function HtmlViewer({
                     data-tooltip={t('fileViewer.resetZoom')}
                     data-tooltip-placement="bottom"
                     onClick={() => {
-                      fireArtifactToolbarClick('zoom_level_dropdown');
                       setZoomMenuOpen((v) => !v);
                     }}
                   >
@@ -16382,8 +15360,7 @@ function HtmlViewer({
                     role="menuitem"
                     disabled={source === null}
                     onClick={() => {
-                      fireArtifactToolbarClick('versions', 'more_menu');
-                      setVersionModalOpen('more_menu');
+                      setVersionModalOpen(true);
                       setToolbarMoreOpen(false);
                     }}
                   >
@@ -16550,7 +15527,6 @@ function HtmlViewer({
                 data-tooltip-placement="bottom"
                 title={t('fileViewer.present')}
                 onClick={() => {
-                  fireArtifactHeaderClick('present_dropdown');
                   setPresentMenuOpen((v) => !v);
                 }}
               >
@@ -16558,18 +15534,18 @@ function HtmlViewer({
               </button>
               {presentMenuOpen ? (
                 <div className="present-menu" role="menu">
-                  <button role="menuitem" onClick={() => { firePresentPopoverClick('in_this_tab'); presentInThisTab(); }}>
+                  <button role="menuitem" onClick={() => { presentInThisTab(); }}>
                     <span className="present-icon"><RemixIcon name="eye-line" size={14} /></span>{' '}
                     <span className="present-menu-copy">
                       <span>{t('fileViewer.presentInTab')}</span>
                       {effectiveDeck ? <small>{t('fileViewer.presentInTabDeckHint')}</small> : null}
                     </span>
                   </button>
-                  <button role="menuitem" onClick={() => { firePresentPopoverClick('fullscreen'); presentFullscreen(); }}>
+                  <button role="menuitem" onClick={() => { presentFullscreen(); }}>
                     <span className="present-icon"><RemixIcon name="play-line" size={14} /></span>{' '}
                     {t('fileViewer.presentFullscreen')}
                   </button>
-                  <button role="menuitem" onClick={() => { firePresentPopoverClick('new_tab'); presentNewTab(); }}>
+                  <button role="menuitem" onClick={() => { presentNewTab(); }}>
                     <span className="present-icon"><RemixIcon name="share-forward-line" size={14} /></span>{' '}
                     {t('fileViewer.presentNewTab')}
                   </button>
@@ -16603,8 +15579,7 @@ function HtmlViewer({
                   setVersionModalOpen(false);
                   return;
                 }
-                fireArtifactToolbarClick('versions', 'toolbar');
-                setVersionModalOpen('toolbar');
+                setVersionModalOpen(true);
               }}
             >
               <RemixIcon name="history-line" size={15} />
@@ -16963,7 +15938,7 @@ function HtmlViewer({
                       // packaged runtime (no embedded fonts) — unacceptable for a
                       // Chinese-first product. Falls back to the vector/browser
                       // print path on web or on failure.
-                      fireShareExport('pdf', async () => {
+                      runShareExport('pdf', async () => {
                         if (isOpenDesignHostAvailable()) {
                           const res = await exportProjectScreenshotPdf({
                             projectId,
@@ -17045,7 +16020,7 @@ function HtmlViewer({
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
                     onClick={() => {
                       setDeployMenuOpen(false);
-                      fireShareExport('zip', () => exportProjectAsZip({
+                      runShareExport('zip', () => exportProjectAsZip({
                         projectId,
                         filePath: file.name,
                         fallbackHtml: source ?? '',
@@ -17064,7 +16039,7 @@ function HtmlViewer({
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
                     onClick={() => {
                       setDeployMenuOpen(false);
-                      fireShareExport('html', () => exportProjectAsHtml({
+                      runShareExport('html', () => exportProjectAsHtml({
                         projectId,
                         filePath: file.name,
                         fallbackTitle: exportTitle,
@@ -17081,7 +16056,7 @@ function HtmlViewer({
                       role="menuitem"
                       onClick={() => {
                         setDeployMenuOpen(false);
-                        fireShareExport('markdown', () => exportAsMd(source ?? '', exportTitle));
+                        runShareExport('markdown', () => exportAsMd(source ?? '', exportTitle));
                       }}
                     >
                       <span className="share-menu-icon"><RemixIcon name="file-line" size={15} /></span>
@@ -17100,10 +16075,6 @@ function HtmlViewer({
                   projectName={projectName}
                   projectDir={projectDir}
                   agents={agents}
-                  artifactId={artifactId}
-                  artifactKind={handoffArtifactKind}
-                  metricsConsent={metricsConsent}
-                  installationId={installationId}
                 />
               )}
             </div>
@@ -17142,10 +16113,6 @@ function HtmlViewer({
                 parsedDeck={parsedDeckThumbnails}
                 previewViewport={deckThumbnailRenderViewport}
                 onSelect={(index) => {
-                  fireDeckViewerClick('thumbnail_select', {
-                    slide_index: index,
-                    slide_count: deckSlideTotal,
-                  });
                   handleDeckThumbnailSelect(index);
                 }}
               />
@@ -17172,7 +16139,6 @@ function HtmlViewer({
                     filePath={file.name}
                     sendDisabled={streaming}
                     sendDisabledReason={t('chat.annotationSendDisabledReason')}
-                    onToolbarClick={fireDrawToolbarClick}
                     toolbarHost={manualEditMode ? null : commentComposerHost}
                   >
                     <div className="artifact-preview-transport-stack">
@@ -17527,10 +16493,6 @@ function HtmlViewer({
                     type="button"
                     className="deck-floating-reset"
                     onClick={() => {
-                      fireDeckViewerClick('slide_reset', {
-                        slide_index: activeDeckSlideIndex,
-                        slide_count: deckSlideTotal,
-                      });
                       goToSlide(0);
                     }}
                     disabled={activeDeckSlideIndex <= 0}
@@ -17725,10 +16687,8 @@ function HtmlViewer({
       {workspaceActive && versionModalOpen && versioningAvailable && typeof document !== 'undefined' ? (
         <FileVersionManagerModal
           projectId={projectId}
-          projectKind={projectKind}
           file={file}
           currentSource={source}
-          entryFrom={versionModalOpen}
           onExportPdf={triggerPdfExport}
           onOpenImageExport={openImageExportModal}
           onExportZip={triggerZipExport}
@@ -17809,7 +16769,7 @@ function HtmlViewer({
                 onClick={() => {
                   const editable = pptxExportMode === 'editable';
                   setPptxExportModalOpen(false);
-                  fireShareExport('pptx', async () => {
+                  runShareExport('pptx', async () => {
                     const res = await exportProjectAsPptx({
                       projectId,
                       fileName: file.name,
@@ -17892,9 +16852,6 @@ function HtmlViewer({
                 type="button"
                 className="ghost-link button-like"
                 onClick={() => {
-                  // User dismissed the image export modal without saving —
-                  // close the ui_click(image)→result funnel as cancelled.
-                  fireImageExportResult('cancelled', 'MODAL_DISMISSED');
                   setImageExportModalOpen(false);
                   setImageExportError(null);
                 }}
@@ -17953,9 +16910,6 @@ function HtmlViewer({
                 className="ghost-link button-like"
                 disabled={savingTemplate}
                 onClick={() => {
-                  // Dismissed without saving — close the ui_click(template)→
-                  // result funnel as cancelled.
-                  fireTemplateExportResult('cancelled', 'MODAL_DISMISSED');
                   setTemplateModalOpen(false);
                   setTemplateSaveError(null);
                 }}

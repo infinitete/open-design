@@ -25,7 +25,6 @@ interface ByokKeyFieldProps {
   showApiKey: boolean;
   onBlur: () => void;
   onChange: (value: string) => void;
-  onFocus: () => void;
   onToggleShowApiKey: () => void;
 }
 
@@ -40,7 +39,6 @@ export function ByokKeyField({
   showApiKey,
   onBlur,
   onChange,
-  onFocus,
   onToggleShowApiKey,
 }: ByokKeyFieldProps) {
   const [apiKeyCleanedNotice, setApiKeyCleanedNotice] = useState(false);
@@ -85,7 +83,6 @@ export function ByokKeyField({
             aria-invalid={showApiKeyInvalid || undefined}
             onChange={(e) => handleChange(e.target.value)}
             onBlur={handleBlur}
-            onFocus={onFocus}
             autoFocus
           />
           <button

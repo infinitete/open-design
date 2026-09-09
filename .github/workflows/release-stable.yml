@@ -119,20 +119,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
-  # PostHog product-analytics ingest. Defined as repository secret + var
-  # so official builds ship with analytics enabled; PR builds and forks
-  # without these run the daemon in no-op analytics mode (events never
-  # leave the user's machine, /api/analytics/config returns enabled=false).
-  POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
-  POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
-  # PostHog Error tracking sourcemap upload. Personal API key (phx_...) and
-  # project ID let tools-pack's web-sourcemaps step ship browser sourcemaps
-  # to PostHog after `next build` and before the .map files are stripped
-  # from the packaged bundle. Missing in PR/fork builds → upload is skipped
-  # and the helper still strips .map to keep source out of the installer.
-  POSTHOG_CLI_API_KEY: ${{ secrets.POSTHOG_CLI_API_KEY }}
-  POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_CLI_PROJECT_ID }}
   # Run/repo attribution for the published metadata + per-platform manifests,
   # set workflow-wide so the platform build jobs and the publish-metadata step
   # agree on github.runId — publish-metadata.ts refuses a platform manifest

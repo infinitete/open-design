@@ -1,19 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
 import { Button, VisuallyHidden } from '@open-design/components';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackDesignSystemsTemplateCardClick,
-  trackDesignSystemsTopClick,
-  trackDesignSystemStatusResult,
-  trackDesignSystemEditClick,
-  trackPageView,
-} from '../analytics/events';
-import type { DesignSystemEditClickProps } from '@open-design/contracts/analytics';
-import type {
-  TrackingDesignSystemStatusAction,
-  TrackingDesignSystemStatusValue,
-} from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
 import type { Locale } from '../i18n/types';
 import {
@@ -41,7 +28,6 @@ import styles from './DesignSystemsTab.module.css';
 // ---- Single-machine build shims -------------------------------------------
 const useWorkspaceContext = (): { context: null; loading: boolean; identityChangePending?: boolean; failure?: string } => ({ context: null, loading: false });
 const resolveWorkspaceResourceReadIdentity = (_s?: unknown) => null;
-const workspaceAnalyticsDimensions = (_c?: unknown): Record<string, unknown> => ({});
 const workspaceIdentityCacheKey = (_c?: unknown): string => 'local';
 const workspaceContextHasTeamIdentity = (_c?: unknown): boolean => false;
 const workspaceProjectHeaders = (_c?: unknown): Record<string, string> => ({});
@@ -70,8 +56,6 @@ type WorkspaceCollabContext = {
   [key: string]: unknown;
 } | null;
 const workspaceResourceUrl = (path: string, _c?: unknown): string => path;
-const trackWorkspaceResourceActionResult = (..._a: unknown[]): void => {};
-type TrackingWorkspaceScope = string;
 
 interface Props {
   /** EntryShell parks this mounted tab while another nav surface is visible. */
@@ -117,24 +101,6 @@ const SURFACE_PILLS: { value: SurfaceFilter; labelKey: 'examples.modeAll' | 'ds.
 
 function surfaceOf(system: DesignSystemSummary): Surface {
   return system.surface ?? 'web';
-}
-
-// `system.status` is the DesignSystemSummary status string from the
-// daemon; map it onto the tracking enum used by
-// `design_system_status_result.status_before|status_after`. The
-// summary type today only carries `'draft' | 'published'`; the wider
-// tracking enum keeps room for `ready`/`failed`/`archived` once those
-// land server-side. Unknown values collapse to `'unknown'`.
-function mapStatusToTracking(
-  status: string | null | undefined,
-): TrackingDesignSystemStatusValue {
-  switch (status) {
-    case 'draft':
-    case 'published':
-      return status;
-    default:
-      return 'unknown';
-  }
 }
 
 function systemMatchesQuery(
@@ -186,7 +152,6 @@ export function DesignSystemsTab({
   onSystemsRefresh,
 }: Props) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const designSystemsPageViewFiredRef = useRef(false);
   useEffect(() => {
     if (!isActive) return;
@@ -198,14 +163,7 @@ export function DesignSystemsTab({
     // `entry_from` is `unknown` here because the tab is reached
     // through the home nav rail; a router-aware entry mapper can
     // refine this later.
-    trackPageView(analytics.track, {
-      page_name: 'design_systems',
-      area: 'design_system_list',
-      view_type: 'page',
-      entry_from: 'unknown',
-      available_design_system_count: systems.length,
-    });
-  }, [analytics.track, systems.length, isActive, loading]);
+  }, [systems.length, isActive, loading]);
   const searchTrackedRef = useRef(false);
   const categoryTrackedRef = useRef(false);
   const [filter, setFilter] = useState('');
@@ -231,7 +189,6 @@ export function DesignSystemsTab({
   const workspaceState = useWorkspaceContext();
   const { context: workspaceContext } = workspaceState;
   const resourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
-  const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
   const systemsRef = useRef(systems);
@@ -278,12 +235,6 @@ export function DesignSystemsTab({
   const teamSharedMeta = teamSharedState.workspaceIdentity === workspaceIdentity
     ? teamSharedState.meta
     : EMPTY_TEAM_SHARED_META;
-  const resourceScopeForSystem = (system: DesignSystemSummary): TrackingWorkspaceScope =>
-    system.teamSynced || teamSharedIds.has(system.id)
-      ? 'team'
-      : isUserSystem(system)
-        ? 'personal'
-        : 'official';
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [unsharingId, setUnsharingId] = useState<string | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>('all');
@@ -455,8 +406,6 @@ export function DesignSystemsTab({
     _options: { refreshSystems?: boolean; invalidate?: boolean; fresh?: boolean } = {},
   ) => {}, []);
 
-
-
   const handleTeamIndexStreamActive = useWorkspaceSnapshotActivation({
     enabled: isActive && hasTeamWorkspace,
     identity: workspaceIdentity,
@@ -511,7 +460,6 @@ export function DesignSystemsTab({
     setActionToast({ message: t('dsManager.deleteFailed' as never), tone: 'error' });
   }
 
-
   // Remove a design system from the team scope. Mirrors PluginsView's
   // unshareResource: DELETE the same share route, backed by the daemon's
   // resource-owner permission gate (only the sharer, or a workspace
@@ -521,26 +469,17 @@ export function DesignSystemsTab({
     setActionToast({ message: t('dsManager.deleteFailed' as never), tone: 'error' });
   }
 
-
   async function togglePublished(system: DesignSystemSummary) {
     if (busyAction) return;
     setBusyAction({ systemId: system.id, action: 'publish' });
     notifyActionLoading();
-    const startedAt = performance.now();
     const willPublish = system.status !== 'published';
-    const action: TrackingDesignSystemStatusAction = willPublish
-      ? 'publish'
-      : 'unpublish';
-    const statusBefore = mapStatusToTracking(system.status);
-    const isDefaultBefore = system.id === selectedId;
     let succeeded = false;
-    let errorCode: string | undefined;
     try {
       const updated = await updateDesignSystemDraft(system.id, {
         status: willPublish ? 'published' : 'draft',
       });
       succeeded = Boolean(updated);
-      if (!succeeded) errorCode = 'DS_STATUS_UPDATE_RETURNED_NULL';
       if (succeeded) {
         await refreshSystems();
         notifyAction('success', t('ds.actionDone'));
@@ -548,29 +487,9 @@ export function DesignSystemsTab({
         notifyAction('error', t('ds.actionFailed'));
       }
     } catch (err) {
-      errorCode = err instanceof Error
-        ? `DS_STATUS_UPDATE_THREW:${err.message.slice(0, 80)}`
-        : 'DS_STATUS_UPDATE_THREW';
       notifyAction('error', t('ds.actionFailed'));
     } finally {
       setBusyAction(null);
-      trackDesignSystemStatusResult(analytics.track, {
-        page_name: 'design_systems',
-        area: 'design_system_status',
-        action,
-        result: succeeded ? 'success' : 'failed',
-        design_system_id: system.id,
-        status_before: statusBefore,
-        status_after: succeeded
-          ? willPublish
-            ? 'published'
-            : 'draft'
-          : statusBefore,
-        is_default_before: isDefaultBefore,
-        is_default_after: isDefaultBefore,
-        error_code: errorCode,
-        duration_ms: Math.round(performance.now() - startedAt),
-      });
     }
   }
 
@@ -578,31 +497,14 @@ export function DesignSystemsTab({
     if (busyAction) return;
     const ok = window.confirm(t('dsManager.deleteConfirm', { title: system.title }));
     if (!ok) {
-      trackDesignSystemStatusResult(analytics.track, {
-        page_name: 'design_systems',
-        area: 'design_system_status',
-        action: 'delete',
-        result: 'cancelled',
-        design_system_id: system.id,
-        status_before: mapStatusToTracking(system.status),
-        status_after: mapStatusToTracking(system.status),
-        is_default_before: system.id === selectedId,
-        is_default_after: system.id === selectedId,
-        duration_ms: 0,
-      });
       return;
     }
     setBusyAction({ systemId: system.id, action: 'delete' });
     notifyActionLoading(t('dsManager.deleteSystemAria', { title: system.title }));
-    const startedAt = performance.now();
-    const statusBefore = mapStatusToTracking(system.status);
-    const wasDefault = system.id === selectedId;
     let succeeded = false;
-    let errorCode: string | undefined;
     try {
       const deleted = await deleteDesignSystemDraft(system.id);
       succeeded = Boolean(deleted);
-      if (!succeeded) errorCode = 'DS_DELETE_RETURNED_FALSE';
       if (succeeded && selectedId === system.id) {
         const fallback = systems.find((candidate) =>
           candidate.id !== system.id && isUserSystem(candidate),
@@ -616,9 +518,6 @@ export function DesignSystemsTab({
         notifyAction('error', t('ds.actionFailed'));
       }
     } catch (err) {
-      errorCode = err instanceof Error
-        ? `DS_DELETE_THREW:${err.message.slice(0, 80)}`
-        : 'DS_DELETE_THREW';
       notifyAction(
         'error',
         err instanceof DesignSystemDeleteError
@@ -628,22 +527,6 @@ export function DesignSystemsTab({
       );
     } finally {
       setBusyAction(null);
-      trackDesignSystemStatusResult(analytics.track, {
-        page_name: 'design_systems',
-        area: 'design_system_status',
-        action: 'delete',
-        result: succeeded ? 'success' : 'failed',
-        design_system_id: system.id,
-        status_before: statusBefore,
-        status_after: succeeded ? 'deleted' : statusBefore,
-        is_default_before: wasDefault,
-        // After a successful delete the row is gone; if it was the
-        // default the consumer remapped to a fallback above, so this
-        // DS is no longer the default either way.
-        is_default_after: false,
-        error_code: errorCode,
-        duration_ms: Math.round(performance.now() - startedAt),
-      });
     }
   }
 
@@ -651,38 +534,11 @@ export function DesignSystemsTab({
     if (busyAction) return;
     setBusyAction({ systemId: system.id, action: 'default' });
     notifyActionLoading(t('dsManager.makeDefault'));
-    const wasDefault = system.id === selectedId;
-    const statusBefore = mapStatusToTracking(system.status);
     try {
       onSelect(system.id);
       notifyAction('success', t('ds.actionDone'));
-      trackDesignSystemStatusResult(analytics.track, {
-        page_name: 'design_systems',
-        area: 'design_system_status',
-        action: wasDefault ? 'unset_default' : 'set_default',
-        result: 'success',
-        design_system_id: system.id,
-        status_before: statusBefore,
-        status_after: statusBefore,
-        is_default_before: wasDefault,
-        is_default_after: !wasDefault,
-        duration_ms: 0,
-      });
     } catch {
       notifyAction('error', t('ds.actionFailed'));
-      trackDesignSystemStatusResult(analytics.track, {
-        page_name: 'design_systems',
-        area: 'design_system_status',
-        action: wasDefault ? 'unset_default' : 'set_default',
-        result: 'failed',
-        design_system_id: system.id,
-        status_before: statusBefore,
-        status_after: statusBefore,
-        is_default_before: wasDefault,
-        is_default_after: wasDefault,
-        error_code: 'DS_DEFAULT_SELECT_THREW',
-        duration_ms: 0,
-      });
     } finally {
       setBusyAction(null);
     }
@@ -690,16 +546,6 @@ export function DesignSystemsTab({
 
   function handleEditSystem(system: DesignSystemSummary): void {
     if (!onOpenSystem || busyAction) return;
-    trackDesignSystemEditClick(analytics.track, {
-      page_name: 'design_systems',
-      area: 'design_system_edit',
-      element: 'edit_with_agent',
-      module: 'general',
-      edit_surface: 'chat',
-      artifact_kind: 'design_system',
-      design_system_id: system.id,
-      project_id: system.projectId ?? undefined,
-    });
     setBusyAction({ systemId: system.id, action: 'edit' });
     notifyActionLoading(t('dsManager.editWithAgent'));
     try {
@@ -712,19 +558,8 @@ export function DesignSystemsTab({
     }
   }
 
-  function trackCardClick(system: DesignSystemSummary): void {
-    trackDesignSystemsTemplateCardClick(analytics.track, {
-      page_name: 'design_systems',
-      area: 'templates_card',
-      element: 'templates_card',
-      templates_id: system.id,
-      templates_type: system.source ?? 'library',
-    });
-  }
-
   function handleSelectSystem(system: DesignSystemSummary): void {
     setPreviewId(system.id);
-    trackCardClick(system);
   }
 
   const scopeTabs = [
@@ -830,11 +665,6 @@ export function DesignSystemsTab({
               variant="primary"
               className={`${styles.newBtn} ${styles.headerCreate}`}
               onClick={() => {
-                trackDesignSystemsTopClick(analytics.track, {
-                  page_name: 'design_systems',
-                  area: 'design_systems',
-                  element: 'create',
-                });
                 onCreate();
               }}
               data-testid="design-systems-create"
@@ -890,11 +720,6 @@ export function DesignSystemsTab({
               setSearchExpanded(true);
               if (searchTrackedRef.current) return;
               searchTrackedRef.current = true;
-              trackDesignSystemsTopClick(analytics.track, {
-                page_name: 'design_systems',
-                area: 'design_systems',
-                element: 'search_input',
-              });
             }}
             onChange={(e) => setFilter(e.target.value)}
           />
@@ -920,12 +745,6 @@ export function DesignSystemsTab({
                   data-testid={`design-systems-surface-${p.value}`}
                   className={`${styles.surfacePill} ${surfaceFilter === p.value ? styles.surfacePillActive : ''}`}
                   onClick={() => {
-                    trackDesignSystemsTopClick(analytics.track, {
-                      page_name: 'design_systems',
-                      area: 'design_systems',
-                      element: 'filter_chip',
-                      filter_name: p.value,
-                    });
                     setSurfaceFilter(p.value);
                   }}
                 >
@@ -941,11 +760,6 @@ export function DesignSystemsTab({
               onFocus={() => {
                 if (categoryTrackedRef.current) return;
                 categoryTrackedRef.current = true;
-                trackDesignSystemsTopClick(analytics.track, {
-                  page_name: 'design_systems',
-                  area: 'design_systems',
-                  element: 'search_dropdown',
-                });
               }}
               onChange={(e) => setCategory(e.target.value)}
             >
@@ -1313,15 +1127,11 @@ function DesignSystemDetail({
   canUnshareFromTeam,
   unsharing,
 }: DetailProps) {
-  const analytics = useAnalytics();
   const resourceReadIdentityKey = workspaceResourceReadIdentityKey(resourceReadIdentity);
   const resourceReadIdentityRef = useRef(resourceReadIdentity);
   resourceReadIdentityRef.current = resourceReadIdentity;
   const resourceReadContext = resourceReadIdentity?.context ?? null;
-  const detailWorkspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const isUser = isUserSystem(system);
-  const detailResourceScope: TrackingWorkspaceScope =
-    system.teamSynced || isTeamShared ? 'team' : isUser ? 'personal' : 'official';
   const status = system.status ?? 'draft';
   const published = status === 'published';
   // A built-in preset can always be picked as the global default; a user
@@ -1389,24 +1199,6 @@ function DesignSystemDetail({
 
   const host = designSystemLogoHost(system) || undefined;
   const projectId = detail?.projectId ?? system.projectId;
-
-  // Direct in-panel DS edits (E3 / §3.6). All carry edit_surface=direct_module
-  // + artifact_kind=design_system + the DS id so "edit depth" drills down.
-  function emitEditClick(
-    element: DesignSystemEditClickProps['element'],
-    module: DesignSystemEditClickProps['module'],
-  ) {
-    trackDesignSystemEditClick(analytics.track, {
-      page_name: 'design_systems',
-      area: 'design_system_edit',
-      element,
-      module,
-      edit_surface: 'direct_module',
-      artifact_kind: 'design_system',
-      design_system_id: system.id,
-      project_id: projectId ?? undefined,
-    });
-  }
   const { kit } = useDesignKit({
     designSystemId: system.id,
     title: system.title,
@@ -1425,10 +1217,8 @@ function DesignSystemDetail({
 
   async function handleDownload() {
     if (downloading) return;
-    emitEditClick('download', 'general');
     setDownloading(true);
     setDownloadFailed(false);
-    const startedAt = performance.now();
     onActionFeedback('loading', t('dsManager.downloadTitle'));
     try {
       const ok =
@@ -1443,19 +1233,9 @@ function DesignSystemDetail({
           : false);
       setDownloadFailed(!ok);
       onActionFeedback(ok ? 'success' : 'error', ok ? t('ds.actionDone') : t('dsManager.downloadFailed'));
-      trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system', action: 'download_plugin',
-        result: ok ? 'success' : 'failed', duration_ms: Math.round(performance.now() - startedAt),
-        ...(!ok ? { error_code: 'download_failed' } : {}), ...detailWorkspaceDimensions,
-      });
     } catch {
       setDownloadFailed(true);
       onActionFeedback('error', t('dsManager.downloadFailed'));
-      trackWorkspaceResourceActionResult(analytics.track, {
-        page_name: 'design_systems', area: 'workspace_resource', resource_kind: 'design_system', action: 'download_plugin', result: 'failed',
-        duration_ms: Math.round(performance.now() - startedAt), error_code: 'download_failed',
-        ...detailWorkspaceDimensions,
-      });
     } finally {
       setDownloading(false);
     }
@@ -1549,7 +1329,6 @@ function DesignSystemDetail({
           variant="primary"
           className={styles.actionButton}
           onClick={() => {
-            emitEditClick('edit_with_agent', 'general');
             onEdit(system);
           }}
           disabled={busy}
@@ -1593,7 +1372,6 @@ function DesignSystemDetail({
           badgeSlot={badgeSlot}
           actionsSlot={actionsSlot}
           showCover={false}
-          onEditClick={emitEditClick}
           noticeSlot={
             downloadFailed ? (
               <div className={styles.missingProjectNotice}>{t('dsManager.downloadFailed')}</div>

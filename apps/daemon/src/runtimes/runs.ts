@@ -15,7 +15,7 @@ import {
 } from '../run-tool-bundle.js';
 import { createRunLifecycleTracer } from '../run-lifecycle-tracer.js';
 import { projectWorkspaceProvenance } from '../workspace-contract.js';
-import { OPEN_DESIGN_PLUGIN_ID } from '../mcp-observability.js';
+import { OPEN_DESIGN_PLUGIN_ID, validatePluginWorkflowProvenance, validatePluginRequestId, decodeDurablePluginWorkflowProvenance } from '../mcp-observability.js';
 import {
   scanRunEventsForUsageAnalytics,
   summarizeRunTimingAnalytics,
@@ -25,11 +25,6 @@ import {
   RESTART_ERROR_CODE,
   RESTART_ERROR_MESSAGE,
 } from './run-restart-recovery.js';
-import {
-  beginRunTelemetryDelivery,
-  finalizeRunTelemetryDelivery,
-  recordRunTelemetryDeliveryAttempt,
-} from '../observability/delivery-state.js';
 
 export const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
 
@@ -566,9 +561,8 @@ function durableRunState(run) {
     ...(run.analyticsTelemetry ? { analyticsTelemetry: run.analyticsTelemetry } : {}),
     ...(run.promptTelemetry ? { promptTelemetry: run.promptTelemetry } : {}),
     ...(run.promptCache ? { promptCache: run.promptCache } : {}),
-    ...(run.analyticsRecovery ? { analyticsRecovery: run.analyticsRecovery } : {}),
-    ...(run.externalPluginAnalytics
-      ? { externalPluginAnalytics: run.externalPluginAnalytics }
+    ...(run.pluginWorkflowProvenance
+      ? { pluginWorkflowProvenance: run.pluginWorkflowProvenance }
       : {}),
     ...(typeof run.manualResumeAttemptCount === 'number'
       ? { manualResumeAttemptCount: run.manualResumeAttemptCount }
@@ -601,10 +595,6 @@ function durableRunState(run) {
     ...(run.odNextTaskInputSnapshot
       ? { odNextTaskInputSnapshot: run.odNextTaskInputSnapshot }
       : {}),
-    ...(typeof run.langfuseCompletedAt === 'number'
-      ? { langfuseCompletedAt: run.langfuseCompletedAt }
-      : {}),
-    ...(run.telemetryDelivery ? { telemetryDelivery: run.telemetryDelivery } : {}),
   };
 }
 
@@ -633,6 +623,8 @@ function readDurableRunState(statePath) {
     ) {
       return null;
     }
+    value.pluginWorkflowProvenance = decodeDurablePluginWorkflowProvenance(value);
+    delete value.externalPluginAnalytics;
     return value;
   } catch {
     return null;
@@ -735,10 +727,10 @@ export function createChatRunService({
           runIdsByClientRequestId.set(state.clientRequestId, state.id);
         }
         const pluginWorkflowId =
-          state?.externalPluginAnalytics?.externalPluginId
+          state?.pluginWorkflowProvenance?.externalPluginContext.id
             === OPEN_DESIGN_PLUGIN_ID
-          && typeof state.externalPluginAnalytics.pluginWorkflowId === 'string'
-            ? state.externalPluginAnalytics.pluginWorkflowId
+          && typeof state.pluginWorkflowProvenance.pluginWorkflowId === 'string'
+            ? state.pluginWorkflowProvenance.pluginWorkflowId
             : null;
         if (pluginWorkflowId && typeof state.id === 'string') {
           runIdsByPluginWorkflowId.set(pluginWorkflowId, state.id);
@@ -830,7 +822,22 @@ export function createChatRunService({
     return run;
   };
 
+  const assertWorkflowBindingAvailable = (meta) => {
+    if (meta.pluginWorkflowProvenance == null) return;
+    const provenance = validatePluginWorkflowProvenance(
+      meta.pluginWorkflowProvenance, validatePluginRequestId(meta.clientRequestId),
+    );
+    if (runIdsByPluginWorkflowId.has(provenance.pluginWorkflowId)) {
+      throw Object.assign(new Error('pluginWorkflowId is already bound to a logical run request'), {
+        code: 'PLUGIN_WORKFLOW_CONFLICT',
+      });
+    }
+  };
+
   const create = (meta = {}) => {
+    // Synchronous reservation boundary: never overwrite a durable workflow,
+    // even if two HTTP preparations passed their earlier lookup concurrently.
+    assertWorkflowBindingAvailable(meta);
     const now = Date.now();
     const id = randomUUID();
     const run = {
@@ -877,29 +884,8 @@ export function createChatRunService({
         meta.context && typeof meta.context === 'object' && !Array.isArray(meta.context)
           ? meta.context
           : null,
-      externalPluginAnalytics:
-        meta.analyticsHints
-        && typeof meta.analyticsHints === 'object'
-        && !Array.isArray(meta.analyticsHints)
-        && meta.analyticsHints.externalPluginId === OPEN_DESIGN_PLUGIN_ID
-          ? {
-              entrySurface: meta.analyticsHints.entrySurface,
-              hostProduct: meta.analyticsHints.hostProduct,
-              externalPluginId: OPEN_DESIGN_PLUGIN_ID,
-              externalPluginVersion: meta.analyticsHints.externalPluginVersion,
-              distributionMechanism:
-                meta.analyticsHints.distributionMechanism,
-              publisherClass: meta.analyticsHints.publisherClass,
-              attributionQuality: meta.analyticsHints.attributionQuality,
-              pluginWorkflowId: meta.analyticsHints.pluginWorkflowId,
-              logicalRequestDigest: meta.analyticsHints.logicalRequestDigest,
-              logicalRequestDigestVersion:
-                meta.analyticsHints.logicalRequestDigestVersion,
-              briefState: meta.analyticsHints.briefState,
-              generationSloWindowMs:
-                meta.analyticsHints.generationSloWindowMs,
-            }
-          : null,
+      pluginWorkflowProvenance: meta.pluginWorkflowProvenance == null ? null
+        : validatePluginWorkflowProvenance(meta.pluginWorkflowProvenance, validatePluginRequestId(meta.clientRequestId)),
       status: 'queued',
       createdAt: now,
       updatedAt: now,
@@ -971,11 +957,11 @@ export function createChatRunService({
     runs.set(run.id, run);
     if (run.clientRequestId) runIdsByClientRequestId.set(run.clientRequestId, run.id);
     if (
-      run.externalPluginAnalytics?.externalPluginId === OPEN_DESIGN_PLUGIN_ID
-      && typeof run.externalPluginAnalytics.pluginWorkflowId === 'string'
+      run.pluginWorkflowProvenance?.externalPluginContext.id === OPEN_DESIGN_PLUGIN_ID
+      && typeof run.pluginWorkflowProvenance.pluginWorkflowId === 'string'
     ) {
       runIdsByPluginWorkflowId.set(
-        run.externalPluginAnalytics.pluginWorkflowId,
+        run.pluginWorkflowProvenance.pluginWorkflowId,
         run.id,
       );
     }
@@ -1038,70 +1024,6 @@ export function createChatRunService({
     if (!run || run.pendingManualResumeAttemptCount !== executionAttempt) return;
     delete run.pendingManualResumeAttemptCount;
     persistState(run);
-  };
-
-  const setAnalyticsRecovery = (run, recovery) => {
-    if (!run || !recovery) return;
-    run.analyticsRecovery = {
-      context: recovery.context,
-      properties: recovery.properties,
-      insertId: recovery.insertId,
-    };
-    persistState(run);
-  };
-
-  const markAnalyticsCompleted = (run) => {
-    if (!run?.analyticsRecovery) return;
-    run.analyticsRecovery.completedAt = Date.now();
-    persistState(run);
-  };
-
-  const beginTelemetryDelivery = (run) => {
-    if (!run) return null;
-    run.telemetryDelivery = beginRunTelemetryDelivery(
-      run.telemetryDelivery,
-      run.id,
-    );
-    persistState(run);
-    return run.telemetryDelivery;
-  };
-
-  const finalizeTelemetryDelivery = (run, delivery) => {
-    if (!run || !delivery) return null;
-    run.telemetryDelivery = finalizeRunTelemetryDelivery(
-      run.telemetryDelivery,
-      run.id,
-      delivery,
-    );
-    if (typeof run.telemetryDelivery.finalizedAt === 'number') {
-      run.langfuseCompletedAt = run.telemetryDelivery.finalizedAt;
-    } else {
-      delete run.langfuseCompletedAt;
-    }
-    persistState(run);
-    return run.telemetryDelivery;
-  };
-
-  const recordTelemetryDeliveryAttempt = (run) => {
-    if (!run) return null;
-    run.telemetryDelivery = recordRunTelemetryDeliveryAttempt(
-      run.telemetryDelivery,
-      run.id,
-    );
-    persistState(run);
-    return run.telemetryDelivery;
-  };
-
-  // Compatibility alias for older in-process callers. New delivery paths use
-  // the explicit begin/finalize pair so a daemon crash cannot be confused
-  // with a terminal network failure.
-  const markLangfuseCompleted = (run) => {
-    if (!run) return;
-    finalizeTelemetryDelivery(run, {
-      langfuse_expected: true,
-      langfuse_delivery_status: 'accepted',
-      langfuse_attempt_count: 1,
-    });
   };
 
   const setDeliverableValidation = (run, result) => {
@@ -1327,8 +1249,8 @@ export function createChatRunService({
     ...(run.nativeSessionRecovery ? { nativeSessionRecovery: run.nativeSessionRecovery } : {}),
     ...(run.browserUse ? { browserUse: run.browserUse } : {}),
     ...(typeof run.clientType === 'string' ? { clientType: run.clientType } : {}),
-    ...(run.externalPluginAnalytics
-      ? { externalPluginAnalytics: run.externalPluginAnalytics }
+    ...(run.pluginWorkflowProvenance
+      ? { pluginWorkflowProvenance: run.pluginWorkflowProvenance }
       : {}),
     ...(typeof run.manualResumeAttemptCount === 'number'
       ? { manualResumeAttemptCount: run.manualResumeAttemptCount }
@@ -1924,9 +1846,9 @@ export function createChatRunService({
       runIdsByClientRequestId.delete(run.clientRequestId);
     }
     const pluginWorkflowId =
-      run.externalPluginAnalytics?.externalPluginId === OPEN_DESIGN_PLUGIN_ID
-      && typeof run.externalPluginAnalytics.pluginWorkflowId === 'string'
-        ? run.externalPluginAnalytics.pluginWorkflowId
+      run.pluginWorkflowProvenance?.externalPluginContext.id === OPEN_DESIGN_PLUGIN_ID
+      && typeof run.pluginWorkflowProvenance.pluginWorkflowId === 'string'
+        ? run.pluginWorkflowProvenance.pluginWorkflowId
         : null;
     if (
       pluginWorkflowId
@@ -1966,12 +1888,6 @@ export function createChatRunService({
     wait,
     emit,
     persistState,
-    setAnalyticsRecovery,
-    markAnalyticsCompleted,
-    beginTelemetryDelivery,
-    recordTelemetryDeliveryAttempt,
-    finalizeTelemetryDelivery,
-    markLangfuseCompleted,
     setDeliverableValidation,
     finish,
     fail,

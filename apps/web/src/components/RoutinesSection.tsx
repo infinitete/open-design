@@ -14,8 +14,6 @@ import { navigate } from '../router';
 import { useT } from '../i18n';
 import { localizeRunFailureReason } from '../i18n/runErrors';
 import type { Dict } from '../i18n/types';
-import { useAnalytics } from '../analytics/provider';
-import { trackAutomationsClick } from '../analytics/events';
 import { listProjects } from '../state/projects';
 
 // Shared translator signature: every sub-component in this file is module-scoped,
@@ -496,10 +494,6 @@ function RunHistory({
 
 export function RoutinesSection({ onClose }: RoutinesSectionProps) {
   const t = useT();
-  const analytics = useAnalytics();
-  const fireAutomation = (element: 'new_automation' | 'create' | 'save' | 'cancel' | 'run_now' | 'edit' | 'pause' | 'resume' | 'delete' | 'history') => {
-    trackAutomationsClick(analytics.track, { page_name: 'automations', area: 'automations', element });
-  };
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -555,7 +549,6 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    fireAutomation(editingId ? 'save' : 'create');
     setSubmitting(true);
     setError(null);
     try {
@@ -692,7 +685,6 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
             type="button"
             className="btn btn-primary"
             onClick={() => {
-              fireAutomation('new_automation');
               setForm(emptyForm());
               setShowForm(true);
             }}
@@ -783,7 +775,6 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
               type="button"
               className="btn"
               onClick={() => {
-                fireAutomation('cancel');
                 setShowForm(false);
                 setEditingId(null);
                 setForm(emptyForm());
@@ -858,7 +849,7 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
                     <button
                       type="button"
                       className="btn btn-primary"
-                      onClick={() => { fireAutomation('run_now'); runNow(r); }}
+                      onClick={() => { runNow(r); }}
                       disabled={isBusy}
                     >
                       {t('routines.runNow')}
@@ -867,7 +858,6 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
                       type="button"
                       className="btn"
                       onClick={() => {
-                        fireAutomation('edit');
                         setForm(formFromRoutine(r));
                         setEditingId(r.id);
                         setShowForm(true);
@@ -879,7 +869,7 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
                     <button
                       type="button"
                       className="btn"
-                      onClick={() => { fireAutomation(r.enabled ? 'pause' : 'resume'); toggleEnabled(r); }}
+                      onClick={() => { toggleEnabled(r); }}
                       disabled={isBusy}
                     >
                       {r.enabled ? t('routines.pause') : t('routines.resume')}
@@ -887,7 +877,7 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
                     <button
                       type="button"
                       className="btn btn-ghost"
-                      onClick={() => { fireAutomation('history'); setExpandedId(isExpanded ? null : r.id); }}
+                      onClick={() => { setExpandedId(isExpanded ? null : r.id); }}
                       aria-expanded={isExpanded}
                     >
                       {isExpanded ? t('routines.hideHistory') : t('routines.history')}
@@ -895,7 +885,7 @@ export function RoutinesSection({ onClose }: RoutinesSectionProps) {
                     <button
                       type="button"
                       className="btn btn-ghost btn-danger"
-                      onClick={() => { fireAutomation('delete'); remove(r); }}
+                      onClick={() => { remove(r); }}
                       disabled={isBusy}
                       title={t('routines.deleteTitle')}
                     >

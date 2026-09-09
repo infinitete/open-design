@@ -85,7 +85,6 @@ describe('tools-dev sandbox mode smoke', () => {
             designSystemId: null,
             onboardingCompleted: true,
             skillId: null,
-            telemetry: { artifactManifest: true, content: false, metrics: false },
           },
           method: 'PUT',
         });

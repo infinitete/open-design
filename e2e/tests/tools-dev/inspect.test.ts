@@ -65,7 +65,6 @@ describe('tools-dev pure inspect smoke', () => {
               agentModels: {},
               onboardingCompleted: true,
               privacyDecisionAt: Date.now(),
-              telemetry: { artifactManifest: true, content: false, metrics: false },
             },
             method: 'PUT',
           });

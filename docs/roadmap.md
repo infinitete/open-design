@@ -167,7 +167,6 @@ v1." Its estimates and checkboxes are retained as historical context.
 - Collaborative mode (multi-user session on a single daemon)
 - "Freeze prototype as design system" action
 - Figma export (behind the Open CoDesign post-1.0 line; borrow their approach when they ship it)
-- Telemetry (opt-in, self-hosted, never phoning home to a central service)
 - Hosted SaaS offering (optional; full-local stays primary)
 
 v2 isn't promised. It's the direction if v1 lands.

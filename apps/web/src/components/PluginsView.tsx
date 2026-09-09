@@ -29,22 +29,6 @@ import {
 } from '../providers/registry';
 import { localizeSkillDescription, localizeSkillName } from '../i18n/content';
 import type { Locale } from '../i18n/types';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackPageView,
-  trackPluginImportModalClick,
-  trackPluginImportModalSurfaceView,
-  trackPluginImportResult,
-  trackPluginsAvailableTabClick,
-  trackPluginsInstalledTabClick,
-  trackPluginsSourcesTabClick,
-  trackPluginsTemplatesDropdownClick,
-  trackPluginsTopClick,
-  trackExtensionMarketplaceClick,
-} from '../analytics/events';
-import {
-  stableAnalyticsRequestErrorCode,
-} from '../analytics/workspace';
 import {
   addPluginMarketplace,
   applyPlugin,
@@ -83,7 +67,6 @@ import { AnimatePresence } from 'motion/react';
 import { navigate } from '../router';
 
 type PluginsTab = 'installed' | 'available' | 'sources';
-
 
 const USER_SOURCE_KINDS = new Set<PluginSourceKind>([
   'user',
@@ -162,15 +145,6 @@ interface PluginsViewProps {
   ) => Promise<PluginShareProjectOutcome>;
 }
 
-function resourceActionAnalyticsErrorCode(
-  error: { code?: string; errorCode?: string; status?: number },
-  fallback: string,
-): string {
-  return stableAnalyticsRequestErrorCode({
-    code: error.errorCode ?? error.code,
-    status: error.status,
-  }, fallback);
-}
 
 export function PluginsView({
   onCreatePlugin,
@@ -178,13 +152,11 @@ export function PluginsView({
   onCreatePluginShareProject,
 }: PluginsViewProps) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const pluginsPageViewFiredRef = useRef(false);
   useEffect(() => {
     if (pluginsPageViewFiredRef.current) return;
     pluginsPageViewFiredRef.current = true;
-    trackPageView(analytics.track, { page_name: 'plugins' });
-  }, [analytics.track]);
+  }, []);
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   const [allInstalledPlugins, setAllInstalledPlugins] = useState<InstalledPluginRecord[]>([]);
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
@@ -404,11 +376,6 @@ export function PluginsView({
             type="button"
             className="plugins-view__primary"
             onClick={() => {
-              trackPluginsTopClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'plugins',
-                element: 'create_plugin',
-              });
               onCreatePlugin?.();
             }}
             data-testid="plugins-create-button"
@@ -420,11 +387,6 @@ export function PluginsView({
             type="button"
             className="plugins-view__secondary"
             onClick={() => {
-              trackPluginsTopClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'plugins',
-                element: 'import_plugin',
-              });
               setImportOpen(true);
             }}
             aria-haspopup="dialog"
@@ -462,11 +424,6 @@ export function PluginsView({
                 .filter(Boolean)
                 .join('')}
               onClick={() => {
-                trackPluginsTopClick(analytics.track, {
-                  page_name: 'plugins',
-                  area: 'plugins',
-                  element: `${tab.id}_tab` as const,
-                });
                 setActiveTab(tab.id);
               }}
               data-testid={`plugins-tab-${tab.id}`}
@@ -492,51 +449,16 @@ export function PluginsView({
             pendingDuplicateId={pendingDuplicatePluginId}
             pendingShareAction={pendingShareAction}
             onUse={(record, action) => {
-              trackPluginsInstalledTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'installed_tab',
-                element: action === 'use-with-query' ? 'templates_use_dropdown' : 'templates_use',
-                template_id: record.id,
-                template_type: record.sourceKind,
-              });
               if (action === 'use-with-query') {
-                trackPluginsTemplatesDropdownClick(analytics.track, {
-                  page_name: 'plugins',
-                  area: 'templates_dropdown',
-                  element: 'use_with_query',
-                  template_id: record.id,
-                  template_type: record.sourceKind,
-                });
               } else {
-                trackPluginsTemplatesDropdownClick(analytics.track, {
-                  page_name: 'plugins',
-                  area: 'templates_dropdown',
-                  element: 'use',
-                  template_id: record.id,
-                  template_type: record.sourceKind,
-                });
               }
               void handleUsePlugin(record, action);
             }}
             onDuplicate={(record) => void handleDuplicatePlugin(record)}
             onOpenDetails={(record) => {
-              trackPluginsInstalledTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'installed_tab',
-                element: 'templates_details',
-                template_id: record.id,
-                template_type: record.sourceKind,
-              });
               setDetailsRecord(record);
             }}
             onPluginShareAction={(record, action) => {
-              trackPluginsInstalledTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'installed_tab',
-                element: action === 'publish-github' ? 'templates_publish' : 'templates_contribute',
-                template_id: record.id,
-                template_type: record.sourceKind,
-              });
               requestPluginShareTask(record, action);
             }}
             preferDefaultFacet={false}
@@ -551,49 +473,14 @@ export function PluginsView({
             plugins={availablePlugins}
             pendingKey={pendingInstallEntry}
             onOpenDetails={(plugin) => {
-              trackPluginsAvailableTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'available_tab',
-                element: 'details',
-                plugin_id: plugin.entry.name,
-                plugin_type: plugin.marketplace.trust,
-              });
               setAvailableDetails(plugin);
             }}
             onUseInstalled={(record) => {
-              trackPluginsAvailableTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'available_tab',
-                element: 'install',
-                plugin_id: record.sourceMarketplaceEntryName ?? record.id,
-                plugin_type: record.marketplaceTrust ?? 'official',
-              });
               void handleUsePlugin(record, 'use');
             }}
             onInstall={(plugin) => {
-              trackPluginsAvailableTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'available_tab',
-                element: 'install',
-                plugin_id: plugin.entry.name,
-                plugin_type: plugin.marketplace.trust,
-              });
               void handleInstallAvailable(plugin);
             }}
-            onSearchInput={() =>
-              trackPluginsAvailableTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'available_tab',
-                element: 'search_input',
-              })
-            }
-            onSourceDropdown={() =>
-              trackPluginsAvailableTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'available_tab',
-                element: 'source_dropdown',
-              })
-            }
             t={t}
           />
         ) : null}
@@ -603,36 +490,14 @@ export function PluginsView({
             marketplaces={visibleMarketplaces}
             pendingAction={pendingSourceAction}
             onAdd={(url, trust) => {
-              trackPluginsSourcesTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'sources_tab',
-                element: 'add_source',
-              });
               void handleMarketplaceMutation('add', () => addPluginMarketplace({ url, trust }));
             }}
-            onSourceUrlInput={() =>
-              trackPluginsSourcesTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'sources_tab',
-                element: 'source_url_input',
-              })
-            }
             onRefresh={(marketplace) => {
-              trackPluginsSourcesTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'sources_tab',
-                element: 'refresh',
-              });
               void handleMarketplaceMutation(`refresh:${marketplace.id}`, () =>
                 refreshPluginMarketplace(marketplace.id),
               );
             }}
             onRemove={(marketplace) => {
-              trackPluginsSourcesTabClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'sources_tab',
-                element: 'remove',
-              });
               void handleMarketplaceMutation(`remove:${marketplace.id}`, () =>
                 removePluginMarketplace(marketplace.id),
               );
@@ -869,37 +734,13 @@ export function ExtensionsMarketplace({
   onUseSkill,
 }: ExtensionsMarketplaceProps) {
   const { locale, t } = useI18n();
-  const analytics = useAnalytics();
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
-  const pageViewFiredRef = useRef(false);
-  useEffect(() => {
-    if (!isActive) return;
-    if (pageViewFiredRef.current) return;
-    pageViewFiredRef.current = true;
-    trackPageView(analytics.track, { page_name: 'plugins' });
-  }, [analytics.track, isActive]);
 
   const [mode, setMode] = useState<MarketMode>('plugins');
   // #5517 lands on the official catalog first — a new workspace's personal
   // scope is empty, and the official list is the marketplace's front door.
   const [scope, setScope] = useState<MarketScope>('official');
-  function trackExtension(
-    element: 'details' | 'use' | 'add' | 'create' | 'filter',
-    input: {
-      id?: string;
-      kind?: 'expert_plugin' | 'skill';
-      scope?: string;
-    } = {},
-  ) {
-    trackExtensionMarketplaceClick(analytics.track, {
-      page_name: 'plugins',
-      area: 'extension_marketplace',
-      element: element === 'details' ? 'extension_card' : element === 'use' ? 'install' : 'extension_card',
-      extension_kind: input.kind ?? (mode === 'plugins' ? 'expert_plugin' : 'skill'),
-      ...(input.id ? { extension_key: input.id } : {}),
-    });
-  }
   const [query, setQuery] = useState('');
   // Selected category chip (`null` = 全部). Slugs come from the cards in scope.
   const [category, setCategory] = useState<string | null>(null);
@@ -936,15 +777,6 @@ export function ExtensionsMarketplace({
 
   function openCardDetail(detail: MarketCardDetail | null) {
     if (!detail) return;
-    trackExtension('details', {
-      id:
-        detail.kind === 'plugin'
-          ? detail.record.id
-          : detail.kind === 'skill'
-            ? detail.skill.id
-            : detail.plugin.key,
-      kind: detail.kind === 'skill' ? 'skill' : 'expert_plugin',
-    });
     setMenuId(null);
     setConfirmUninstallId(null);
     if (detail.kind === 'plugin') {
@@ -969,10 +801,6 @@ export function ExtensionsMarketplace({
   const createFolderInputRef = useRef<HTMLInputElement>(null);
 
   function openCreateDialog() {
-    trackExtension('add', {
-      kind: mode === 'skills' ? 'skill' : 'expert_plugin',
-      scope: 'personal',
-    });
     setCreateKind(mode === 'skills' ? 'skill' : 'plugin');
     setCreateUrl('');
     setCreateFolderFiles([]);
@@ -1009,9 +837,6 @@ export function ExtensionsMarketplace({
   async function handleCreateImportUrl() {
     const url = createUrl.trim();
     if (!url || createBusy) return;
-    const startedAt = performance.now();
-    const trackingKind = createKind === 'skill' ? 'skill' : 'expert_plugin';
-    trackExtension('add', { kind: trackingKind, scope: 'personal' });
     if (createKind === 'skill') {
       setCreateBusy('import');
       try {
@@ -1052,9 +877,6 @@ export function ExtensionsMarketplace({
 
   async function handleCreateUploadFolder() {
     if (createFolderFiles.length === 0 || createBusy) return;
-    const startedAt = performance.now();
-    const trackingKind = createKind === 'skill' ? 'skill' : 'expert_plugin';
-    trackExtension('add', { kind: trackingKind, scope: 'personal' });
     setCreateBusy('upload');
     try {
       if (createKind === 'plugin') {
@@ -1172,7 +994,6 @@ export function ExtensionsMarketplace({
   async function installAvailable(plugin: AvailableMarketplacePlugin, title: string) {
     if (installingKeys.has(plugin.key)) return;
     setInstallingKeys((prev) => new Set(prev).add(plugin.key));
-    const startedAt = performance.now();
     try {
       const outcome = await installPluginSource(
         plugin.installSource ?? plugin.entry.name,
@@ -1323,10 +1144,6 @@ export function ExtensionsMarketplace({
         {...(onUseSkill
           ? {
             onUse: () => {
-              trackExtension('use', {
-                id: selectedSkill.id,
-                kind: 'skill',
-              });
               setCardDetail(null);
               onUseSkill(selectedSkill);
             },
@@ -1365,7 +1182,6 @@ export function ExtensionsMarketplace({
             type="button"
             className={mode === 'plugins' ? 'is-active' : ''}
             onClick={() => {
-              trackExtension('filter', { kind: 'expert_plugin' });
               setMode('plugins');
               setMenuId(null);
               setConfirmUninstallId(null);
@@ -1377,7 +1193,6 @@ export function ExtensionsMarketplace({
             type="button"
             className={mode === 'skills' ? 'is-active' : ''}
             onClick={() => {
-              trackExtension('filter', { kind: 'skill' });
               setMode('skills');
               setMenuId(null);
             }}
@@ -1397,7 +1212,6 @@ export function ExtensionsMarketplace({
               type="button"
               className={scope === item.id ? 'is-active' : ''}
               onClick={() => {
-                trackExtension('filter');
                 setScope(item.id);
                 setMenuId(null);
               }}
@@ -1523,10 +1337,6 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'try'; record: InstalledPluginRecord };
-                          trackExtension('use', {
-                            id: action.record.id,
-                            kind: 'expert_plugin',
-                          });
                           onUsePlugin(action.record, 'use');
                         }}
                       >
@@ -1540,10 +1350,6 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'use-skill'; skill: SkillSummary };
-                          trackExtension('use', {
-                            id: action.skill.id,
-                            kind: 'skill',
-                          });
                           onUseSkill(action.skill);
                         }}
                       >
@@ -1558,11 +1364,6 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'install'; plugin: AvailableMarketplacePlugin };
-                          trackExtension('add', {
-                            id: action.plugin.key,
-                            kind: 'expert_plugin',
-                            scope: 'official',
-                          });
                           void installAvailable(action.plugin, card.title);
                         }}
                       >
@@ -1720,10 +1521,6 @@ export function ExtensionsMarketplace({
                       disabled={createBusy !== null}
                       data-testid="plugin-create-with-agent"
                       onClick={() => {
-                        trackExtension('create', {
-                          kind: 'expert_plugin',
-                          scope: 'personal',
-                        });
                         closeCreateDialog();
                         onCreatePlugin();
                       }}
@@ -2868,16 +2665,11 @@ function PluginImportModal({
   onUploadZip: (file: File) => Promise<PluginInstallOutcome>;
   onUploadFolder: (files: File[]) => Promise<PluginInstallOutcome>;
 }) {
-  const analytics = useAnalytics();
   const importModalViewFiredRef = useRef(false);
   useEffect(() => {
     if (importModalViewFiredRef.current) return;
     importModalViewFiredRef.current = true;
-    trackPluginImportModalSurfaceView(analytics.track, {
-      page_name: 'plugins',
-      area: 'import_modal',
-    });
-  }, [analytics.track]);
+  }, []);
   const [kind, setKind] = useState<ImportKind>('github');
   const [source, setSource] = useState('');
   const [zipFile, setZipFile] = useState<File | null>(null);
@@ -2885,22 +2677,10 @@ function PluginImportModal({
   const [working, setWorking] = useState(false);
 
   function selectKind(next: ImportKind) {
-    trackPluginImportModalClick(analytics.track, {
-      page_name: 'plugins',
-      area: 'import_modal',
-      element: 'source_tab',
-      import_source: next,
-    });
     setKind(next);
   }
 
   async function runImport() {
-    trackPluginImportModalClick(analytics.track, {
-      page_name: 'plugins',
-      area: 'import_modal',
-      element: 'import',
-      import_source: kind,
-    });
     setWorking(true);
     try {
       let outcome: PluginInstallOutcome | null = null;
@@ -2913,15 +2693,6 @@ function PluginImportModal({
         outcome = await onUploadFolder(folderFiles);
       }
       if (outcome) {
-        trackPluginImportResult(analytics.track, {
-          page_name: 'plugins',
-          area: 'import_modal',
-          import_source: kind,
-          result: outcome.ok ? 'success' : 'failed',
-          ...(outcome.ok ? {} : {
-            error_code: resourceActionAnalyticsErrorCode(outcome, 'install_failed'),
-          }),
-        });
       }
     } finally {
       setWorking(false);
@@ -3050,11 +2821,6 @@ function PluginImportModal({
             type="button"
             className="plugins-view__secondary"
             onClick={() => {
-              trackPluginImportModalClick(analytics.track, {
-                page_name: 'plugins',
-                area: 'import_modal',
-                element: 'cancel',
-              });
               onClose();
             }}
           >

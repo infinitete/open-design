@@ -424,7 +424,7 @@ describe('streamViaDaemon', () => {
     expect(transcript).toContain('make the second step clearer');
   });
 
-  it('extracts only the latest user prompt for telemetry', () => {
+  it('extracts only the latest user prompt from conversation history', () => {
     expect(
       latestUserPromptFromHistory([
         { id: '1', role: 'user', content: 'first turn' },

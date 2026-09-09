@@ -164,18 +164,16 @@ describe('run request idempotency', () => {
     const request = {
       ...base,
       clientRequestId,
-      analyticsHints: {
-        entrySurface: 'external_mcp',
-        hostProduct: 'codex_unknown',
-        externalPluginId: 'open-design',
-        externalPluginVersion: '0.4.0',
-        distributionMechanism: 'git_marketplace',
-        publisherClass: 'open_design_first_party',
-        attributionQuality: 'self_reported',
+      pluginWorkflowProvenance: {
+        externalPluginContext: {
+          id: 'open-design',
+          version: '0.4.0',
+          distributionMechanism: 'git_marketplace',
+          publisherClass: 'open_design_first_party',
+        },
         pluginWorkflowId,
         logicalRequestDigest: logical.digest,
         logicalRequestDigestVersion: logical.version,
-        briefState: 'not_applicable',
       },
     };
 
@@ -183,8 +181,6 @@ describe('run request idempotency', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-od-analytics-device-id': 'test-installation-plugin-workflow',
-        'x-od-analytics-client-type': 'external_mcp',
       },
       body: JSON.stringify(request),
     });
@@ -195,7 +191,7 @@ describe('run request idempotency', () => {
       `${started.url}/api/runs/${encodeURIComponent(firstBody.runId)}`,
     );
     await expect(acceptedRun.json()).resolves.toMatchObject({
-      clientType: 'external_mcp',
+      clientType: 'web',
     });
 
     const bindingBeforeRestart = await fetch(
@@ -236,8 +232,8 @@ describe('run request idempotency', () => {
       body: JSON.stringify({
         ...request,
         clientRequestId: conflictingRequestId,
-        analyticsHints: {
-          ...request.analyticsHints,
+        pluginWorkflowProvenance: {
+          ...request.pluginWorkflowProvenance,
           logicalRequestDigest: conflictLogical.digest,
         },
       }),
@@ -260,24 +256,20 @@ describe('run request idempotency', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-od-analytics-device-id': 'test-installation-plugin-artifact',
-        'x-od-analytics-client-type': 'external_mcp',
       },
       body: JSON.stringify({
         ...base,
         clientRequestId,
-        analyticsHints: {
-          entrySurface: 'external_mcp',
-          hostProduct: 'codex_unknown',
-          externalPluginId: 'open-design',
-          externalPluginVersion: '0.4.0',
-          distributionMechanism: 'git_marketplace',
-          publisherClass: 'open_design_first_party',
-          attributionQuality: 'self_reported',
+        pluginWorkflowProvenance: {
+          externalPluginContext: {
+            id: 'open-design',
+            version: '0.4.0',
+            distributionMechanism: 'git_marketplace',
+            publisherClass: 'open_design_first_party',
+          },
           pluginWorkflowId,
           logicalRequestDigest: logical.digest,
           logicalRequestDigestVersion: logical.version,
-          briefState: 'not_applicable',
         },
       }),
     });

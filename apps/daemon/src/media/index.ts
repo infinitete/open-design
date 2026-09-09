@@ -3928,6 +3928,8 @@ function runHyperFramesRender(compAbs: string, tmpOutput: string, onProgress?: P
         env: {
           ...process.env,
           OD_HYPERFRAMES_BIN: hyperFramesCli,
+          // Force vendor telemetry off regardless of the daemon's inherited env.
+          HYPERFRAMES_NO_TELEMETRY: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },

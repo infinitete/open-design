@@ -1,171 +1,42 @@
-// Shared wiring for the `first_visible_output` regression suites.
-//
-// Both suites drive the REAL daemon (`startServer` + a fake agent CLI on the
-// real spawn path) and read the two timing fields off the real PostHog
-// `run_finished` payload, because the bug this instrumentation exists for was
-// never in a helper — it was in which call site owns the mark. Anything that
-// stubs the emission path would prove the wrong thing.
+// Real daemon wiring: inspect local lifecycle timestamps, never an export sink.
 import type { Server } from 'node:http';
-import { createServer } from 'node:http';
-import { gunzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { chmod, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect } from 'vitest';
+import type { RunWithLifecycleTelemetry } from '../src/run-lifecycle-tracer.js';
 
-/**
- * Per-test timeout every case in these suites is declared with. Every wait
- * below is a slice of THIS budget, so no step can silently outlive the timeout
- * and no step needs an arbitrary cutoff of its own.
- */
 export const TEST_BUDGET_MS = 90_000;
-/** Spawn the CLI, stream the turn, reach a terminal run row. */
 export const RUN_TERMINAL_WAIT_MS = 30_000;
-/**
- * The daemon captures `run_finished` from an async chain that only starts once
- * the run row is terminal; posthog-node then posts it (flushAt: 1). Neither
- * step is synchronous with the status flip, so the sink is polled rather than
- * sampled once.
- */
-export const CAPTURE_WAIT_MS = 30_000;
-/**
- * Grace after the daemon's analytics flush has been awaited. Past this point a
- * missing event is a missing EVENT, not batching latency.
- */
-export const FLUSHED_CAPTURE_WAIT_MS = 5_000;
-
-// Leaves room for daemon boot, project/config setup and teardown inside the
-// same budget. A future edit that grows a phase past the timeout fails here,
-// at import, instead of as an unexplained timeout in one case.
-if (
-  RUN_TERMINAL_WAIT_MS + CAPTURE_WAIT_MS + FLUSHED_CAPTURE_WAIT_MS
-  >= TEST_BUDGET_MS
-) {
-  throw new Error(
-    'first_visible_output harness: phase waits exceed the per-test budget.',
-  );
-}
 
 export type StartedServer = {
   url: string;
   server: Server;
   shutdown?: () => Promise<void> | void;
 };
-
 export type RunStatus = { id: string; status: string };
+export type RunTiming = NonNullable<RunWithLifecycleTelemetry['analyticsTelemetry']>;
 
-export type RunTiming = {
-  time_to_first_token_ms?: number;
-  time_to_first_visible_output_ms?: number;
-};
-
-export type CaptureSink = {
-  url: string;
-  /**
-   * Resolve the run's `run_finished` timing, or throw. `flush` must drive the
-   * daemon's own analytics shutdown (`startServer(...).shutdown`), which awaits
-   * posthog-node's drain — that is what makes delivery deterministic instead of
-   * hostage to an arbitrary sleep. The throw is preserved on purpose: a run
-   * that never reports is a real regression, not something to wait out.
-   */
-  waitForRunFinished(runId: string, flush: () => Promise<void>): Promise<RunTiming>;
-  close(): Promise<void>;
-};
-
-/**
- * `firstVisibleOutputAt` is stamped after `firstTokenAt` by construction: the
- * daemon cannot show bytes before it has the token they are made of. That held
- * only by accident while both marks shared one timestamp, so every case asserts
- * it now that they are stamped independently.
- */
-export function expectVisibleOutputNotBeforeFirstToken(timing: RunTiming): void {
-  expect(timing.time_to_first_token_ms).toBeTypeOf('number');
-  expect(timing.time_to_first_visible_output_ms).toBeTypeOf('number');
-  expect(
-    timing.time_to_first_visible_output_ms! - timing.time_to_first_token_ms!,
-  ).toBeGreaterThanOrEqual(0);
+/** Read the real object passed to the pass-through tracer spy, without replacing
+ * any marks. These clocks are local product diagnostics, not HTTP DTO fields. */
+export function readLocalLifecycleRun(
+  runId: string,
+  calls: readonly (readonly RunWithLifecycleTelemetry[])[],
+): RunWithLifecycleTelemetry & { id: string; lastAgentActivityAt: number; terminalAt: number } {
+  const run = calls.map(([value]) => value).find(
+    (value) => (value as RunWithLifecycleTelemetry & { id?: string }).id === runId,
+  );
+  expect(run, `local lifecycle run ${runId}`).toBeDefined();
+  expect(run).toHaveProperty('id', runId);
+  return run as RunWithLifecycleTelemetry & {
+    id: string; lastAgentActivityAt: number; terminalAt: number;
+  };
 }
 
-// Minimal stand-in for PostHog ingestion. posthog-node runs with `flushAt: 1`,
-// so each daemon capture arrives as its own `/batch/` POST.
-export async function startCaptureSink(): Promise<CaptureSink> {
-  const events: Array<{ event: string; properties: Record<string, unknown> }> = [];
-  const server = createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-    req.on('end', () => {
-      // posthog-node gzips its batch payloads.
-      const raw = Buffer.concat(chunks);
-      let body = '';
-      try {
-        body = /gzip/iu.test(req.headers['content-encoding'] ?? '')
-          ? gunzipSync(raw).toString('utf8')
-          : raw.toString('utf8');
-      } catch {
-        body = '';
-      }
-      try {
-        const parsed = JSON.parse(body) as {
-          batch?: Array<{ event?: unknown; properties?: unknown }>;
-        };
-        for (const record of parsed.batch ?? []) {
-          if (typeof record.event !== 'string') continue;
-          events.push({
-            event: record.event,
-            properties: (record.properties ?? {}) as Record<string, unknown>,
-          });
-        }
-      } catch {
-        // Non-batch probes (flags, etc.) are not interesting here.
-      }
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{"status":1}');
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('no capture port');
-
-  const find = (runId: string): RunTiming | null => {
-    const match = events.find(
-      (record) =>
-        record.event === 'run_finished' && record.properties.run_id === runId,
-    );
-    return match ? (match.properties as RunTiming) : null;
-  };
-  const poll = async (runId: string, budgetMs: number): Promise<RunTiming | null> => {
-    const deadline = Date.now() + budgetMs;
-    for (;;) {
-      const match = find(runId);
-      if (match) return match;
-      if (Date.now() >= deadline) return null;
-      await delay(100);
-    }
-  };
-
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    async waitForRunFinished(runId, flush): Promise<RunTiming> {
-      const captured = await poll(runId, CAPTURE_WAIT_MS);
-      if (captured) return captured;
-      // Force it rather than waiting longer: the daemon's shutdown awaits
-      // `analytics.shutdown()`, which drains posthog-node, so once this
-      // resolves the sink holds everything the daemon will ever send.
-      await flush();
-      const afterFlush = await poll(runId, FLUSHED_CAPTURE_WAIT_MS);
-      if (afterFlush) return afterFlush;
-      throw new Error(
-        `no run_finished captured for ${runId} after the daemon analytics flush; saw ${
-          events.map((record) => record.event).join(', ') || '<nothing>'
-        }`,
-      );
-    },
-    close(): Promise<void> {
-      return new Promise<void>((resolve) => server.close(() => resolve()));
-    },
-  };
+export function expectVisibleOutputNotBeforeFirstToken(timing: RunTiming): void {
+  expect(timing.firstTokenAt).toBeTypeOf('number');
+  expect(timing.firstVisibleOutputAt).toBeTypeOf('number');
+  expect(timing.firstVisibleOutputAt! - timing.firstTokenAt!).toBeGreaterThanOrEqual(0);
 }
 
 /**
@@ -331,9 +202,6 @@ export async function sendRunAndWait(
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-od-analytics-device-id': 'first-visible-output-test',
-      'x-od-analytics-session-id': 'first-visible-output-session',
-      'x-od-analytics-client-type': 'web',
     },
     body: JSON.stringify({
       projectId: conversation.projectId,

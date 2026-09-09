@@ -12,18 +12,7 @@ import {
 } from 'react';
 import { Button } from '@open-design/components';
 import { createPortal } from 'react-dom';
-import type { DesignSystemEditClickProps, TrackingArtifactKind, TrackingProjectKind } from '@open-design/contracts/analytics';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackFileManagerClick,
-  trackDesignSystemEditClick,
-  trackFileUploadResult,
-  trackPageView,
-  trackTabLauncherClick,
-  trackSketchSaveResult,
-  trackSketchExportResult,
-} from '../analytics/events';
-import { deriveUploadCohort } from '../analytics/upload-tracking';
+import type { TrackingArtifactKind, TrackingProjectKind } from '@open-design/contracts/analytics';
 import { useI18n, useT, type Locale } from '../i18n';
 import { useStableHandler } from '../lib/use-stable-handler';
 import type { ProjectDeleteResult } from '../state/projects';
@@ -51,7 +40,6 @@ import {
 } from '../providers/registry';
 import type { Dict } from '../i18n/types';
 import { STAGE_ATTACHMENT_EVENT, type StageAttachmentEventDetail } from './ChatComposer';
-import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { navigate, registerNavigationGuard } from '../router';
 import { downloadDesignSystemArchive, downloadProjectArchive } from '../runtime/exports';
 import { finalizeBrandProject } from '../runtime/brands';
@@ -104,6 +92,7 @@ import {
   resolveLocalizedText,
   type ChatSessionMode,
   type InstalledPluginRecord,
+  type ProjectKind,
   type LocalizedText,
   type WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -182,6 +171,17 @@ function FileSyncBadge(_props: { state: string; size?: number }) { return null; 
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
+function workspaceTrackingProjectKind(projectKind: ProjectKind): TrackingProjectKind {
+  switch (projectKind) {
+    case 'deck':
+      return 'slide_deck';
+    case 'other':
+      return 'document';
+    default:
+      return projectKind;
+  }
+}
+
 function syncInertAttribute(element: HTMLElement | null, inert: boolean): void {
   if (!element) return;
   // React 18 treats `inert` as an unknown string attribute while React 19
@@ -214,7 +214,7 @@ export async function settleManualEditFiles(
 
 interface Props {
   projectId: string;
-  projectKind: TrackingProjectKind;
+  projectKind: ProjectKind;
   projectName?: string;
   // Basename of the project's chosen working directory (e.g. "openclaw").
   // Threaded to DesignFilesPanel as the breadcrumb root label. Undefined for
@@ -1389,7 +1389,6 @@ export function FileWorkspace({
   const { locale, t } = useI18n();
   const workspaceContext: null = null;
   const iframeKeepAlivePool = useIframeKeepAlivePool();
-  const analytics = useAnalytics();
   // P1 page_view page_name=file_manager — once per project the user lands
   // inside the workspace. Re-fire when the projectId changes so a
   // project-switch session shows up as a fresh view rather than reusing
@@ -1398,8 +1397,7 @@ export function FileWorkspace({
   useEffect(() => {
     if (fileManagerViewedProjectRef.current === projectId) return;
     fileManagerViewedProjectRef.current = projectId;
-    trackPageView(analytics.track, { page_name: 'file_manager' });
-  }, [projectId, analytics.track]);
+  }, [projectId]);
   const defaultRootTab = designSystemProject ? DESIGN_SYSTEM_TAB : DESIGN_FILES_TAB;
   // Persisted tabs come from the parent. Active tab can transiently point
   // at a pending sketch — pending sketches are not in tabsState.tabs.
@@ -2353,23 +2351,12 @@ export function FileWorkspace({
     if (picked.length === 0) return;
 
     setUploadError(null);
-    // Cohort math is shared across all three upload surfaces; see
-    // `analytics/upload-tracking.ts` for the per-file → batch reduction.
-    const cohort = deriveUploadCohort(picked);
     let result: UploadProjectFilesResult;
     try {
       result = await uploadProjectFiles(projectId, picked, uploadDir);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setUploadError(`Upload failed for ${picked.length} file(s) (${detail}).`);
-      trackFileUploadResult(analytics.track, {
-        page_name: 'file_manager',
-        area: 'file_manager',
-        project_id: projectId,
-        ...cohort,
-        result: 'failed',
-        error_code: detail,
-      });
       return;
     }
     if (result.uploaded.length > 0) {
@@ -2388,22 +2375,7 @@ export function FileWorkspace({
           : `Upload failed for ${failedCount} file(s)${detail}.`,
       );
       console.warn('Project upload had failures', result.failed);
-      trackFileUploadResult(analytics.track, {
-        page_name: 'file_manager',
-        area: 'file_manager',
-        project_id: projectId,
-        ...cohort,
-        result: 'failed',
-        ...(result.error ? { error_code: result.error } : {}),
-      });
     } else if (result.uploaded.length > 0) {
-      trackFileUploadResult(analytics.track, {
-        page_name: 'file_manager',
-        area: 'file_manager',
-        project_id: projectId,
-        ...cohort,
-        result: 'success',
-      });
     }
   }
 
@@ -3392,10 +3364,6 @@ export function FileWorkspace({
       projectName={projectName}
       projectDir={resolvedDir}
       agents={handoffAgents}
-      artifactId={handoffArtifactId}
-      artifactKind={handoffArtifactKind}
-      metricsConsent={metricsConsent}
-      installationId={installationId}
       workspaceActive={workspaceActive}
       onRetainActivityChange={handleHtmlViewerRetainActivityChange}
       onManualEditExitHandlerChange={handleManualEditExitHandlerChange}
@@ -4138,14 +4106,6 @@ export function FileWorkspace({
           launcherContext={launcherContext}
           onOpenFile={openFile}
           onOpenTab={focusWorkspaceTab}
-          onTrack={(input) =>
-            trackTabLauncherClick(analytics.track, {
-              page_name: 'file_manager',
-              area: 'tab_launcher',
-              ...(projectId ? { project_id: projectId } : {}),
-              ...input,
-            })
-          }
           onClose={() => setLauncherOpen(false)}
         />
       ) : null}
@@ -4245,7 +4205,7 @@ export function FileWorkspace({
         {initialMaterializationPending ? (
           <DesignFilesPanel
             projectId={projectId}
-            projectKind={projectKind}
+            projectKind={workspaceTrackingProjectKind(projectKind)}
             viewerOnly
             files={[]}
             folders={[]}
@@ -4290,7 +4250,7 @@ export function FileWorkspace({
           <DesignFilesPanel
             key={projectId}
             projectId={projectId}
-            projectKind={projectKind}
+            projectKind={workspaceTrackingProjectKind(projectKind)}
             filesRefreshKey={filesRefreshKey}
             viewerOnly={viewerOnly}
             rootDirName={rootDirName}
@@ -4307,88 +4267,31 @@ export function FileWorkspace({
               // Re-engagement entry: opening an existing sketch from the file
               // list (new_sketch already covers fresh creation).
               if (isSketchName(name)) {
-                trackFileManagerClick(analytics.track, {
-                  page_name: 'file_manager',
-                  area: 'file_manager',
-                  element: 'open_sketch',
-                  project_id: projectId,
-                  project_kind: projectKind,
-                });
               }
               openFile(name);
             }}
             onOpenLiveArtifact={(tabId) => openFile(tabId)}
             onRenameFile={handleRename}
             onDeleteFile={(name) => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'delete',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               void handleDelete(name);
             }}
             onDeleteFiles={(names) => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'delete',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               return handleDeleteMany(names);
             }}
             onUpload={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'upload',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               fileInputRef.current?.click();
             }}
             onUploadFiles={(picked) => void uploadFiles(picked)}
             onPaste={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'paste',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               void createMarkdownDocument();
             }}
             onNewSketch={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'new_sketch',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               void startNewSketch();
             }}
             onOpenBrowser={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'new_browser',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               openBrowserTab();
             }}
             onCreateDesignSystem={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'create_design_system',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
-              setPendingDesignSystemCreateEntry('project_canvas');
               navigate({ kind: 'design-system-create' });
             }}
             onCreateDesignSystemFromProject={onCreateDesignSystemFromProject}
@@ -4396,13 +4299,6 @@ export function FileWorkspace({
             onDuplicateProject={onDuplicateProject}
             duplicateProjectBusy={duplicateProjectBusy}
             onSelectFromLibrary={() => {
-              trackFileManagerClick(analytics.track, {
-                page_name: 'file_manager',
-                area: 'file_manager',
-                element: 'library',
-                project_id: projectId,
-                project_kind: projectKind,
-              });
               setShowLibraryPicker(true);
             }}
             uploadError={uploadError}
@@ -4428,24 +4324,10 @@ export function FileWorkspace({
                 // Fires only on the explicit "Save" button — background
                 // autosave calls saveSketch() directly and is not tracked.
                 const result = await saveSketch(activeFile.name, scene);
-                trackSketchSaveResult(analytics.track, {
-                  page_name: 'file_manager',
-                  area: 'sketch_editor',
-                  result: result === false ? 'failed' : 'success',
-                  project_id: projectId,
-                  project_kind: projectKind,
-                });
                 return result;
               }}
               onExportImage={async (base64, fileName) => {
                 const result = await exportSketchImage(activeFile.name, base64, fileName);
-                trackSketchExportResult(analytics.track, {
-                  page_name: 'file_manager',
-                  area: 'sketch_editor',
-                  result: result === false ? 'failed' : 'success',
-                  project_id: projectId,
-                  project_kind: projectKind,
-                });
                 return result;
               }}
               onOpenExportedImage={openFile}
@@ -4687,7 +4569,6 @@ function DesignSystemProjectPanel({
   githubConnected?: boolean;
 }) {
   const t = useT();
-  const analytics = useAnalytics();
   const workspaceContext: null = null;
   // Match the exact fields sent by workspaceProjectHeaders. Billing-only
   // refreshes must not blank and reload the kit, while a role, membership, or
@@ -4739,22 +4620,6 @@ function DesignSystemProjectPanel({
     initialBrandJsonRef.current = null;
     initialBrandJsonLoadedRef.current = false;
   }, [projectId, workspaceIdentity]);
-  function emitDesignSystemProjectEditClick(
-    element: DesignSystemEditClickProps['element'],
-    module: DesignSystemEditClickProps['module'],
-  ) {
-    trackDesignSystemEditClick(analytics.track, {
-      page_name: 'design_system_project',
-      area: 'design_system_edit',
-      element,
-      module,
-      edit_surface: 'direct_module',
-      artifact_kind: 'design_system',
-      design_system_id: system.id,
-      project_id: projectId,
-    });
-  }
-
   const refreshKitDependencies = useCallback(async (options?: {
     finalizeBrand?: boolean;
   }) => {
@@ -5432,7 +5297,6 @@ function DesignSystemProjectPanel({
       label: t('ds.refresh'),
       icon: 'refresh',
       onClick: () => {
-        emitDesignSystemProjectEditClick('kit_refresh', 'kit');
         void refreshKit();
       },
       disabled: !editable || Boolean(kitActionBusy) || statusBusy || defaultBusy,
@@ -5443,7 +5307,6 @@ function DesignSystemProjectPanel({
       label: t('dsManager.downloadTitle'),
       icon: 'download',
       onClick: () => {
-        emitDesignSystemProjectEditClick('kit_download', 'kit');
         void downloadKit();
       },
       disabled: !editable || Boolean(kitActionBusy) || statusBusy || defaultBusy,
@@ -5612,7 +5475,6 @@ function DesignSystemProjectPanel({
           onDeleteImage={editable ? (index) => void removeKitImage(index) : undefined}
           onRefresh={editable ? () => void refreshKit() : undefined}
           onDownload={editable ? () => void downloadKit() : undefined}
-          onEditClick={editable ? emitDesignSystemProjectEditClick : undefined}
           uploading={kitUploading}
           actionBusy={kitActionBusy}
           onActionFeedback={notifyKit}
@@ -6272,7 +6134,6 @@ function designSystemSectionStatusClass(status: DesignSystemSectionStatus): stri
   }
 }
 
-
 function designSystemInitialGenerationSteps({
   files,
   sectionReviews,
@@ -6584,7 +6445,7 @@ function nextMarkdownDocumentPath(files: ProjectFile[], dir: string): string {
 
 function initialMarkdownDocument(
   path: string,
-  projectKind: TrackingProjectKind,
+  projectKind: ProjectKind,
   t: TranslateFn,
 ): string {
   const title = normalizeProjectFilePath(path)
@@ -6615,16 +6476,18 @@ ${t('designFiles.documentTemplate.nextBody')}
 `;
 }
 
-function defaultPagePresetId(projectKind: TrackingProjectKind): ProjectPagePresetId {
+function defaultPagePresetId(projectKind: ProjectKind): ProjectPagePresetId {
   switch (projectKind) {
-    case 'slide_deck':
+    case 'deck':
       return 'blank-slides';
-    case 'document':
+    case 'other':
       return 'blank-document';
     case 'template':
     case 'prototype':
-    case 'wireframe':
-    case 'mobile':
+    case 'brand':
+    case 'image':
+    case 'video':
+    case 'audio':
     default:
       return 'blank-prototype';
   }
@@ -7283,30 +7146,21 @@ function escapeHtmlText(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function documentTemplateScenarioKey(projectKind: TrackingProjectKind): keyof Dict {
+function documentTemplateScenarioKey(projectKind: ProjectKind): keyof Dict {
   switch (projectKind) {
     case 'prototype':
       return 'designFiles.documentTemplate.scenario.prototype';
-    case 'wireframe':
-      return 'designFiles.documentTemplate.scenario.wireframe';
-    case 'mobile':
-      return 'designFiles.documentTemplate.scenario.mobile';
-    case 'slide_deck':
+    case 'deck':
       return 'designFiles.documentTemplate.scenario.slideDeck';
-    case 'document':
+    case 'other':
       return 'designFiles.documentTemplate.scenario.document';
     case 'image':
       return 'designFiles.documentTemplate.scenario.image';
     case 'video':
       return 'designFiles.documentTemplate.scenario.video';
-    case 'hyperframes':
-      return 'designFiles.documentTemplate.scenario.hyperframes';
     case 'audio':
       return 'designFiles.documentTemplate.scenario.audio';
-    case 'live_artifact':
-      return 'designFiles.documentTemplate.scenario.liveArtifact';
     case 'brand':
-    case 'design_system':
       return 'designFiles.documentTemplate.scenario.designSystem';
     case 'template':
     default:

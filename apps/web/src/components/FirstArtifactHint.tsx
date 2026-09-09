@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import { useT } from '../i18n';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackStudioOnboardingHintClick,
-  trackStudioOnboardingHintSurfaceView,
-} from '../analytics/events';
 import {
   hasSeenFirstArtifactHint,
   markFirstArtifactHintSeen,
@@ -25,7 +20,6 @@ import styles from './FirstArtifactHint.module.css';
 // chat.
 export function FirstArtifactHint() {
   const t = useT();
-  const analytics = useAnalytics();
   const reducedMotion = useReducedMotion();
   const [visible, setVisible] = useState(() => !hasSeenFirstArtifactHint());
   // Delayed mount replaces an opacity fade: the card appears fully opaque
@@ -78,22 +72,11 @@ export function FirstArtifactHint() {
     // fires only once the card is actually renderable.
     if (!visible || !settled || firedRef.current) return;
     firedRef.current = true;
-    trackStudioOnboardingHintSurfaceView(analytics.track, {
-      page_name: 'chat_panel',
-      area: 'onboarding_first_artifact_hint',
-      hint_type: 'view_artifact',
-    });
-  }, [visible, settled, analytics.track]);
+  }, [visible, settled]);
 
   if (!visible || !settled) return null;
 
   function dismiss() {
-    trackStudioOnboardingHintClick(analytics.track, {
-      page_name: 'chat_panel',
-      area: 'onboarding_first_artifact_hint',
-      element: 'dismiss',
-      hint_type: 'view_artifact',
-    });
     // Spend the once-ever budget on the user's own close action.
     markFirstArtifactHintSeen();
     setVisible(false);

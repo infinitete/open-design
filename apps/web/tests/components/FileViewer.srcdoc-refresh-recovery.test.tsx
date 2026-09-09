@@ -4,10 +4,6 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FileViewer } from '../../src/components/FileViewer';
-import {
-  clearExceptionTrackingContext,
-  setExceptionTrackingContext,
-} from '../../src/analytics/error-tracking';
 import type { ProjectFile } from '../../src/types';
 
 function htmlFile(overrides: Partial<ProjectFile> = {}): ProjectFile {
@@ -45,17 +41,8 @@ function transportGeneration(frame: HTMLIFrameElement): string {
   return generation;
 }
 
-beforeEach(() => {
-  setExceptionTrackingContext({
-    apiKey: 'phc_preview_test',
-    host: 'https://posthog.test',
-    distinctId: 'preview-test-user',
-  });
-});
-
 afterEach(() => {
   cleanup();
-  clearExceptionTrackingContext();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -295,31 +282,7 @@ describe('FileViewer srcDoc file-watch refresh recovery', () => {
     expect(recoveredFrame).not.toBe(partialFrame);
     expect(recoveredFrame.srcdoc).toContain('data-od-lazy-srcdoc-transport');
 
-    const postHogCalls = fetchMock.mock.calls.filter(([input]) =>
-      String(input).includes('/i/v0/e/'));
-    expect(postHogCalls).toHaveLength(1);
-    const [, postHogInit] = postHogCalls[0]!;
-    expect(postHogInit).toBeDefined();
-    const payload = JSON.parse(
-      String(postHogInit?.body),
-    ) as { event?: string; properties?: Record<string, unknown> };
-    expect(payload).toMatchObject({
-      event: 'client_preview_white_screen',
-      properties: {
-        reason: 'srcdoc_transport_unverified',
-        transport_signal: 'body_incomplete',
-        transport_stage: 'head_bridge_alive_body_tail_missing',
-        activation_acknowledged: true,
-        body_complete: false,
-        frame_ready_state: 'complete',
-        frame_body_present: true,
-        frame_body_child_count: 2,
-        frame_document_element_child_count: 2,
-        recovery_attempted: true,
-        recovery_path: 'lazy_shell_remount',
-      },
-    });
-    expect(JSON.stringify(payload)).not.toContain('partial-document');
+
   });
 
   it('does not remount a healthy document while a parser-blocking script is still loading', () => {
@@ -389,7 +352,6 @@ describe('FileViewer srcDoc file-watch refresh recovery', () => {
     });
 
     expect(screen.getByTestId('artifact-preview-frame')).toBe(parsingFrame);
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/i/v0/e/'))).toBe(false);
   });
 
   it('recovers when a truncated document stays loading through the parsing grace period', () => {

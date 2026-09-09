@@ -8,6 +8,7 @@ import {
   snapshotAiHtmlVersionsForRun,
 } from '../src/run-html-version-snapshots.js';
 import { listProjectFileVersions } from '../src/project-file-versions.js';
+import { decodeDurablePluginWorkflowProvenance, validatePluginWorkflowProvenance } from '../src/mcp-observability.js';
 
 describe('AI HTML version snapshots', () => {
   const roots: string[] = [];
@@ -17,43 +18,43 @@ describe('AI HTML version snapshots', () => {
   });
 
   it('derives bounded Artifact origin only from a validated Plugin run context', () => {
-    expect(artifactOriginForRun({
-      runId: 'run-1',
-      externalPluginAnalytics: {
-        entrySurface: 'external_mcp',
-        externalPluginId: 'open-design',
-        pluginWorkflowId: 'workflow-1',
+    const provenance = validatePluginWorkflowProvenance({
+      pluginWorkflowId: '018f6f2e-2222-7222-8222-222222222222',
+      externalPluginContext: {
+        id: 'open-design', version: '0.5.0',
+        distributionMechanism: 'git_marketplace', publisherClass: 'open_design_first_party',
       },
-    })).toEqual({
-      entrySurface: 'external_mcp',
-      externalPluginId: 'open-design',
-      pluginWorkflowId: 'workflow-1',
-      runId: 'run-1',
+      logicalRequestDigest: 'a'.repeat(64), logicalRequestDigestVersion: 1,
     });
     expect(artifactOriginForRun({
-      runId: 'run-old-id',
-      externalPluginAnalytics: {
-        entrySurface: 'external_mcp',
-        externalPluginId: 'open-design-cloud',
-        pluginWorkflowId: 'workflow-old-id',
-      },
-    })).toBeUndefined();
-    expect(artifactOriginForRun({
-      runId: 'run-2',
-      externalPluginAnalytics: {
-        entrySurface: 'open_design_ui',
-        externalPluginId: 'open-design',
-        pluginWorkflowId: 'workflow-2',
-      },
-    })).toBeUndefined();
-    expect(artifactOriginForRun({
-      runId: 'run-3',
-      externalPluginAnalytics: {
-        entrySurface: 'external_mcp',
-        externalPluginId: 'unknown-plugin',
-        pluginWorkflowId: 'workflow-3',
-      },
-    })).toBeUndefined();
+      runId: 'run-1', pluginWorkflowProvenance: provenance,
+    })).toEqual({
+      entrySurface: 'external_mcp', externalPluginId: 'open-design',
+      pluginWorkflowId: provenance.pluginWorkflowId, runId: 'run-1',
+    });
+    // Unrelated UI runs have no external plugin binding.
+    expect(artifactOriginForRun({ runId: 'run-2' })).toBeUndefined();
+    // Old durable records must not turn retired/unknown identities or UI
+    // attribution into a product origin when migrated to provenance.
+    for (const [externalPluginId, entrySurface] of [
+      ['open-design-cloud', 'external_mcp'],
+      ['open-design', 'open_design_ui'],
+      ['unknown-plugin', 'external_mcp'],
+    ]) {
+      const decoded = decodeDurablePluginWorkflowProvenance({
+        externalPluginAnalytics: {
+          externalPluginId, entrySurface,
+          externalPluginVersion: provenance.externalPluginContext.version,
+          distributionMechanism: provenance.externalPluginContext.distributionMechanism,
+          publisherClass: provenance.externalPluginContext.publisherClass,
+          pluginWorkflowId: provenance.pluginWorkflowId,
+          logicalRequestDigest: provenance.logicalRequestDigest,
+          logicalRequestDigestVersion: 1,
+        },
+      });
+      expect(decoded).toBeNull();
+      expect(artifactOriginForRun({ runId: 'run-invalid', pluginWorkflowProvenance: decoded })).toBeUndefined();
+    }
   });
 
   async function makeProject(): Promise<{ root: string; projectsRoot: string; projectId: string; projectRoot: string }> {

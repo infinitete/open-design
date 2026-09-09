@@ -9,7 +9,6 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { adaptRuntimeChildObservationsV1 } from '../../src/observability/runtime-child-observations.js';
-import { safeTaskObservationRuntimeVersions } from '../../src/observability/task-observation-aggregation.js';
 import {
   OPENCODE_CHILD_EVIDENCE_ADAPTER_VERSION,
   adaptOpenCodeChildRuntimeFactV1,
@@ -620,10 +619,6 @@ describe('native OpenCode child evidence', () => {
       },
     });
     expect(observations[1]?.attributes).not.toHaveProperty('runtimeCliVersion');
-    expect(safeTaskObservationRuntimeVersions(observations[1]!)).toEqual({
-      agentCliVersion: '1.18.18',
-      runtimeAdapterVersion: OPENCODE_CHILD_EVIDENCE_ADAPTER_VERSION,
-    });
     expect(observations[1]?.turnAccounting).toBeUndefined();
     const parent = normalizeAgentObservationV1({
       identity: {

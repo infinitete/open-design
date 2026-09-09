@@ -6,7 +6,6 @@ import {
   persistRunEventToAssistantMessage,
   readRunMessageEventPersistenceTelemetry,
   RUN_MESSAGE_EVENT_FLUSH_INTERVAL_MS,
-  runMessageEventPersistenceAnalytics,
 } from '../../src/runtimes/chat-run-messages.js';
 
 function createDb(): Database.Database {
@@ -104,7 +103,7 @@ describe('run message event persistence', () => {
     expect(updates.count).toBeLessThanOrEqual(2);
   });
 
-  it('reports persistence pressure without emitting a high-cardinality event per flush', () => {
+  it('reports persistence pressure through local diagnostics', () => {
     db = createDb();
     db.prepare(`INSERT INTO messages (id, content, events_json) VALUES (?, '', '[]')`)
       .run('assistant-1');
@@ -131,19 +130,6 @@ describe('run message event persistence', () => {
       finalizeCount: 1,
       finalEventCount: 1,
       persistenceErrorCount: 0,
-    });
-    expect(runMessageEventPersistenceAnalytics(run)).toMatchObject({
-      message_event_storage_mode: 'append_only',
-      message_event_input_count: 1_500,
-      message_event_delta_count: 1_500,
-      message_event_input_char_count: 1_500,
-      message_event_flush_count: 1,
-      message_event_batch_event_count: 1,
-      message_event_persisted_count: 1,
-      message_event_pending_char_peak: 1_500,
-      message_event_finalize_count: 1,
-      message_event_final_event_count: 1,
-      message_event_persistence_error_count: 0,
     });
   });
 

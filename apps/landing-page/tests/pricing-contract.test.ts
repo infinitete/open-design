@@ -596,24 +596,16 @@ describe("pricing contract", () => {
     assert.doesNotMatch(campaign, /body: ['\"][^'\"]*20:00/);
     assert.match(campaign, /paidBenefitNote: '8月13日—8月27日 · 两周免费用'/);
     assert.match(campaign, /teamBenefitNote: '8月13日—8月27日 · 两周免费用'/);
-    assert.match(page, /DEEPSEEK_V4_PRO_CAMPAIGN\.startAt/);
-    assert.match(page, /DEEPSEEK_V4_PRO_CAMPAIGN\.endAtExclusive/);
-    assert.match(page, /now >= campaignStartAt && now < campaignEndAt/);
+    assert.match(banner, /data-start-at=\{DEEPSEEK_V4_PRO_CAMPAIGN\.startAt\}/);
+    assert.match(banner, /data-end-at=\{DEEPSEEK_V4_PRO_CAMPAIGN\.endAtExclusive\}/);
+    assert.match(banner, /now >= startAt && now < endAt/);
     assert.doesNotMatch(page, /data-pricing-campaign-surface/);
     assert.doesNotMatch(page, /class="pr-campaign-disclaimer"/);
     assert.match(campaign, /套餐内的无限制模型额度与免费生成次数，仅可通过OpenDesign使用/);
     assert.match(page, /<p class="pr-foot" set:html=\{footnoteHtml\} \/>/);
     assert.doesNotMatch(page, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
     assert.doesNotMatch(page, /area:\s*'campaign_banner'/);
-    assert.match(page, /element:\s*'deepseek_v4_pro_benefit'/);
-    assert.match(page, /window\.__odRecordCampaignEntry\?\./);
-    assert.match(page, /'landing_pricing_team_plan'\s*:\s*'landing_pricing_personal_plan'/);
-    assert.match(page, /'deepseek_v4_pro'/);
-    // First-touch envelope + device id survive Pricing → Cloud. Campaign id is
-    // re-decided by campaignEligible and written only via __odAttributedUrl.
-    assert.match(page, /'od_conversion_source',\s*'od_device_id'/);
-    assert.match(page, /od_campaign_id is intentionally NOT forwarded/);
-    assert.match(page, /window\.__odTrack\('ui_click', props\)/);
+    assert.doesNotMatch(page, /window\.__odTrack/);
     assert.doesNotMatch(page, /pricing_subscribe_click/);
     assert.doesNotMatch(page, /\.pr-campaign-disclaimer\s*\{/);
     assert.doesNotMatch(page, /权益生效后连续 7 天/);
@@ -624,28 +616,7 @@ describe("pricing contract", () => {
   it("does not expose a campaign review preview backdoor", async () => {
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 
-    assert.match(page, /campaignEligible = now >= campaignStartAt && now < campaignEndAt/);
-    assert.match(page, /campaignVisible = campaignEligible/);
-    assert.match(page, /campaignVisible = campaignEligible/);
     assert.doesNotMatch(page, /data-campaign-review-param|campaignPreview|previewEndAt/);
-  });
-
-  it("stamps campaign attribution on subscribe CTAs only inside the activity window", async () => {
-    // Clicks outside the fixed window must not count toward the campaign:
-    // the CTA keeps recording od_entry_* attribution, but the minted entry
-    // and the ui_click props carry the campaign id only while campaignEligible
-    // is true.
-    const page = await readFile(PRICING_PAGE_PATH, "utf8");
-
-    assert.match(
-      page,
-      /__odRecordCampaignEntry\?\.\(\s*audience === 'team' \? 'landing_pricing_team_plan' : 'landing_pricing_personal_plan',\s*campaignEligible \? 'deepseek_v4_pro' : undefined,\s*\)/,
-    );
-    assert.match(page, /\.\.\.\(campaignEligible \? \{ campaign_id: 'deepseek_v4_pro' \} : \{\}\)/);
-    assert.doesNotMatch(
-      page,
-      /element: 'subscribe',[\s\S]{0,300}?\n\s*campaign_id: 'deepseek_v4_pro',/,
-    );
   });
 
   it("removes card-level and Team campaign offer blocks", async () => {
@@ -662,7 +633,6 @@ describe("pricing contract", () => {
     assert.doesNotMatch(teamPanel, /data-pricing-campaign-surface/);
     assert.doesNotMatch(teamPanel, /class="pr-team-model-offer"/);
     assert.doesNotMatch(teamPanel, /data-team-campaign-countdown/);
-    assert.match(page, /campaignEligible = now >= campaignStartAt && now < campaignEndAt/);
     assert.doesNotMatch(page, /\.pr-team-model-offer\s*\{/);
   });
 
@@ -908,9 +878,7 @@ describe("pricing contract", () => {
     assert.match(page, /data-downgrade-plan-label=\{planActionLabels\.downgrade\}/);
     assert.match(page, /data-upgrade-plan-label=\{planActionLabels\.upgrade\}/);
     assert.match(page, /loadPersonalPricingContext\(apiOrigin\)/);
-    assert.match(page, /pricing:personal-context-resolved/);
-    assert.match(page, /resolvePricingBridgeSource/);
-    assert.match(page, /authenticated:\s*true/);
+    assert.match(page, /data-personal-pricing-context-resolved/);
     assert.match(page, /if \(!context\) return/);
     assert.doesNotMatch(page, /liveContext \?\?/);
     assert.doesNotMatch(page, /demo_plan/);
@@ -937,31 +905,6 @@ describe("pricing contract", () => {
     );
     assert.match(individualPlans, /data-pricing-cta\s+data-tier=\{tier\}/);
     assert.match(individualPlans, /\.pricing-card-cta\s*\{[^}]*border:\s*0;/s);
-  });
-
-  it("records Pricing Enterprise submit intent before shared-form validation", async () => {
-    const [page, form] = await Promise.all([
-      readFile(PRICING_PAGE_PATH, "utf8"),
-      readFile(
-        new URL("../app/_components/enterprise-lead-form.astro", import.meta.url),
-        "utf8",
-      ),
-    ]);
-    const submitHandler = form.slice(
-      form.indexOf("form.addEventListener('submit'"),
-      form.indexOf("const data = new FormData(form)"),
-    );
-    assert.match(
-      submitHandler,
-      /pricing:enterprise-submit[\s\S]*?\['email', 'team-size'/,
-    );
-    assert.doesNotMatch(
-      page.slice(
-        page.indexOf("modal.addEventListener('od:lead-success'"),
-        page.indexOf("});", page.indexOf("modal.addEventListener('od:lead-success'")) + 3,
-      ),
-      /pricing:enterprise-submit/,
-    );
   });
 
   it("restores account actions only on Pricing", async () => {
@@ -1392,7 +1335,7 @@ describe("pricing contract", () => {
     assert.match(page, /data-open-lead-modal/);
     assert.match(
       page,
-      /<EnterpriseLeadForm locale=\{locale\} source="pricing_team" pageName="pricing" \/>/,
+      /<EnterpriseLeadForm locale=\{locale\} source="pricing_team" \/>/,
     );
     assert.match(form, /fetch\('\/contact-sales'/);
   });

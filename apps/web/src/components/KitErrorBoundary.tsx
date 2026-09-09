@@ -10,7 +10,6 @@
 
 import { Component, type ReactNode } from 'react';
 import { useT } from '../i18n';
-import { reportHandledException } from '../analytics/error-tracking';
 import styles from './KitErrorBoundary.module.css';
 
 interface ErrorBoundaryProps {
@@ -31,7 +30,6 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
   componentDidCatch(error: unknown) {
     // Surface to the existing analytics sink; the UI still recovers locally.
-    reportHandledException(error, 'design-kit-view render error');
   }
 
   private retry = () => this.setState({ hasError: false });

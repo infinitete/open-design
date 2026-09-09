@@ -44,7 +44,6 @@ function baseConfig(): Record<string, unknown> {
     designSystemId: null,
     onboardingCompleted: true,
     privacyDecisionAt: 1,
-    telemetry: { metrics: true, content: true },
     composio: {
       apiKey: '',
       apiKeyConfigured: true,

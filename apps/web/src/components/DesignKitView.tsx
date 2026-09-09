@@ -27,7 +27,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Textarea } from '@open-design/components';
-import type { DesignSystemEditClickProps } from '@open-design/contracts/analytics';
 import { useT } from '../i18n';
 import {
   fetchProjectFileText,
@@ -287,10 +286,6 @@ export interface DesignKitViewProps {
   onDownload?: () => void;
   onImport?: () => void;
   onReset?: () => void;
-  onEditClick?: (
-    element: DesignSystemEditClickProps['element'],
-    module: DesignSystemEditClickProps['module'],
-  ) => void;
   uploading?: KitUploadModule | null;
   actionBusy?: string | null;
   onActionFeedback?: (tone: DesignKitActionFeedbackTone, message: string) => void;
@@ -319,7 +314,6 @@ function DesignKitViewInner({
   onDownload,
   onImport,
   onReset,
-  onEditClick,
   uploading,
   actionBusy,
   onActionFeedback,
@@ -633,22 +627,6 @@ function DesignKitViewInner({
     [t],
   );
 
-  function uploadElementForModule(module: KitUploadModule): DesignSystemEditClickProps['element'] {
-    return module === 'logo' ? 'logo_upload' : module === 'font' ? 'font_upload' : 'image_upload';
-  }
-
-  function uploadTrackingModule(module: KitUploadModule): DesignSystemEditClickProps['module'] {
-    return module === 'logo' ? 'logo' : module === 'font' ? 'typography' : 'images';
-  }
-
-  function designMdTrackingModule(module: DesignMdModuleSpec): DesignSystemEditClickProps['module'] {
-    if (module.id === 'typography') return 'typography';
-    if (module.id === 'palette') return 'palette';
-    if (module.id === 'imageryLayout') return 'images';
-    if (module.id === 'designSystem') return 'kit';
-    return 'design_md';
-  }
-
   function handleFile(module: KitUploadModule, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -682,7 +660,6 @@ function DesignKitViewInner({
         : f.type.startsWith('image/') || /\.svg$/i.test(f.name),
     );
     if (file) {
-      onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
       onUploadModule(module, file);
     }
   }
@@ -696,7 +673,6 @@ function DesignKitViewInner({
         if (!imageType) continue;
         const blob = await item.getType(imageType);
         const ext = imageType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-        onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
         onActionFeedback?.('loading', t('ds.uploading'));
         onUploadModule(
           module,
@@ -711,7 +687,6 @@ function DesignKitViewInner({
 
   function openDesignMdEditor() {
     if (!designMd) return;
-    onEditClick?.('design_md_edit', 'design_md');
     setDesignMdTarget({ kind: 'all' });
     setDesignMdDraft(designMd.body);
     setDesignMdOpen(true);
@@ -719,7 +694,6 @@ function DesignKitViewInner({
 
   function openDesignMdModuleEditor(module: DesignMdModuleSpec) {
     if (!designMd) return;
-    onEditClick?.('design_md_edit', designMdTrackingModule(module));
     const slice = designMdModuleSlice(designMd.body, module);
     setDesignMdTarget({ kind: 'module', module });
     setDesignMdDraft(slice.text);
@@ -742,14 +716,12 @@ function DesignKitViewInner({
 
   async function copyDesignMd() {
     if (!designMd?.body) return;
-    onEditClick?.('design_md_copy', 'design_md');
     await copyDesignMdText(designMd.body);
   }
 
   async function copyDesignMdModule(module: DesignMdModuleSpec) {
     if (!designMd?.body) return;
     const slice = designMdModuleSlice(designMd.body, module);
-    onEditClick?.('design_md_copy', designMdTrackingModule(module));
     await copyDesignMdText(slice.text);
   }
 
@@ -772,11 +744,9 @@ function DesignKitViewInner({
       void copyDesignMd();
     } else if (key === 'u' && canUpload) {
       event.preventDefault();
-      onEditClick?.('logo_upload', 'logo');
       logoInputRef.current?.click();
     } else if (key === 'r' && onRefresh) {
       event.preventDefault();
-      onEditClick?.('kit_refresh', 'kit');
       onRefresh();
     } else if (
       (event.key === 'Delete' || event.key === 'Backspace') &&
@@ -785,7 +755,6 @@ function DesignKitViewInner({
       target.closest('[data-kit-logo-stage]')
     ) {
       event.preventDefault();
-      onEditClick?.('logo_delete', 'logo');
       void onDeleteLogo(activeLogo);
     }
   }
@@ -802,7 +771,6 @@ function DesignKitViewInner({
   function openColorEditor(index: number) {
     const color = colors[index];
     if (!color) return;
-    onEditClick?.('color_edit', 'palette');
     setColorEditor({
       index,
       label: color.name || color.role || `Color ${index + 1}`,
@@ -858,7 +826,6 @@ function DesignKitViewInner({
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    onEditClick?.('design_md_upload', 'design_md');
     const text = await file.text();
     setDesignMdTarget({ kind: 'all' });
     setDesignMdDraft(text);
@@ -940,7 +907,6 @@ function DesignKitViewInner({
       label,
       'upload',
       () => {
-        onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
         (module === 'logo' ? logoInputRef : module === 'font' ? fontInputRef : imageInputRef).current?.click();
       },
       Boolean(uploading || anyActionBusy),
@@ -959,7 +925,6 @@ function DesignKitViewInner({
             disabled={uploading === module || anyActionBusy}
             aria-busy={(uploading === module || actionBusy === `upload:${module}`) || undefined}
             onClick={() => {
-              onEditClick?.(uploadElementForModule(module), uploadTrackingModule(module));
               (module === 'logo' ? logoInputRef : module === 'font' ? fontInputRef : imageInputRef).current?.click();
             }}
           >
@@ -1220,7 +1185,6 @@ function DesignKitViewInner({
                           t('ds.deleteLogo'),
                           'trash',
                           () => {
-                            onEditClick?.('logo_delete', 'logo');
                             void onDeleteLogo(activeLogo);
                           },
                           Boolean(uploading || anyActionBusy),
@@ -1512,7 +1476,6 @@ function DesignKitViewInner({
                               actionBusy === `delete-image:${sampleIndex}` ? styles.shotDeleteLoading : ''
                             }`}
                             onClick={() => {
-                              onEditClick?.('image_delete', 'images');
                               void onDeleteImage(sampleIndex);
                             }}
                             disabled={Boolean(uploading || anyActionBusy)}
@@ -1548,25 +1511,21 @@ function DesignKitViewInner({
                     {designMdModuleActionButtons(designMdModules.designSystem)}
                     {!stickyHeader && onRefresh
                       ? moduleActionButton(t('ds.refresh'), 'refresh', () => {
-                          onEditClick?.('kit_refresh', 'kit');
                           onRefresh();
                         }, anyActionBusy, actionBusy === 'refresh')
                       : null}
                     {!stickyHeader && onDownload
                       ? moduleActionButton(t('ds.download'), 'download', () => {
-                          onEditClick?.('kit_download', 'kit');
                           onDownload();
                         }, anyActionBusy, actionBusy === 'download')
                       : null}
                     {!stickyHeader && onImport
                       ? moduleActionButton(t('ds.importFolder'), 'import', () => {
-                          onEditClick?.('kit_import', 'kit');
                           onImport();
                         }, anyActionBusy, actionBusy === 'import')
                       : null}
                     {!stickyHeader && onReset
                       ? moduleActionButton(t('ds.reset'), 'reload', () => {
-                          onEditClick?.('kit_reset', 'kit');
                           onReset();
                         }, anyActionBusy, actionBusy === 'reset')
                       : null}

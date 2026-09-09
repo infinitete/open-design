@@ -1,30 +1,5 @@
-/**
- * `last_progress_age_ms` must survive the stall it is meant to describe.
- *
- * The analytics contract (packages/contracts/src/analytics/events/result-events.ts)
- * defines the field as "age of the last agent activity at finish. Near the
- * inactivity ceiling on a stall; near zero on a clean finish." It is the one
- * property that answers "how long had the agent been silent when we gave up".
- *
- * On an ACP runtime it reports the opposite. `attachAcpSession`'s own stage
- * watchdog ends a stalled turn by calling `fail()`, which emits an SSE `error`
- * through the daemon's ACP `send` wrapper (server.ts) — and that wrapper stamps
- * `run.lastAgentActivityAt = Date.now()` for every emission, error included. So
- * the daemon's own timeout event resets the progress clock microseconds before
- * the run finalizes, and a run that sat silent for the entire timeout window
- * reports a `last_progress_age_ms` of a few hundred milliseconds.
- *
- * Field evidence: run 14b04dd3-56b0-4d44-926b-db6cee3017ab (2026-07-28, OD
- * 0.16.1, a retired cloud runtime) ran 37.2 minutes, was ended by a watchdog
- * after ~30 minutes of silence, and reported `last_progress_age_ms = 664`. That
- * reading is what made the incident look like "the process was still doing
- * something right up to the kill" and sent triage after the wrong window.
- *
- * This spec pins the contract for every ACP runtime (driven here through the
- * Kimi CLI adapter): after a silent ACP stall, the reported age must cover the
- * silence, not the daemon's own error emission.
- */
-
+// ACP stage verdicts must preserve the last real progress clock and terminate
+// the process tree before the durable run becomes terminal. No export sink.
 import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -34,20 +9,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const posthogCapture = vi.hoisted(() => vi.fn());
-const posthogShutdown = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock('posthog-node', () => ({
-  PostHog: vi.fn(function PostHogMock() {
-    return {
-      capture: posthogCapture,
-      groupIdentify: vi.fn(),
-      on: vi.fn(),
-      shutdown: posthogShutdown,
-    };
-  }),
-}));
+import { startServer } from '../../src/server.js';
+import { createRunLifecycleTracer } from '../../src/run-lifecycle-tracer.js';
+import { readLocalLifecycleRun } from '../first-visible-output-harness.js';
 
-const { startServer } = await import('../../src/server.js');
+// Pass-through observation of the real local diagnostic state, not a capture mock.
+vi.mock('../../src/run-lifecycle-tracer.js', { spy: true });
 
 type StartedServer = {
   url: string;
@@ -58,9 +25,11 @@ type StartedServer = {
 type RunStatus = {
   id: string;
   status: string;
-  errorCode: string | null;
-  terminalTrigger: string | null;
+  error: string | null;
+  exitCode: number | null;
   eventsLogPath: string;
+  failureCategory: string | null;
+  failureDetail: string | null;
 };
 
 const FAKE_KIMI = fileURLToPath(new URL('../fixtures/fake-kimi-acp-cli.mjs', import.meta.url));
@@ -99,19 +68,13 @@ describe('ACP stall progress age', () => {
     if (binDir) await rm(binDir, { recursive: true, force: true });
     binDir = null;
     restoreEnv(originalEnv);
-    posthogCapture.mockReset();
+    vi.mocked(createRunLifecycleTracer).mockClear();
   });
 
-  it('reports the real silence in last_progress_age_ms when the ACP stage watchdog ends a stalled run', async () => {
+  it('preserves the local progress clock when the ACP stage watchdog ends a stalled run', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-age-bin-'));
     const fakeKimi = await writeSilentlyStallingKimi(binDir, 'kimi-silent-stall');
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_stall';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -120,32 +83,31 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
 
-    const finished = await waitForRunFinished(run.id);
+    const localRun = readLocalLifecycleRun(run.id, vi.mocked(createRunLifecycleTracer).mock.calls);
 
     // Sanity: this is the incident's terminal fingerprint — an ACP stage
     // timeout classifies as `timeout`/`timeout` (the outer inactivity watchdog
     // would have produced `timeout`/`inactivity_timeout` instead) and the run
     // carries the CHILD's exit code, not a stall code.
-    expect(finished.failure_category).toBe('timeout');
-    expect(finished.failure_detail).toBe('timeout');
+    expect(run.failureCategory).toBe('timeout');
+    expect(run.failureDetail).toBe('timeout');
 
-    // ...which is why the terminal must name the watchdog that fired. Without
-    // it an ACP stage timeout is indistinguishable from a user interrupt.
-    expect(finished.terminal_trigger).toBe('acp_stage_timeout');
+    // The durable error must identify the ACP response watchdog, not the
+    // outer inactivity timeout or a user interrupt.
+    expectAcpStageTimeout(run);
 
     // The turn streamed its text and then went silent for the whole stage
     // window. The reported progress age must cover that silence.
-    expect(typeof finished.last_progress_age_ms).toBe('number');
+    expect(localRun.lastAgentActivityAt).toBeTypeOf('number');
+    expect(localRun.terminalAt).toBeTypeOf('number');
     expect(
-      finished.last_progress_age_ms,
-      progressAgeFailureContext(finished, run),
+      localRun.terminalAt - localRun.lastAgentActivityAt,
+      progressAgeFailureContext(run),
     ).toBeGreaterThanOrEqual(ACP_STAGE_TIMEOUT_MS * 0.8);
   }, 60_000);
 
@@ -166,12 +128,6 @@ describe('ACP stall progress age', () => {
       openToolBeforeStall: true,
     });
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_stall_tool';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -180,33 +136,34 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
 
-    const finished = await waitForRunFinished(run.id);
+    const localRun = readLocalLifecycleRun(run.id, vi.mocked(createRunLifecycleTracer).mock.calls);
 
     // Non-vacuity guard: the fixture really did leave a concrete tool open, and
     // the failure path really did synthesize its terminal pair. Without this the
     // progress-age assertion below could pass simply because no tool existed.
-    expect(finished.tool_call_count).toBeGreaterThanOrEqual(1);
+    expect(readRunEventTail(run.eventsLogPath)).toEqual(expect.arrayContaining([
+      'agent:tool_use', 'agent:tool_result',
+    ]));
 
     // Same terminal fingerprint as the tool-free stall: an ACP stage timeout,
     // named as such. Flushing an open tool must not reclassify the failure.
-    expect(finished.failure_category).toBe('timeout');
-    expect(finished.failure_detail).toBe('timeout');
-    expect(finished.terminal_trigger).toBe('acp_stage_timeout');
+    expect(run.failureCategory).toBe('timeout');
+    expect(run.failureDetail).toBe('timeout');
+    expectAcpStageTimeout(run);
 
     // The agent produced its last real byte at the start of the stall window.
     // The synthetic flush pair that the daemon emitted on the way out is not
     // agent progress, so the reported age must still cover the whole silence.
-    expect(typeof finished.last_progress_age_ms).toBe('number');
+    expect(localRun.lastAgentActivityAt).toBeTypeOf('number');
+    expect(localRun.terminalAt).toBeTypeOf('number');
     expect(
-      finished.last_progress_age_ms,
-      progressAgeFailureContext(finished, run),
+      localRun.terminalAt - localRun.lastAgentActivityAt,
+      progressAgeFailureContext(run),
     ).toBeGreaterThanOrEqual(ACP_STAGE_TIMEOUT_MS * 0.8);
   }, 60_000);
 
@@ -226,12 +183,6 @@ describe('ACP stall progress age', () => {
       stderrOnSigterm: true,
     });
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_stall_teardown';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -240,27 +191,27 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
 
-    const finished = await waitForRunFinished(run.id);
+    const localRun = readLocalLifecycleRun(run.id, vi.mocked(createRunLifecycleTracer).mock.calls);
 
     // Non-vacuity guard: the child really did exit through its SIGTERM handler,
     // so its shutdown line really was written after the daemon's verdict.
-    expect(finished.error_code).toBe('AGENT_EXIT_143');
+    expect(run.exitCode).toBe(143);
+    expect(readFileSync(run.eventsLogPath, 'utf8')).toContain('[fake-kimi] shutting down after SIGTERM');
 
-    expect(finished.failure_category).toBe('timeout');
-    expect(finished.failure_detail).toBe('timeout');
-    expect(finished.terminal_trigger).toBe('acp_stage_timeout');
+    expect(run.failureCategory).toBe('timeout');
+    expect(run.failureDetail).toBe('timeout');
+    expectAcpStageTimeout(run);
 
-    expect(typeof finished.last_progress_age_ms).toBe('number');
+    expect(localRun.lastAgentActivityAt).toBeTypeOf('number');
+    expect(localRun.terminalAt).toBeTypeOf('number');
     expect(
-      finished.last_progress_age_ms,
-      progressAgeFailureContext(finished, run),
+      localRun.terminalAt - localRun.lastAgentActivityAt,
+      progressAgeFailureContext(run),
     ).toBeGreaterThanOrEqual(ACP_STAGE_TIMEOUT_MS * 0.8);
   }, 60_000);
 
@@ -272,18 +223,12 @@ describe('ACP stall progress age', () => {
   // the stall to the wrong clock, which is the exact confusion this PR exists to
   // remove. The ACP verdict owns the attempt: the outer watchdog must be retired
   // and the teardown escalated once it lands.
-  it('keeps acp_stage_timeout attribution when the child outlives the first SIGTERM', async () => {
+  it('keeps the ACP stage timeout verdict when the child outlives the first SIGTERM', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-linger-bin-'));
     const fakeKimi = await writeSilentlyStallingKimi(binDir, 'kimi-silent-stall-linger', {
       ignoreSigterm: true,
     });
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_stall_linger';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     // Deliberately just above the stage timeout: the ACP watchdog wins the race,
     // and the outer watchdog is still armed and would fire a beat later.
@@ -295,32 +240,27 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
 
-    const finished = await waitForRunFinished(run.id);
+    const localRun = readLocalLifecycleRun(run.id, vi.mocked(createRunLifecycleTracer).mock.calls);
 
     // The ACP stage watchdog reached the verdict first, so it owns the terminal
     // attribution even though the child needed escalation to actually die.
-    expect(
-      finished.terminal_trigger,
-      progressAgeFailureContext(finished, run),
-    ).toBe('acp_stage_timeout');
-    expect(finished.failure_category).toBe('timeout');
-    expect(finished.failure_detail).toBe('timeout');
+    expectAcpStageTimeout(run);
+    expect(run.failureCategory).toBe('timeout');
+    expect(run.failureDetail).toBe('timeout');
 
-    // And the age still describes the silence, not the drawn-out teardown.
+    // Teardown must not re-stamp the last real progress clock.
     expect(
-      finished.last_progress_age_ms,
-      progressAgeFailureContext(finished, run),
+      localRun.terminalAt - localRun.lastAgentActivityAt,
+      progressAgeFailureContext(run),
     ).toBeGreaterThanOrEqual(ACP_STAGE_TIMEOUT_MS * 0.8);
   }, 60_000);
 
-  it('publishes run_finished only after the stalled ACP process group is silent', async () => {
+  it('makes the durable run terminal only after the stalled ACP process group is silent', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-terminal-silence-bin-'));
     const activityFile = path.join(binDir, 'descendant-activity.log');
     const descendantPidFile = path.join(binDir, 'descendant.pid');
@@ -329,12 +269,6 @@ describe('ACP stall progress age', () => {
       descendantPidFile,
     });
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_terminal_silence';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -344,13 +278,11 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
-    await waitForRunFinished(run.id);
+    expectAcpStageTimeout(run);
 
     const descendantPid = Number(readFileSync(descendantPidFile, 'utf8').trim());
     expect(Number.isInteger(descendantPid)).toBe(true);
@@ -360,7 +292,7 @@ describe('ACP stall progress age', () => {
     const activityAtTerminal = activityTickCount(activityFile);
     expect(activityAtTerminal).toBeGreaterThan(0);
 
-    // This real wait protects an OS process-tree boundary: after run_finished
+    // This real wait protects an OS process-tree boundary: after the durable terminal state
     // there is no application completion signal left to await. A surviving
     // descendant makes the counter advance; a quiescent group leaves it fixed.
     await delay(300);
@@ -377,19 +309,13 @@ describe('ACP stall progress age', () => {
   //
   // Once the attempt has a verdict, nothing the child says may restart any of
   // this attempt's clocks.
-  it('keeps acp_stage_timeout attribution when the child keeps logging and refuses to die', async () => {
+  it('keeps the ACP stage timeout verdict when the child keeps logging and refuses to die', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-chatty-bin-'));
     const fakeKimi = await writeSilentlyStallingKimi(binDir, 'kimi-silent-stall-chatty-linger', {
       ignoreSigterm: true,
       stderrOnSigterm: true,
     });
 
-    process.env.POSTHOG_KEY = 'phc_test_acp_stall_chatty';
-    delete process.env.POSTHOG_HOST;
-    delete process.env.LANGFUSE_PUBLIC_KEY;
-    delete process.env.LANGFUSE_SECRET_KEY;
-    delete process.env.LANGFUSE_BASE_URL;
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(LINGER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -399,32 +325,27 @@ describe('ACP stall progress age', () => {
     await putConfig(started.url, {
       agentId: 'kimi',
       agentCliEnv: { kimi: { KIMI_BIN: fakeKimi } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
     });
 
     const run = await createAndWaitForStalledRun(started.url);
     expect(run.status).toBe('failed');
 
-    const finished = await waitForRunFinished(run.id);
+    const localRun = readLocalLifecycleRun(run.id, vi.mocked(createRunLifecycleTracer).mock.calls);
 
-    expect(
-      finished.terminal_trigger,
-      progressAgeFailureContext(finished, run),
-    ).toBe('acp_stage_timeout');
-    expect(finished.failure_category).toBe('timeout');
-    expect(finished.failure_detail).toBe('timeout');
+    expectAcpStageTimeout(run);
+    expect(run.failureCategory).toBe('timeout');
+    expect(run.failureDetail).toBe('timeout');
 
     // Exactly one terminal failure reached the transcript. A second `error`
     // here is the inactivity watchdog re-terminalizing the attempt.
     expect(
       readRunEventTail(run.eventsLogPath).filter((entry) => entry === 'error').length,
-      progressAgeFailureContext(finished, run),
+      progressAgeFailureContext(run),
     ).toBe(1);
 
     expect(
-      finished.last_progress_age_ms,
-      progressAgeFailureContext(finished, run),
+      localRun.terminalAt - localRun.lastAgentActivityAt,
+      progressAgeFailureContext(run),
     ).toBeGreaterThanOrEqual(ACP_STAGE_TIMEOUT_MS * 0.8);
   }, 60_000);
 });
@@ -435,21 +356,17 @@ describe('ACP stall progress age', () => {
  * (green locally, red on CI). Name the suspects directly: the persisted run
  * event tail identifies the last thing the daemon recorded before finalizing.
  */
-function progressAgeFailureContext(
-  finished: Record<string, any>,
-  run: RunStatus,
-): string {
-  const summary = {
-    last_progress_age_ms: finished.last_progress_age_ms,
-    terminal_trigger: finished.terminal_trigger,
-    last_observed_phase: finished.last_observed_phase,
-    tool_call_count: finished.tool_call_count,
-    attempt_index: finished.attempt_index,
-    total_duration_ms: finished.total_duration_ms,
-    error_code: finished.error_code,
-  };
+// terminalTrigger/errorCode were populated by the removed export lifecycle.
+// The product-owned terminal error preserves the ACP stage fingerprint directly.
+function expectAcpStageTimeout(run: RunStatus): void {
+  expect(run.error, progressAgeFailureContext(run)).toBe(
+    `ACP response timed out after ${ACP_STAGE_TIMEOUT_MS}ms`,
+  );
+}
+
+function progressAgeFailureContext(run: RunStatus): string {
   return [
-    `run_finished: ${JSON.stringify(summary)}`,
+    `durable run: ${JSON.stringify(run)}`,
     `run event tail: ${JSON.stringify(readRunEventTail(run.eventsLogPath))}`,
   ].join('\n');
 }
@@ -474,20 +391,6 @@ function readRunEventTail(eventsLogPath: string | null | undefined): unknown[] {
   } catch (error) {
     return [`<unreadable: ${(error as Error).message}>`];
   }
-}
-
-async function waitForRunFinished(runId: string): Promise<Record<string, any>> {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const call of posthogCapture.mock.calls) {
-      const payload = call[0] as { event?: string; properties?: Record<string, unknown> };
-      if (payload?.event === 'run_finished' && payload.properties?.run_id === runId) {
-        return payload.properties as Record<string, any>;
-      }
-    }
-    await delay(100);
-  }
-  throw new Error(`no run_finished analytics event for run ${runId}`);
 }
 
 async function writeSilentlyStallingKimi(
@@ -560,9 +463,6 @@ async function createAndWaitForStalledRun(url: string): Promise<RunStatus> {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-od-analytics-device-id': 'acp-stall-age-device',
-      'x-od-analytics-session-id': 'acp-stall-age-session',
-      'x-od-analytics-client-type': 'web',
     },
     body: JSON.stringify({
       projectId,
@@ -594,12 +494,6 @@ async function createAndWaitForStalledRun(url: string): Promise<RunStatus> {
 
 function snapshotEnv(): Record<string, string | undefined> {
   return {
-    POSTHOG_KEY: process.env.POSTHOG_KEY,
-    POSTHOG_HOST: process.env.POSTHOG_HOST,
-    LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY,
-    LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY,
-    LANGFUSE_BASE_URL: process.env.LANGFUSE_BASE_URL,
-    OPEN_DESIGN_TELEMETRY_RELAY_URL: process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL,
     OD_ACP_STAGE_TIMEOUT_MS: process.env.OD_ACP_STAGE_TIMEOUT_MS,
     OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS: process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS,
     OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS: process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS,

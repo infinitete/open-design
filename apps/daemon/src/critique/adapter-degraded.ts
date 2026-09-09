@@ -16,8 +16,6 @@
 
 import type { DegradedReason } from '@open-design/contracts/critique';
 
-import { critiqueDegradedTotal } from '../metrics/index.js';
-
 export type DegradedSource = 'conformance' | 'orchestrator' | 'manual';
 
 export interface DegradedEntry {
@@ -67,13 +65,6 @@ export function markDegraded(
     expiresAtMs: markedAtMs + ttlMs,
   };
   store.set(adapterId, entry);
-  // Phase 12: every degraded mark increments the Prometheus counter so
-  // the dashboard's "adapter health" panel reflects the same rate the
-  // orchestrator and conformance harness observe. Bump is unconditional
-  // (every call records, including overwrites of a still-live entry)
-  // because the dashboard rate query divides over the time window, not
-  // over distinct adapters.
-  critiqueDegradedTotal.inc({ reason, adapter: adapterId });
   return entry;
 }
 
@@ -111,8 +102,6 @@ export function clearDegraded(adapterId: string): boolean {
 
 /**
  * Snapshot the current degraded-adapter table (post-TTL eviction).
- * Used by the `/api/metrics/critique` Prometheus exporter from
- * Phase 12.
  */
 export function listDegraded(): DegradedEntry[] {
   const out: DegradedEntry[] = [];

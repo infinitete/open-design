@@ -9,10 +9,7 @@
  *
  * Copy comes from app/_lib/enterprise-lead-copy.ts (all authored locales).
  * `source` distinguishes the lead origin on the backend ('enterprise' |
- * 'pricing_team'); `pageName` stamps the PostHog events so funnels stay
- * separable per entry point. On a successful submit the form dispatches a
- * bubbling `od:lead-success` CustomEvent (detail = segmentation props) so a
- * host page can layer its own legacy analytics on top.
+ * 'pricing_team').
  */
 import {
   getEnterpriseLeadCopy,
@@ -22,10 +19,9 @@ import {
 interface Props {
   locale: string;
   source: 'enterprise' | 'pricing_team';
-  pageName: string;
 }
 
-const { locale, source, pageName } = Astro.props;
+const { locale, source } = Astro.props;
 const c = getEnterpriseLeadCopy(locale);
 const countryOptions = buildCountryOptions(locale);
 ---
@@ -40,7 +36,7 @@ const countryOptions = buildCountryOptions(locale);
   </div>
 </div>
 <h2 class="ent-form-heading" id="ent-form-heading">{c.formHeading}</h2>
-<form class="ent-form" id="ent-form" data-source={source} data-page-name={pageName} novalidate>
+<form class="ent-form" id="ent-form" data-source={source} novalidate>
   <div class="ent-field">
     <label class="ent-label" for="ent-email">{c.emailLabel} <span class="ent-req">*</span></label>
     <input class="ent-input" id="ent-email" name="email" type="email" required autocomplete="email" placeholder={c.emailPlaceholder} />
@@ -308,7 +304,6 @@ const countryOptions = buildCountryOptions(locale);
     const defaultLabel = submitBtn?.getAttribute('data-default-label') || 'Submit';
     const submittingLabel = submitBtn?.getAttribute('data-submitting-label') || defaultLabel;
     const leadSource = form.getAttribute('data-source') || 'enterprise';
-    const pageName = form.getAttribute('data-page-name') || 'enterprise';
 
     // Custom selects — a fully styled dropdown so we don't render the OS-native
     // popup. The real <select> stays in the DOM (hidden) as the form value and
@@ -451,45 +446,18 @@ const countryOptions = buildCountryOptions(locale);
       ['email', 'team-size', 'seats', 'country', 'budget', 'use-case', 'industry'].forEach((id) => setInvalid(id, false));
     });
 
-    // Lightweight analytics wrapper around the shared PostHog delegate
-    // (window.__odTrack, installed by sub-page-layout). page_name matches the
-    // host page (enterprise / pricing) so the two funnels stay separable.
-    const track = (name, props) => {
-      try {
-        if (typeof window.__odTrack === 'function') {
-          window.__odTrack(name, Object.assign(
-            { page_name: pageName, locale: (document.documentElement.lang || 'en').toLowerCase() },
-            props || {},
-          ));
-        }
-      } catch (e) {}
-    };
-
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      // Pricing's legacy compatibility funnel counted submit intent, including
-      // attempts rejected by client validation. Keep this synchronous and
-      // payload-free so analytics can never delay or leak lead fields.
-      if (leadSource === 'pricing_team') {
-        form.dispatchEvent(new CustomEvent('pricing:enterprise-submit', {
-          bubbles: true,
-        }));
-      }
       if (errorEl) errorEl.hidden = true;
 
       let firstInvalid = null;
-      const invalidFields = [];
       ['email', 'team-size', 'seats', 'country', 'budget', 'use-case', 'industry'].forEach((id) => {
         if (!validateField(id)) {
-          invalidFields.push(id);
           if (!firstInvalid) firstInvalid = fieldInput(id);
         }
       });
 
       if (firstInvalid) {
-        // Validation blocked the submit — record which fields so we can see
-        // where the funnel leaks.
-        track('lead_submit_invalid', { missing: invalidFields.join(',') });
         // A custom-select's real <select> is hidden, so focus its trigger.
         const focusTarget = firstInvalid.classList?.contains('ent-cselect__native')
           ? firstInvalid.parentElement.querySelector('.ent-cselect__trigger')
@@ -501,7 +469,7 @@ const countryOptions = buildCountryOptions(locale);
       const data = new FormData(form);
       // The country select's value is the ISO code; submit the localized
       // label plus the code (e.g. "中国 (CN)") so the canonical KV lead stays
-      // readable while analytics keep the canonical code.
+      // readable while the backend keeps the canonical code.
       const countrySel = fieldInput('country');
       const countryCode = countrySel ? countrySel.value : '';
       const countryName = countrySel && countrySel.selectedIndex > 0
@@ -526,17 +494,6 @@ const countryOptions = buildCountryOptions(locale);
         pageUrl: location.href,
       };
 
-      const leadProps = {
-        team_size: payload.teamSize,
-        seats: payload.seats,
-        budget: payload.budget,
-        country: countryCode,
-        industry: payload.industry,
-        use_case: useCases[0] || '',
-        use_case_count: useCases.length,
-      };
-      track('lead_submit_attempt', leadProps);
-
       if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = submittingLabel;
@@ -549,26 +506,12 @@ const countryOptions = buildCountryOptions(locale);
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('request_failed');
-        track('lead_submit_success', leadProps);
-        // Host pages (the pricing modal) layer legacy analytics on this. The
-        // detail carries the segmentation props PLUS the presence booleans the
-        // pre-shared-form `team_lead_submit` contract exposed, so the bridge
-        // can keep that event's original schema intact.
-        form.dispatchEvent(new CustomEvent('od:lead-success', {
-          bubbles: true,
-          detail: Object.assign({}, leadProps, {
-            has_company: !!payload.company,
-            has_role: !!payload.role,
-            has_message: !!payload.message,
-          }),
-        }));
         form.hidden = true;
         if (successEl) {
           successEl.hidden = false;
           successEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       } catch (err) {
-        track('lead_submit_failed', Object.assign({ reason: 'request_failed' }, leadProps));
         if (errorEl) errorEl.hidden = false;
         if (submitBtn) {
           submitBtn.disabled = false;

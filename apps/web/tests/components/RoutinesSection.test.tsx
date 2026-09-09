@@ -1,16 +1,20 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Routine } from '@open-design/contracts';
 
 import { RoutinesSection } from '../../src/components/RoutinesSection';
 import * as router from '../../src/router';
+import { resetCoalescedGet } from '../../src/lib/coalesced-get';
 
 const originalFetch = globalThis.fetch;
 const originalConfirm = window.confirm;
 
 describe('RoutinesSection', () => {
+  beforeEach(() => {
+    resetCoalescedGet();
+  });
   afterEach(() => {
     cleanup();
     globalThis.fetch = originalFetch;

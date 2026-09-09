@@ -11,7 +11,6 @@
 import { getCollection, render } from 'astro:content';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import SiteAnalytics from '../../_components/site-analytics.astro';
 import HeaderEnhancer from '../../_components/header-enhancer.astro';
 import { Header, type HeaderProps } from '../../_components/header';
 import LocaleSwitcherScript from '../../_components/locale-switcher-script.astro';
@@ -156,7 +155,6 @@ const tutorialCopy =
       category={tutorialCopy.category}
       localeCanonicalOnly={isPptArticle}
     />
-    <SiteAnalytics />
   </head>
   <body>
     <div class='shell'>

@@ -17,14 +17,8 @@ import {
   type UpdaterRestartSafety,
 } from '../lib/updater';
 import { useT } from '../i18n';
+import { useAppVersion } from '../hooks/useAppVersion';
 import type { Dict } from '../i18n/types';
-import { useAnalytics, useAppVersion } from '../analytics/provider';
-import {
-  trackUpdateIndicatorClick,
-  trackUpdateIndicatorSurfaceView,
-  trackUpdateInstallResult,
-  trackUpdatePromptSurfaceView,
-} from '../analytics/events';
 import styles from './UpdaterPopup.module.css';
 
 const INSTALL_HANDOFF_WATCHDOG_MS = 10_000;
@@ -261,7 +255,6 @@ export function UpdaterPopup({
       ? t('updater.installRestart')
       : t('updater.openInstaller');
   const channelLabel = channelLabelFor(model.status?.channel);
-  const analytics = useAnalytics();
   const appVersionBefore = useAppVersion();
   const versionProps = useMemo(
     () => updateVersionProps(model, appVersionBefore),
@@ -277,12 +270,7 @@ export function UpdaterPopup({
     }
     if (lastIndicatorSurfaceKeyRef.current === indicatorSurfaceKey) return;
     lastIndicatorSurfaceKeyRef.current = indicatorSurfaceKey;
-    trackUpdateIndicatorSurfaceView(analytics.track, {
-      page_name: 'home',
-      area: 'update_indicator',
-      ...versionProps,
-    });
-  }, [analytics.track, indicatorSurfaceKey, ready, versionProps]);
+  }, [indicatorSurfaceKey, ready, versionProps]);
 
   const promptSurfaceKey = panelOpen ? indicatorSurfaceKey : null;
   const lastPromptSurfaceKeyRef = useRef<string | null>(null);
@@ -293,24 +281,12 @@ export function UpdaterPopup({
     }
     if (lastPromptSurfaceKeyRef.current === promptSurfaceKey) return;
     lastPromptSurfaceKeyRef.current = promptSurfaceKey;
-    trackUpdatePromptSurfaceView(analytics.track, {
-      page_name: 'home',
-      area: 'update_prompt',
-      ...versionProps,
-    });
-  }, [analytics.track, promptSurfaceKey, versionProps]);
+  }, [promptSurfaceKey, versionProps]);
 
   const close = useCallback(() => {
     if (installBusy) return;
-    trackUpdateIndicatorClick(analytics.track, {
-      page_name: 'home',
-      area: 'update_prompt',
-      element: 'later',
-      action: 'dismiss',
-      ...versionProps,
-    });
     setPanelOpen(false);
-  }, [analytics.track, installBusy, versionProps]);
+  }, [installBusy, versionProps]);
 
   useEffect(() => {
     if (!panelOpen) return;
@@ -337,13 +313,6 @@ export function UpdaterPopup({
     setInstallError(null);
     setInstallState('opening');
     setPanelOpen(true);
-    trackUpdateIndicatorClick(analytics.track, {
-      page_name: 'home',
-      area: 'update_prompt',
-      element: 'install_update',
-      action: 'install',
-      ...versionProps,
-    });
     try {
       if (onAllowSilentUpdatesChange != null) {
         try {
@@ -357,13 +326,6 @@ export function UpdaterPopup({
         actionInFlightRef.current = false;
         setInstallError(installFailureText);
         setInstallState('idle');
-        trackUpdateInstallResult(analytics.track, {
-          page_name: 'home',
-          area: 'update_prompt',
-          result: 'failed',
-          error_code: result.reason,
-          ...versionProps,
-        });
         return;
       }
       if (result.model.errorMessage != null) {
@@ -371,25 +333,12 @@ export function UpdaterPopup({
         actionInFlightRef.current = false;
         setInstallError(safety == null ? installFailureText : restartSafetyText(t, safety));
         setInstallState('idle');
-        trackUpdateInstallResult(analytics.track, {
-          page_name: 'home',
-          area: 'update_prompt',
-          result: 'failed',
-          ...(updaterErrorCode(result.model) ? { error_code: updaterErrorCode(result.model) } : {}),
-          ...versionProps,
-        });
         return;
       }
       setModel(result.model);
       setInstallError(null);
       setInstallState('handoff');
       startHandoffWatchdog();
-      trackUpdateInstallResult(analytics.track, {
-        page_name: 'home',
-        area: 'update_prompt',
-        result: 'success',
-        ...versionProps,
-      });
       const quitResult = await quitAfterUpdaterInstallerOpen({ payload: { source: 'updater-prompt' } });
       if (!quitResult.ok) {
         const quitSafety = restartSafetyFromActionResult(quitResult);
@@ -404,13 +353,6 @@ export function UpdaterPopup({
       actionInFlightRef.current = false;
       setInstallError(installFailureText);
       setInstallState('idle');
-      trackUpdateInstallResult(analytics.track, {
-        page_name: 'home',
-        area: 'update_prompt',
-        result: 'failed',
-        error_code: error instanceof Error ? error.name : 'unknown',
-        ...versionProps,
-      });
     }
   };
 
@@ -451,13 +393,6 @@ export function UpdaterPopup({
             setPanelOpen(false);
             return;
           }
-          trackUpdateIndicatorClick(analytics.track, {
-            page_name: 'home',
-            area: 'update_indicator',
-            element: 'ready_indicator',
-            action: 'open_prompt',
-            ...versionProps,
-          });
           setPanelOpen(true);
         }}
       >

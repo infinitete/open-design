@@ -38,22 +38,6 @@ import { zhTW } from '../../src/i18n/locales/zh-TW';
 import { writeHomeGuideStage } from '../../src/components/home-hero/firstRunGuide';
 import { setHomeHeroPrompt } from '../helpers/home-hero-lexical';
 
-const analyticsMocks = vi.hoisted(() => ({ track: vi.fn() }));
-
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return {
-    ...actual,
-    useAnalytics: () => ({
-      track: analyticsMocks.track,
-      newRequestId: () => 'request-1',
-      setConfigureGlobals: vi.fn(),
-      setConsent: vi.fn(),
-      setIdentity: vi.fn(),
-    }),
-  };
-});
-
 // en's copy for `homeHero.chip.webClonePromptSeed`. Asserting the rendered
 // string (rather than re-deriving it through `t`) is what makes this a test of
 // what the user sees in the composer.
@@ -136,7 +120,6 @@ function composerText(): string {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  analyticsMocks.track.mockClear();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();

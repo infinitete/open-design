@@ -9,11 +9,6 @@ import { InstalledPluginRecordSchema } from '@open-design/contracts';
 import { PluginDetailView } from '../../src/components/PluginDetailView';
 import { I18nProvider } from '../../src/i18n';
 
-vi.mock('../../src/analytics/provider', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
-  return { ...actual, useAnalytics: () => ({ track: vi.fn() }) };
-});
-
 vi.mock('../../src/router', () => ({
   goBack: vi.fn(),
   navigate: vi.fn(),

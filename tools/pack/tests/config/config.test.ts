@@ -1,31 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { join, resolve } from "node:path";
 
 import cliSource from "@/index.ts?raw";
 import { resolveToolPackConfig, WORKSPACE_ROOT } from "@/config/index.js";
-
-const savedTelemetryRelayUrl = process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-const savedPosthogKey = process.env.POSTHOG_KEY;
-const savedPosthogHost = process.env.POSTHOG_HOST;
-
-afterEach(() => {
-  if (savedTelemetryRelayUrl == null) {
-    delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-  } else {
-    process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = savedTelemetryRelayUrl;
-  }
-  if (savedPosthogKey == null) {
-    delete process.env.POSTHOG_KEY;
-  } else {
-    process.env.POSTHOG_KEY = savedPosthogKey;
-  }
-  if (savedPosthogHost == null) {
-    delete process.env.POSTHOG_HOST;
-  } else {
-    process.env.POSTHOG_HOST = savedPosthogHost;
-  }
-});
 
 // The retired platform CLI surface: no strict-bundling flag, no env override,
 // no optional package pin, and no copied platform binary may come back on any
@@ -162,62 +140,53 @@ describe("resolveToolPackConfig namespace defaults", () => {
   });
 });
 
-describe("resolveToolPackConfig telemetry relay", () => {
-  it("reads and normalizes OPEN_DESIGN_TELEMETRY_RELAY_URL for packaged config", () => {
-    process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = "https://telemetry.open-design.ai/api/langfuse//";
-    const config = resolveToolPackConfig("mac", { namespace: "telemetry-test" });
-    expect(config.telemetryRelayUrl).toBe("https://telemetry.open-design.ai/api/langfuse");
+describe("resolveToolPackConfig retired telemetry analytics inputs", () => {
+  it("resolves a config with no telemetry or PostHog fields", () => {
+    const config = resolveToolPackConfig("mac", { namespace: "retired-telemetry-test" }) as Record<
+      string,
+      unknown
+    >;
+    expect("telemetryRelayUrl" in config).toBe(false);
+    expect("posthogKey" in config).toBe(false);
+    expect("posthogHost" in config).toBe(false);
+    expect("posthogCliApiKey" in config).toBe(false);
+    expect("posthogCliProjectId" in config).toBe(false);
+    expect("posthogCliHost" in config).toBe(false);
   });
 
-  it("rejects invalid telemetry relay URLs", () => {
-    process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = "not-a-url";
-    expect(() => resolveToolPackConfig("mac")).toThrow(
-      /OPEN_DESIGN_TELEMETRY_RELAY_URL must be an absolute https URL/,
-    );
-  });
-
-  it("rejects plaintext telemetry relay URLs for packaged config", () => {
-    process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = "http://telemetry.open-design.ai/api/langfuse";
-    expect(() => resolveToolPackConfig("mac")).toThrow(
-      /OPEN_DESIGN_TELEMETRY_RELAY_URL must use https/,
-    );
-  });
-});
-
-describe("resolveToolPackConfig PostHog analytics", () => {
-  it("bakes POSTHOG_KEY into packaged config when set at build time", () => {
-    process.env.POSTHOG_KEY = "phc_test_abc123";
-    process.env.POSTHOG_HOST = "https://us.i.posthog.com";
-    const config = resolveToolPackConfig("mac", { namespace: "analytics-test" });
-    expect(config.posthogKey).toBe("phc_test_abc123");
-    expect(config.posthogHost).toBe("https://us.i.posthog.com");
-  });
-
-  it("omits POSTHOG_KEY for fork builds that lack the secret", () => {
-    delete process.env.POSTHOG_KEY;
-    delete process.env.POSTHOG_HOST;
-    const config = resolveToolPackConfig("mac", { namespace: "analytics-test" });
-    expect(config.posthogKey).toBeUndefined();
-    expect(config.posthogHost).toBeUndefined();
-  });
-
-  it("rejects POSTHOG_KEY values that contain whitespace", () => {
-    process.env.POSTHOG_KEY = "phc_test abc";
-    expect(() => resolveToolPackConfig("mac")).toThrow(
-      /POSTHOG_KEY contains whitespace/,
-    );
-  });
-
-  it("rejects invalid POSTHOG_HOST URLs", () => {
-    process.env.POSTHOG_KEY = "phc_test_abc";
-    process.env.POSTHOG_HOST = "not-a-url";
-    expect(() => resolveToolPackConfig("mac")).toThrow(/POSTHOG_HOST must be an absolute URL/);
-  });
-
-  it("strips trailing slashes from POSTHOG_HOST", () => {
-    process.env.POSTHOG_KEY = "phc_test_abc";
-    process.env.POSTHOG_HOST = "https://eu.i.posthog.com///";
-    const config = resolveToolPackConfig("mac");
-    expect(config.posthogHost).toBe("https://eu.i.posthog.com");
+  it("ignores retired telemetry environment variables instead of validating them", () => {
+    // Values the old resolvers rejected (non-URL relay hosts, whitespace keys)
+    // must now be inert: the keys are no longer read, so a leftover CI secret
+    // or a stale local export cannot fail or shape a build.
+    const retiredEnv = {
+      OPEN_DESIGN_TELEMETRY_RELAY_URL: "not-a-url",
+      POSTHOG_KEY: "phc_test abc",
+      POSTHOG_HOST: "not-a-url",
+      POSTHOG_CLI_API_KEY: "phx_test def",
+      POSTHOG_CLI_PROJECT_ID: "not-numeric",
+      POSTHOG_CLI_HOST: "not-a-url",
+    } as const;
+    const saved: Record<string, string | undefined> = {};
+    for (const [key, value] of Object.entries(retiredEnv)) {
+      saved[key] = process.env[key];
+      process.env[key] = value;
+    }
+    try {
+      const config = resolveToolPackConfig("mac", { namespace: "retired-telemetry-test" }) as Record<
+        string,
+        unknown
+      >;
+      expect("telemetryRelayUrl" in config).toBe(false);
+      expect("posthogKey" in config).toBe(false);
+      expect("posthogHost" in config).toBe(false);
+      expect("posthogCliApiKey" in config).toBe(false);
+      expect("posthogCliProjectId" in config).toBe(false);
+      expect("posthogCliHost" in config).toBe(false);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });

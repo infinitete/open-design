@@ -33,30 +33,6 @@ import {
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import type { ProjectDeleteResult } from '../state/projects';
-import { useAnalytics } from '../analytics/provider';
-import {
-  trackHomeNavClick,
-  trackOnboardingClick,
-  trackOnboardingCompleteResult,
-  trackOnboardingRuntimeScanResult,
-  trackPageView,
-} from '../analytics/events';
-import {
-  clearOnboardingSessionId,
-  getOrCreateOnboardingSessionId,
-} from '../analytics/onboarding-session';
-import type {
-  TrackingOnboardingArea,
-  TrackingOnboardingStepIndex,
-  TrackingOnboardingStepName,
-  TrackingOnboardingClickElement,
-  TrackingOnboardingClickAction,
-  TrackingOnboardingRuntimeType,
-  TrackingOnboardingCompletionResult,
-  TrackingOnboardingCompletionType,
-  TrackingCliProviderId,
-} from '@open-design/contracts/analytics';
-import { agentIdToTracking } from '@open-design/contracts/analytics';
 import { useI18n, useT } from '../i18n';
 import { navigate, useRoute } from '../router';
 import type {
@@ -399,40 +375,6 @@ interface Props {
   artifactUpgradeSlot?: ReactNode;
 }
 
-// Map an EntryNavRail view id to the existing analytics `element` enum on
-// `home/nav` ui_click. Keep this compatibility signal alongside the new
-// Workspace navigation dimensions so established PostHog dashboards do not
-// lose their historical series.
-function navElementForView(
-  next: EntryViewKind,
-):
-  | 'home'
-  | 'projects'
-  | 'automations'
-  | 'plugins'
-  | 'design_systems'
-  | 'integrations'
-  | null {
-  switch (next) {
-    case 'home':
-      return 'home';
-    case 'projects':
-      return 'projects';
-    case 'tasks':
-      return 'automations';
-    case 'plugins':
-      return 'plugins';
-    case 'design-systems':
-      return 'design_systems';
-    case 'brands':
-      return 'design_systems';
-    case 'integrations':
-      return 'integrations';
-    default:
-      return null;
-  }
-}
-
 // Tab views stay mounted (so previews/thumbnails survive a tab switch) but the
 // inactive ones must leave layout, the accessibility tree, and tab order.
 // `content-visibility: hidden` still reserves the hidden pane's block size,
@@ -650,26 +592,9 @@ export function EntryShell({
     if (!scrollContainer) return;
     scrollContainer.scrollTop = 0;
   }, [view]);
-  const analytics = useAnalytics();
   function changeView(next: EntryViewKind) {
-    const navElement = navElementForView(next);
-    if (navElement) {
-      trackHomeNavClick(analytics.track, {
-        page_name: 'home',
-        area: 'nav',
-        element: navElement,
-      });
-    }
     navigate({ kind: 'home', view: next });
   }
-
-  // Project collection surfaces have no legacy page-level tracker. Community
-  // is conditionally mounted and tracks its own visit; always-mounted library
-  // surfaces receive an explicit isActive prop below.
-  useEffect(() => {
-    if (view === 'drafts') trackPageView(analytics.track, { page_name: 'drafts' });
-    else if (view === 'all-projects') trackPageView(analytics.track, { page_name: 'all_projects' });
-  }, [analytics.track, view]);
 
   function startPluginAuthoring(goal?: string) {
     setHomePromptHandoff(
@@ -925,7 +850,6 @@ export function EntryShell({
   // the settings entry (EntryNavRail onOpenSettings), so the top strip no longer
   // carries a redundant one.
 
-
   if (view === 'onboarding') {
     return (
       <div className="entry-shell entry-shell--no-header entry-shell--onboarding">
@@ -980,11 +904,6 @@ export function EntryShell({
           view={view}
           onViewChange={changeView}
           onNewProject={() => {
-            trackHomeNavClick(analytics.track, {
-              page_name: 'home',
-              area: 'nav',
-              element: 'new_project_plus',
-            });
             openNewProject();
           }}
           onOpenSearch={() => setProjectSearchOpen(true)}
@@ -994,8 +913,7 @@ export function EntryShell({
               <WorkbenchCampaignBadge
                 audience={topRightCampaignAudience}
                 page="home"
-                metricsConsent={config.telemetry?.metrics === true}
-                installationId={config.installationId}
+
                 loggedIn={false}
               />
             ) : null
@@ -1278,7 +1196,6 @@ export function EntryShell({
                     onProjectUnshared={markProjectUnshared}
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     onOpen={(id) => onOpenProject(id)}
-                    onViewAll={() => {}}
                     onDelete={onDeleteProject}
                     onRename={onRenameProject}
                   />
@@ -1316,7 +1233,6 @@ export function EntryShell({
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     openingProjectId={pullingProjectId}
                     onOpen={handleOpenAllProjects}
-                    onViewAll={() => {}}
                     onDelete={onDeleteProject}
                     onRename={onRenameProject}
                   />
@@ -1398,7 +1314,6 @@ function OnboardingView({
   onFinish: () => void;
 }) {
   const t = useT();
-  const analytics = useAnalytics();
   const [step, setStep] = useState(0);
   const [runtime, setRuntime] = useState<'local' | 'byok' | null>(null);
   const [modelSource, setModelSource] = useState<'local' | 'byok'>('local');
@@ -1436,11 +1351,6 @@ function OnboardingView({
       : setLocalProviderModelsCache;
   const agentRevealTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const cliScanTokenRef = useRef(0);
-  const cliScanTelemetryRef = useRef<{
-    token: number;
-    startedAt: number;
-    onboardingSessionId: string;
-  } | null>(null);
   const cliRefreshPendingTokenRef = useRef<number | null>(null);
   const onboardingMountedRef = useRef(true);
   const providerModelsAutoFetchKeyRef = useRef<string | null>(null);
@@ -1585,119 +1495,12 @@ function OnboardingView({
       const selectedCliAgent = selectDefaultCliAgent(currentAvailableAgents);
       showCliAgents(scanToken, currentAvailableAgents, { stagger: false });
       setCliScanStatus('done');
-      emitPendingCliScanResult(scanToken, {
-        result: 'success',
-        detected: agents.length,
-        available: currentAvailableAgents.length,
-        selectedCliId: selectedCliAgent ? agentIdToTracking(selectedCliAgent.id) : undefined,
-      });
       return;
     }
     if (!agentsLoading && cliScanStatus === 'scanning') {
       setCliScanStatus('done');
-      emitPendingCliScanResult(scanToken, {
-        result: 'failed',
-        detected: agents.length,
-        available: 0,
-        errorCode: 'NO_AVAILABLE_CLI',
-      });
     }
   }, [agents, agentsLoading, cliScanStatus, config.agentId, runtime]);
-
-  // Onboarding step exposure for identity, source choice, and optional setup.
-  //
-  // We do NOT clear on unmount: route changes can remount the shell
-  // during first-run setup. Completion clears inline; abandoned sessions
-  // clear on sessionStorage tab close.
-  const onboardingSessionIdRef = useRef<string>('');
-  if (!onboardingSessionIdRef.current && config.onboardingCompleted !== true) {
-    onboardingSessionIdRef.current = getOrCreateOnboardingSessionId();
-  }
-  useEffect(() => {
-    const onboardingSessionId = onboardingSessionIdRef.current;
-    if (!onboardingSessionId) return;
-    const info = stepInfo(step);
-    trackPageView(analytics.track, {
-      page_name: 'onboarding',
-      area: info.area,
-      step_index: info.stepIndex,
-      step_name: info.stepName,
-      onboarding_session_id: onboardingSessionId,
-    });
-  }, [analytics.track, step]);
-
-  // Onboarding analytics helpers. Wall-clock start so the lifecycle
-  // result event can carry `duration_ms`; `runtime` state is the user's
-  // current pick at click time so `runtime_type` rides along on every
-  // click. The lifecycle guard keeps rapid repeated completion actions from
-  // double-firing the terminal event.
-  const onboardingStartedAtRef = useRef<number>(Date.now());
-  const lifecycleReportedRef = useRef(false);
-  function currentRuntimeType(): TrackingOnboardingRuntimeType {
-    if (runtime === 'local') return 'local_cli';
-    if (runtime === 'byok') return 'byok';
-    return 'none';
-  }
-  function stepInfo(stepIdx: number): {
-    area: TrackingOnboardingArea;
-    stepIndex: TrackingOnboardingStepIndex;
-    stepName: TrackingOnboardingStepName;
-  } {
-    if (stepIdx === 0) {
-      return { area: 'model_source', stepIndex: '1', stepName: 'model_source' };
-    }
-    return { area: 'runtime_setup', stepIndex: '2', stepName: 'runtime_setup' };
-  }
-  function emitOnboardingClick(
-    element: TrackingOnboardingClickElement,
-    action: TrackingOnboardingClickAction,
-    extra: Partial<Omit<
-      Parameters<typeof trackOnboardingClick>[1],
-      'page_name' | 'area' | 'element' | 'action' | 'step_index' | 'step_name' | 'onboarding_session_id'
-    >> = {},
-  ): void {
-    const onboardingSessionId = onboardingSessionIdRef.current;
-    if (!onboardingSessionId) return;
-    const info = stepInfo(step);
-    trackOnboardingClick(analytics.track, {
-      page_name: 'onboarding',
-      area: info.area,
-      element,
-      action,
-      step_index: info.stepIndex,
-      step_name: info.stepName,
-      onboarding_session_id: onboardingSessionId,
-      ...extra,
-    });
-  }
-  function emitOnboardingComplete(
-    result: TrackingOnboardingCompletionResult,
-    completionType: TrackingOnboardingCompletionType,
-    extra: {
-      errorCode?: string;
-      runtimeType?: TrackingOnboardingRuntimeType;
-    } = {},
-  ): void {
-    if (lifecycleReportedRef.current) return;
-    const onboardingSessionId = onboardingSessionIdRef.current;
-    if (!onboardingSessionId) return;
-    lifecycleReportedRef.current = true;
-    const info = stepInfo(step);
-    trackOnboardingCompleteResult(analytics.track, {
-      page_name: 'onboarding',
-      area: 'onboarding',
-      result,
-      exit_step_name: info.stepName,
-      completion_type: completionType,
-      runtime_type: extra.runtimeType ?? currentRuntimeType(),
-      has_about_you: false,
-      has_design_system_request: false,
-      source_count: 0,
-      ...(extra.errorCode ? { error_code: extra.errorCode } : {}),
-      duration_ms: Math.max(0, Date.now() - onboardingStartedAtRef.current),
-      onboarding_session_id: onboardingSessionId,
-    });
-  }
   const protocolProviders = KNOWN_PROVIDERS.filter((provider) => provider.protocol === apiProtocol);
   const hasProtocolOwnedEmptyProvider =
     apiProtocol === 'azure' && protocolProviders.some((provider) => provider.baseUrl === '');
@@ -1796,33 +1599,6 @@ function OnboardingView({
     return selectedAgent;
   }
 
-  function emitPendingCliScanResult(
-    token: number,
-    args: {
-      result: 'success' | 'failed';
-      detected: number;
-      available: number;
-      selectedCliId?: TrackingCliProviderId;
-      errorCode?: string;
-    },
-  ): void {
-    const telemetry = cliScanTelemetryRef.current;
-    if (!telemetry || telemetry.token !== token) return;
-    cliScanTelemetryRef.current = null;
-    trackOnboardingRuntimeScanResult(analytics.track, {
-      page_name: 'onboarding',
-      area: 'runtime',
-      runtime_type: 'local_cli',
-      result: args.result,
-      detected_cli_count: args.detected,
-      available_cli_count: args.available,
-      ...(args.selectedCliId ? { selected_cli_id: args.selectedCliId } : {}),
-      ...(args.errorCode ? { error_code: args.errorCode } : {}),
-      duration_ms: Math.max(0, Date.now() - telemetry.startedAt),
-      onboarding_session_id: telemetry.onboardingSessionId,
-    });
-  }
-
   function beginCliScan(options: { clearVisible: boolean }): number {
     const scanToken = cliScanTokenRef.current + 1;
     cliScanTokenRef.current = scanToken;
@@ -1831,14 +1607,6 @@ function OnboardingView({
     onModeChange('daemon');
     setCliScanStatus('scanning');
     if (options.clearVisible) setVisibleAgentIds([]);
-    const onboardingSessionId = onboardingSessionIdRef.current;
-    cliScanTelemetryRef.current = onboardingSessionId
-      ? {
-          token: scanToken,
-          startedAt: Date.now(),
-          onboardingSessionId,
-        }
-      : null;
     return scanToken;
   }
 
@@ -1870,20 +1638,15 @@ function OnboardingView({
     });
   }
 
-  function handleBackWithTracking(): void {
-    emitOnboardingClick('back', 'back');
+  function handleBack(): void {
     clearAgentRevealTimers();
     setRuntime(null);
     setStep(0);
   }
 
   function completeStreamlinedOnboarding(
-    runtimeType: TrackingOnboardingRuntimeType,
+    runtimeType: 'local_cli' | 'byok' | 'none',
   ): void {
-    emitOnboardingComplete('completed', 'completed_without_design_system', {
-      runtimeType,
-    });
-    clearOnboardingSessionId();
     onFinish();
   }
 
@@ -1915,16 +1678,11 @@ function OnboardingView({
 
   function continueWithModelSource(): void {
     if (modelSource === 'local') {
-      emitOnboardingClick('local_coding_agent', 'select_runtime', {
-        runtime_type: 'local_cli',
-      });
       setRuntime('local');
       void scanCliAgents({ preferExisting: true });
       setStep(1);
       return;
     }
-
-    emitOnboardingClick('byok', 'select_runtime', { runtime_type: 'byok' });
     setRuntime('byok');
     setStep(1);
   }
@@ -1969,7 +1727,6 @@ function OnboardingView({
         mode: 'daemon',
         agentId: selectedAgent.id,
       });
-      emitOnboardingClick('continue', 'continue', { runtime_type: 'local_cli' });
       completeStreamlinedOnboarding('local_cli');
       return;
     }
@@ -1982,12 +1739,10 @@ function OnboardingView({
       if (!testResult?.ok) return;
       if (!continueAttemptStillCurrent('byok', startedInputKey)) return;
       await onConfigPersist({ ...config, mode: 'api' });
-      emitOnboardingClick('continue', 'continue', { runtime_type: 'byok' });
       completeStreamlinedOnboarding('byok');
       return;
     }
   }
-
 
   async function scanCliAgents(options: { preferExisting?: boolean } = {}) {
     const scanToken = beginCliScan({ clearVisible: !options.preferExisting });
@@ -1999,12 +1754,6 @@ function OnboardingView({
       const selectedCliAgent = selectDefaultCliAgent(currentAvailableAgents);
       showCliAgents(scanToken, currentCandidateAgents, { stagger: false });
       setCliScanStatus('done');
-      emitPendingCliScanResult(scanToken, {
-        result: 'success',
-        detected: agents.length,
-        available: currentAvailableAgents.length,
-        selectedCliId: selectedCliAgent ? agentIdToTracking(selectedCliAgent.id) : undefined,
-      });
       return currentAvailableAgents;
     }
     if (options.preferExisting && agentsLoading) {
@@ -2029,33 +1778,13 @@ function OnboardingView({
 
       if (candidateAgents.length === 0) {
         setCliScanStatus('done');
-        emitPendingCliScanResult(scanToken, {
-          result: 'failed',
-          detected: nextAgents.length,
-          available: 0,
-          errorCode: 'NO_AVAILABLE_CLI',
-        });
         return;
       }
-      emitPendingCliScanResult(scanToken, {
-        result: 'success',
-        detected: nextAgents.length,
-        available: availableAgents.length,
-        ...(selectedCliAgent
-          ? { selectedCliId: agentIdToTracking(selectedCliAgent.id) }
-          : {}),
-      });
       showCliAgents(scanToken, candidateAgents, { stagger: true });
     } catch (err) {
       if (cliScanTokenRef.current === scanToken) {
         cliRefreshPendingTokenRef.current = null;
         setCliScanStatus('done');
-        emitPendingCliScanResult(scanToken, {
-          result: 'failed',
-          detected: 0,
-          available: 0,
-          errorCode: err instanceof Error ? err.message : 'AGENT_REFRESH_THREW',
-        });
       }
     }
   }
@@ -2352,7 +2081,7 @@ function OnboardingView({
             <button
               type="button"
               className="onboarding-view__back-to-cloud"
-              onClick={handleBackWithTracking}
+              onClick={handleBack}
             >
               <Icon name="chevron-left" size={14} />
               <span>{t('settings.onboardingBack')}</span>

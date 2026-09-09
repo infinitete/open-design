@@ -1,3 +1,5 @@
+// TODO(contracts): keep — these type the Run failure classification that
+// drives the product retry decision and the persisted failure fields.
 import type {
   TrackingRunCancelOrigin,
   TrackingRunFailureCategory,

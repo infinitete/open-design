@@ -15,15 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStrategyRolloutRoutes } from '../../src/routes/strategy-rollout.js';
 import { migrateOdNextRolloutStore } from '../../src/strategies/od-next/rollout.js';
 
-function analyticsStub() {
-  return {
-    capture: vi.fn().mockResolvedValue(undefined),
-    captureSafety: vi.fn(),
-    mergeAnonymousPerson: vi.fn(),
-    identifyGroup: vi.fn(),
-    shutdown: vi.fn(),
-  } as never;
-}
 
 describe('GET /api/strategies/od-next/rollout', () => {
   let server: Server | null = null;
@@ -39,8 +30,6 @@ describe('GET /api/strategies/od-next/rollout', () => {
     app.use(express.json());
     registerStrategyRolloutRoutes(app, {
       db,
-      analytics: analyticsStub(),
-      getAppVersion: () => '0.0.0',
       requireLocalDaemonRequest: (_req, _res, next) => next(),
       readOdNextPreference,
     });

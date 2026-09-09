@@ -1,28 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { AnimatePresence, motion, MotionConfig } from 'motion/react';
+import { AnimatePresence, MotionConfig } from 'motion/react';
 import { Button } from '@open-design/components';
-import { reportAgentDetectDiagnostics } from './analytics/agent-detect';
-import { useAnalytics } from './analytics/provider';
-import {
-  trackExperienceSurveyDismissed,
-  trackExperienceSurveySent,
-  trackExperienceSurveyShown,
-  trackFileUploadResult,
-  trackProjectCreateResult,
-} from './analytics/events';
-import { deriveUploadCohort } from './analytics/upload-tracking';
-import { setPendingDesignSystemCreateEntry } from './analytics/ds-create-entry';
-import { detectClientType } from './analytics/identity';
 import {
   stashOnboardingEntryForProject,
   type OnboardingEntry,
 } from './onboarding/onboarding-entry';
-import {
-  deriveConfigureGlobals,
-  projectKindFromMetadataToTracking,
-  fidelityToTracking,
-} from '@open-design/contracts/analytics';
 import type {
   ChatSessionMode,
   CreateProjectExampleReference,
@@ -48,7 +31,6 @@ import {
   type ProjectNameAuthorityResolution,
 } from './components/ProjectView';
 import { ProjectCreationPendingView } from './components/ProjectCreationPendingView';
-import { ExperienceSurvey } from './components/ExperienceSurvey';
 import { TooltipLayer } from './components/TooltipLayer';
 import { UpdateDialog } from './components/UpdateDialog';
 import { UpdaterPopup } from './components/UpdaterPopup';
@@ -71,7 +53,6 @@ import {
   updateCurrentApiProtocolConfig,
   type SettingsSection,
 } from './components/SettingsDialog';
-import { PrivacyConsentModal } from './components/PrivacyConsentModal';
 import {
   daemonIsLive,
   fetchAppVersionInfo,
@@ -149,7 +130,7 @@ import {
   removeProjectFromDisplaySnapshots,
   writeProjectDisplaySnapshot,
 } from './state/project-display-cache';
-import { getOpenDesignHost, type OpenDesignHostProjectImportSuccess } from '@open-design/host';
+import { getOpenDesignHost, detectOpenDesignHostClientType, type OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import { useI18n } from './i18n';
 import { liveArtifactTabId } from './types';
 import type {
@@ -304,18 +285,9 @@ export async function persistComposioConfigChange(
 }
 
 export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppConfig {
-  const stalePrivacySnapshot =
-    current.privacyDecisionAt != null && next.privacyDecisionAt == null;
   return {
     ...next,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
-    ...(stalePrivacySnapshot
-      ? {
-          installationId: current.installationId,
-          privacyDecisionAt: current.privacyDecisionAt,
-          telemetry: current.telemetry,
-        }
-      : {}),
     composio: next.composio
       ? {
           apiKey: '',
@@ -438,7 +410,10 @@ export function App() {
 function AppInner() {
   const { t } = useI18n();
   const iframeKeepAlivePool = useIframeKeepAlivePool();
-  const clientType = useMemo(() => detectClientType(), []);
+  const clientType = useMemo(() => {
+    if (typeof window === 'undefined') return 'web' as const;
+    return detectOpenDesignHostClientType();
+  }, []);
   const hostPlatform = useMemo(() => getOpenDesignHost()?.client.platform, []);
   useModalWindowDragGuard();
   const listCurrentProjects = useCallback(
@@ -460,16 +435,8 @@ function AppInner() {
   // Icon fonts whose startup fetch lost a race stay tofu forever without
   // this — see runtime/font-recovery.ts.
   useEffect(() => installFontRecovery(), []);
-  // Observability marker. `apps/web/src/observability/white-screen.ts`
-  // keys its "app actually mounted" success condition on this attribute
-  // because the dynamic-import loading shell (`<div class="od-loading-shell">
-  // Loading OpenDesign…</div>`) is itself >MIN_VISIBLE_TEXT and would
-  // otherwise be mistaken for a real mount. Survives subsequent render
-  // crashes — once App has mounted at least once, it's no longer a white
-  // screen (subsequent failures show up as `$exception`).
   useEffect(() => {
     if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-od-app-mounted', '1');
       document.querySelectorAll('.od-loading-shell').forEach((node) => node.remove());
     }
   }, []);
@@ -686,10 +653,7 @@ function AppInner() {
       setProjectsLoading(false);
     }
   }
-  const analytics = useAnalytics();
-
-  // Single-flight guard for `/api/agents?stream=1`: beginning a new request
-  // physically aborts the previous stream, not just invalidates its
+  // Single-flight guard for `/api/agents?stream=1`: beginning a new request  // physically aborts the previous stream, not just invalidates its
   // callbacks. Stacked live streams are what deadlocked the packaged app —
   // each navigation/focus refresh opened another slow cold-probe stream,
   // and once they pinned every upstream connection slot the whole od://
@@ -705,12 +669,6 @@ function AppInner() {
   const isCurrentAgentStreamRequest = useCallback((requestId: number) => {
     return agentStreamRequestSeqRef.current === requestId;
   }, []);
-
-  // v2 schema removed the standalone `app_launch` event; the initial
-  // page_view fires from each top-level page surface (home / projects /
-  // automations / plugins / design_systems / integrations) instead.
-  // `detectClientType` still feeds analytics identity via the provider.
-  void detectClientType;
 
   const rememberLocalProject = useCallback((projectId: string) => {
     pendingLocalProjectIdsRef.current.add(projectId);
@@ -842,66 +800,6 @@ function AppInner() {
     return true;
   }, []);
 
-  // Propagate the Privacy toggle through to PostHog without a reload —
-  // posthog-js's opt_out_capturing flips a localStorage flag that makes
-  // every subsequent capture() a no-op. When the user opts back in we
-  // call opt_in_capturing to resume.
-  useEffect(() => {
-    analytics.setConsent(config.telemetry?.metrics === true);
-  }, [analytics.setConsent, config.telemetry?.metrics]);
-
-  // Sync PostHog's distinct_id with the anonymous installationId, both on
-  // first opt-in (when the daemon stamps a fresh id) and on Delete-my-data
-  // rotation (when PrivacySection.tsx generates a new one). posthog-js
-  // caches the previous id in localStorage; identify() alone would stitch
-  // the two ids together, so applyIdentity() does reset() first to
-  // guarantee the new session is fully decoupled from the deleted one.
-  useEffect(() => {
-    if (config.telemetry?.metrics !== true) return;
-    analytics.setIdentity(config.installationId ?? null);
-  }, [analytics.setIdentity, config.installationId, config.telemetry?.metrics]);
-
-  // v2 analytics requires every event to carry the configure-state
-  // triplet (has_available_configure_cli / configure_type /
-  // configure_availability). We push it into the PostHog global register
-  // whenever the user's execution-mode config or the detected agent list
-  // changes; the next capture inherits the fresh values, so dashboards
-  // can segment by execution setup without per-helper boilerplate.
-  //
-  // Gated on `agentsLoading` so the cold-start probe (`fetchAgentsStream()`
-  // lands asynchronously after this effect's first run) does not stamp
-  // the first home/projects/plugins page_view with
-  // has_available_configure_cli=false / configure_availability=unavailable
-  // on machines that DO have an installed CLI. While the probe is in
-  // flight we leave the boot defaults ('unknown'/'unknown') in place,
-  // matching what the helper would return for an empty agent list with
-  // no mode pinned.
-  useEffect(() => {
-    if (agentsLoading) return;
-    const byokConfigured = (() => {
-      const protocols = config.apiProtocolConfigs;
-      if (!protocols) return Boolean(config.apiKey?.trim());
-      return Object.values(protocols).some(
-        (cfg) => Boolean(cfg?.apiKey?.trim()),
-      );
-    })();
-    const globals = deriveConfigureGlobals({
-      mode: config.mode,
-      agentId: config.agentId,
-      agents: agents.map((a) => ({ id: a.id, available: a.available })),
-      byokConfigured,
-    });
-    analytics.setConfigureGlobals(globals);
-  }, [
-    analytics.setConfigureGlobals,
-    agentsLoading,
-    config.mode,
-    config.agentId,
-    config.apiKey,
-    config.apiProtocolConfigs,
-    agents,
-  ]);
-
   // Stamp the app appearance onto the <html> element so CSS variables pick it
   // up. The theme itself is a constant (light-only), but the accent still comes
   // from config, and the stamp must be re-applied whenever that changes.
@@ -927,21 +825,6 @@ function AppInner() {
     if (route.kind === 'project') suspendThumbnailLoads();
     else resumeThumbnailLoads();
   }, [route.kind]);
-  // Gate the privacy banner on three things:
-  //   1. Daemon config has hydrated (privacyDecisionAt is daemon-owned).
-  //   2. The user has not yet made a privacy decision.
-  //   3. Onboarding is complete (Skip and design-system creation both flip
-  //      onboardingCompleted to true; see handleCompleteOnboarding wiring).
-  // Once onboarding is done the banner is allowed on any route — including
-  // the project view the design-system finish path drops the user into, so
-  // they can read and acknowledge the disclosure while the first generation
-  // is running. Settings is irrelevant to visibility; the banner sits above
-  // the modal-backdrop layer in index.css so opening Settings does not hide
-  // it.
-  const showPrivacyConsent =
-    daemonConfigLoaded &&
-    config.privacyDecisionAt == null &&
-    config.onboardingCompleted === true;
   useEffect(() => {
     const body = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }
@@ -1005,7 +888,6 @@ function AppInner() {
       })
         .then((list) => {
           if (cancelled || !isCurrentAgentStreamRequest(agentRequestId)) return;
-          reportAgentDetectDiagnostics(analytics.track, list);
           setAgents(orderAgentsByRegistry(list));
         })
         .catch((err) => {
@@ -1150,11 +1032,6 @@ function AppInner() {
         setConfig(next);
 
         // Route first-run users through the global onboarding panel.
-        // The onboarding panel and the privacy banner have independent
-        // lifecycles: onboarding keys off `onboardingCompleted`, the
-        // banner keys off `privacyDecisionAt`. They may coexist on the
-        // first launch; the banner sits above the modal layer so it
-        // stays actionable regardless of the active view.
         if (shouldRouteToFirstRunOnboarding(next, window.location.pathname)) {
           navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
         }
@@ -1407,23 +1284,6 @@ function AppInner() {
     settingsDraftConfigRef.current = draft;
   }, []);
 
-  const handlePrivacyConsentChoice = useCallback((share: boolean) => {
-    const base = settingsDraftConfigRef.current ?? latestPersistedConfigRef.current;
-    const installationId = share
-      ? base.installationId ?? generateInstallationIdSafe()
-      : null;
-    void handleConfigPersist({
-      ...base,
-      installationId,
-      privacyDecisionAt: Date.now(),
-      telemetry: {
-        ...(base.telemetry ?? {}),
-        metrics: share,
-        content: share,
-      },
-    });
-  }, [handleConfigPersist]);
-
   /**
    * Explicit Composio API-key save. Called from the section-local
    * "Save key" button so secrets never ride the autosave keystroke
@@ -1567,7 +1427,6 @@ function AppInner() {
           },
         });
         const ordered = orderAgentsByRegistry(next);
-        reportAgentDetectDiagnostics(analytics.track, ordered);
         if (isCurrentAgentStreamRequest(agentRequestId)) {
           setAgents(ordered);
           setAgentsLoading(false);
@@ -1635,10 +1494,8 @@ function AppInner() {
       (input.metadata?.promptTemplate?.prompt?.trim() || undefined);
 
       const metadata = mergeLinkedDirsIntoMetadata(input.metadata, input.linkedDirs);
-      const kind = metadata?.kind ?? null;
-      const fidelity = fidelityToTracking(metadata?.fidelity ?? null);
       const creationSource: 'blank' | 'template' | 'zip' | 'folder' =
-        kind === 'template' ? 'template' : 'blank';
+        (metadata?.kind ?? null) === 'template' ? 'template' : 'blank';
       let optimisticProjectId: string | null = null;
       let result;
       try {
@@ -1709,20 +1566,6 @@ function AppInner() {
           err instanceof Error && err.message.trim()
             ? err.message
             : 'CREATE_REQUEST_FAILED';
-        trackProjectCreateResult(
-          analytics.track,
-          {
-            page_name: 'home',
-            area: 'new_project',
-            project_source: 'create_button',
-            project_id: null,
-            project_kind: projectKindFromMetadataToTracking(metadata),
-            fidelity,
-            result: 'failed',
-            error_code: errorCode,
-          },
-          { requestId: input.requestId },
-        );
         if (optimisticProjectId) {
           clearLocalProject(optimisticProjectId);
           removeWorkspaceProjectTabs(optimisticProjectId);
@@ -1741,22 +1584,6 @@ function AppInner() {
         throw err;
       }
       if (!result) {
-        trackProjectCreateResult(
-          analytics.track,
-          {
-            page_name: 'home',
-            area: 'new_project',
-            project_source: 'create_button',
-            project_id: null,
-            project_kind: projectKindFromMetadataToTracking(metadata),
-            fidelity,
-            ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
-            ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
-            result: 'failed',
-            error_code: 'CREATE_REQUEST_FAILED',
-          },
-          { requestId: input.requestId },
-        );
         return false;
       }
       const project = result.appliedPluginSnapshotId
@@ -1815,11 +1642,7 @@ function AppInner() {
         let firstMessageAttachments: ChatAttachment[] = [];
         if (!workingDirHandoffFailed && pendingFiles.length > 0) {
           // Home composer attaches stay client-side until submit lands a
-          // project; the actual upload happens here. v2 doc wants one
-          // file_upload_result per surface — `page_name='home'` /
-          // `area='chat_composer'` so it's distinguishable from the
-          // file_manager Upload button and the chat_panel composer.
-          const cohort = deriveUploadCohort(pendingFiles);
+          // project; the actual upload happens here.
           const uploadResult = await uploadProjectFiles(
             result.project.id,
             pendingFiles,
@@ -1829,32 +1652,7 @@ function AppInner() {
           if (partial) {
             console.warn('Some Home attachments failed to upload', uploadResult.failed);
           }
-          trackFileUploadResult(analytics.track, {
-            page_name: 'home',
-            area: 'chat_composer',
-            project_id: result.project.id,
-            ...cohort,
-            result: partial ? 'failed' : 'success',
-            ...(partial && uploadResult.error
-              ? { error_code: uploadResult.error }
-              : {}),
-          });
         }
-        trackProjectCreateResult(
-          analytics.track,
-          {
-            page_name: 'home',
-            area: 'new_project',
-            project_source: 'create_button',
-            project_id: result.project.id,
-            project_kind: projectKindFromMetadataToTracking(metadata),
-            fidelity,
-            ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
-            ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
-            result: 'success',
-          },
-          { requestId: input.requestId },
-        );
         // PluginLoopHome flow: the user already typed (or accepted) the
         // first message on Home. Mark this project so ProjectView fires
         // sendMessage(pendingPrompt) once on mount instead of just
@@ -1957,7 +1755,7 @@ function AppInner() {
       }
       return true;
     },
-    [analytics.track, clearLocalProject, rememberLocalProject],
+    [clearLocalProject, rememberLocalProject],
   );
 
   const handleCreateProjectFromDesignSystem = useCallback(
@@ -3013,7 +2811,6 @@ function AppInner() {
         onProjectsRefresh={refreshProjects}
         onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
         onCreateDesignSystem={() => {
-          setPendingDesignSystemCreateEntry('design_systems_page');
           navigate({ kind: 'design-system-create' });
         }}
         onOpenDesignSystem={(id: string) => navigate({ kind: 'design-system-detail', designSystemId: id })}
@@ -3042,15 +2839,6 @@ function AppInner() {
       </div>
       <TooltipLayer />
       <UpdateDialog />
-      {/* Mounted at shell level, outside the route views, so a survey armed by
-          an export inside a project stays on screen when the user navigates
-          back to home. */}
-      <ExperienceSurvey
-        metricsConsent={config.telemetry?.metrics === true}
-        onExposure={() => trackExperienceSurveyShown(analytics.track)}
-        onDismiss={() => trackExperienceSurveyDismissed(analytics.track)}
-        onSubmit={(answers) => trackExperienceSurveySent(analytics.track, answers)}
-      />
       <AnimatePresence>
       {settingsOpen ? (
         renderSettingsSurface('modal')
@@ -3095,42 +2883,6 @@ function AppInner() {
           onDismiss={() => setProjectOpenError(null)}
         />
       ) : null}
-      {/* First-run privacy consent banner. It waits for daemon config
-          hydration because privacyDecisionAt is daemon-owned and stripped
-          from localStorage. It waits for `onboardingCompleted` so first-run
-          users see the welcome panel before the disclosure (Skip and
-          finish both flip the flag). Independent of Settings: z-index in
-          index.css sits above modal backdrops so opening Settings does
-          not hide the banner. */}
-      <AnimatePresence>
-      {showPrivacyConsent ? (
-        <motion.div
-          initial={{ opacity: 0, y: 20, scale: 0.97 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 10, scale: 0.97 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 28 }}
-        >
-        <PrivacyConsentModal
-          onShare={() => {
-            // The banner owns only the privacy decision; it does not drive
-            // navigation. Choosing Share keeps the current anonymous identity
-            // when one already exists and enables the telemetry surface.
-            handlePrivacyConsentChoice(true);
-          }}
-          onDecline={() => {
-            handlePrivacyConsentChoice(false);
-          }}
-        />
-      </motion.div>
-      ) : null}
-      </AnimatePresence>
     </>
   );
-}
-
-function generateInstallationIdSafe(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `inst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

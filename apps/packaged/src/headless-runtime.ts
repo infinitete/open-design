@@ -228,9 +228,6 @@ export async function runPackagedHeadless(
         mcpBootstrapArgs: mcpBootstrap.args,
         mcpBootstrapCommand: mcpBootstrap.command,
         nodeCommand: activeConfig.nodeCommand,
-        telemetryRelayUrl: activeConfig.telemetryRelayUrl,
-        posthogKey: activeConfig.posthogKey,
-        posthogHost: activeConfig.posthogHost,
         // PR #974 round-5 (lefarcen P2): headless packaged mode uses the signed
         // Electron entry as a lifecycle owner, but creates no BrowserWindow and
         // exposes no privileged shell.openPath surface.
