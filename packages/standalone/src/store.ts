@@ -22,6 +22,15 @@ export type GenerationState = {
   lastSuccessful: string | null;
 };
 
+/** Lifecycle contract the carrier implements for the active generation. */
+export type LifecycleStatus = { state: "running" | "stopped"; generationId: string | null };
+
+export interface LifecyclePort {
+  start(generation: GenerationRecord): Promise<LifecycleStatus>;
+  status(): Promise<LifecycleStatus>;
+  stop(): Promise<LifecycleStatus>;
+}
+
 const INITIAL_STATE: GenerationState = { schemaVersion: 1, attempt: null, active: null, lastSuccessful: null };
 let atomicSequence = 0;
 
@@ -245,18 +254,4 @@ export class StandaloneStore {
     return this.materialize({ name, mode: component.mode, artifact: { entrypoint: component.entrypoint, sha256: component.sha256, size: component.size, url: component.url } }, readArtifact);
   }
 
-  async rollbackFailedActivation(): Promise<GenerationRecord | null> {
-    return this.withStateTransaction(async () => {
-      const state = await this.readState();
-      const fallback = state.lastSuccessful;
-      const generation = fallback === null ? null : await readJson<GenerationRecord>(this.generationPath(fallback));
-      await writeJsonAtomic(this.statePath, { ...state, attempt: null, active: fallback });
-      return generation;
-    });
-  }
-
-  async lastSuccessfulGeneration(): Promise<GenerationRecord | null> {
-    const state = await this.readState();
-    return state.lastSuccessful === null ? null : readJson<GenerationRecord>(this.generationPath(state.lastSuccessful));
-  }
 }

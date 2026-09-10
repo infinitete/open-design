@@ -2,8 +2,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { FossilBootloader, StandaloneStore, StandaloneUpdater, VersionedLauncher, supportsInstalledShell, verifyStandaloneMetadata, type SignedStandaloneChannelHead, type SignedStandaloneMetadata } from "@open-design/standalone";
-import { FileFixtureLifecyclePort, TERMINAL_SHELL_IDENTITY, TERMINAL_SHELL_VERSION, applyTerminalUpdate, assertOfficialNodeVersion } from "./index.js";
+import { StandaloneStore, supportsInstalledShell, verifyStandaloneMetadata, type SignedStandaloneMetadata } from "@open-design/standalone";
+import { FileFixtureLifecyclePort, TERMINAL_SHELL_IDENTITY, TERMINAL_SHELL_VERSION, assertOfficialNodeVersion } from "./index.js";
 
 function option(name: string, fallback?: string): string {
   const index = process.argv.indexOf(name);
@@ -73,7 +73,6 @@ async function main(): Promise<void> {
   if (resolvedChannel !== undefined && namespace !== `terminal-${resolvedChannel}`) throw new Error("namespace must match its exact channel");
   const store = new StandaloneStore(root, namespace);
   const lifecycle = new FileFixtureLifecyclePort(root, namespace);
-  const launcher = new VersionedLauncher(store, lifecycle);
   let output: unknown;
   if (command === "install") {
     if (envelope === undefined || trustedInstallKeys === undefined) throw new Error("install metadata was not initialized");
@@ -83,32 +82,22 @@ async function main(): Promise<void> {
     await store.commit(generation.id);
     output = { schemaVersion: 1, shell: TERMINAL_SHELL_IDENTITY.shell, operation: "install", generation };
   } else if (command === "start") {
+    // One installed generation: activate the prepared attempt if there is one,
+    // then boot exactly that generation. There is no second generation to fall
+    // back to, so a failed start surfaces rather than rolling back.
     await store.activatePrepared();
-    output = await new FossilBootloader(async () => launcher).start();
-  } else if (command === "update" || command === "apply-update") {
-    const channel = option("--channel");
-    const headUrl = option("--channel-head");
-    const trusted = JSON.parse(await readFile(resolve(option("--trusted-keys")), "utf8")) as Record<string, string>;
-    const updater = new StandaloneUpdater(
-      channel,
-      "closure",
-      { shell: "terminal", target: hostTarget(), shellVersion: TERMINAL_SHELL_VERSION, runtime: { name: "node", version: runtimeVersion } },
-      trusted,
-      store,
-      { readChannelHead: async () => JSON.parse(Buffer.from(await readArtifact(headUrl)).toString("utf8")) as SignedStandaloneChannelHead, readArtifact },
-    );
-    const preparation = await updater.prepareLatest();
-    output = command === "apply-update"
-      ? await applyTerminalUpdate(updater, launcher, preparation)
-      : preparation;
+    const generation = await store.activeGeneration();
+    await lifecycle.start(generation);
+    await store.markSuccessful(generation.id);
+    output = { state: "running", generationId: generation.id };
   } else if (command === "status") {
-    output = await launcher.status();
+    output = await lifecycle.status();
   } else if (command === "stop") {
-    output = await launcher.stop();
+    output = await lifecycle.stop();
   } else if (command === "inspect") {
-    output = { shell: TERMINAL_SHELL_IDENTITY, state: await store.readState(), lifecycle: await launcher.status() };
+    output = { shell: TERMINAL_SHELL_IDENTITY, state: await store.readState(), lifecycle: await lifecycle.status() };
   } else {
-    throw new Error("usage: open-design-terminal <install|update|apply-update|start|status|inspect|stop> --root <path> [options]");
+    throw new Error("usage: open-design-terminal <install|start|status|inspect|stop> --root <path> [options]");
   }
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }

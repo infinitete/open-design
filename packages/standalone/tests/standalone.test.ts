@@ -1,10 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { FossilBootloader, StandaloneStore, StandaloneUpdater, VersionedLauncher, canonicalJson, sha256Hex, signStandaloneChannelHead, signStandaloneMetadata, verifyStandaloneChannelHead, type GenerationRecord, type LifecyclePort, type LifecycleStatus, type StandaloneMetadata } from "../src/index.js";
+import { StandaloneStore, canonicalJson, sha256Hex, signStandaloneChannelHead, signStandaloneMetadata, verifyStandaloneChannelHead, type GenerationRecord, type LifecyclePort, type LifecycleStatus, type StandaloneMetadata } from "../src/index.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -39,8 +39,8 @@ describe("standalone exact skeleton", () => {
     const generation = await store.prepare(envelope, new Map([["test-key", keys.publicKey]]), async () => bytes);
     await store.commit(generation.id);
     const port = new FixturePort();
-    const fossil = new FossilBootloader(async () => new VersionedLauncher(store, port));
-    await expect(fossil.start()).resolves.toEqual({ state: "running", generationId: generation.id });
+    await expect(port.start(generation)).resolves.toEqual({ state: "running", generationId: generation.id });
+    await store.markSuccessful(generation.id);
     expect(await store.readState()).toEqual({ schemaVersion: 1, active: generation.id, attempt: null, lastSuccessful: generation.id });
     expect(await readFile(generation.components["closure-fixture"]!.path, "utf8")).toContain("closure fixture");
   });
@@ -70,8 +70,8 @@ describe("standalone exact skeleton", () => {
     expect(await store.readState()).toMatchObject({ attempt: newest.id });
   });
 
-  it("supports dual-sign key rotation and defers automatic activation until cold start", async () => {
-    const root = await mkdtemp(join(tmpdir(), "standalone-update-")); roots.push(root);
+  it("accepts a rotated signing key and refuses a different channel", async () => {
+    const root = await mkdtemp(join(tmpdir(), "standalone-keys-")); roots.push(root);
     const artifact = Buffer.from("closure-update");
     const oldKeys = generateKeyPairSync("ed25519");
     const nextKeys = generateKeyPairSync("ed25519");
@@ -86,7 +86,6 @@ describe("standalone exact skeleton", () => {
       publishedAt: "2026-08-24T00:00:00.000Z",
       lanes: {
         closure: { releaseVersion: "0.1.0-betahyx.1", url: "https://fixtures.invalid/closure-metadata.json", sha256: sha256Hex(metadataBytes), size: metadataBytes.byteLength },
-        terminal: { releaseVersion: "0.1.0-betahyx.1", url: "https://fixtures.invalid/terminal-metadata.json", sha256: "d".repeat(64), size: 1 },
       },
     }, [
       { keyId: "old", privateKey: oldKeys.privateKey },
@@ -94,106 +93,16 @@ describe("standalone exact skeleton", () => {
     ]);
     const trusted = new Map([["next", nextKeys.publicKey]]);
     expect(verifyStandaloneChannelHead(head, trusted)).toBe("next");
-    const store = new StandaloneStore(root, "terminal-betahyx");
-    const updater = new StandaloneUpdater(
-      "betahyx",
-      "closure",
-      { shell: "terminal", target: "darwin-arm64", shellVersion: "0.1.0", runtime: { name: "node", version: "24.18.0" } },
-      trusted,
-      store,
-      {
-        readChannelHead: async () => head,
-        readArtifact: async (url) => url.endsWith("closure-metadata.json") ? metadataBytes : artifact,
-      },
-    );
-    await expect(updater.prepareLatest()).resolves.toMatchObject({ status: "prepared" });
-    expect(await store.readState()).toMatchObject({ active: null, attempt: expect.any(String) });
-    await expect(updater.prepareLatest()).resolves.toMatchObject({ status: "current", applyRequired: true });
-    const launcher = new VersionedLauncher(store, new FixturePort());
-    await expect(updater.applyNow(launcher)).resolves.toMatchObject({ state: "running" });
-    expect(await store.readState()).toMatchObject({ active: expect.any(String), attempt: null });
-    await expect(updater.applyNow(launcher)).rejects.toThrow("no prepared generation to apply");
 
-    await expect(updater.prepareLatest()).resolves.toMatchObject({ status: "current", applyRequired: false });
-    const active = await store.activeGeneration();
-    const activated = await updater.activateOnColdStart();
-    expect(activated).toBeNull();
-    expect(await store.readState()).toMatchObject({ active: active.id, attempt: null });
-    const older = metadata(artifact, "0.1.0-betahyx.0");
-    older.shellCompatibility = [{ shell: "terminal", target: "darwin-arm64", shellVersion: "9.9.9", runtime: { name: "node", version: "24.18.0" } }];
-    const olderEnvelope = signStandaloneMetadata(older, "next", nextKeys.privateKey);
-    const olderBytes = Buffer.from(canonicalJson(olderEnvelope));
-    const olderHead = signStandaloneChannelHead({
-      schemaVersion: 1,
-      channel: "betahyx",
-      publishedAt: "2026-08-24T00:00:00.000Z",
-      lanes: { closure: { releaseVersion: older.releaseVersion, url: "https://fixtures.invalid/older-metadata.json", sha256: sha256Hex(olderBytes), size: olderBytes.byteLength } },
-    }, [{ keyId: "next", privateKey: nextKeys.privateKey }]);
-    const replay = new StandaloneUpdater(
-      "betahyx",
-      "closure",
-      { shell: "terminal", target: "darwin-arm64", shellVersion: "0.1.0", runtime: { name: "node", version: "24.18.0" } },
-      trusted,
-      store,
-      { readChannelHead: async () => olderHead, readArtifact: async (url) => url.endsWith("older-metadata.json") ? olderBytes : artifact },
-    );
-    await expect(replay.prepareLatest()).rejects.toThrow("would downgrade");
+    const store = new StandaloneStore(root, "terminal-betahyx");
+    const generation = await store.prepare(envelope, trusted, async () => artifact);
+    expect(generation.channel).toBe("betahyx");
+    await store.commit(generation.id);
+
     const preview = metadata(artifact);
     preview.channel = "previewhyx";
     preview.releaseVersion = "0.1.0-previewhyx.1";
     const previewEnvelope = signStandaloneMetadata(preview, "next", nextKeys.privateKey);
     await expect(store.prepare(previewEnvelope, trusted, async () => artifact)).rejects.toThrow("already bound to betahyx");
-  });
-
-  it("recovers the lifecycle before committing a failed activation rollback", async () => {
-    const root = await mkdtemp(join(tmpdir(), "standalone-rollback-")); roots.push(root);
-    const keys = generateKeyPairSync("ed25519");
-    const trusted = new Map([["test-key", keys.publicKey]]);
-    const store = new StandaloneStore(root, "terminal-betahyx");
-    const firstBytes = Buffer.from("first");
-    const first = await store.prepare(signStandaloneMetadata(metadata(firstBytes), "test-key", keys.privateKey), trusted, async () => firstBytes);
-    await store.commit(first.id);
-    const port = new FixturePort();
-    await new VersionedLauncher(store, port).start();
-
-    const secondBytes = Buffer.from("second");
-    const second = await store.prepare(signStandaloneMetadata(metadata(secondBytes, "0.1.0-betahyx.2"), "test-key", keys.privateKey), trusted, async () => secondBytes);
-    await store.commit(second.id);
-    const failingPort: LifecyclePort = {
-      status: () => port.status(),
-      stop: () => port.stop(),
-      start: async (generation) => {
-        if (generation.id === second.id) throw new Error("activation failed");
-        return port.start(generation);
-      },
-    };
-
-    await expect(new VersionedLauncher(store, failingPort).start()).resolves.toEqual({ state: "running", generationId: first.id });
-    expect(await store.readState()).toEqual({ schemaVersion: 1, active: first.id, attempt: null, lastSuccessful: first.id });
-    await expect(port.status()).resolves.toEqual({ state: "running", generationId: first.id });
-  });
-
-  it("leaves generation state unchanged when the rollback record is missing", async () => {
-    const root = await mkdtemp(join(tmpdir(), "standalone-missing-rollback-")); roots.push(root);
-    const keys = generateKeyPairSync("ed25519");
-    const trusted = new Map([["test-key", keys.publicKey]]);
-    const store = new StandaloneStore(root, "terminal-betahyx");
-    const firstBytes = Buffer.from("first");
-    const first = await store.prepare(signStandaloneMetadata(metadata(firstBytes), "test-key", keys.privateKey), trusted, async () => firstBytes);
-    await store.commit(first.id);
-    await new VersionedLauncher(store, new FixturePort()).start();
-    const secondBytes = Buffer.from("second");
-    const second = await store.prepare(signStandaloneMetadata(metadata(secondBytes, "0.1.0-betahyx.2"), "test-key", keys.privateKey), trusted, async () => secondBytes);
-    await store.commit(second.id);
-    await unlink(join(root, "generations", `${first.id}.json`));
-    const stateBefore = await store.readState();
-    const failingPort: LifecyclePort = {
-      status: async () => ({ state: "stopped", generationId: null }),
-      stop: async () => ({ state: "stopped", generationId: null }),
-      start: async () => { throw new Error("activation failed"); },
-    };
-
-    await expect(new VersionedLauncher(store, failingPort).start()).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await store.readState()).toEqual(stateBefore);
   });
 });

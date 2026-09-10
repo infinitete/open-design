@@ -182,6 +182,24 @@ export function verifyStandaloneMetadata(envelope: SignedStandaloneMetadata, rin
   return verifyValue(envelope.metadata, envelope.signatures, ring);
 }
 
+/**
+ * Whether the running carrier matches one of the release's declared shell
+ * distributions. A mismatch means this release cannot be installed onto the
+ * current shell at all — the carrier has to be replaced first.
+ */
+export function supportsInstalledShell(
+  envelope: SignedStandaloneMetadata,
+  installed: StandaloneShellCompatibility,
+): boolean {
+  return envelope.metadata.shellCompatibility.some((candidate) =>
+    candidate.shell === installed.shell
+    && candidate.target === installed.target
+    && candidate.shellVersion === installed.shellVersion
+    && candidate.runtime.name === installed.runtime.name
+    && candidate.runtime.version === installed.runtime.version
+  );
+}
+
 export function signStandaloneShellMetadata(metadata: StandaloneShellMetadata, signers: readonly StandaloneSigner[]): SignedStandaloneShellMetadata {
   validateStandaloneShellMetadata(metadata);
   return { metadata, signatures: signValue(metadata, signers) };

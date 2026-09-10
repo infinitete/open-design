@@ -1,7 +1,7 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { canonicalJson, replaceFile, type GenerationRecord, type LifecyclePort, type LifecycleStatus, type StandaloneUpdater, type UpdatePreparation, type VersionedLauncher } from "@open-design/standalone";
+import { canonicalJson, replaceFile, type GenerationRecord, type LifecyclePort, type LifecycleStatus } from "@open-design/standalone";
 
 export const TERMINAL_SHELL_VERSION = "0.1.0";
 export const OFFICIAL_NODE_VERSION = "24.18.0";
@@ -52,10 +52,4 @@ export class FileFixtureLifecyclePort implements LifecyclePort {
     const current = await this.read();
     return this.write({ state: "stopped", generationId: current.generationId });
   }
-}
-
-export async function applyTerminalUpdate(updater: StandaloneUpdater, launcher: VersionedLauncher, preparation: UpdatePreparation): Promise<{ preparation: UpdatePreparation; lifecycle?: LifecycleStatus }> {
-  if (preparation.status === "shell-reinstall-required") return { preparation };
-  if (preparation.status === "current" && !preparation.applyRequired) return { preparation, lifecycle: await launcher.status() };
-  return { preparation, lifecycle: await updater.applyNow(launcher) };
 }
