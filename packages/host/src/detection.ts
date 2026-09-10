@@ -58,22 +58,6 @@ export function isOpenDesignHostBridge(value: unknown): value is OpenDesignHostB
   const pdf = value.pdf;
   if (!isRecord(pdf) || !hasFunction(pdf, "print")) return false;
 
-  const updater = value.updater;
-  if (
-    !isRecord(updater) ||
-    !hasFunction(updater, "status") ||
-    !hasFunction(updater, "check") ||
-    !hasFunction(updater, "clear-cache") ||
-    !hasFunction(updater, "download") ||
-    !hasFunction(updater, "install") ||
-    !hasFunction(updater, "quit") ||
-    !hasFunction(updater, "setMenuLabels") ||
-    !hasFunction(updater, "subscribe") ||
-    !hasFunction(updater, "subscribeOpenDialog")
-  ) {
-    return false;
-  }
-
   return true;
 }
 

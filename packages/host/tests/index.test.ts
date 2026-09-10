@@ -8,12 +8,9 @@ import {
   OPEN_DESIGN_HOST_GLOBAL,
   OPEN_DESIGN_HOST_VERSION,
   clearHostBrowserData,
-  checkHostUpdater,
   detectOpenDesignHostClientType,
   getLatestHostPreviewNavigationFailure,
-  getHostUpdaterStatus,
   getOpenDesignHost,
-  installHostUpdater,
   isOpenDesignHostAvailable,
   isOpenDesignHostBridge,
   normalizeOpenDesignHostProjectImportResult,
@@ -21,10 +18,6 @@ import {
   pickAndImportHostProject,
   printHostPdf,
   openHostProjectPath,
-  quitHostAfterUpdaterInstallerOpen,
-  setHostUpdaterMenuLabels,
-  subscribeHostUpdaterOpenDialog,
-  subscribeHostUpdater,
   subscribeHostPreviewNavigationFailure,
 } from "../src/index.js";
 import { createMockOpenDesignHost, installMockOpenDesignHost } from "../src/testing.js";
@@ -82,15 +75,16 @@ describe("open-design host contract", () => {
       ...createMockOpenDesignHost(),
       shell: { openExternal: async () => ({ ok: true }) },
     })).toBe(false);
+  });
+
+  it("ignores unknown bridge keys so a stale host build still validates", () => {
+    // The updater namespace is gone from the contract, but a host build that
+    // still injects one must keep working: validation checks the capabilities
+    // it knows rather than rejecting anything extra.
     expect(isOpenDesignHostBridge({
       ...createMockOpenDesignHost(),
-      updater: { status: async () => createMockOpenDesignHost().updater.status() },
-    })).toBe(false);
-    const { "clear-cache": _clearCache, ...updaterWithoutClearCache } = createMockOpenDesignHost().updater;
-    expect(isOpenDesignHostBridge({
-      ...createMockOpenDesignHost(),
-      updater: updaterWithoutClearCache,
-    })).toBe(false);
+      updater: { check: async () => ({ ok: true }) },
+    })).toBe(true);
   });
 
   it("reads the bridge through the package-owned global accessor", () => {
@@ -237,76 +231,6 @@ describe("open-design host contract", () => {
     expect(print).toHaveBeenCalledWith("<html></html>", "nonce", { deck: true });
   });
 
-  it("routes updater status, actions, and subscriptions through package-owned helpers", async () => {
-    const status = {
-      arch: "arm64",
-      availableVersion: "1.0.1-beta.1",
-      capabilities: {
-        canApplyInPlace: false,
-        canDownload: true,
-        canOpenInstaller: true,
-        requiresManualInstall: true,
-      },
-      channel: "beta" as const,
-      currentVersion: "1.0.0-beta.0",
-      downloadPath: "/tmp/Open Design Beta.dmg",
-      enabled: true,
-      mode: "package-launcher" as const,
-      platform: "darwin",
-      state: "downloaded" as const,
-      supported: true,
-    };
-    const check = vi.fn(async () => status);
-    const install = vi.fn(async () => status);
-    const quit = vi.fn(async () => ({ ok: true as const }));
-    const statusFn = vi.fn(async () => status);
-    const unsubscribe = vi.fn();
-    const subscribe = vi.fn(() => unsubscribe);
-    const unsubscribeOpenDialog = vi.fn();
-    const subscribeOpenDialog = vi.fn(() => unsubscribeOpenDialog);
-    const setMenuLabels = vi.fn(async () => ({ ok: true as const }));
-    const scope: Record<string, unknown> = {};
-    scope[OPEN_DESIGN_HOST_GLOBAL] = createMockOpenDesignHost({
-      updater: { check, install, quit, setMenuLabels, status: statusFn, subscribe, subscribeOpenDialog },
-    });
-
-    await expect(getHostUpdaterStatus({ payload: { source: "mount" } }, scope)).resolves.toEqual({
-      ok: true,
-      status,
-    });
-    await expect(checkHostUpdater({ payload: { source: "button" } }, scope)).resolves.toEqual({
-      ok: true,
-      status,
-    });
-    await expect(installHostUpdater({ payload: { source: "popup" } }, scope)).resolves.toEqual({
-      ok: true,
-      status,
-    });
-    await expect(quitHostAfterUpdaterInstallerOpen({ payload: { source: "opened-popup" } }, scope)).resolves.toEqual({
-      ok: true,
-    });
-
-    const listener = vi.fn();
-    expect(subscribeHostUpdater(listener, scope)).toBe(unsubscribe);
-    const openDialogListener = vi.fn();
-    expect(subscribeHostUpdaterOpenDialog(openDialogListener, scope)).toBe(unsubscribeOpenDialog);
-    await expect(setHostUpdaterMenuLabels({
-      check: "Check for Updates…",
-      checking: "Checking for Updates…",
-      downloading: "Downloading Update…",
-      install: "Install Update…",
-      installing: "Installing Update…",
-      restart: "Restart to Update OpenDesign…",
-    }, scope)).resolves.toEqual({ ok: true });
-    expect(statusFn).toHaveBeenCalledWith({ payload: { source: "mount" } });
-    expect(check).toHaveBeenCalledWith({ payload: { source: "button" } });
-    expect(install).toHaveBeenCalledWith({ payload: { source: "popup" } });
-    expect(quit).toHaveBeenCalledWith({ payload: { source: "opened-popup" } });
-    expect(subscribe).toHaveBeenCalledWith(listener);
-    expect(subscribeOpenDialog).toHaveBeenCalledWith(openDialogListener);
-    expect(setMenuLabels).toHaveBeenCalledOnce();
-  });
-
   it("routes optional preview navigation failure subscriptions", () => {
     const failure = {
       errorCode: -3,
@@ -330,22 +254,6 @@ describe("open-design host contract", () => {
     expect(subscribeNavigationFailure).toHaveBeenCalledWith(listener);
     expect(getLatestHostPreviewNavigationFailure({})).toBeNull();
     expect(subscribeHostPreviewNavigationFailure(listener, {})).toEqual(expect.any(Function));
-  });
-
-  it("wraps updater action throws into structured failures", async () => {
-    const scope: Record<string, unknown> = {};
-    scope[OPEN_DESIGN_HOST_GLOBAL] = createMockOpenDesignHost({
-      updater: {
-        check: vi.fn(async () => {
-          throw new Error("updater failed");
-        }),
-      },
-    });
-
-    await expect(checkHostUpdater(undefined, scope)).resolves.toEqual({
-      ok: false,
-      reason: "updater failed",
-    });
   });
 
   it("installs and restores test hosts without exposing callers to the global key", () => {

@@ -1,4 +1,3 @@
-import { OPEN_DESIGN_HOST_UPDATER_ACTIONS } from "./protocol.js";
 import type {
   OpenDesignHostActionResult,
   OpenDesignHostBrowserClearDataOptions,
@@ -13,12 +12,6 @@ import type {
   OpenDesignHostProjectImportInit,
   OpenDesignHostProjectImportResult,
   OpenDesignHostProjectReplaceWorkingDirResult,
-  OpenDesignHostUpdaterActionOptions,
-  OpenDesignHostUpdaterMenuLabels,
-  OpenDesignHostUpdaterOpenDialogListener,
-  OpenDesignHostUpdaterResult,
-  OpenDesignHostUpdaterStatusAction,
-  OpenDesignHostUpdaterStatusListener,
 } from "./protocol.js";
 import { getOpenDesignHost } from "./detection.js";
 
@@ -28,7 +21,7 @@ import { getOpenDesignHost } from "./detection.js";
  * Renderer-facing wrappers over the host bridge. Each resolves the bridge from
  * scope, invokes the capability, and returns a host-owned result (or a uniform
   * "host is not available" failure). Covers shell, browser, capture, project,
-  * pdf, and the full updater action surface.
+  * pdf, project, and shell surfaces.
  */
 
 /** @internal Build a normalized host failure result. */
@@ -182,119 +175,5 @@ export function subscribeHostPreviewNavigationFailure(
     return host.preview.subscribeNavigationFailure(listener);
   } catch {
     return () => undefined;
-  }
-}
-
-/** @internal Run a status-returning updater action and wrap the result. */
-async function runHostUpdaterAction(
-  action: OpenDesignHostUpdaterStatusAction,
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  const host = getOpenDesignHost(scope);
-  if (host == null) return unavailable("OpenDesign host is not available");
-  try {
-    return {
-      ok: true,
-      status: await host.updater[action](options),
-    };
-  } catch (error) {
-    return unavailable(error instanceof Error ? error.message : String(error));
-  }
-}
-
-/** Get the host updater status. */
-export async function getHostUpdaterStatus(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  return await runHostUpdaterAction(OPEN_DESIGN_HOST_UPDATER_ACTIONS.STATUS, options, scope);
-}
-
-/** Trigger a host updater check. */
-export async function checkHostUpdater(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  return await runHostUpdaterAction(OPEN_DESIGN_HOST_UPDATER_ACTIONS.CHECK, options, scope);
-}
-
-/** Trigger a host updater download. */
-export async function downloadHostUpdater(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  return await runHostUpdaterAction(OPEN_DESIGN_HOST_UPDATER_ACTIONS.DOWNLOAD, options, scope);
-}
-
-/** Clear the host updater/launcher caches and reset one-shot update state. */
-export async function clearHostUpdaterCache(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  return await runHostUpdaterAction(OPEN_DESIGN_HOST_UPDATER_ACTIONS.CLEAR_CACHE, options, scope);
-}
-
-/** Trigger a host updater install. */
-export async function installHostUpdater(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostUpdaterResult> {
-  return await runHostUpdaterAction(OPEN_DESIGN_HOST_UPDATER_ACTIONS.INSTALL, options, scope);
-}
-
-/** Quit the host after its updater installer has opened. */
-export async function quitHostAfterUpdaterInstallerOpen(
-  options?: OpenDesignHostUpdaterActionOptions,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostActionResult> {
-  const host = getOpenDesignHost(scope);
-  if (host == null) return unavailable("OpenDesign host is not available");
-  try {
-    return await host.updater.quit(options);
-  } catch (error) {
-    return unavailable(error instanceof Error ? error.message : String(error));
-  }
-}
-
-/** Subscribe to host updater status changes; returns an unsubscribe fn. */
-export function subscribeHostUpdater(
-  listener: OpenDesignHostUpdaterStatusListener,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): () => void {
-  const host = getOpenDesignHost(scope);
-  if (host == null) return () => undefined;
-  try {
-    return host.updater.subscribe(listener);
-  } catch {
-    return () => undefined;
-  }
-}
-
-/** Subscribe to native host requests to open the updater dialog. */
-export function subscribeHostUpdaterOpenDialog(
-  listener: OpenDesignHostUpdaterOpenDialogListener,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): () => void {
-  const host = getOpenDesignHost(scope);
-  if (host == null) return () => undefined;
-  try {
-    return host.updater.subscribeOpenDialog(listener);
-  } catch {
-    return () => undefined;
-  }
-}
-
-/** Synchronize renderer-localized updater menu labels to the native host. */
-export async function setHostUpdaterMenuLabels(
-  labels: OpenDesignHostUpdaterMenuLabels,
-  scope: OpenDesignHostGlobalScope = globalThis,
-): Promise<OpenDesignHostActionResult> {
-  const host = getOpenDesignHost(scope);
-  if (host == null) return unavailable("OpenDesign host is not available");
-  try {
-    return await host.updater.setMenuLabels(labels);
-  } catch (error) {
-    return unavailable(error instanceof Error ? error.message : String(error));
   }
 }
