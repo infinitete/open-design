@@ -55,8 +55,6 @@ The build-graph cache is almost entirely Windows-specific.
 | `win.nsis-payload-overlay` | win |
 | `win.nsis-installer` | win |
 | `win.portable-zip` | win |
-| `win.launcher-payload-base` | win |
-| `win.launcher-payload` | win |
 
 `mac` and `linux` have `<platform>.workspace-build` only.
 
@@ -75,8 +73,7 @@ drops them.
 Existing links: `win.workspace-tarballs` carries `workspaceBuildKey`;
 `win.packaged-app` carries `tarballsKey`; `win.electron-builder-dir` carries
 `packagedAppKey` and `resourceTreeKey`; `win.nsis-installer` carries
-`basePayloadKey` and `overlayPayloadKey`; `win.launcher-payload` carries
-`sourceKey`.
+`basePayloadKey` and `overlayPayloadKey`.
 
 **R3 — Build outputs are never direct key inputs.** `hashPackageSourcePath`
 excludes `dist`, `.next`, `out`, `node_modules`, and `.od`. A node that
@@ -106,21 +103,16 @@ Current materialization-time parameters:
   `appVersion`, and the Windows executable fixed file version.
 - **Namespace / channel and runtime endpoints.**
   `win.electron-builder-dir` omits them. `open-design-config.json` — which
-  carries `namespace`, `updateMetadataUrl`, `webOutputMode`, and
-  `namespaceBaseRoot` — is regenerated on the materialization path by
-  `writePackagedConfig`.
+  carries `namespace`, `webOutputMode`, and `namespaceBaseRoot` — is
+  regenerated on the materialization path by `writePackagedConfig`.
 
-The downstream `win.nsis-payload-overlay`, `win.nsis-installer`,
-`win.portable-zip`, and `win.launcher-payload` nodes carry `namespace` and the
-full `packagedVersion` in their keys, because their content includes the
-already-stamped payload. `win.nsis-payload-base` instead carries only
-`versionCore`: its content excludes `Open Design.exe`,
-`resources/app/package.json`, and `resources/open-design-config.json`, which
-are assigned to the version-bearing overlay.
-`win.launcher-payload-base` is the exception: its key carries `namespace`, but
-version identity reaches it only indirectly through the upstream `sourceKey`;
-the final `win.launcher-payload` archive explicitly carries the
-version-bearing `manifest` and `configBody`.
+The downstream `win.nsis-payload-overlay`, `win.nsis-installer`, and
+`win.portable-zip` nodes carry `namespace` and the full `packagedVersion` in
+their keys, because their content includes the already-stamped payload.
+`win.nsis-payload-base` instead carries only `versionCore`: its content excludes
+`Open Design.exe`, `resources/app/package.json`, and
+`resources/open-design-config.json`, which are assigned to the version-bearing
+overlay.
 
 **Requirement.** A value may be a materialization-time parameter only when
 both hold:
@@ -132,9 +124,9 @@ both hold:
 Adding a materialization-time parameter without (2) is not permitted.
 
 > Known asymmetry: app version satisfies (2). The other regenerated config
-> fields — `namespace`, `updateMetadataUrl`, `webOutputMode`,
-> `namespaceBaseRoot`, and the packaged entrypoint fields — currently satisfy
-> only (1): they are rewritten but not asserted.
+> fields — `namespace`, `webOutputMode`, `namespaceBaseRoot`, and the packaged
+> entrypoint fields — currently satisfy only (1): they are rewritten but not
+> asserted.
 
 ## Signing boundary
 
@@ -166,10 +158,6 @@ extend them.
 
 - `<platform>.workspace-build` — `pnpm-workspace.yaml` is not a key input;
   file mode (executable bit) is not hashed by `hashPackageSourcePath`.
-- `win.launcher-payload` — the `seed: "nsis-base"` branch takes content from
-  the NSIS base payload but carries only the literal `"nsis-base"`, not
-  `WIN_ARCHIVE_CACHE_VERSION`. Bumping that constant without bumping the
-  launcher payload cache versions mismatches.
 
 ## Changing a cache node
 

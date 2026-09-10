@@ -58,7 +58,7 @@ Every user-facing capability ships web UI **and** `od` CLI together calling the 
 
 - Read `.github/AGENTS.md` before touching workflows/scripts/actions. `ci.yml` decides; `comment`/`autofix`/`report` atoms execute via `handoff.py` contracts. Never add `foo.comment.atom.yml`-style follow-ons without using the existing atoms.
 - Read `specs/current/ci.md` before changing planner confidence/routing/omission in `.github/config/scopes.json` + `scopes.py`.
-- Read `tools/pack/AGENTS.md` updater section + `tools/pack/CACHE.md` before touching updater code, installer identity, updater UI, or cache keys. Channel identities stay distinct (`Open Design` / `Beta` / `Prerelease` / `Preview`); stable gates on prerelease only.
+- Read `tools/pack/AGENTS.md` + `tools/pack/CACHE.md` before touching installer identity or cache keys. Channel identities stay distinct (`Open Design` / `Beta` / `Prerelease` / `Preview`); stable gates on prerelease only.
 
 ## Commits / PRs
 
@@ -74,5 +74,4 @@ pnpm tools-dev status --json && pnpm tools-dev logs --json && pnpm tools-dev che
 pnpm guard && pnpm typecheck
 pnpm --filter @open-design/daemon test && pnpm --filter @open-design/web test
 pnpm --filter @open-design/daemon build   # rebuilds od CLI (dist/cli.js) for OD_BIN media checks
-pnpm tools-serve start updater            # deterministic updater fixture service
 ```

@@ -2,9 +2,6 @@
 
 这份文档记录 `e2e/` 当前的自动化测试分层、自动执行入口，以及我们有意保留的已知缺口。
 
-安装与更新器全生命周期的「节点 → 归属测试」覆盖图谱单独维护在
-[`../updater-lifecycle.md`](../updater-lifecycle.md)；改动 updater 相关代码时以那份图谱定位归属测试。
-
 ## 当前套件形态
 
 现在这套 E2E 已经比较明确地分成三层：
@@ -195,8 +192,6 @@ AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
   `context_remove` analytics；`project-management-flows.test.ts` 中保留 3 条 P1。
 - chat scrollbar gutter 仍被 resize handle hitbox 覆盖，LTR hover/drag 与 RTL
   共 3 条 P1 为 expected failure。
-- updater ready popup 在紧凑窗口中仍会落到 Home composer / agent picker 的 stacking
-  context 下方，保留 1 条 P1 expected failure。
 - account menu 当前不展示 Personal / Team credit balance，双窗口 billing scope 的
   可视化隔离保留 1 条 P1 expected failure；workspace authority / billing API 的 P0
   覆盖仍正常。
@@ -222,8 +217,8 @@ AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
 - Media 长任务已覆盖 token/task 生命周期边界，但仍缺一条从 UI 发起 run、
   agent 调用 media tool、daemon 调用 fake Vela、轮询终态并校验产物文件的完整
   跨层自动化闭环。
-- Functional UI 只覆盖 Chromium desktop；安装器交互和历史版本升级的人工边界见
-  [`../updater-lifecycle.md`](../updater-lifecycle.md)。
+- Functional UI 只覆盖 Chromium desktop；安装器交互的人工边界保留在
+  `tools/pack/AGENTS.md` 的 channel identity 小节。
 
 默认 Playwright worker 会把 `AMR_HOME` 指向 worker-local 空目录，避免开发者真实
 `~/.amr/config.json` 将普通 signed-out 用例意外切换为 Workspace scope。真正测试
@@ -258,8 +253,8 @@ pnpm --filter @open-design/e2e exec playwright test -c playwright.config.ts ui/a
 后面最有价值的继续方式是：
 
 - 在 `extended` 里继续给 UI-only 断言补低成本 persisted-state 校验
-- 用单独 UI fix PR 收敛 Provider 6、Context 3、resize 3、Updater 1、billing 1，避免
-  再次与 release-gate PR 的作用域清理互相覆盖
+- 用单独 UI fix PR 收敛 Provider 6、Context 3、resize 3、billing 1，避免再次与
+  release-gate PR 的作用域清理互相覆盖
 - 补一条 fake Vela 驱动的 UI → run → media tool → task 终态 → artifact 跨层闭环
 - 为 Community 搜索提供真实产品行为后再补搜索 E2E
 - 每补完一批，就做一次 grouped validation

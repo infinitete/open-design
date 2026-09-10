@@ -38,8 +38,8 @@ resolves channel/namespace-scoped runtime and data identities before spawning
 the daemon, and the desktop discovers the web URL through sidecar IPC rather
 than assuming a port.
 
-Read `tools/pack/AGENTS.md` before changing packaged launch, update, installer,
-or channel identity behavior.
+Read `tools/pack/AGENTS.md` before changing packaged launch, installer, or
+channel identity behavior.
 
 ### Container and daemon-served production
 

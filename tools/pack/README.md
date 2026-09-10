@@ -53,9 +53,8 @@ The packaged daemon path contract lives only in the root `AGENTS.md` section
 **Daemon data directory contract**. Before changing or documenting packaged
 path propagation, you MUST read that section; this README MUST NOT restate it.
 
-Packaged desktop checks release metadata, verifies the downloaded artifact, and exposes update actions through desktop
-IPC. Launcher-based builds prefer verified payload activation followed by relaunch; installer replacement remains the
-fallback for artifact types and older builds that cannot apply a payload in place.
+Packaged builds install a single application artifact and do not self-update. There is no release feed, no generation
+pointer, and no in-place payload swap: installing a newer version means running a newer installer or image.
 
 Electron-builder resources live under `tools/pack/resources/mac/`. The current logo is staged there as the mac icon/DMG
 placeholder so future design-provided assets can replace the resource files without changing packaging code.
@@ -178,10 +177,8 @@ Linux desktop apps in this space split across formats: VS Code ships `.deb` + `.
 ### Out of scope (later phases)
 
 - AppImage signing (`--signed`) — deferred pending a GPG key infrastructure decision and a user-facing verification flow design (no ETA).
-- AppImage auto-update feed (`latest-linux.yml`) — the linux electron-builder config has no `publish` block wired, so a generated feed would point users at a feed that never updates. Tracked alongside signing.
 - Additional package formats: `.deb`, `.rpm`, Snap, Flatpak — deferred until there is demand and an owner for per-distro metadata, signing/store/repository plumbing, install/remove hooks, and release validation.
 - Full Linux AppImage and headless packaged smoke remain outside the main PR gate; run the applicable tools-pack validation manually or through a release lane when Linux packaging changes.
 
-`--to dmg` is manual-install DMG output only. Any builder-generated updater metadata such as `latest-mac.yml` or
-`.blockmap` files is treated as scratch and cleaned from the builder directory; release-beta generates the authoritative
-`latest-mac.yml` feed during release asset preparation, pointing at the update ZIP.
+`--to dmg` is manual-install DMG output only. Any builder-generated metadata such as `latest-mac.yml` or `.blockmap`
+files is treated as scratch and cleaned from the builder directory.
