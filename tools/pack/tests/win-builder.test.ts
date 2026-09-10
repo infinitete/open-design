@@ -11,8 +11,6 @@ import winBuildSource from "@/win/build.ts?raw";
 import winBuilderSource from "@/win/builder.ts?raw";
 import { materializeCachedUnpackedForInstaller } from "@/win/builder.js";
 import winCustomInstallerSource from "@/win/custom-installer.ts?raw";
-import { createLauncherRuntimeSyncPowerShellScript } from "@/win/custom-installer.js";
-import winPayloadSource from "@/win/payload.ts?raw";
 import type { WinPaths } from "@/win/types.js";
 import { readWinExecutableVersionSnapshot } from "@/win/version-resource.js";
 
@@ -41,7 +39,6 @@ function createPaths(root: string): WinPaths {
     installerBasePayloadPath: join(namespaceRoot, "installer", "payload-base.7z"),
     installerOverlayPayloadPath: join(namespaceRoot, "installer", "payload-overlay.7z"),
     installerScriptPath: join(namespaceRoot, "installer", "installer.nsi"),
-    launcherPayloadPath: join(namespaceRoot, "payload", "Open Design-second-payload.7z"),
     publicDesktopShortcutPath: join(namespaceRoot, "desktop", "public.lnk"),
     latestYmlPath: join(namespaceRoot, "builder", "latest.yml"),
     installMarkerPath: join(namespaceRoot, "logs", "install.marker.json"),
@@ -148,15 +145,6 @@ describe("materializeCachedUnpackedForInstaller", () => {
 });
 
 describe("Windows pack artifact boundaries", () => {
-  it("does not build launcher payload artifacts for a pure dir target", () => {
-    const source = winBuildSource;
-    expect(source).toContain("const hasLauncherPayloadTarget = hasNsisTarget || hasZipTarget");
-    expect(source).toContain("if (hasLauncherPayloadTarget)");
-    expect(source.indexOf("const hasLauncherPayloadTarget = hasNsisTarget || hasZipTarget")).toBeLessThan(
-      source.indexOf('runPhase("payload-artifact"'),
-    );
-  });
-
   it("uses the electron-builder cache identity instead of hashing the unpacked tree when possible", () => {
     const source = winBuilderSource;
     expect(source).toContain("builtApp.cacheEntryPath == null");
@@ -175,92 +163,11 @@ describe("Windows pack artifact boundaries", () => {
     expect(source).not.toContain('"-ms=off"');
   });
 
-  it("invalidates Windows payload caches when the archive method changes", () => {
-    expect(winBuilderSource).toContain("const WIN_NSIS_BASE_PAYLOAD_INPUT_HASH_CACHE_VERSION = 2");
-    expect(winPayloadSource).toContain("const WIN_LAUNCHER_PAYLOAD_BASE_CACHE_VERSION = 2");
-    expect(winPayloadSource).toContain("const WIN_LAUNCHER_PAYLOAD_ARCHIVE_CACHE_VERSION = 2");
-  });
-
   it("invalidates the NSIS installer cache when installer helper code changes", () => {
     const source = winBuilderSource;
     expect(source).toContain("hashWinNsisInstallerImplementation");
     expect(source).toContain("nsisInstallerImplementation");
     expect(source.indexOf("nsisInstallerImplementation")).toBeLessThan(source.indexOf('target: "nsis-installer"'));
-  });
-});
-
-describe("launcher runtime sync helper", () => {
-  it.runIf(process.platform === "win32")("writes cleanup.json for superseded launcher runtime pointers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "open-design-launcher-sync-"));
-    const runtimePath = join(root, "runtime.json");
-    const attemptsPath = join(root, "state", "attempt.json");
-    const cleanupPath = join(root, "state", "cleanup.json");
-    const helperPath = join(root, "sync-launcher-runtime.ps1");
-
-    try {
-      await mkdir(join(root, "state"), { recursive: true });
-      await writeFile(helperPath, createLauncherRuntimeSyncPowerShellScript(), "utf8");
-      await writeFile(
-        runtimePath,
-        `${JSON.stringify({
-          active: { generation: 3, version: "0.10.2-beta.11" },
-          channel: "beta",
-          lastSuccessful: { generation: 3, version: "0.10.2-beta.11" },
-          namespace: "rr",
-          schemaVersion: 1,
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        }, null, 2)}\n`,
-        "utf8",
-      );
-
-      await execFileAsync("powershell.exe", [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        helperPath,
-        "-RuntimePath",
-        runtimePath,
-        "-AttemptsPath",
-        attemptsPath,
-        "-CleanupPath",
-        cleanupPath,
-        "-Channel",
-        "beta",
-        "-Namespace",
-        "rr",
-        "-Version",
-        "0.10.2-beta.12",
-      ]);
-
-      const runtime = JSON.parse(await readFile(runtimePath, "utf8")) as {
-        active: { version: string };
-        lastSuccessful: { version: string };
-      };
-      const cleanup = JSON.parse(await readFile(cleanupPath, "utf8")) as {
-        currentVersion: string;
-        versions: Array<{ reason: string; state: string; version: string }>;
-      };
-      expect(runtime.active.version).toBe("0.10.2-beta.12");
-      expect(runtime.lastSuccessful.version).toBe("0.10.2-beta.12");
-      expect(cleanup.currentVersion).toBe("0.10.2-beta.12");
-      expect(cleanup.versions).toEqual([
-        expect.objectContaining({
-          reason: "older-than-bound-package",
-          state: "deprecated",
-          version: "0.10.2-beta.11",
-        }),
-        expect.objectContaining({
-          reason: "current-bound-package",
-          state: "retained",
-          version: "0.10.2-beta.12",
-        }),
-      ]);
-    } finally {
-      await rm(root, { force: true, recursive: true });
-    }
   });
 });
 

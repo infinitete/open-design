@@ -7,13 +7,10 @@ import {
   SIDECAR_MESSAGES,
   SIDECAR_MODES,
   SIDECAR_SOURCES,
-  isDesktopUpdateAction,
   type DaemonStatusSnapshot,
   type DesktopEvalResult,
   type DesktopScreenshotResult,
   type DesktopStatusSnapshot,
-  type DesktopUpdateAction,
-  type DesktopUpdateResult,
   type SidecarStamp,
   type WebStatusSnapshot,
 } from "@open-design/sidecar-proto";
@@ -29,9 +26,6 @@ import {
 } from "@open-design/platform";
 
 import type { ToolPackConfig } from "../config/index.js";
-import { resolveToolPackLauncherLayout } from "../launcher/layout.js";
-import { readToolPackLauncherRuntimeSnapshot } from "../launcher/runtime-snapshot.js";
-import { readToolPackUpdateCacheLifecycleSnapshot } from "../updates/cache-lifecycle-snapshot.js";
 import { DESKTOP_LOG_ECHO_ENV } from "./constants.js";
 import { listDirectories, pathExists, removeTree } from "./fs.js";
 import { readBuiltAppManifest } from "./manifest.js";
@@ -63,7 +57,6 @@ import type {
 } from "./types.js";
 
 const PACKAGED_CONFIG_PATH_ENV = "OD_PACKAGED_CONFIG_PATH";
-const UPDATE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 
 function desktopStamp(config: ToolPackConfig): SidecarStamp {
   return {
@@ -424,7 +417,6 @@ export async function uninstallPackedWinApp(config: ToolPackConfig): Promise<Win
 
 export async function cleanupPackedWinNamespace(config: ToolPackConfig): Promise<WinCleanupResult> {
   const paths = resolveWinPaths(config);
-  const launcher = resolveToolPackLauncherLayout(config);
   const registeredPaths = await resolveWinRegisteredPaths(config, paths);
   const removalPlan = await createWinRemovalPlan(config);
   if (await pathExists(registeredPaths.uninstallerPath)) {
@@ -433,7 +425,6 @@ export async function cleanupPackedWinNamespace(config: ToolPackConfig): Promise
   const stop = await stopPackedWinApp(config);
   const removedOutputRoot = await pathExists(config.roots.output.namespaceRoot);
   const removedRuntimeNamespaceRoot = await pathExists(config.roots.runtime.namespaceRoot);
-  const removedLauncherNamespaceRoot = await pathExists(launcher.paths.namespaceRoot);
   const removedCacheRoot = removalPlan.some((target) => target.scope === "cache" && target.willRemove && target.exists);
   const removedProductUserDataRoot = removalPlan.some((target) => target.scope === "product-user-data" && target.willRemove && target.exists);
   await cleanupWinRegistryResidues(registeredPaths, config);
@@ -442,10 +433,8 @@ export async function cleanupPackedWinNamespace(config: ToolPackConfig): Promise
   }
   await removeTree(config.roots.output.namespaceRoot);
   await removeTree(config.roots.runtime.namespaceRoot);
-  await removeTree(launcher.paths.namespaceRoot);
   return {
     namespace: config.namespace,
-    removedLauncherNamespaceRoot,
     removedCacheRoot,
     removedOutputRoot,
     removedProductUserDataRoot,
@@ -508,12 +497,6 @@ export async function resetPackedWinNamespaces(config: ToolPackConfig): Promise<
     } }));
   }
   return { namespaces, results };
-}
-
-function resolveUpdateAction(value: string | undefined): DesktopUpdateAction | null {
-  if (value == null) return null;
-  if (isDesktopUpdateAction(value)) return value;
-  throw new Error("--update-action must be status, check, clear-cache, download, or install");
 }
 
 async function requestDesktopEval(
@@ -587,7 +570,7 @@ async function pollWinInspectStatus(config: ToolPackConfig, count: number, inter
 
 export async function inspectPackedWinApp(
   config: ToolPackConfig,
-  options: { expr?: string; path?: string; statusPollCount?: string | number; statusPollIntervalMs?: string | number; updateAction?: string },
+  options: { expr?: string; path?: string; statusPollCount?: string | number; statusPollIntervalMs?: string | number },
 ): Promise<WinInspectResult> {
   const stamp = desktopStamp(config);
   const [desktopSnapshot, daemonSnapshot, webSnapshot] = await Promise.all([
@@ -595,41 +578,19 @@ export async function inspectPackedWinApp(
     requestStatusSnapshot<DaemonStatusSnapshot>(appIpcPath(config, APP_KEYS.DAEMON)),
     requestStatusSnapshot<WebStatusSnapshot>(appIpcPath(config, APP_KEYS.WEB)),
   ]);
-  const updateAction = resolveUpdateAction(options.updateAction);
   const statusPollCount = resolveOptionalPositiveInteger(options.statusPollCount, "--status-poll-count");
   const statusPollIntervalMs = resolveOptionalPositiveInteger(options.statusPollIntervalMs, "--status-poll-interval-ms") ?? 500;
-  const launcher = await readToolPackLauncherRuntimeSnapshot(config);
-  const updateCache = await readToolPackUpdateCacheLifecycleSnapshot(config);
   return {
     daemonStatus: daemonSnapshot.status,
     ...(daemonSnapshot.error == null ? {} : { daemonStatusError: daemonSnapshot.error }),
     ...(options.expr == null ? {} : {
       eval: await requestDesktopEval(stamp.ipc, options.expr),
     }),
-    launcher,
-    launcherSource: {
-      kind: "tools-pack-runtime",
-      note: "launcher snapshot is read from the tools-pack runtime root; user-installed launcher state is reported by the running desktop status and its AppData paths",
-      root: launcher.root,
-    },
-    updateCache,
-    updateCacheSource: {
-      kind: "tools-pack-runtime",
-      note: "update cache snapshot is read from the tools-pack runtime root; user-installed update cache is reported by status.update.paths",
-      root: updateCache.updateRoot,
-    },
     ...(options.path == null ? {} : {
       screenshot: await requestJsonIpc<DesktopScreenshotResult>(
         stamp.ipc,
         { input: { path: options.path }, type: SIDECAR_MESSAGES.SCREENSHOT },
         { timeoutMs: 10000 },
-      ),
-    }),
-    ...(updateAction == null ? {} : {
-      update: await requestJsonIpc<DesktopUpdateResult>(
-        stamp.ipc,
-        { input: { action: updateAction }, type: SIDECAR_MESSAGES.UPDATE },
-        { timeoutMs: UPDATE_ACTION_TIMEOUT_MS },
       ),
     }),
     status: desktopSnapshot.status,

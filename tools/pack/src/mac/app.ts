@@ -170,7 +170,6 @@ export function renderMacPackagedConfig(options: {
       namespace: useStableProductData
         ? stableReleaseNamespace
         : options.config.namespace,
-      ...(options.config.updateMetadataUrl == null ? {} : { updateMetadataUrl: options.config.updateMetadataUrl }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
       ...(options.config.portable || useStableProductData

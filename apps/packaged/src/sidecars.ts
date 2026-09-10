@@ -897,24 +897,14 @@ export function createPackagedSidecarSpawnOptions(input: {
 }
 
 export const MANAGED_CHILD_EXIT_GRACE_MS = 5_000;
-export const DEFERRED_MANAGED_CHILD_EXIT_GRACE_MS = 30_000;
 
 export type CloseManagedChildDeps = {
-  deferredExitGraceMs?: number;
   exitGraceMs?: number;
   requestIpc?: typeof requestJsonIpc;
   stopOptions?: StopProcessesOptions;
   stopProcesses?: typeof stopProcesses;
   waitForExit?: typeof waitForProcessExit;
 };
-
-export function resolveManagedChildExitGraceMs(
-  shutdown: ShutdownResult | null | undefined,
-): number {
-  return shutdown?.deferred === true
-    ? DEFERRED_MANAGED_CHILD_EXIT_GRACE_MS
-    : MANAGED_CHILD_EXIT_GRACE_MS;
-}
 
 export async function closeManagedChild(
   child: ManagedSidecarChild,
@@ -933,9 +923,7 @@ export async function closeManagedChild(
     // Fall through to process cleanup.
   }
 
-  const exitGraceMs = shutdown?.deferred === true
-    ? (deps.deferredExitGraceMs ?? resolveManagedChildExitGraceMs(shutdown))
-    : (deps.exitGraceMs ?? resolveManagedChildExitGraceMs(shutdown));
+  const exitGraceMs = deps.exitGraceMs ?? MANAGED_CHILD_EXIT_GRACE_MS;
 
   if (!(await (deps.waitForExit ?? waitForProcessExit)(child.child.pid, exitGraceMs))) {
     await appendLifecycleLog(`[open-design packaged] shutdown timeout app=${child.app} pid=${child.child.pid ?? "unknown"}; forcing stop`);

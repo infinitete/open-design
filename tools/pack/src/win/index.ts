@@ -1,5 +1,4 @@
 export { packWin } from "./build.js";
-export { validateWinLauncherPayloadArchive } from "./payload.js";
 export {
   cleanupPackedWinNamespace,
   diagnosePackedWinIpc,

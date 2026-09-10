@@ -25,7 +25,6 @@ function createPackagedConfig(
     appVersion: packagedVersion,
     ...entrypoints,
     namespace: config.namespace,
-    ...(config.updateMetadataUrl == null ? {} : { updateMetadataUrl: config.updateMetadataUrl }),
     webOutputMode: config.webOutputMode,
     ...(config.portable ? {} : { namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot }),
   };

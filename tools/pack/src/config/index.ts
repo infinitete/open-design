@@ -45,7 +45,6 @@ export type ToolPackCliOptions = {
   deb?: boolean;
   dir?: string;
   diagnoseAttempts?: string | number;
-  expectedVersion?: string;
   expr?: string;
   headless?: boolean;
   json?: boolean;
@@ -53,7 +52,6 @@ export type ToolPackCliOptions = {
   notarize?: boolean;
   namespace?: string;
   path?: string;
-  payloadPath?: string;
   portable?: boolean;
   removeCache?: boolean;
   removeData?: boolean;
@@ -65,7 +63,6 @@ export type ToolPackCliOptions = {
   statusPollCount?: string | number;
   statusPollIntervalMs?: string | number;
   to?: string;
-  updateAction?: string;
 };
 
 type ToolPackRoots = {
@@ -104,7 +101,6 @@ export type ToolPackConfig = {
   roots: ToolPackRoots;
   silent: boolean;
   signed: boolean;
-  updateMetadataUrl?: string;
   to: ToolPackBuildOutput;
   webOutputMode: ToolPackWebOutputMode;
   workspaceRoot: string;
@@ -146,22 +142,6 @@ function resolveToolPackWebOutputMode(platform: ToolPackPlatform, value: string 
   if (value == null || value.length === 0) return "standalone";
   if (value === "server" || value === "standalone") return value;
   throw new Error(`unsupported OD_WEB_OUTPUT_MODE value: ${value}`);
-}
-
-function resolveToolPackUpdateMetadataUrl(value: string | undefined): string | undefined {
-  if (value == null) return undefined;
-  const normalized = value.trim();
-  if (normalized.length === 0) return undefined;
-  let parsed: URL;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    throw new Error(`OD_UPDATE_METADATA_URL must be an absolute URL: ${value}`);
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error(`OD_UPDATE_METADATA_URL must use http(s): ${value}`);
-  }
-  return normalized;
 }
 
 function resolveElectronVersion(workspaceRoot: string): string {
@@ -238,7 +218,6 @@ export function resolveToolPackConfig(
     removeSidecars: options.removeSidecars === true,
     silent: options.silent !== false,
     signed: options.signed === true,
-    updateMetadataUrl: resolveToolPackUpdateMetadataUrl(process.env.OD_UPDATE_METADATA_URL),
     to: resolveToolPackBuildOutput(platform, options.to),
     webOutputMode: resolveToolPackWebOutputMode(platform, process.env.OD_WEB_OUTPUT_MODE),
     workspaceRoot: WORKSPACE_ROOT,

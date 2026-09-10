@@ -1,52 +1,16 @@
 import { SIDECAR_ENV } from "@open-design/sidecar-proto";
 
-let parentMonitorExitHolds = 0;
-const releaseWaiters: Array<() => void> = [];
-
-function notifyReleaseWaiters(): void {
-  if (parentMonitorExitHolds > 0) return;
-  const waiters = releaseWaiters.splice(0);
-  for (const waiter of waiters) waiter();
-}
-
-export function holdParentMonitorExit(): () => void {
-  parentMonitorExitHolds += 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    parentMonitorExitHolds = Math.max(0, parentMonitorExitHolds - 1);
-    notifyReleaseWaiters();
-  };
-}
-
-export function isParentMonitorExitHeld(): boolean {
-  return parentMonitorExitHolds > 0;
-}
-
-export function waitForParentMonitorRelease(): Promise<void> {
-  if (parentMonitorExitHolds === 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    releaseWaiters.push(resolve);
-  });
-}
-
-export function resetParentMonitorExitHoldForTests(): void {
-  parentMonitorExitHolds = 0;
-  notifyReleaseWaiters();
-}
-
-export function scheduleHeldDaemonExit(
+/**
+ * Stop the daemon and exit, one tick later so the caller's IPC response can
+ * flush first.
+ */
+export function scheduleDaemonExit(
   stop: () => Promise<void>,
   exit: (code?: number) => void = (code) => process.exit(code),
-): boolean {
-  const deferred = isParentMonitorExitHeld();
+): void {
   setImmediate(() => {
-    void waitForParentMonitorRelease()
-      .then(() => stop())
-      .finally(() => exit(0));
+    void stop().finally(() => exit(0));
   });
-  return deferred;
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
@@ -77,7 +41,7 @@ export function attachParentMonitor(
   let exiting = false;
 
   const timer = setInterval(() => {
-    if (isAlive(parentPid) || isParentMonitorExitHeld() || exiting) return;
+    if (isAlive(parentPid) || exiting) return;
     exiting = true;
     clearInterval(timer);
     void stop().finally(() => exit(0));

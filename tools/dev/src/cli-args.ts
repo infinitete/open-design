@@ -9,7 +9,6 @@ const OPTIONS_WITH_VALUE = new Set([
   "--selector",
   "--timeout",
   "--tools-dev-root",
-  "--update-action",
   "--web-port",
 ]);
 

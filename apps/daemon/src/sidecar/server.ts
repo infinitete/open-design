@@ -31,7 +31,7 @@ function isDesktopAuthRegistered(): boolean { return false; }
 function getDesktopAuthSecret(): Buffer | null { return null; }
 function setDesktopAuthSecret(_secret: Buffer): void {}
 function signDesktopImportToken(_secret: Buffer, _baseDir: string, _opts: any): string { return ''; }
-import { attachParentMonitor, scheduleHeldDaemonExit } from "./parent-monitor-gate.js";
+import { attachParentMonitor, scheduleDaemonExit } from "./parent-monitor-gate.js";
 
 /**
  * PR #974 round 6 (mrcfps): pure wrapper that overlays the live
@@ -186,8 +186,8 @@ export async function startDaemonSidecar(
           // (the flag flips after REGISTER_DESKTOP_AUTH and stays sticky).
           return withCurrentDesktopAuthGate(state);
         case SIDECAR_MESSAGES.SHUTDOWN: {
-          const deferred = scheduleHeldDaemonExit(stop, options.exit);
-          return deferred ? { accepted: true, deferred: true } : { accepted: true };
+          scheduleDaemonExit(stop, options.exit);
+          return { accepted: true };
         }
         case SIDECAR_MESSAGES.REGISTER_DESKTOP_AUTH:
           // PR #974: the desktop main process registers its per-process
@@ -218,11 +218,7 @@ export async function startDaemonSidecar(
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      // Packaged beforeShutdown sends SHUTDOWN. When the handoff hold is
-      // active the SHUTDOWN ack includes deferred:true so closeManagedChild
-      // waits a longer bounded grace before stopProcesses(). SIGTERM from
-      // that escalation still uses this hold; SIGKILL remains the ceiling.
-      scheduleHeldDaemonExit(stop, options.exit);
+      scheduleDaemonExit(stop, options.exit);
     });
   }
 

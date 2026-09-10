@@ -198,8 +198,6 @@ describe("inspectPackedWinApp", () => {
         error: "IPC request timed out: test-pipe",
         ok: false,
       });
-      expect(result.launcher.exists).toBe(false);
-      expect(result.updateCache.releaseCount).toBe(0);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
@@ -225,8 +223,6 @@ describe("inspectPackedWinApp", () => {
       expect(result.statusError).toBe("IPC request timed out: test-pipe");
       expect(result.daemonStatus).toEqual({ state: "running", url: "http://127.0.0.1:1234" });
       expect(result.webStatus).toEqual({ state: "running", url: "http://127.0.0.1:5678" });
-      expect(result.launcher.exists).toBe(false);
-      expect(result.updateCache.releaseCount).toBe(0);
     } finally {
       await rm(root, { force: true, recursive: true });
     }

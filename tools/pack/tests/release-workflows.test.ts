@@ -44,7 +44,7 @@ describe("release workflows", () => {
   });
 
   it("keeps every release lane free of retired Vela packaging inputs", async () => {
-    const [beta, prerelease, stable, stablePrepare, buildMac, buildWin, prepareMac, prepareWin, publishPlatform, desktopUpdater, installUnsafeDmg] = await Promise.all([
+    const [beta, prerelease, stable, stablePrepare, buildMac, buildWin, prepareMac, prepareWin, publishPlatform, installUnsafeDmg] = await Promise.all([
       readFile(new URL("../../../.github/workflows/release-beta.yml", import.meta.url), "utf8"),
       readFile(new URL("../../../.github/workflows/release-prerelease.yml", import.meta.url), "utf8"),
       readFile(new URL("../../../.github/workflows/release-stable.yml", import.meta.url), "utf8"),
@@ -54,7 +54,6 @@ describe("release workflows", () => {
       readFile(new URL("../../../tools/release/scripts/prepare-platform-assets.sh", import.meta.url), "utf8"),
       readFile(new URL("../../../tools/release/scripts/prepare-platform-assets.ps1", import.meta.url), "utf8"),
       readFile(new URL("../../../tools/release/src/storage/publish-platform.ts", import.meta.url), "utf8"),
-      readFile(new URL("../../../apps/desktop/src/main/updater/payload.ts", import.meta.url), "utf8"),
       readFile(new URL("../../../scripts/install-unsafe-dmg.sh", import.meta.url), "utf8"),
     ]);
     const mac = sectionBetween(beta, "  build_mac_arm64:", "  build_mac_x64:");
@@ -90,8 +89,8 @@ describe("release workflows", () => {
         expect(lane, token).not.toContain(token);
       }
     }
-    expect(mac.match(/RELEASE_ARTIFACT_MODE: dmg-and-payload/g)?.length ?? 0).toBe(2);
-    expect(macX64.match(/RELEASE_ARTIFACT_MODE: \$\{\{ inputs\.mac_x64_target == 'all' && 'all' \|\| 'dmg-and-payload' \}\}/g)?.length ?? 0).toBe(2);
+    expect(mac.match(/RELEASE_ARTIFACT_MODE: dmg-and-zip/g)?.length ?? 0).toBe(2);
+    expect(macX64.match(/RELEASE_ARTIFACT_MODE: \$\{\{ inputs\.mac_x64_target == 'all' && 'all' \|\| 'dmg-and-zip' \}\}/g)?.length ?? 0).toBe(2);
     expect(mac).toContain("uses: actions/cache/restore@v5");
     expect(mac).toContain("uses: actions/cache/save@v5");
     expect(mac).toContain("tools-pack-mac-v1-beta-${RUNNER_OS}-arm64-");
@@ -154,7 +153,6 @@ describe("release workflows", () => {
     expect(win).toContain("tools-pack-win-v1-beta-$env:RUNNER_OS-");
     expect(win).toContain('pnpm.cmd exec tools-pack win cleanup --dir "${{ runner.temp }}\\tools-pack" --namespace release-beta-win --json');
     expect(win).toContain('"tools-pack", "win", "build"');
-    expect(win).toContain("tools-pack win validate-payload");
     expect(win).toContain("pnpm exec tsx scripts/release-smoke.ts win specs/win.spec.ts");
     expect(win).toContain(".\\.github\\scripts\\release\\cache\\win.ps1");
     for (const metadata of [betaMetadata, prereleaseMetadata, stableMetadata]) {
@@ -173,40 +171,23 @@ describe("release workflows", () => {
     expect(macBuild).toContain("scrubMacExtendedAttributes(paths.appPath)");
     expect(macFs).toContain("com.apple.provenance");
     expect(macFs).toContain("com.apple.macl");
-    expect(desktopUpdater).toContain("MAC_PAYLOAD_XATTRS_TO_SCRUB");
-    expect(desktopUpdater).toContain('execFileAsync("xattr", ["-dr", attribute, input.destinationRoot])');
-    expect(desktopUpdater).toContain("com.apple.macl");
     expect(installUnsafeDmg).toContain("com.apple.macl");
     expect(win).toContain("-IncludeZip $${{ inputs.win_x64_target == 'all' || inputs.win_x64_target == 'zip' }}");
     expect(prepareMac).not.toContain("required RELEASE_ASSET_SUFFIX");
     expect(prepareMac).toContain('RELEASE_ASSET_SUFFIX="${RELEASE_ASSET_SUFFIX:-}"');
     expect(prepareWin).toContain("[AllowEmptyString()]");
-    expect(prepareWin).toContain("$sourcePayload = [string]$build.payloadPath");
-    expect(prepareWin).toContain("open-design-$ReleaseVersion$ReleaseAssetSuffix-win-x64-payload.7z");
-    expect(publishPlatform).toContain("open-design-${releaseVersion}${assetSuffix}-win-x64-payload.7z");
-    expect(publishPlatform).toContain("payload: assetEntry(payload)");
     expect(publishPlatform).toContain("versionLockObjectKey(releaseVersion, countedReleaseChannel)");
     expect(publishPlatform).toContain("assertCurrentVersionReservation(storage, releaseVersion, versionLockKey, countedReleaseChannel)");
-    expect(buildWin).toContain("function Validate-WinLauncherPayloadArchive");
     expect(buildWin).toContain('Measure-Step "clean tools-pack win namespace"');
     expect(buildWin.indexOf('Measure-Step "clean tools-pack win namespace"')).toBeLessThan(buildWin.indexOf('Measure-Step "tools-pack win build"'));
     expect(buildWin).toContain('"tools-pack", "win", "cleanup"');
-    expect(winLifecycle).toContain("const launcher = resolveToolPackLauncherLayout(config)");
-    expect(winLifecycle).toContain("await removeTree(launcher.paths.namespaceRoot)");
-    expect(winLifecycle).toContain("removedLauncherNamespaceRoot");
-    expect(buildWin).toContain('Measure-Step "validate launcher payload artifact"');
-    expect(buildWin).toContain('Measure-Step "validate launcher payload update fixture"');
-    expect(buildWin).toContain('Test-JsonString $manifest.entry.executable "entry.executable" "payload/Open Design.exe"');
     for (const workspaceBuild of [winApp, macWorkspace, linuxPack]) {
       const sidecarProtoBuild = 'await runPnpm(config, ["--filter", "@open-design/sidecar-proto", "build"])';
-      const launcherProtoBuild = 'await runPnpm(config, ["--filter", "@open-design/launcher-proto", "build"])';
       const sidecarBuild = 'await runPnpm(config, ["--filter", "@open-design/sidecar", "build"])';
       const dshRuntimeBuild = 'await runPnpm(config, ["--filter", "@open-design/dsh-runtime", "build"])';
       const daemonBuild = 'await runPnpm(config, ["--filter", "@open-design/daemon", "build"])';
-      expect(workspaceBuild).toContain(launcherProtoBuild);
       expect(workspaceBuild).toContain(dshRuntimeBuild);
-      expect(workspaceBuild.indexOf(sidecarProtoBuild)).toBeLessThan(workspaceBuild.indexOf(launcherProtoBuild));
-      expect(workspaceBuild.indexOf(launcherProtoBuild)).toBeLessThan(workspaceBuild.indexOf(sidecarBuild));
+      expect(workspaceBuild.indexOf(sidecarProtoBuild)).toBeLessThan(workspaceBuild.indexOf(sidecarBuild));
       expect(workspaceBuild.indexOf(dshRuntimeBuild)).toBeLessThan(workspaceBuild.indexOf(daemonBuild));
     }
     expect(prerelease).toContain("name: release-prerelease");
@@ -282,7 +263,6 @@ describe("release workflows", () => {
       );
     }
     expect(prereleaseWin).toContain("tools-pack-win-v1-prerelease-$env:RUNNER_OS-");
-    expect(prereleaseWin).toContain("tools-pack win validate-payload");
     expect(prereleaseWin).toContain("release-build\\win_x64\\build.json");
     expect(prereleaseWin).toContain("tools-release write-report");
     expect(stable).not.toContain(".github/scripts/release/assets/mac.sh");

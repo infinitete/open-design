@@ -3,11 +3,8 @@ import type {
   DesktopEvalResult,
   DesktopScreenshotResult,
   DesktopStatusSnapshot,
-  DesktopUpdateResult,
   WebStatusSnapshot,
 } from "@open-design/sidecar-proto";
-import type { ToolPackLauncherRuntimeSnapshot } from "../launcher/runtime-snapshot.js";
-import type { ToolPackUpdateCacheLifecycleSnapshot } from "../updates/cache-lifecycle-snapshot.js";
 import type { CacheReport } from "../cache/index.js";
 import type { ToolPackConfig } from "../config/index.js";
 import type { INTERNAL_PACKAGES } from "./constants.js";
@@ -75,7 +72,6 @@ export type WinPaths = {
   installerBasePayloadPath: string;
   installerOverlayPayloadPath: string;
   installerScriptPath: string;
-  launcherPayloadPath: string;
   publicDesktopShortcutPath: string;
   latestYmlPath: string;
   installMarkerPath: string;
@@ -108,7 +104,6 @@ export type WinPackResult = {
   installerPath: string | null;
   latestYmlPath: string | null;
   outputRoot: string;
-  payloadPath: string | null;
   portableZipPath: string | null;
   resourceRoot: string;
   runtimeNamespaceRoot: string;
@@ -273,7 +268,6 @@ export type WinUninstallResult = {
 
 export type WinCleanupResult = {
   namespace: string;
-  removedLauncherNamespaceRoot: boolean;
   removedOutputRoot: boolean;
   removedCacheRoot: boolean;
   removedProductUserDataRoot: boolean;
@@ -357,23 +351,10 @@ export type WinInspectResult = {
   daemonStatus: DaemonStatusSnapshot | null;
   daemonStatusError?: string;
   eval?: DesktopEvalResult;
-  launcher: ToolPackLauncherRuntimeSnapshot;
-  launcherSource: {
-    kind: "tools-pack-runtime";
-    note: string;
-    root: string;
-  };
   screenshot?: DesktopScreenshotResult;
   status: DesktopStatusSnapshot | null;
   statusError?: string;
   statusPoll?: WinInspectStatusPollResult;
-  updateCache: ToolPackUpdateCacheLifecycleSnapshot;
-  updateCacheSource: {
-    kind: "tools-pack-runtime";
-    note: string;
-    root: string;
-  };
-  update?: DesktopUpdateResult;
   webStatus: WebStatusSnapshot | null;
   webStatusError?: string;
 };
