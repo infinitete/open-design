@@ -10,9 +10,6 @@ import type {
   AppRuntimeCapabilities,
   AppVersionInfo,
   AppVersionResponse,
-  WhatsNewContent,
-  WhatsNewLocaleContent,
-  WhatsNewResponse,
   AudioKind,
   ChatAttachment,
   ChatCommentAttachment,
@@ -348,7 +345,6 @@ export interface AppConfig {
   // Legacy anonymous installation identity still returned by older daemons.
   // It is accepted for compatibility but is not generated or used by the web app.
   installationId?: string | null;
-  allowSilentUpdates?: boolean;
   customInstructions?: string;
   projectLocations?: ProjectLocationPrefs[];
   defaultProjectLocationId?: string | null;
@@ -454,9 +450,6 @@ export type {
   AppRuntimeCapabilities,
   AppVersionInfo,
   AppVersionResponse,
-  WhatsNewContent,
-  WhatsNewLocaleContent,
-  WhatsNewResponse,
   AudioKind,
   ConnectionTestKind,
   ConnectionTestProtocol,

@@ -218,15 +218,6 @@ interface Props {
   onSignInCloud?: () => void;
   /** Clear app-owned model-source state after the daemon confirms sign-out. */
   onSignedOut?: () => void | Promise<void>;
-  /**
-   * The update-ready host (`UpdaterPopup`), which renders nothing until the
-   * updater reports a downloaded, unopened installer.
-   *
-   * It is an independent control in the top-right chrome cluster
-   * (`.entry-nav-rail__account-updater`), immediately after the account capsule
-   * when one is present.
-   */
-  updaterSlot?: ReactNode;
   /** Optional notice shown above the footer controls. */
   footerNotice?: ReactNode;
 }
@@ -248,8 +239,8 @@ interface NavButtonProps {
 
 // No `data-tooltip` here: every nav item renders its label inline, so the
 // rail's hover bubble (entry-layout.css) would only duplicate visible text.
-// That bubble stays reserved for the rail's icon-only controls (updater,
-// avatar, icon-only sign-out).
+// That bubble stays reserved for the rail's icon-only controls (avatar,
+// icon-only sign-out).
 function NavButton({
   active,
   ariaLabel,
@@ -519,8 +510,6 @@ interface EntryTopRightClusterProps {
   /** Extra content rendered LEFT of the credits pill (e.g. the DeepSeek
    *  campaign badge on Home). */
   leadingSlot?: ReactNode;
-  /** Update-ready host; rides the account row right after the avatar chip. */
-  updaterSlot?: ReactNode;
   onOpenSettings?: (section?: EntrySettingsSection) => void;
   onSignedOut?: () => void | Promise<void>;
   priorityAnnouncementActive?: boolean;
@@ -544,21 +533,18 @@ interface EntryTopRightClusterProps {
  */
 export function EntryTopRightCluster({
   leadingSlot,
-  updaterSlot,
 }: {
   page?: unknown;
   context?: WorkspaceCollabContext;
   billing?: WorkspaceBillingSummary | null;
   balanceUsd?: string | null;
   leadingSlot?: ReactNode;
-  updaterSlot?: ReactNode;
   onOpenSettings?: (section?: EntrySettingsSection) => void;
   onSignedOut?: () => void | Promise<void>;
 }) {
   return (
     <div className="entry-top-right-cluster">
       {leadingSlot}
-      {updaterSlot}
     </div>
   );
 }
@@ -569,7 +555,6 @@ export function EntryTopRightCluster({
 export function WorkspaceTopRightAccountCluster(_props: {
   onOpenSettings?: (section?: EntrySettingsSection) => void;
   onSignedOut?: () => void | Promise<void>;
-  updaterSlot?: ReactNode;
   workspaceContextOverride?: WorkspaceCollabContext;
   workspaceContextLoading?: boolean;
   metricsConsent?: boolean;
@@ -591,7 +576,6 @@ export function EntryNavRail({
   balanceUsd,
   onOpenSettings,
   onSignedOut,
-  updaterSlot,
   footerNotice,
 }: Props) {
   const { t } = useI18n();
@@ -769,9 +753,8 @@ export function EntryNavRail({
             </NavButton>
             {/* recvq4hGF7BJkI removed this entry while the rail footer still
                 carried EntryShell's `entry-settings-chip` for the signed-out
-                case. #5517 then dropped that chip (the footer only hosts the
-                updater popup now), and a signed-out rail has no account menu
-                either — leaving no settings entry at all. This item is the
+                case. #5517 then dropped that chip, and a signed-out rail has no
+                account menu either — leaving no settings entry at all. This item is the
                 ONLY signed-out settings entry (testId `entry-settings-button`
                 is the e2e contract); signed-in keeps settings in the account
                 menu, so it must not render on that branch. */}
@@ -801,7 +784,6 @@ export function EntryNavRail({
       <EntryTopRightCluster
 
         leadingSlot={topRightSlot}
-        updaterSlot={updaterSlot}
         onOpenSettings={onOpenSettings}
       />
     </nav>

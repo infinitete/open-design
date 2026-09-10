@@ -588,30 +588,8 @@ export interface Dict {
   'settings.runtimePackaged': string;
   'settings.runtimeDevelopment': string;
   'settings.versionUnavailable': string;
-  'settings.allowSilentUpdates': string;
-  'settings.allowSilentUpdatesDesc': string;
   'settings.installLatest': string;
   'settings.alreadyLatest': string;
-  'settings.updateCheck': string;
-  'settings.updateNow': string;
-  'settings.updateRecheck': string;
-  'settings.updateRetry': string;
-  'settings.updateViewReleases': string;
-  'settings.updateActionFailed': string;
-  'settings.updateQuitFailed': string;
-  'settings.updateStatusNotChecked': string;
-  'settings.updateStatusDevelopment': string;
-  'settings.updateStatusUnsupported': string;
-  'settings.updateStatusChecking': string;
-  'settings.updateStatusUpToDate': string;
-  'settings.updateStatusAvailable': string;
-  'settings.updateStatusAvailableUnknown': string;
-  'settings.updateStatusDownloading': string;
-  'settings.updateStatusDownloadingPercent': string;
-  'settings.updateStatusReady': string;
-  'settings.updateStatusReadyUnknown': string;
-  'settings.updateStatusInstalling': string;
-  'settings.updateStatusFailed': string;
   'settings.skills': string;
   'settings.skillsHint': string;
   'settings.skillsNew': string;
@@ -1006,52 +984,6 @@ export interface Dict {
   'notify.failureTitle': string;
   'notify.successBody': string;
   'notify.failureBody': string;
-
-  // Desktop updater
-  'updater.available': string;
-  'updater.availableBody': string;
-  'updater.activeRunsTitle': string;
-  'updater.activeRunsBody': string;
-  'updater.activeRunsUnknownBody': string;
-  'updater.checking': string;
-  'updater.download': string;
-  'updater.downloading': string;
-  'updater.downloadingPercent': string;
-  'updater.dialogAvailableGeneric': string;
-  'updater.dialogAvailableVersion': string;
-  'updater.dialogCheckFailed': string;
-  'updater.dialogReadyGeneric': string;
-  'updater.dialogReadyVersion': string;
-  'updater.dialogUnsupported': string;
-  'updater.done': string;
-  'updater.failed': string;
-  'updater.installerOpenBody': string;
-  'updater.installerOpened': string;
-  'updater.later': string;
-  'updater.manualDownload': string;
-  'updater.allowSilentUpdates': string;
-  'updater.openFailedFallback': string;
-  'updater.installRestart': string;
-  'updater.installingRestart': string;
-  'updater.openInstaller': string;
-  'updater.opening': string;
-  'updater.payloadReadyGeneric': string;
-  'updater.payloadReadyVersion': string;
-  'updater.quitButton': string;
-  'updater.quitFailedBody': string;
-  'updater.quitFailedTitle': string;
-  'updater.quitting': string;
-  'updater.ready': string;
-  'updater.readyGeneric': string;
-  'updater.readyVersion': string;
-  // Forced installer reinstall (feed control.launcher.version.min gate).
-  // Copy priority: operator jump link (reinstall.url) > these defaults.
-  'updater.reinstallLearnMore': string;
-  'updater.reinstallReadyGeneric': string;
-  'updater.reinstallReadyVersion': string;
-  'updater.restartAnyway': string;
-  'updater.upToDate': string;
-  'updater.viewVersionFeatures': string;
 
   // Post-update "what's new" dialog on the home surface. Cover art, release
   // headline and highlight bullets come from the hosted highlights document;
@@ -4135,8 +4067,6 @@ export interface Dict {
   'questionForm.skip': string;
   'questionForm.locked': string;
 
-
-
   // Tool cards (assistant action cards)
   'tool.openInTab': string;
   'tool.open': string;
@@ -4448,12 +4378,6 @@ export interface Dict {
   'settings.resetOnboardingDesc': string;
   'settings.resetOnboardingButton': string;
   // Manual updater/launcher cache clear (disaster recovery, About pane).
-  'settings.clearUpdaterCacheTitle': string;
-  'settings.clearUpdaterCacheHint': string;
-  'settings.clearUpdaterCacheButton': string;
-  'settings.clearUpdaterCacheConfirmButton': string;
-  'settings.clearUpdaterCacheSuccess': string;
-  'settings.clearUpdaterCacheFailed': string;
   'onboarding.brandTitle': string;
   'onboarding.brandSubtitle': string;
   'onboarding.brandSkip': string;

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -86,15 +86,19 @@ describe('app-config', () => {
       expect(cfg).toEqual({});
     });
 
-    it('preserves and validates the silent update preference', async () => {
-      await writeFile(
-        path.join(dataDir, 'app-config.json'),
-        JSON.stringify({ allowSilentUpdates: true }),
-      );
+    it('drops the retired silent-update preference while keeping unrelated keys', async () => {
+      // The packaged auto-updater is gone; a stored preference must not survive.
+      await writeFile(path.join(dataDir, 'app-config.json'), JSON.stringify({
+        allowSilentUpdates: true,
+        onboardingCompleted: true,
+        skillId: 'demo-skill',
+      }));
 
-      expect((await readAppConfig(dataDir)).allowSilentUpdates).toBe(true);
-      expect((await writeAppConfig(dataDir, { allowSilentUpdates: false })).allowSilentUpdates).toBe(false);
-      expect((await writeAppConfig(dataDir, { allowSilentUpdates: 'yes' })).allowSilentUpdates).toBeUndefined();
+      const cfg = await readAppConfig(dataDir);
+
+      expect('allowSilentUpdates' in cfg).toBe(false);
+      expect(cfg.onboardingCompleted).toBe(true);
+      expect(cfg.skillId).toBe('demo-skill');
     });
 
     it('preserves omitted orbit.templateSkillId from legacy stored config', async () => {
@@ -595,6 +599,23 @@ describe('app-config', () => {
       expect(cfg.agentModels).toEqual({ codex: { model: 'gpt-5' } });
       expect(cfg.agentCliEnv).toEqual({ codex: { CODEX_HOME: '/tmp/codex' } });
       expect(cfg.agentCliEnvIntent).toEqual({ codex: { apiKeyOverride: true } });
+    });
+
+    it('drops the retired silent-update preference when rewriting stored config', async () => {
+      await writeFile(path.join(dataDir, 'app-config.json'), JSON.stringify({
+        allowSilentUpdates: true,
+        onboardingCompleted: true,
+      }));
+
+      await writeAppConfig(dataDir, { skillId: 'demo-skill' });
+
+      const raw = JSON.parse(
+        await readFile(path.join(dataDir, 'app-config.json'), 'utf8'),
+      ) as Record<string, unknown>;
+
+      expect('allowSilentUpdates' in raw).toBe(false);
+      expect(raw.onboardingCompleted).toBe(true);
+      expect(raw.skillId).toBe('demo-skill');
     });
 
     it('persists supported per-agent CLI env keys and drops everything else', async () => {

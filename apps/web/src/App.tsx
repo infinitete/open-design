@@ -32,8 +32,6 @@ import {
 } from './components/ProjectView';
 import { ProjectCreationPendingView } from './components/ProjectCreationPendingView';
 import { TooltipLayer } from './components/TooltipLayer';
-import { UpdateDialog } from './components/UpdateDialog';
-import { UpdaterPopup } from './components/UpdaterPopup';
 import {
   openWorkspaceTab,
   removeWorkspaceProjectTabs,
@@ -91,7 +89,6 @@ import {
   syncMediaProvidersToDaemon,
 } from './state/config';
 import { saveAgentNetworkPrefs } from './providers/agent-network';
-import { createSilentUpdatePreferenceWriter } from './state/silent-update-preference';
 import { applyAppearanceToDocument } from './state/appearance';
 import { isMacPlatform } from './utils/platform';
 import { randomUUID } from './utils/uuid';
@@ -624,10 +621,6 @@ function AppInner() {
   // so they don't race ahead of the daemon-stored choice and overwrite it
   // with a freshly picked first-available agent.
   const [daemonConfigLoaded, setDaemonConfigLoaded] = useState(false);
-  // True only when GET /api/app-config returned a real config object. Used to
-  // gate silent-update default seeding: a failed/null fetch must not be treated
-  // as "no preference yet" or we would overwrite a daemon-backed opt-out.
-  const [daemonAppConfigReady, setDaemonAppConfigReady] = useState(false);
   // Narrower flag dedicated to the Composio API key hydration. The key is
   // persisted by the daemon (and only reflected back via apiKeyConfigured
   // + apiKeyTail), so after a dev-server restart there is a window where
@@ -869,7 +862,6 @@ function AppInner() {
         setProjectsLoading(false);
         setPromptTemplatesLoading(false);
         setDaemonConfigLoaded(true);
-        setDaemonAppConfigReady(false);
         // Composio hydration also depends on the daemon. With no daemon
         // we just keep whatever localStorage already held; drop the
         // skeleton so the Settings → Connectors input reflects state.
@@ -1036,8 +1028,6 @@ function AppInner() {
           navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
         }
         setDaemonConfigLoaded(true);
-        // Only a non-null GET payload means we actually observed daemon prefs.
-        setDaemonAppConfigReady(daemonConfig != null);
         // Composio key hydration is part of this same daemon-config
         // fetch — by the time we land here the daemon has either
         // returned the saved-key shape (apiKeyConfigured + tail) or
@@ -1196,35 +1186,6 @@ function AppInner() {
   }, []);
 
   /**
-   * Non-optimistic, serialized write for the daemon-owned silent-update
-   * preference. Concurrent Settings / popup toggles cannot commit out of
-   * order: only the latest request applies to app state after its daemon
-   * write succeeds.
-   */
-  const silentUpdatePreferenceWriterRef = useRef(
-    createSilentUpdatePreferenceWriter<AppConfig>({
-      readBase: () => latestPersistedConfigRef.current,
-      writeDaemon: async (next) => {
-        await syncConfigToDaemon(next, { throwOnError: true });
-      },
-      commit: (allowSilentUpdates) => {
-        const next: AppConfig = {
-          ...latestPersistedConfigRef.current,
-          allowSilentUpdates,
-        };
-        latestPersistedConfigRef.current = next;
-        setConfig((prev) => ({ ...prev, allowSilentUpdates }));
-        // saveConfig strips daemon-owned keys from localStorage; in-memory
-        // config still carries allowSilentUpdates for the rest of the session.
-        saveConfig(next);
-      },
-    }),
-  );
-  const handleSilentUpdatePreferenceChange = useCallback(async (allowSilentUpdates: boolean) => {
-    await silentUpdatePreferenceWriterRef.current.write(allowSilentUpdates);
-  }, []);
-
-  /**
    * Autosave-driven persistence path. The settings dialog calls this on
    * every committed edit (via a debounced effect) so localStorage and
    * the daemon stay in lock-step with the user's draft. We deliberately
@@ -1241,15 +1202,7 @@ function AppInner() {
     // a half-typed key can't survive in localStorage. If the dialog is
     // closing, preserve any onboarding completion that the close gesture
     // already committed so an unmount autosave cannot re-open the welcome flow.
-    // allowSilentUpdates is daemon-owned and must not be applied optimistically:
-    // keep the previous value in memory until the daemon write succeeds.
-    const prevSilent = latestPersistedConfigRef.current.allowSilentUpdates;
-    const nextSilent = next.allowSilentUpdates;
-    const silentChanged = nextSilent !== prevSilent;
-    const nextForOptimistic = silentChanged
-      ? { ...next, allowSilentUpdates: prevSilent }
-      : next;
-    const persisted = buildPersistedConfig(nextForOptimistic, configRef.current);
+    const persisted = buildPersistedConfig(next, configRef.current);
     latestPersistedConfigRef.current = persisted;
     saveConfig(persisted);
     setConfig(persisted);
@@ -1258,9 +1211,6 @@ function AppInner() {
       && shouldSyncMediaProvidersOnSave(persisted.mediaProviders, {
         force: options?.forceMediaProviderSync,
       });
-    const daemonPayload = silentChanged
-      ? { ...persisted, allowSilentUpdates: nextSilent }
-      : persisted;
     await Promise.all([
       shouldSyncMediaProviders
         ? syncMediaProvidersToDaemon(persisted.mediaProviders, {
@@ -1269,15 +1219,8 @@ function AppInner() {
             throwOnError: options?.forceMediaProviderSync,
           })
         : Promise.resolve(),
-      syncConfigToDaemon(daemonPayload, { throwOnError: true }),
+      syncConfigToDaemon(persisted, { throwOnError: true }),
     ]);
-    if (silentChanged) {
-      latestPersistedConfigRef.current = {
-        ...latestPersistedConfigRef.current,
-        allowSilentUpdates: nextSilent,
-      };
-      setConfig((curr) => ({ ...curr, allowSilentUpdates: nextSilent }));
-    }
   }, [daemonMediaProviders, daemonMediaProvidersFetchState]);
 
   const handleSettingsDraftChange = useCallback((draft: AppConfig) => {
@@ -2499,7 +2442,6 @@ function AppInner() {
       initialSection={settingsInitialSection}
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
-      onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
       onPersistAgentNetwork={handlePersistAgentNetwork}
@@ -2789,9 +2731,7 @@ function AppInner() {
         onApiProtocolChange={handleApiProtocolChange}
         onApiModelChange={handleApiModelChange}
         onConfigPersist={handleConfigPersist}
-        daemonAppConfigReady={daemonAppConfigReady}
-        onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
-        onSkillsRefresh={refreshSkills}
+          onSkillsRefresh={refreshSkills}
         onSkillsChanged={handleSkillsChanged}
         onRefreshAgents={refreshAgents}
         skillsLoading={skillsLoading}
@@ -2838,7 +2778,6 @@ function AppInner() {
         </div>
       </div>
       <TooltipLayer />
-      <UpdateDialog />
       <AnimatePresence>
       {settingsOpen ? (
         renderSettingsSurface('modal')

@@ -62,7 +62,6 @@ import {
   ProjectSearchModal,
 } from './ProjectSearchModal';
 import { LibrarySection } from './LibrarySection';
-import { UpdaterPopup } from './UpdaterPopup';
 import { WhatsNewPopup } from './WhatsNewPopup';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
 import { installDeepSeekHarnessCompanion } from '../providers/agent-companion';
@@ -330,8 +329,6 @@ interface Props {
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
   /** True only when GET /api/app-config returned a real config object. */
   daemonAppConfigReady?: boolean;
-  /** Non-optimistic daemon write for the silent-update preference. */
-  onSilentUpdatePreferenceChange?: (allowSilentUpdates: boolean) => Promise<void>;
   onSkillsRefresh?: () => Promise<void> | void;
   onSkillsChanged?: (affectedSkillId?: string) => void;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
@@ -416,7 +413,6 @@ export function EntryShell({
   onApiModelChange,
   onConfigPersist,
   daemonAppConfigReady = false,
-  onSilentUpdatePreferenceChange,
   onSkillsRefresh,
   onSkillsChanged,
   onRefreshAgents,
@@ -828,23 +824,6 @@ export function EntryShell({
   // #5517: the GitHub/Discord/X/mail badges and the settings chip leave the
   // rail footer. Socials live in the account menu, while settings stays
   // reachable through either the account menu or the signed-out rail item.
-  //
-  // The updater host has no topbar to live in any more (the rail toggle is the
-  // pinned Home tab in the workspace tabs bar), so the rail owns it: it rides
-  // the floating account row immediately after the avatar chip, falling back
-  // to the rail footer in the signed-out shell. `EntryNavRail` decides which —
-  // the shell only supplies the host, which renders nothing until the real
-  // updater reports a downloaded, unopened installer.
-  const updaterSlot = (
-    <UpdaterPopup
-      allowSilentUpdates={config.allowSilentUpdates}
-      silentUpdatePreferenceReady={daemonAppConfigReady}
-      onAllowSilentUpdatesChange={
-        onSilentUpdatePreferenceChange
-          ?? ((allowSilentUpdates) => onConfigPersist({ ...config, allowSilentUpdates }))
-      }
-    />
-  );
 
   // #5517 removes the entry top-bar settings cog: the nav-rail account menu owns
   // the settings entry (EntryNavRail onOpenSettings), so the top strip no longer
@@ -922,7 +901,6 @@ export function EntryShell({
           onInvite={() => changeView('members')}
           onSignInCloud={() => navigate({ kind: 'home', view: 'onboarding' })}
           onSignedOut={onSignedOut}
-          updaterSlot={updaterSlot}
           // A loading or unavailable workspace read is not proof of sign-out.
           // Keep the account slot neutral until Cloud answers successfully;
           // only a successful null context (or known local sign-out) may show
@@ -940,9 +918,8 @@ export function EntryShell({
         ) : null}
         <main className="entry-main entry-main--scroll" ref={entryMainScrollRef}>
           {/* #5517: no entry topbar. The rail toggle is the pinned Home tab in
-              the workspace tabs bar (entryRailBridge), the updater popup host
-              lives in the rail footer, and everything below is fixed-position
-              or portalled so it occupies no layout space here. */}
+              the workspace tabs bar (entryRailBridge), and everything below is
+              fixed-position or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
           {/* The campaign badge lives in EntryNavRail's top-right cluster so it
               stays beside the account module across every entry tab. */}

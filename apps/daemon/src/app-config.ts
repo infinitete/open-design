@@ -126,7 +126,6 @@ export interface AppConfigPrefs {
   disabledDesignSystems?: string[];
   installationId?: string | null;
   privacyDecisionAt?: number | null;
-  allowSilentUpdates?: boolean;
   orbit?: OrbitConfigPrefs;
   customInstructions?: string | null;
   projectLocations?: ProjectLocationPrefs[];
@@ -159,7 +158,6 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'disabledDesignSystems',
   'installationId',
   'privacyDecisionAt',
-  'allowSilentUpdates',
   'orbit',
   'customInstructions',
   'projectLocations',
@@ -475,9 +473,18 @@ function retireAgentEntryMap<T>(map: Record<string, T>): Record<string, T> | und
   return next === map ? map : (Object.keys(next).length > 0 ? next : undefined);
 }
 
-function normalizeRetiredAgentPrefs(prefs: AppConfigPrefs): AppConfigPrefs {
+function normalizeRetiredPrefs(prefs: AppConfigPrefs): AppConfigPrefs {
   let changed = false;
   let next = prefs;
+
+  // The packaged auto-updater is gone, so a stored silent-update preference is
+  // dead state. Drop it on read and write rather than persisting a key the
+  // contract no longer declares.
+  if (Object.prototype.hasOwnProperty.call(next, 'allowSilentUpdates')) {
+    next = next === prefs ? { ...next } : next;
+    delete (next as Record<string, unknown>).allowSilentUpdates;
+    changed = true;
+  }
 
   if (typeof next.agentId === 'string' && RETIRED_AGENT_IDS.has(next.agentId)) {
     next = { ...next };
@@ -610,14 +617,6 @@ function applyConfigValue(
     }
     return;
   }
-  if (key === 'allowSilentUpdates') {
-    if (typeof value === 'boolean') {
-      target[key] = value;
-    } else {
-      delete target[key];
-    }
-    return;
-  }
   if (key === 'orbit') {
     const validated = validateOrbit(value);
     if (validated !== undefined) {
@@ -716,7 +715,7 @@ function filterAllowedKeys(obj: Record<string, unknown>): AppConfigPrefs {
       applyConfigValue(result, key as keyof AppConfigPrefs, obj[key]);
     }
   }
-  return normalizeRetiredAgentPrefs(normalizeAgentCliEnvPrefs(result as AppConfigPrefs));
+  return normalizeRetiredPrefs(normalizeAgentCliEnvPrefs(result as AppConfigPrefs));
 }
 
 export function toPublicAppConfigPrefs(prefs: AppConfigPrefs): PublicAppConfigPrefs {
@@ -882,7 +881,7 @@ async function doWrite(
     ? inferAgentCliEnvIntentForExplicitEnvWrite(next as AppConfigPrefs)
     : next as AppConfigPrefs;
   const normalizedNext = normalizeAgentCliEnvPrefs(nextWithInferredIntent);
-  const normalizedNextWithoutRetiredAgents = normalizeRetiredAgentPrefs(normalizedNext);
+  const normalizedNextWithoutRetiredAgents = normalizeRetiredPrefs(normalizedNext);
   const file = configFile(dataDir);
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';

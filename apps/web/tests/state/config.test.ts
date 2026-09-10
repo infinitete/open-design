@@ -253,23 +253,6 @@ describe('syncConfigToDaemon', () => {
     }
   });
 
-  it('syncs the silent update preference to daemon app config', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await syncConfigToDaemon({
-      ...DEFAULT_CONFIG,
-      allowSilentUpdates: true,
-    });
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ];
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      allowSilentUpdates: true,
-    });
-  });
 });
 
 describe('syncMediaProvidersToDaemon', () => {
@@ -420,17 +403,6 @@ describe('mergeDaemonConfig', () => {
     }
   });
 
-  it('uses daemon silent update preference and clears stale local values when absent', () => {
-    expect(
-      mergeDaemonConfig(DEFAULT_CONFIG, { allowSilentUpdates: false }).allowSilentUpdates,
-    ).toBe(false);
-    expect(
-      mergeDaemonConfig(DEFAULT_CONFIG, { allowSilentUpdates: true }).allowSilentUpdates,
-    ).toBe(true);
-    expect(
-      mergeDaemonConfig({ ...DEFAULT_CONFIG, allowSilentUpdates: true }, {}).allowSilentUpdates,
-    ).toBeUndefined();
-  });
 });
 
 describe('mergeDaemonMediaProviders', () => {

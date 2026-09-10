@@ -357,9 +357,8 @@
   /* Action row rides higher, clear of the credits + account stack. */
   margin-bottom: 12px;
 }
-/* With no update in flight, the actions box has no children because the
-   updater host renders nothing. Collapse it AND the footer's own padding so
-   the rail doesn't end in a blank strip under the account row. */
+/* When the actions box has no children, collapse it AND the footer's own
+   padding so the rail doesn't end in a blank strip under the account row. */
 .entry-nav-rail__footer .entry-rail-actions:empty {
   display: none;
 }
@@ -471,7 +470,7 @@
 }
 
 /* ---------- Right-side hover tooltip (rail items only) ----------
-   Only the rail's icon-only controls (updater, avatar, icon-only
+   Only the rail's icon-only controls (avatar, icon-only
    sign-out) advertise a `data-tooltip`; labeled nav items render
    their text inline and must not emit the attribute, or the bubble
    would duplicate visible text. The label slides in from the right
@@ -522,13 +521,6 @@
   transform: translateY(-50%) translateX(0);
 }
 
-/* Positioning host for the update-ready indicator and its panel. The
-   indicator's own look lives in UpdaterPopup.module.css; `.updater-popup`
-   anchors against this box (see styles/workspace/mention-home.css). */
-.entry-updater-menu {
-  position: relative;
-  display: inline-flex;
-}
 .entry-nav-rail__logo {
   appearance: none;
   position: relative;
@@ -1108,13 +1100,12 @@
   display: none;
 }
 /* The topbar is an isolated sticky stacking context at z-index 10, so a
-   child popover's own z-index cannot escape it. While a topbar popover or
-   the updater's "update ready" prompt is open, lift the whole topbar above
-   raised page surfaces (e.g. the home composer card at z-index 1700 when
-   its agent picker is open) so the prompt paints on top. */
+   child popover's own z-index cannot escape it. While a topbar popover is
+   open, lift the whole topbar above raised page surfaces (e.g. the home
+   composer card at z-index 1700 when its agent picker is open) so the
+   popover paints on top. */
 .entry-main__topbar:has(.entry-settings-menu__popover),
-.entry-main__topbar:has(.inline-switcher__popover),
-.entry-main__topbar:has(.updater-popup) {
+.entry-main__topbar:has(.inline-switcher__popover) {
   z-index: 1900;
 }
 .entry-main__topbar::before {
@@ -5125,30 +5116,6 @@
   order: 99;
   margin: auto 0 0;
   padding-top: var(--spacing-10);
-}
-/* Update-ready slot: an independent top-right cluster item immediately AFTER
-   the credits/avatar capsule when present. Signed-out shells keep the same
-   top-right position without rendering an account capsule.
-
-   This stays a global selector next to the rest of the account block rather
-   than a CSS Module: its only child is `.entry-updater-menu`, itself a global
-   positioning contract, so a module would need a `:global()` escape to reach
-   it.
-
-   `:empty` is load-bearing, not tidiness. The slot is mounted unconditionally
-   so the cluster's shape is stable, and the updater host renders nothing until
-   an installer is downloaded and unopened — so without this rule an idle
-   cluster would reserve its gap for a control that is not there.
-   `display: none` (not `width: 0`) is what drops it out of flex layout so the
-   `gap` collapses with it. */
-.entry-nav-rail__account-updater {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-width: 0;
-}
-.entry-nav-rail__account-updater:empty {
-  display: none;
 }
 /* Unread-messages red dot riding the account avatar's top-right corner. */
 .entry-nav-rail__account-avatar-dot {

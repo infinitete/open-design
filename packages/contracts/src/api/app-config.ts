@@ -82,7 +82,6 @@ export interface AppConfigPrefs {
   disabledSkills?: string[];
   disabledDesignSystems?: string[];
   installationId?: string | null;
-  allowSilentUpdates?: boolean;
   orbit?: OrbitConfigPrefs;
   customInstructions?: string | null;
   /** External project library roots. The daemon adds its built-in .od/projects location at read time. */
