@@ -39,6 +39,7 @@ import {
   renderLinuxPackagedMainEntry,
   resolveLinuxLifecycleMode,
   resolveProductionInstallCommand,
+  resolveProductionInstallEnv,
   shouldRejectLinuxHeadlessInspectOptions,
   stopPackedLinuxApp,
   sanitizeNamespace,
@@ -662,6 +663,64 @@ describe("resolveProductionInstallCommand", () => {
       args: ["install", "--prod", "--no-lockfile", "--config.node-linker=hoisted"],
     });
     expect(resolved.command).not.toBe("npm");
+  });
+});
+
+describe("resolveProductionInstallEnv", () => {
+  it("mirrors HTTPS_PROXY onto GLOBAL_AGENT_HTTPS_PROXY so the onnxruntime CUDA download follows the same proxy as the rest of the install", () => {
+    // hyperframes -> onnxruntime-node bootstraps global-agent, which ignores a
+    // plain HTTPS_PROXY; without this mirror the GPU artifact download goes
+    // direct and crawls or fails.
+    expect(
+      resolveProductionInstallEnv({ HTTPS_PROXY: "http://127.0.0.1:7890" })
+        .GLOBAL_AGENT_HTTPS_PROXY,
+    ).toBe("http://127.0.0.1:7890");
+  });
+
+  it("mirrors the lowercase and HTTP/NO_PROXY variants onto their prefixed names", () => {
+    const resolved = resolveProductionInstallEnv({
+      https_proxy: "http://lower:1",
+      HTTP_PROXY: "http://http:2",
+      NO_PROXY: "localhost,127.0.0.1",
+    });
+    expect(resolved.GLOBAL_AGENT_HTTPS_PROXY).toBe("http://lower:1");
+    expect(resolved.GLOBAL_AGENT_HTTP_PROXY).toBe("http://http:2");
+    expect(resolved.GLOBAL_AGENT_NO_PROXY).toBe("localhost,127.0.0.1");
+  });
+
+  it("prefers the uppercase variable when both cases are set", () => {
+    const resolved = resolveProductionInstallEnv({
+      HTTPS_PROXY: "http://upper:1",
+      https_proxy: "http://lower:2",
+    });
+    expect(resolved.GLOBAL_AGENT_HTTPS_PROXY).toBe("http://upper:1");
+  });
+
+  it("leaves an explicit GLOBAL_AGENT_HTTPS_PROXY untouched", () => {
+    const resolved = resolveProductionInstallEnv({
+      HTTPS_PROXY: "http://standard:1",
+      GLOBAL_AGENT_HTTPS_PROXY: "http://explicit:2",
+    });
+    expect(resolved.GLOBAL_AGENT_HTTPS_PROXY).toBe("http://explicit:2");
+  });
+
+  it("adds no proxy variables when none are configured", () => {
+    const resolved = resolveProductionInstallEnv({ OD_TOOLS_PACK_PNPM_BIN: "/tmp/pnpm" });
+    expect(resolved.OD_TOOLS_PACK_PNPM_BIN).toBe("/tmp/pnpm");
+    expect("GLOBAL_AGENT_HTTPS_PROXY" in resolved).toBe(false);
+    expect("GLOBAL_AGENT_HTTP_PROXY" in resolved).toBe(false);
+  });
+
+  it("treats an empty proxy value as unset", () => {
+    expect(
+      "GLOBAL_AGENT_HTTPS_PROXY" in resolveProductionInstallEnv({ HTTPS_PROXY: "" }),
+    ).toBe(false);
+  });
+
+  it("does not mutate the caller's environment object", () => {
+    const env: NodeJS.ProcessEnv = { HTTPS_PROXY: "http://127.0.0.1:7890" };
+    resolveProductionInstallEnv(env);
+    expect(env.GLOBAL_AGENT_HTTPS_PROXY).toBeUndefined();
   });
 });
 

@@ -42,6 +42,24 @@ const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
 // buildDockerArgs; runProductionInstall reads it to avoid invoking `npm` inside
 // `electronuserland/builder:base`, which strips npm/npx/corepack.
 const PRODUCTION_INSTALL_PNPM_BIN_ENV = "OD_TOOLS_PACK_PNPM_BIN";
+// onnxruntime-node (pulled in by the daemon's `hyperframes` dependency) fetches
+// the CUDA execution provider from GitHub during the assembled-app install on
+// Linux/x64: a ~215 MB tarball that unpacks to a >240 MB
+// libonnxruntime_providers_cuda.so. Its installer bootstraps `global-agent`,
+// which honors only the GLOBAL_AGENT_-prefixed proxy variables -- the plain
+// HTTPS_PROXY that npm already follows for the rest of the install is quietly
+// ignored for this one request, so the download goes direct and crawls (or dies
+// mid-transfer on a link that cannot reach GitHub at all). Mirror the standard
+// variables onto the prefixed ones so the whole install follows one proxy
+// setting; existing GLOBAL_AGENT_* values always win.
+const PRODUCTION_INSTALL_PROXY_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["HTTPS_PROXY", "GLOBAL_AGENT_HTTPS_PROXY"],
+  ["https_proxy", "GLOBAL_AGENT_HTTPS_PROXY"],
+  ["HTTP_PROXY", "GLOBAL_AGENT_HTTP_PROXY"],
+  ["http_proxy", "GLOBAL_AGENT_HTTP_PROXY"],
+  ["NO_PROXY", "GLOBAL_AGENT_NO_PROXY"],
+  ["no_proxy", "GLOBAL_AGENT_NO_PROXY"],
+];
 const CONTAINER_PNPM_PATH = "/tmp/pnpm";
 const CONTAINER_PNPM_HOME = "/tmp/pnpm-home";
 const CONTAINER_NODE_VERSION = "24.14.1";
@@ -439,11 +457,28 @@ export function resolveProductionInstallCommand(env: NodeJS.ProcessEnv): Product
   return { command: "npm", args: ["install", "--omit=dev", "--no-package-lock"] };
 }
 
+// Environment for the assembled-app install: the caller's environment with the
+// standard proxy variables mirrored onto the GLOBAL_AGENT_* names the
+// onnxruntime-node installer reads. See PRODUCTION_INSTALL_PROXY_PAIRS.
+export function resolveProductionInstallEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const resolved: NodeJS.ProcessEnv = { ...env };
+  for (const [source, target] of PRODUCTION_INSTALL_PROXY_PAIRS) {
+    if (resolved[target] != null && resolved[target].length > 0) {
+      continue;
+    }
+    const value = env[source];
+    if (value != null && value.length > 0) {
+      resolved[target] = value;
+    }
+  }
+  return resolved;
+}
+
 async function runProductionInstall(appRoot: string): Promise<void> {
   const { command, args } = resolveProductionInstallCommand(process.env);
   await execFileAsync(command, args, {
     cwd: appRoot,
-    env: process.env,
+    env: resolveProductionInstallEnv(process.env),
   });
 }
 
