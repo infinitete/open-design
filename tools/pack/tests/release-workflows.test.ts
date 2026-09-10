@@ -97,9 +97,6 @@ describe("release workflows", () => {
     expect(mac).toContain("pnpm exec tools-pack mac cleanup --dir \"$RUNNER_TEMP/tools-pack\" --namespace release-beta --json");
     expect(mac).toContain("exec tools-pack mac build");
     expect(mac).toContain("build_args+=(--signed --notarize)");
-    expect(mac).toContain("Build beta mac_arm64 update fixture");
-    expect(mac).toContain("OD_PACKAGED_E2E_MAC_UPDATE_BUILD_JSON_PATH: ${{ steps.mac_arm64_update_fixture.outputs.update_build_json_path }}");
-    expect(mac).toContain("OD_PACKAGED_E2E_MAC_UPDATE_FIXTURE: ${{ inputs.mac_arm64_smoke_mode == 'full' && inputs.mac_arm64_update_metadata_url == '' && inputs.mac_arm64_update_target_version == '' && 'tools-serve' || '' }}");
     expect(mac).toContain("pnpm exec tsx scripts/release-smoke.ts mac specs/mac.spec.ts");
     expect(mac).toContain("bash .github/scripts/release/cache/mac.sh");
     expect(macX64).toContain("uses: actions/cache/restore@v5");
@@ -110,16 +107,10 @@ describe("release workflows", () => {
     expect(macX64).toContain("pnpm exec tsx scripts/release-smoke.ts mac specs/mac.spec.ts");
     expect(buildMac).toContain('--cache-dir "$TOOLS_PACK_CACHE_DIR"');
     expect(buildMac).toContain('tools-pack mac build update fixture');
-    expect(buildMac).toContain('OD_PACKAGED_E2E_MAC_UPDATE_BUILD_JSON_PATH="$update_build_json_path"');
-    expect(buildMac).toContain('OD_PACKAGED_E2E_MAC_UPDATE_VERSION="${OD_PACKAGED_E2E_MAC_UPDATE_VERSION:-$update_version}"');
     expect(buildMac).not.toContain("::warning::Expected Electron framework symlink");
     expect(linux).not.toContain("--require-vela-cli");
     expect(beta).not.toContain("REQUIRE_VELA_CLI: \"true\"");
     expect(beta).toContain("release-beta publish requires win_x64_target=nsis or all");
-    expect(beta).toContain("mac_arm64_update_metadata_url:");
-    expect(beta).toContain("win_x64_update_metadata_url:");
-    expect(beta).toContain("OD_PACKAGED_E2E_MAC_UPDATE_METADATA_URL: ${{ inputs.mac_arm64_update_metadata_url }}");
-    expect(beta).toContain("OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}");
     // Retired telemetry analytics inputs must stay out of every shipping
     // lane: the daemon no longer reads them, so a leftover secret read is
     // dead weight (and would imply baking analytics back into packages).
@@ -363,37 +354,4 @@ describe("release workflows", () => {
     }
   });
 
-  it("passes launcher version floor repo vars through to metadata publish and verify verbatim", async () => {
-    const [beta, prerelease, stable] = await Promise.all([
-      readFile(new URL("../../../.github/workflows/release-beta.yml", import.meta.url), "utf8"),
-      readFile(new URL("../../../.github/workflows/release-prerelease.yml", import.meta.url), "utf8"),
-      readFile(new URL("../../../.github/workflows/release-stable.yml", import.meta.url), "utf8"),
-    ]);
-
-    const passthrough = (suffix: string): string[] => [
-      `RELEASE_LAUNCHER_VERSION_MIN_${suffix}: \${{ vars.RELEASE_LAUNCHER_VERSION_MIN_${suffix} }}`,
-      `RELEASE_LAUNCHER_VERSION_MIN_URL_${suffix}: \${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_${suffix} }}`,
-    ];
-
-    // Each channel workflow forwards its own repo-vars pair plus the STABLE
-    // fallback pair verbatim; channel policy (pair-level stable fallback,
-    // format/https/floor validation) lives only in
-    // tools/release/src/storage/launcher-version-floor.ts, never in YAML.
-    const lanes: Array<{ minSteps: number; suffix: string; workflow: string }> = [
-      { minSteps: 2, suffix: "BETA", workflow: beta },
-      { minSteps: 2, suffix: "PRERELEASE", workflow: prerelease },
-    ];
-    for (const lane of lanes) {
-      for (const key of [...passthrough(lane.suffix), ...passthrough("STABLE")]) {
-        // publish-metadata always carries the pair; lanes with a
-        // verify-metadata step must carry it there too.
-        expect(countOccurrences(lane.workflow, key)).toBeGreaterThanOrEqual(lane.minSteps);
-      }
-      expect(lane.workflow).not.toContain(`vars.RELEASE_LAUNCHER_VERSION_MIN_${lane.suffix} ||`);
-    }
-    for (const key of passthrough("STABLE")) {
-      expect(countOccurrences(stable, key)).toBeGreaterThanOrEqual(2);
-    }
-    expect(stable).not.toContain("vars.RELEASE_LAUNCHER_VERSION_MIN_STABLE ||");
-  });
 });

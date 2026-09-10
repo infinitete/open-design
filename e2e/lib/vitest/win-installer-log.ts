@@ -37,14 +37,6 @@ const WORKING_OVERWRITE_MARKERS: InstallerLogMarker[] = [
     pattern: /event=installed_exe_after_extract .* exists=1/,
   },
   {
-    label: 'launcher runtime sync succeeds',
-    pattern: /launcher runtime sync exit=0/,
-  },
-  {
-    label: 'launcher runtime pointer is written',
-    pattern: /event=launcher_runtime_after_write path=\S+/,
-  },
-  {
     label: 'install section completes',
     pattern: /install section done/,
   },

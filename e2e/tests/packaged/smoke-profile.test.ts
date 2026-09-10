@@ -14,9 +14,8 @@ import { resolvePackagedSmokeProfile } from '@/vitest/packaged-smoke-profile';
 //      variable survives it.
 //
 // On `release/v0.18.1` that produced `verifyCoreOnly === ('' === 'core')`,
-// i.e. `false`: the run took the `full` path, demanded the updater fixture that
-// only a genuine `full` request wires up, and died before the smoke started —
-// on the branch-cut commit, before anything else had landed there.
+// i.e. `false`: the run took the `full` path and died before the smoke started
+// — on the branch-cut commit, before anything else had landed there.
 // `release/v0.18.0` hid it because its branch name matched a special case that
 // produced `skip`, so the smoke never ran at all.
 //
@@ -48,7 +47,7 @@ describe('packaged smoke profile', () => {
   });
 
   it('rejects an unrecognised profile instead of letting it read as not-core', () => {
-    // A typo must not quietly select the updater path the way `''` did.
+    // A typo must not quietly select the deeper path the way `''` did.
     expect(() => resolvePackagedSmokeProfile('fulll')).toThrow(/unsupported packaged smoke profile/);
     expect(() => resolvePackagedSmokeProfile('CORE')).toThrow(/unsupported packaged smoke profile/);
   });

@@ -95,7 +95,6 @@ function probe(document: PackagedAppShellProbeDocument): PackagedAppShellSnapsho
 const HOME_SHELL: readonly FixtureNode[] = [
   { classes: ['entry-shell'] },
   { attributes: { 'data-testid': 'entry-nav-home' }, classes: ['entry-nav__item'] },
-  { attributes: { 'data-testid': 'entry-nav-updater' }, classes: ['entry-nav__item'] },
 ];
 
 // The auth-first surface a fresh install or a completed but signed-out core

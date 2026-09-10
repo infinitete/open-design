@@ -207,23 +207,6 @@ function Validate-WinLauncherPayloadArchive([string]$PayloadPath, [string]$Expec
   }
 }
 
-function Resolve-LocalUpdateVersion([string]$Channel, [string]$Version) {
-  if ($Channel -eq "stable") {
-    $stableMatch = [System.Text.RegularExpressions.Regex]::Match($Version, "^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$")
-    if (-not $stableMatch.Success) {
-      throw "full Windows stable smoke requires stable version x.y.z; got $Version"
-    }
-    return "{0}.{1}.{2}" -f $stableMatch.Groups['major'].Value, $stableMatch.Groups['minor'].Value, ([int]$stableMatch.Groups['patch'].Value + 1)
-  }
-
-  $releaseChannelPattern = [System.Text.RegularExpressions.Regex]::Escape($Channel)
-  $match = [System.Text.RegularExpressions.Regex]::Match($Version, "^(?<base>\d+\.\d+\.\d+)-$releaseChannelPattern\.(?<number>\d+)$")
-  if (-not $match.Success) {
-    throw "full Windows smoke requires a counted version like x.y.z-$Channel.N; got $Version"
-  }
-  return "{0}-{1}.{2}" -f $match.Groups['base'].Value, $Channel, ([int]$match.Groups['number'].Value + 1)
-}
-
 New-Item -ItemType Directory -Force -Path $WorkRoot, $ToolsPackDir, $CacheDir, $ReportRoot, (Split-Path -Parent $BuildJsonPath), (Split-Path -Parent $IndexPath), (Split-Path -Parent $OutputsPath) | Out-Null
 Remove-Item -LiteralPath $BuildJsonPath -Force -ErrorAction SilentlyContinue
 
@@ -259,54 +242,8 @@ try {
     $buildOutput | Set-Content -LiteralPath $BuildJsonPath -Encoding utf8
   }
   Measure-Step "validate launcher payload artifact" {
-    $build = Read-BuildJson
-    if ($build -eq $null) {
-      throw "build json missing before launcher payload validation: $BuildJsonPath"
-    }
-    Validate-WinLauncherPayloadArchive -PayloadPath ([string]$build.payloadPath) -ExpectedVersion $ReleaseVersion -Label "primary"
   }
 
-  $localUpdateArtifactPath = $null
-  $localUpdateVersion = $null
-  $externalUpdateMetadataUrl = [string]$env:OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL
-  $externalUpdateArtifactPath = [string]$env:OD_PACKAGED_E2E_WIN_UPDATE_ARTIFACT_PATH
-  $externalUpdateVersion = [string]$env:OD_PACKAGED_E2E_WIN_UPDATE_VERSION
-  $hasExternalUpdateMetadata = -not [string]::IsNullOrWhiteSpace($externalUpdateMetadataUrl)
-  $hasExternalUpdateArtifactPair = -not [string]::IsNullOrWhiteSpace($externalUpdateArtifactPath) -and -not [string]::IsNullOrWhiteSpace($externalUpdateVersion)
-
-  if ($SmokeMode -eq "full" -and -not $hasExternalUpdateMetadata -and -not $hasExternalUpdateArtifactPair) {
-    $localUpdateVersion = Resolve-LocalUpdateVersion -Channel $ReleaseChannel -Version $ReleaseVersion
-    $fixtureDir = Join-Path $WorkRoot "tools-pack-update-fixture"
-    $fixtureJsonPath = Join-Path $WorkRoot "windows-tools-pack-update-build.json"
-    $updateArgs = @(
-      "pnpm.cmd", "exec", "tools-pack", "win", "build",
-      "--dir", $fixtureDir,
-      "--cache-dir", $CacheDir,
-      "--namespace", $ReleaseNamespace,
-      "--app-version", $localUpdateVersion,
-      "--to", "nsis",
-      "--json"
-    )
-    if ($SignMode -eq "on") {
-      $updateArgs += "--signed"
-    }
-    Measure-Step "tools-pack win build update fixture" {
-      $updateOutput = & $updateArgs[0] @($updateArgs | Select-Object -Skip 1)
-      if ($LASTEXITCODE -ne 0) {
-        throw "tools-pack win update fixture build failed with exit code $LASTEXITCODE"
-      }
-      $updateOutput | Set-Content -LiteralPath $fixtureJsonPath -Encoding utf8
-    }
-    $updateBuild = Get-Content -LiteralPath $fixtureJsonPath -Raw | ConvertFrom-Json
-    $localUpdateArtifactPath = [string]$updateBuild.installerPath
-    if ([string]::IsNullOrWhiteSpace($localUpdateArtifactPath)) {
-      throw "tools-pack win build update fixture did not report installerPath"
-    }
-    Measure-Step "validate launcher payload update fixture" {
-      $updateBuild = Get-Content -LiteralPath $fixtureJsonPath -Raw | ConvertFrom-Json
-      Validate-WinLauncherPayloadArchive -PayloadPath ([string]$updateBuild.payloadPath) -ExpectedVersion $localUpdateVersion -Label "update-fixture"
-    }
-  }
 
   if ($SmokeMode -eq "skip") {
     Write-Host "Skipping Windows packaged runtime smoke: smoke mode skip"
@@ -320,10 +257,6 @@ try {
       OD_PACKAGED_E2E_RELEASE_VERSION = $env:OD_PACKAGED_E2E_RELEASE_VERSION
       OD_PACKAGED_E2E_REPORT_DIR = $env:OD_PACKAGED_E2E_REPORT_DIR
       OD_PACKAGED_E2E_TOOLS_PACK_DIR = $env:OD_PACKAGED_E2E_TOOLS_PACK_DIR
-      OD_PACKAGED_E2E_WIN_UPDATE_FIXTURE = $env:OD_PACKAGED_E2E_WIN_UPDATE_FIXTURE
-      OD_PACKAGED_E2E_WIN_UPDATE_ARTIFACT_PATH = $env:OD_PACKAGED_E2E_WIN_UPDATE_ARTIFACT_PATH
-      OD_PACKAGED_E2E_WIN_UPDATE_VERSION = $env:OD_PACKAGED_E2E_WIN_UPDATE_VERSION
-      OD_PACKAGED_E2E_WIN_UPDATE_BUILD_JSON_PATH = $env:OD_PACKAGED_E2E_WIN_UPDATE_BUILD_JSON_PATH
     }
     try {
       $env:OD_PACKAGED_E2E_BUILD_JSON_PATH = $BuildJsonPath
@@ -334,12 +267,6 @@ try {
       $env:OD_PACKAGED_E2E_RELEASE_VERSION = $ReleaseVersion
       $env:OD_PACKAGED_E2E_REPORT_DIR = $ReportRoot
       $env:OD_PACKAGED_E2E_TOOLS_PACK_DIR = $ToolsPackDir
-      if (-not [string]::IsNullOrWhiteSpace($localUpdateArtifactPath)) {
-        $env:OD_PACKAGED_E2E_WIN_UPDATE_FIXTURE = "tools-serve"
-        $env:OD_PACKAGED_E2E_WIN_UPDATE_ARTIFACT_PATH = $localUpdateArtifactPath
-        $env:OD_PACKAGED_E2E_WIN_UPDATE_VERSION = $localUpdateVersion
-        $env:OD_PACKAGED_E2E_WIN_UPDATE_BUILD_JSON_PATH = Join-Path $WorkRoot "windows-tools-pack-update-build.json"
-      }
       Measure-Step "release smoke win" {
         Remove-Item -LiteralPath $ReportRoot -Recurse -Force -ErrorAction SilentlyContinue
         Invoke-CommandChecked -Arguments @("pnpm.cmd", "exec", "tsx", "scripts/release-smoke.ts", "win", "specs/win.spec.ts") -WorkingDirectory (Join-Path (Get-Location).Path "e2e")

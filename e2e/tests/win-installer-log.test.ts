@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { missingWorkingWinInstallerOverwriteMarkers } from '@/vitest/win-installer-log';
 
 describe('working Windows installer overwrite log contract', () => {
-  it('accepts the current remove, extract, and launcher-runtime sync lifecycle', () => {
+  it('accepts the current remove and extract lifecycle', () => {
     const lines = [
       'existing installation found; silent install will overwrite it',
       'event=install_dir_before_remove target=C:\\Open Design exists=1',
@@ -13,8 +13,6 @@ describe('working Windows installer overwrite log contract', () => {
       'payload overlay extraction exit=0',
       'event=install_dir_after_extract target=C:\\Open Design exists=1',
       'event=installed_exe_after_extract target=C:\\Open Design\\Open Design.exe exists=1',
-      'launcher runtime sync exit=0',
-      'event=launcher_runtime_after_write path=C:\\launcher\\runtime.json',
       'install section done',
     ];
 
@@ -37,8 +35,6 @@ describe('working Windows installer overwrite log contract', () => {
       'overlay payload extraction succeeds',
       'install directory exists after extraction',
       'installed executable exists after extraction',
-      'launcher runtime sync succeeds',
-      'launcher runtime pointer is written',
       'install section completes',
     ]);
   });

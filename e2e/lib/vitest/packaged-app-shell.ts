@@ -359,8 +359,8 @@ export type PackagedAppShellPolicyInput = {
  * stop on the same surface after the daemon explicitly reports `false`.
  *
  * `coreProfile` still narrows it: the full profile goes on to drive the entry
- * rail, which `clickUpdaterRailExpression` refuses while onboarding is up, so
- * it needs home either way.
+ * rail, which is not reachable while onboarding is up, so it needs home either
+ * way.
  */
 export function packagedAppShellPolicy(
   input: PackagedAppShellPolicyInput,
