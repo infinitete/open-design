@@ -10,7 +10,6 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 - `packages/diagnostics`: shared diagnostics export primitives for log collection, redaction, manifests, crash-report discovery, and zip packaging used by daemon and desktop.
 - `packages/download`: managed-download runtime. Owns resumable and checksum-verified transfers, concurrent-request deduplication, target locking, inspection/removal, copy-and-clear, and pruning; callers supply the download identity and storage base.
 - `packages/host`: web/desktop host bridge contract. It models renderer-facing host capabilities and helpers while keeping `window.__od__` access out of app UI code.
-- `packages/launcher-proto`: launcher protocol and path/state primitives. Owns channel/version/namespace validation, launcher directory derivation, runtime and cleanup descriptors, target selection, and after-quit argument parsing without owning launcher process orchestration.
 - `packages/metatool`: internal metadata helpers for repo-local tool build outputs. Keep reusable hash/check/write mechanics here; each concrete tool owns its own `meta.json`.
 - `packages/plugin-runtime`: pure TypeScript plugin manifest/marketplace parsers, source adapters, merge/ref resolution, validation, digesting, and pipeline-fallback selection. Daemon, web, and CI inject I/O rather than adding filesystem access here.
 - `packages/registry-protocol`: pure TypeScript plugin-registry backend protocol and schemas. Owns backend list/search/resolve/manifest/doctor plus optional publish/yank interfaces, not concrete network or storage integrations.
@@ -43,8 +42,6 @@ pnpm --filter @open-design/download typecheck
 pnpm --filter @open-design/download test
 pnpm --filter @open-design/host typecheck
 pnpm --filter @open-design/host test
-pnpm --filter @open-design/launcher-proto typecheck
-pnpm --filter @open-design/launcher-proto test
 pnpm --filter @open-design/metatool typecheck
 pnpm --filter @open-design/metatool test
 pnpm --filter @open-design/plugin-runtime typecheck
