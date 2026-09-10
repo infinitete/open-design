@@ -1,8 +1,4 @@
 import { optional, required } from "./common.ts";
-import {
-  assertLauncherVersionFloorSatisfiable,
-  resolveLauncherVersionFloor,
-} from "./launcher-version-floor.ts";
 import { releaseChannelDescriptor } from "@open-design/release";
 import { readFile } from "node:fs/promises";
 import { parseReleaseNotePublication, releaseNoteMetadataFromPublication } from "../release-note/publication.ts";
@@ -42,31 +38,6 @@ if (metadata[versionField] !== releaseVersion) {
   throw new Error(`metadata ${versionField} mismatch: expected ${releaseVersion}, got ${String(metadata[versionField])}`);
 }
 
-// The published control.launcher.version block must match the channel policy
-// resolved from the same repo-vars pairs the publish step consumed; unknown
-// fields would otherwise pass silently.
-const expectedLauncherVersionFloor = resolveLauncherVersionFloor(releaseChannel);
-if (expectedLauncherVersionFloor != null) {
-  assertLauncherVersionFloorSatisfiable(expectedLauncherVersionFloor, releaseVersion);
-}
-const publishedControlVersion = metadata.control?.launcher?.version;
-if (expectedLauncherVersionFloor == null) {
-  if (publishedControlVersion != null) {
-    throw new Error("metadata unexpectedly contains a control.launcher.version block");
-  }
-} else {
-  if (publishedControlVersion?.min !== expectedLauncherVersionFloor.min) {
-    throw new Error(
-      `metadata control.launcher.version.min mismatch: expected ${expectedLauncherVersionFloor.min}, got ${String(publishedControlVersion?.min)}`,
-    );
-  }
-  if (publishedControlVersion.url !== expectedLauncherVersionFloor.url) {
-    throw new Error(
-      `metadata control.launcher.version.url mismatch: expected ${String(expectedLauncherVersionFloor.url)}, got ${String(publishedControlVersion.url)}`,
-    );
-  }
-}
-
 if (releaseNoteManifestPath.length === 0) {
   if (releaseChannel === "stable") {
     throw new Error("RELEASE_NOTE_MANIFEST_PATH is required to verify stable metadata");
@@ -93,9 +64,6 @@ for (const target of ["mac_arm64", "win_x64", "mac_x64", "linux_x64"]) {
     throw new Error(`metadata target ${target} is not published: ${String(status)}`);
   }
   if (result !== "success" || targetMetadata == null) continue;
-  if ((target === "mac_arm64" || target === "win_x64") && targetMetadata.artifacts?.payload?.url == null) {
-    throw new Error(`metadata target ${target} is missing launcher payload artifact`);
-  }
 }
 
 console.log(`verified ${releaseChannel} metadata ${metadataUrl} (${metadata.releaseState ?? "unknown"})`);

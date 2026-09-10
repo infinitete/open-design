@@ -135,8 +135,6 @@ jobs:
             throw "Windows tools-pack cached canary build exited with code $LASTEXITCODE"
           }
           $buildOutput | Set-Content -Path $buildJsonPath -Encoding utf8
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-prerelease-canary-win --payload-path $build.payloadPath --expected-version "${{ steps.version.outputs.version }}" --json
 
       - name: Retry prerelease Windows canary without restored cache
         if: ${{ steps.win_tools_pack_build.outcome == 'failure' }}
@@ -160,8 +158,6 @@ jobs:
             throw "Windows tools-pack uncached canary build exited with code $LASTEXITCODE"
           }
           $buildOutput | Set-Content -Path $buildJsonPath -Encoding utf8
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-prerelease-canary-win --payload-path $build.payloadPath --expected-version "${{ steps.version.outputs.version }}" --json
 
       - name: Smoke prerelease Windows packaged runtime
         working-directory: e2e

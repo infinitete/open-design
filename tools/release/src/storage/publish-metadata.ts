@@ -12,10 +12,6 @@ import {
 import { assertCurrentVersionReservation, versionLockObjectKey } from "./beta-version-reservation.ts";
 import { getStorageObject, putStorageObject, putStorageObjectWithStatus } from "./s3-upload.ts";
 import {
-  assertLauncherVersionFloorSatisfiable,
-  resolveLauncherVersionFloor,
-} from "./launcher-version-floor.ts";
-import {
   parseCountedReleaseVersion,
   parseReleaseBaseVersion,
   releaseChannelDescriptor,
@@ -79,29 +75,6 @@ const versionLockKey = optional(
 );
 const latestCasRequired = process.env.RELEASE_LATEST_CAS_REQUIRED === "true";
 const storage = publishSideEffectsEnabled || versionLockRequired ? storageConfigFromEnv() : null;
-
-// Operator-supplied installer-reinstall floor: one repo-vars pair per channel,
-// resolved with pair-level stable fallback by the shared channel-policy
-// resolver. Published as control.launcher.version.{min,url}; the desktop
-// updater compares min against the physically installed outer package version
-// and forces the installer route — including a same-version reinstall — when
-// the outer is below it.
-const launcherVersionFloor = resolveLauncherVersionFloor(releaseChannel);
-if (launcherVersionFloor != null) {
-  assertLauncherVersionFloorSatisfiable(launcherVersionFloor, releaseVersion);
-}
-const controlBlock = launcherVersionFloor == null
-  ? {}
-  : {
-      control: {
-        launcher: {
-          version: {
-            min: launcherVersionFloor.min,
-            ...(launcherVersionFloor.url == null ? {} : { url: launcherVersionFloor.url }),
-          },
-        },
-      },
-    };
 
 function readReleaseNoteMetadata(): ReturnType<typeof releaseNoteMetadataFromPublication> {
   if (releaseNoteManifestPath.length === 0) {
@@ -193,60 +166,6 @@ async function upload(path: string, objectKey: string, cacheControl: string, typ
     contentType: type,
     objectKey,
   });
-}
-
-async function uploadLatestMetadataWithCas(path: string, objectKey: string): Promise<void> {
-  if (storage == null) throw new Error("storage config is required to publish latest metadata");
-  if (!latestCasRequired) {
-    await upload(path, objectKey, "public, max-age=60, must-revalidate");
-    return;
-  }
-
-  if (releaseChannel === "stable") {
-    throw new Error("latest metadata CAS is only supported for counted releases");
-  }
-  if (parseCountedVersionForChannel(releaseVersion, releaseChannel) == null) {
-    throw new Error(`invalid ${releaseChannel} version for latest CAS: ${releaseVersion}`);
-  }
-
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
-    const latest = await getStorageObject({ ...storage, objectKey });
-    const headers: Record<string, string> = {};
-    if (latest == null) {
-      headers["if-none-match"] = "*";
-    } else {
-      let latestReleaseVersion = "";
-      try {
-        const parsed = JSON.parse(latest.text.replace(/^\uFEFF/u, "")) as { releaseVersion?: unknown };
-        latestReleaseVersion = typeof parsed.releaseVersion === "string" ? parsed.releaseVersion : "";
-      } catch (error) {
-        throw new Error(`latest metadata is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      if (latestReleaseVersion.length > 0 && compareReleaseVersions(latestReleaseVersion, releaseVersion) > 0) {
-        throw new Error(`refusing to move ${releaseChannel} latest backward from ${latestReleaseVersion} to ${releaseVersion}`);
-      }
-      if (latest.etag.length === 0) {
-        throw new Error("latest metadata GET did not return an ETag for CAS update");
-      }
-      headers["if-match"] = latest.etag;
-    }
-
-    const result = await putStorageObjectWithStatus({
-      ...storage,
-      bodyPath: path,
-      cacheControl: "public, max-age=60, must-revalidate",
-      contentType: "application/json; charset=utf-8",
-      headers,
-      objectKey,
-    });
-    if (result.ok) return;
-    if (result.status !== 412) {
-      throw new Error(`latest metadata CAS PUT ${objectKey} failed with HTTP ${result.status}${result.body.length > 0 ? `: ${result.body}` : ""}`);
-    }
-    console.log(`latest metadata CAS conflict on attempt ${attempt}; retrying`);
-  }
-
-  throw new Error(`failed to update latest metadata with CAS after 5 attempts: ${objectKey}`);
 }
 
 async function publishLatestPlatformObjects(manifests: Record<string, PlatformManifest>): Promise<void> {
@@ -354,7 +273,6 @@ const releaseFields = releaseMetadataFields();
 const metadata = {
   ...releaseFields,
   channel: releaseChannel,
-  ...controlBlock,
   expectedPlatforms: expectedTargets,
   expectedTargets,
   failedPlatforms: failedTargets,
@@ -366,7 +284,6 @@ const metadata = {
   platforms,
   ...(releaseNote == null ? {} : { releaseNote }),
   r2: {
-    latestMetadataUrl: publicUrl(publicOrigin, latestPrefix, "metadata.json"),
     latestMetadataUpdated,
     latestPrefix,
     publicOrigin,
@@ -394,17 +311,15 @@ const metadataPath = join(metadataDir, "metadata.json");
 writeJson(metadataPath, metadata);
 await upload(metadataPath, `${versionPrefix}/metadata.json`, "public, max-age=31536000, immutable");
 if (latestMetadataUpdated && publishSideEffectsEnabled) {
-  await uploadLatestMetadataWithCas(metadataPath, `${latestPrefix}/metadata.json`);
   await publishLatestPlatformObjects(releaseTargets);
 } else if (latestMetadataUpdated) {
-  console.log(`[dry-run:${dryRunMode || "plan"}] left ${metadata.r2.latestMetadataUrl} unchanged`);
+  console.log(`[dry-run:${dryRunMode || "plan"}] left the latest platform objects unchanged`);
 } else {
-  console.log(`left ${metadata.r2.latestMetadataUrl} unchanged because releaseState=${releaseState}`);
+  console.log(`left the latest platform objects unchanged because releaseState=${releaseState}`);
 }
 
 const outputs: Record<string, string> = {
   latest_metadata_updated: String(latestMetadataUpdated),
-  metadata_url: metadata.r2.latestMetadataUrl,
   release_state: releaseState,
   report_url: metadata.r2.reportUrl,
   version_metadata_url: metadata.r2.versionMetadataUrl,

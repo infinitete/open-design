@@ -736,7 +736,7 @@ jobs:
       - name: Prepare mac_arm64 assets
         if: ${{ inputs.publish }}
         env:
-          RELEASE_ARTIFACT_MODE: dmg-and-payload
+          RELEASE_ARTIFACT_MODE: dmg-and-zip
           RELEASE_ASSET_SUFFIX: .signed
           RELEASE_ASSETS_DIR: ${{ runner.temp }}/release-assets/mac_arm64
           RELEASE_CHANNEL: beta
@@ -753,7 +753,7 @@ jobs:
         env:
           RELEASE_ASSET_SUFFIX: .signed
           RELEASE_ASSETS_DIR: ${{ runner.temp }}/release-assets/mac_arm64
-          RELEASE_ARTIFACT_MODE: dmg-and-payload
+          RELEASE_ARTIFACT_MODE: dmg-and-zip
           RELEASE_CHANNEL: beta
           RELEASE_MANIFEST_DIR: ${{ runner.temp }}/release-platform-manifests
           RELEASE_OUTPUTS_PATH: ${{ runner.temp }}/release-platform-outputs/mac_arm64.json
@@ -1016,7 +1016,7 @@ jobs:
       - name: Prepare mac_x64 assets
         if: ${{ inputs.publish }}
         env:
-          RELEASE_ARTIFACT_MODE: ${{ inputs.mac_x64_target == 'all' && 'all' || 'dmg-and-payload' }}
+          RELEASE_ARTIFACT_MODE: ${{ inputs.mac_x64_target == 'all' && 'all' || 'dmg-and-zip' }}
           RELEASE_ASSET_SUFFIX: ${{ inputs.mac_x64_sign_mode != 'no' && '.signed' || '.unsigned' }}
           RELEASE_ASSETS_DIR: ${{ runner.temp }}/release-assets/mac_x64
           RELEASE_CHANNEL: beta
@@ -1032,7 +1032,7 @@ jobs:
         env:
           RELEASE_ASSET_SUFFIX: ${{ inputs.mac_x64_sign_mode != 'no' && '.signed' || '.unsigned' }}
           RELEASE_ASSETS_DIR: ${{ runner.temp }}/release-assets/mac_x64
-          RELEASE_ARTIFACT_MODE: ${{ inputs.mac_x64_target == 'all' && 'all' || 'dmg-and-payload' }}
+          RELEASE_ARTIFACT_MODE: ${{ inputs.mac_x64_target == 'all' && 'all' || 'dmg-and-zip' }}
           RELEASE_CHANNEL: beta
           RELEASE_MANIFEST_DIR: ${{ runner.temp }}/release-platform-manifests
           RELEASE_OUTPUTS_PATH: ${{ runner.temp }}/release-platform-outputs/mac_x64.json
@@ -1148,8 +1148,6 @@ jobs:
           $buildOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win build failed with exit code $LASTEXITCODE" }
           $buildOutput | Set-Content -Path "${{ runner.temp }}\release-build\win_x64\build.json" -Encoding utf8
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-beta-win --payload-path $build.payloadPath --expected-version "${{ needs.metadata.outputs.beta_version }}" --json
 
       - name: Retry beta win_x64 without restored cache
         id: win_tools_pack_build_retry
@@ -1166,8 +1164,6 @@ jobs:
           $buildOutput = pnpm.cmd @buildArgs
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win fallback build failed with exit code $LASTEXITCODE" }
           $buildOutput | Set-Content -Path "${{ runner.temp }}\release-build\win_x64\build.json" -Encoding utf8
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-beta-win --payload-path $build.payloadPath --expected-version "${{ needs.metadata.outputs.beta_version }}" --json
 
       - name: Upload win_x64 installer for manual distribution
         # Only when NOT publishing to the release feed, mirroring the mac DMG
@@ -1234,7 +1230,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
           $updateOutput | Set-Content -Path "${{ runner.temp }}\release-build\win_x64\windows-tools-pack-update-build.json" -Encoding utf8
           $updateBuild = $updateOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-beta-win --payload-path $updateBuild.payloadPath --expected-version $updateVersion --json
 
       - name: Smoke beta win_x64 packaged runtime
         id: win_x64_smoke

@@ -1063,8 +1063,6 @@ jobs:
             }
           }
           $buildOutput | Set-Content -Path $buildJsonPath
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-prerelease-win --payload-path $build.payloadPath --expected-version "${{ needs.metadata.outputs.release_version }}" --json
           $buildOutput
       - name: Delete failed Windows tools-pack cache
         if: ${{ steps.win_tools_pack_build.outputs.cache_failed == 'true' && steps.win_tools_pack_cache_restore.outputs.cache-matched-key != '' }}
@@ -1093,7 +1091,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
           $updateOutput | Set-Content -Path "${{ runner.temp }}\release-build\win_x64\windows-tools-pack-update-build.json" -Encoding utf8
           $updateBuild = $updateOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace release-prerelease-win --payload-path $updateBuild.payloadPath --expected-version $updateVersion --json
       - name: Smoke prerelease windows packaged runtime
         id: win_smoke
         if: ${{ inputs.win_x64_smoke_mode != 'skip' }}

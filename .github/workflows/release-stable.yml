@@ -759,8 +759,6 @@ jobs:
             }
           }
           $buildOutput | Set-Content -Path $buildJsonPath
-          $build = $buildOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace "${{ needs.metadata.outputs.win_namespace }}" --payload-path $build.payloadPath --expected-version "${{ needs.metadata.outputs.release_version }}" --json
           $buildOutput
 
       - name: Delete failed Windows tools-pack cache
@@ -790,7 +788,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
           $updateOutput | Set-Content -Path "${{ runner.temp }}\windows-tools-pack-update-build.json" -Encoding utf8
           $updateBuild = $updateOutput | ConvertFrom-Json
-          pnpm.cmd exec tools-pack win validate-payload --namespace "${{ needs.metadata.outputs.win_namespace }}" --payload-path $updateBuild.payloadPath --expected-version $updateVersion --json
 
       - name: Smoke release windows packaged runtime
         if: ${{ inputs.win_x64_smoke_mode != 'skip' }}
