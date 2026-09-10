@@ -307,7 +307,7 @@ zero-effect plans (11.6%). Root markdown such as `README.md` remains medium
 because bare filename literals are widespread as fixture data and cannot be
 distinguished locally from repository-root reads.
 
-### Packaged leaf and Windows payload
+### Packaged leaf
 
 Rule `certain-packaged-leaf-sources` covers only:
 
@@ -317,24 +317,9 @@ Rule `certain-packaged-leaf-sources` covers only:
 
 It claims `tools_dev_tests_required`, `tools_pack_tests_required`, and
 `workspace_validation_required`. A pure matching merge group keeps
-preflight/typecheck, workspace unit tests, desktop/packaged/tools-pack tests,
-and the focused packaged launcher update-loop fallback. It skips web workspace
-tests, broad E2E Vitest, UI P0, critical Playwright, and visual Playwright.
-
-Windows launcher-payload validation is a separate test set. Rule
-`certain-windows-launcher-payload` maps the Windows pack source unit to
-`windows_tools_pack_payload_tests_required`, which alone arms its Windows
-workload outside forced-full plans. The source unit includes the Windows
-tools-pack implementation and resources, its explicit shared-module closure,
-the Windows-only test file, launcher-proto and sidecar-proto sources, and the
-narrow platform/release/sidecar exports consumed by that closure.
-
-That exact shared-module closure is also a diagnostic signal: the flat
-`tools/pack/src/` root does not yet expose stable core, launcher, and
-platform-specific source units. The enumeration records the current dependency
-shape, but it is not a durable pattern to copy or a substitute for decomposing
-that source hierarchy. Until the source boundary or its conservative fallback
-is strengthened, this route remains an active migration surface.
+preflight/typecheck, workspace unit tests, and desktop/packaged/tools-pack
+tests. It skips web workspace tests, broad E2E Vitest, UI P0, critical
+Playwright, and visual Playwright.
 
 Desktop, packaged-runtime, mac-only, and unrelated tools-pack changes retain
 Linux package coverage without starting a Windows runner. Package manifests,
@@ -345,17 +330,11 @@ full behavior.
 Current evidence:
 
 - The latest 400 first-parent merges contain 23 pure packaged-leaf groups.
-- Direct merge-queue replay retains the Windows workload for 5 groups and omits
-  it for 18 desktop, packaged-runtime, mac-only, or unrelated tools-pack groups.
 - Nineteen earlier pure-leaf groups have successful narrow PR validation paired
   with successful full merge-queue validation.
-- Recent pure-leaf PR runs spend about 3.4–4.7 elapsed minutes in the Windows
-  payload job, which can determine the validation critical path.
 - A current full merge-group run measures about 11.8 elapsed minutes and 68
   runner-minutes. A representative pure-leaf narrow PR run measures about 4.2
   elapsed minutes and 8.1 runner-minutes.
-- Expected savings are about 7.5 elapsed minutes and 60 runner-minutes per
-  qualifying single-PR group, before queue batching discounts.
 
 ### Certain daemon core
 
@@ -367,8 +346,7 @@ definition source/companion tests stay medium-tier.
 
 A pure matching merge group keeps preflight and workspace typecheck, workspace
 unit coverage, broad E2E Vitest, and the complete UI P0 matrix. It skips web
-workspace tests, visual Playwright, Windows launcher-payload tests, and
-tools-dev/tools-pack unit coverage. Direct planner tests pin representative
+workspace tests, visual Playwright, and tools-dev/tools-pack unit coverage. Direct planner tests pin representative
 routing and out-of-bound escalation. The retained plan continues to exercise
 daemon buildability, user-level API/runtime behavior, and every merge-gated UI
 P0 capability without treating web rendering or packaging-format tests as

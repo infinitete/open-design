@@ -81,16 +81,6 @@ on:
           - dmg
           - all
         default: dmg
-      mac_arm64_update_metadata_url:
-        description: "Optional external updater metadata URL for full macOS arm64 payload smoke."
-        required: false
-        type: string
-        default: ""
-      mac_arm64_update_target_version:
-        description: "Optional external updater target version expected by full macOS arm64 payload smoke."
-        required: false
-        type: string
-        default: ""
       mac_x64_sign_mode:
         description: "macOS x64 signing mode."
         required: true
@@ -144,16 +134,6 @@ on:
           - zip
           - dir
         default: all
-      win_x64_update_metadata_url:
-        description: "Optional external updater metadata URL for full Windows payload smoke."
-        required: false
-        type: string
-        default: ""
-      win_x64_update_target_version:
-        description: "Optional external updater target version expected by full Windows payload smoke."
-        required: false
-        type: string
-        default: ""
       linux_x64_smoke_mode:
         description: "Linux x64 smoke coverage."
         required: true
@@ -222,14 +202,6 @@ on:
         required: false
         type: string
         default: dmg
-      mac_arm64_update_metadata_url:
-        required: false
-        type: string
-        default: ""
-      mac_arm64_update_target_version:
-        required: false
-        type: string
-        default: ""
       mac_x64_sign_mode:
         required: false
         type: string
@@ -254,14 +226,6 @@ on:
         required: false
         type: string
         default: all
-      win_x64_update_metadata_url:
-        required: false
-        type: string
-        default: ""
-      win_x64_update_target_version:
-        required: false
-        type: string
-        default: ""
       linux_x64_smoke_mode:
         required: false
         type: string
@@ -631,35 +595,6 @@ jobs:
           done <<< "$cache_ids"
           echo "deletedFailedCacheKey=$matched_key count=$count"
 
-      - name: Build beta mac_arm64 update fixture
-        id: mac_arm64_update_fixture
-        if: ${{ inputs.mac_arm64_smoke_mode == 'full' && inputs.mac_arm64_update_metadata_url == '' && inputs.mac_arm64_update_target_version == '' }}
-        run: |
-          set -euo pipefail
-          version="${{ needs.metadata.outputs.beta_version }}"
-          if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
-            update_version="${BASH_REMATCH[1]}-beta.$((BASH_REMATCH[2] + 1))"
-          else
-            echo "full mac_arm64 smoke requires counted beta version x.y.z-beta.N; got $version" >&2
-            exit 1
-          fi
-          update_build_json_path="$RUNNER_TEMP/release-work/mac_arm64/mac-tools-pack-update-build.json"
-          mkdir -p "$(dirname "$update_build_json_path")"
-          update_output="$(pnpm exec tools-pack mac build \
-            --dir "$RUNNER_TEMP/release-work/mac_arm64/tools-pack-update-fixture" \
-            --cache-dir "$RUNNER_TEMP/tools-pack-cache" \
-            --namespace release-beta \
-            --portable \
-            --app-version "$update_version" \
-            --mac-compression normal \
-            --to dmg \
-            --json)"
-          printf '%s\n' "$update_output" > "$update_build_json_path"
-          {
-            echo "update_build_json_path=$update_build_json_path"
-            echo "update_version=$update_version"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Smoke beta mac_arm64 packaged runtime
         id: mac_arm64_smoke
         if: ${{ inputs.mac_arm64_smoke_mode != 'skip' }}
@@ -669,10 +604,6 @@ jobs:
           OD_PACKAGED_E2E_BUILD_JSON_PATH: ${{ runner.temp }}/release-build/mac_arm64/build.json
           OD_PACKAGED_E2E_BUILD_LOG_PATH: ${{ runner.temp }}/release-build/mac_arm64/build.log
           OD_PACKAGED_E2E_MAC: "1"
-          OD_PACKAGED_E2E_MAC_UPDATE_BUILD_JSON_PATH: ${{ steps.mac_arm64_update_fixture.outputs.update_build_json_path }}
-          OD_PACKAGED_E2E_MAC_UPDATE_FIXTURE: ${{ inputs.mac_arm64_smoke_mode == 'full' && inputs.mac_arm64_update_metadata_url == '' && inputs.mac_arm64_update_target_version == '' && 'tools-serve' || '' }}
-          OD_PACKAGED_E2E_MAC_UPDATE_METADATA_URL: ${{ inputs.mac_arm64_update_metadata_url }}
-          OD_PACKAGED_E2E_MAC_UPDATE_VERSION: ${{ inputs.mac_arm64_update_target_version != '' && inputs.mac_arm64_update_target_version || steps.mac_arm64_update_fixture.outputs.update_version }}
           OD_PACKAGED_E2E_MAC_SMOKE_PROFILE: ${{ inputs.mac_arm64_smoke_mode }}
           OD_PACKAGED_E2E_NAMESPACE: release-beta
           OD_PACKAGED_E2E_RELEASE_CHANNEL: beta
@@ -1137,8 +1068,6 @@ jobs:
           OD_BETA_WINDOWS_SIGNING_SIGNTOOL_FOUND: ${{ steps.sign_probe.outputs.signtool_found }}
           OD_BETA_WINDOWS_SIGNTOOL_PATH: ${{ steps.sign_probe.outputs.signtool_path }}
           OD_BETA_WINDOWS_SIGN_CERT_SHA1: ${{ steps.sign_probe.outputs.thumbprint }}
-          OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}
-          OD_PACKAGED_E2E_WIN_UPDATE_VERSION: ${{ inputs.win_x64_update_target_version }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "${{ runner.temp }}\release-build\win_x64" | Out-Null
@@ -1216,21 +1145,6 @@ jobs:
           foreach ($cache in $caches) { gh cache delete $cache.id }
           "deletedFailedCacheKey=$matchedKey count=$($caches.Count)"
 
-      - name: Build beta win_x64 update fixture
-        if: ${{ inputs.win_x64_smoke_mode == 'full' && inputs.win_x64_update_metadata_url == '' && inputs.win_x64_update_target_version == '' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $match = [regex]::Match("${{ needs.metadata.outputs.beta_version }}", "^(?<base>\d+\.\d+\.\d+)-beta\.(?<number>\d+)$")
-          if (-not $match.Success) { throw "full Windows smoke requires a counted beta version; got ${{ needs.metadata.outputs.beta_version }}" }
-          $updateVersion = "{0}-beta.{1}" -f $match.Groups["base"].Value, ([int]$match.Groups["number"].Value + 1)
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "release-beta-win", "--app-version", $updateVersion, "--to", "nsis", "--json")
-          if ("${{ inputs.win_x64_sign_mode }}" -eq "on") { $buildArgs += "--signed" }
-          $updateOutput = pnpm.cmd @buildArgs
-          if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
-          $updateOutput | Set-Content -Path "${{ runner.temp }}\release-build\win_x64\windows-tools-pack-update-build.json" -Encoding utf8
-          $updateBuild = $updateOutput | ConvertFrom-Json
-
       - name: Smoke beta win_x64 packaged runtime
         id: win_x64_smoke
         if: ${{ inputs.win_x64_smoke_mode != 'skip' }}
@@ -1245,9 +1159,6 @@ jobs:
           OD_PACKAGED_E2E_TOOLS_PACK_DIR: ${{ runner.temp }}\tools-pack
           OD_PACKAGED_E2E_WIN: "1"
           OD_PACKAGED_E2E_WIN_SMOKE_PROFILE: ${{ inputs.win_x64_smoke_mode }}
-          OD_PACKAGED_E2E_WIN_UPDATE_FIXTURE: ${{ inputs.win_x64_smoke_mode == 'full' && inputs.win_x64_update_metadata_url == '' && inputs.win_x64_update_target_version == '' && 'tools-serve' || '' }}
-          OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}
-          OD_PACKAGED_E2E_WIN_UPDATE_VERSION: ${{ inputs.win_x64_update_target_version }}
         run: pnpm exec tsx scripts/release-smoke.ts win specs/win.spec.ts
 
       - name: Write win_x64 release report
@@ -1573,10 +1484,6 @@ jobs:
           MAC_X64_RESULT: ${{ needs.build_mac_x64.result }}
           RELEASE_ASSET_SUFFIX: ${{ needs.metadata.outputs.asset_version_suffix }}
           RELEASE_CHANNEL: beta
-          RELEASE_LAUNCHER_VERSION_MIN_BETA: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_BETA }}
-          RELEASE_LAUNCHER_VERSION_MIN_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_STABLE }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_BETA: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_BETA }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE }}
           RELEASE_MANIFEST_DIR: ${{ runner.temp }}/release-platform-manifests
           RELEASE_METADATA_DIR: ${{ runner.temp }}/release-metadata
           RELEASE_NOTE_MANIFEST_PATH: ${{ runner.temp }}/release-metadata/release-note-publication.json
@@ -1612,10 +1519,6 @@ jobs:
           MAC_ARM64_RESULT: ${{ needs.build_mac_arm64.result }}
           MAC_X64_RESULT: ${{ needs.build_mac_x64.result }}
           RELEASE_CHANNEL: beta
-          RELEASE_LAUNCHER_VERSION_MIN_BETA: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_BETA }}
-          RELEASE_LAUNCHER_VERSION_MIN_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_STABLE }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_BETA: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_BETA }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE }}
           RELEASE_METADATA_URL: ${{ steps.outputs.outputs.version_metadata_url }}
           RELEASE_NOTE_MANIFEST_PATH: ${{ runner.temp }}/release-metadata/release-note-publication.json
           RELEASE_VERSION: ${{ needs.metadata.outputs.beta_version }}

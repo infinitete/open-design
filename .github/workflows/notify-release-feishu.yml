@@ -73,13 +73,11 @@ jobs:
       # Windows packaged smoke is advisory to publication: a failed smoke is
       # recorded in the report and annotated on the full download card without
       # blocking platform or metadata publication. The final arm must name a
-      # real profile, NOT ''. A workflow_call
-      # `default:` applies only when an input is omitted, so forwarding an empty
-      # string defeats the callee's declared `core` default; the empty value
-      # then reaches the spec, reads as "not core", and selects the updater path
-      # — which demands a fixture only a genuine `full` request wires up, so the
-      # job dies before the smoke starts. That is how release/v0.18.1's first
-      # prerelease failed on its branch-cut commit.
+      # real profile, NOT ''. A workflow_call `default:` applies only when an
+      # input is omitted, so forwarding an empty string defeats the callee's
+      # declared `core` default; the empty value reaches the spec and reads as
+      # "not core", so the job dies before the smoke starts. That is how
+      # release/v0.18.1's first prerelease failed on its branch-cut commit.
       win_x64_smoke_mode: ${{ inputs.win_x64_smoke_mode || 'core' }}
 
   notify:

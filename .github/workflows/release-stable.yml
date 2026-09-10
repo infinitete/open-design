@@ -30,16 +30,6 @@ on:
           - core
           - full
         default: core
-      win_x64_update_metadata_url:
-        description: "Optional external updater metadata URL for full Windows x64 payload smoke."
-        required: false
-        type: string
-        default: ""
-      win_x64_update_target_version:
-        description: "Optional external updater target version expected by full Windows x64 payload smoke."
-        required: false
-        type: string
-        default: ""
   workflow_call:
     inputs:
       prerelease_version:
@@ -61,16 +51,6 @@ on:
         required: false
         type: string
         default: "core"
-      win_x64_update_metadata_url:
-        description: "Optional external updater metadata URL for full Windows x64 payload smoke."
-        required: false
-        type: string
-        default: ""
-      win_x64_update_target_version:
-        description: "Optional external updater target version expected by full Windows x64 payload smoke."
-        required: false
-        type: string
-        default: ""
     outputs:
       release_version:
         description: "The stable version that was validated or published."
@@ -775,20 +755,6 @@ jobs:
           }
           "deletedFailedCacheKey=$matchedKey count=$($caches.Count)"
 
-      - name: Build stable win_x64 update fixture
-        if: ${{ inputs.win_x64_smoke_mode == 'full' && inputs.win_x64_update_metadata_url == '' && inputs.win_x64_update_target_version == '' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $match = [regex]::Match("${{ needs.metadata.outputs.release_version }}", "^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$")
-          if (-not $match.Success) { throw "full Windows stable smoke requires stable version x.y.z; got ${{ needs.metadata.outputs.release_version }}" }
-          $updateVersion = "{0}.{1}.{2}" -f $match.Groups["major"].Value, $match.Groups["minor"].Value, ([int]$match.Groups["patch"].Value + 1)
-          $buildArgs = @("exec", "tools-pack", "win", "build", "--dir", "${{ runner.temp }}\release-work\win_x64\tools-pack-update-fixture", "--cache-dir", "${{ runner.temp }}\tools-pack-cache", "--namespace", "${{ needs.metadata.outputs.win_namespace }}", "--app-version", $updateVersion, "--to", "nsis", "--json")
-          $updateOutput = pnpm.cmd @buildArgs
-          if ($LASTEXITCODE -ne 0) { throw "tools-pack win update fixture failed with exit code $LASTEXITCODE" }
-          $updateOutput | Set-Content -Path "${{ runner.temp }}\windows-tools-pack-update-build.json" -Encoding utf8
-          $updateBuild = $updateOutput | ConvertFrom-Json
-
       - name: Smoke release windows packaged runtime
         if: ${{ inputs.win_x64_smoke_mode != 'skip' }}
         working-directory: e2e
@@ -802,9 +768,6 @@ jobs:
           OD_PACKAGED_E2E_REPORT_DIR: ${{ runner.temp }}/release-report/win
           OD_PACKAGED_E2E_TOOLS_PACK_DIR: ${{ runner.temp }}/tools-pack
           OD_PACKAGED_E2E_WIN_SMOKE_PROFILE: ${{ inputs.win_x64_smoke_mode }}
-          OD_PACKAGED_E2E_WIN_UPDATE_FIXTURE: ${{ inputs.win_x64_smoke_mode == 'full' && inputs.win_x64_update_metadata_url == '' && inputs.win_x64_update_target_version == '' && 'tools-serve' || '' }}
-          OD_PACKAGED_E2E_WIN_UPDATE_METADATA_URL: ${{ inputs.win_x64_update_metadata_url }}
-          OD_PACKAGED_E2E_WIN_UPDATE_VERSION: ${{ inputs.win_x64_update_target_version }}
         run: |
           $ErrorActionPreference = "Stop"
           pnpm exec tsx scripts/release-smoke.ts win specs/win.spec.ts
@@ -1311,8 +1274,6 @@ jobs:
           RELEASE_CHANNEL: ${{ needs.metadata.outputs.channel }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
           RELEASE_DRY_RUN_MODE: ${{ needs.metadata.outputs.dry_run_mode }}
-          RELEASE_LAUNCHER_VERSION_MIN_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_STABLE }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE }}
           RELEASE_PUBLISH_SIDE_EFFECTS: ${{ needs.metadata.outputs.publish_side_effects_enabled }}
           RELEASE_MANIFEST_DIR: ${{ runner.temp }}/release-platform-manifests
           RELEASE_METADATA_DIR: ${{ runner.temp }}/release-metadata
@@ -1356,8 +1317,6 @@ jobs:
           MAC_X64_RESULT: ${{ needs.build_mac_intel.result }}
           RELEASE_DRY_RUN_MODE: ${{ needs.metadata.outputs.dry_run_mode }}
           RELEASE_CHANNEL: ${{ needs.metadata.outputs.channel }}
-          RELEASE_LAUNCHER_VERSION_MIN_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_STABLE }}
-          RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE: ${{ vars.RELEASE_LAUNCHER_VERSION_MIN_URL_STABLE }}
           RELEASE_METADATA_URL: ${{ steps.outputs.outputs.version_metadata_url }}
           RELEASE_METADATA_PATH: ${{ needs.metadata.outputs.publish_side_effects_enabled == 'true' && '' || format('{0}/release-metadata/metadata.json', runner.temp) }}
           RELEASE_NOTE_MANIFEST_PATH: ${{ runner.temp }}/release-metadata/release-note-publication.json

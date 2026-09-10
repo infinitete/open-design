@@ -334,9 +334,6 @@ jobs:
             pnpm --filter @open-design/desktop test
             pnpm --filter @open-design/packaged test
             pnpm --filter @open-design/tools-pack test
-            if [ "${{ fromJSON(needs.plan.outputs.run).e2e_vitest }}" != "true" ]; then
-              pnpm --filter @open-design/e2e test tests/packaged-launcher-update-loop.test.ts
-            fi
           fi
 
 
@@ -367,25 +364,6 @@ jobs:
         env:
           OD_WATCHER_TEST_DEBUG: "1"
         run: pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4
-
-  windows_tools_pack_payload_tests:
-    name: Windows tools-pack payload tests
-    needs: [plan, runners]
-    if: ${{ fromJSON(needs.plan.outputs.run).windows_tools_pack_payload_tests }}
-    runs-on: ${{ fromJSON(needs.runners.outputs.runs_on).windows_tools }}
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-
-      - name: Setup workspace
-        uses: ./.github/actions/setup-workspace
-        with:
-          runner-labels: ${{ toJSON(fromJSON(needs.runners.outputs.runs_on).windows_tools) }}
-
-      - name: Windows launcher payload archive tests
-        run: pnpm --filter @open-design/tools-pack exec vitest run tests/launcher/windows/payload.test.ts
 
   web_workspace_tests:
     name: Web workspace tests (${{ matrix.shard }}/2)
@@ -952,7 +930,6 @@ jobs:
       - preflight
       - workspace_unit_tests
       - daemon_unit_tests
-      - windows_tools_pack_payload_tests
       - web_workspace_tests
       - e2e_vitest
       - playwright_critical
