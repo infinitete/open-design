@@ -29,7 +29,6 @@ export type RawPackagedConfig = {
   namespaceBaseRoot?: string;
   nodeCommandRelative?: string;
   resourceRoot?: string;
-  updateMetadataUrl?: string;
   webSidecarEntryRelative?: string;
   webStandaloneRoot?: string;
   webOutputMode?: string;
@@ -43,7 +42,6 @@ export type PackagedConfig = {
   namespaceBaseRoot: string;
   nodeCommand: string | null;
   resourceRoot: string;
-  updateMetadataUrl: string | null;
   webSidecarEntry: string | null;
   webStandaloneRoot: string | null;
   webOutputMode: PackagedWebOutputMode;
@@ -176,7 +174,6 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     namespaceBaseRoot,
     nodeCommand,
     resourceRoot,
-    updateMetadataUrl: cleanOptionalString(raw.updateMetadataUrl),
     webSidecarEntry,
     webStandaloneRoot,
     webOutputMode,

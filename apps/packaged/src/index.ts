@@ -6,11 +6,6 @@ import {
   type SidecarStamp,
 } from "@open-design/sidecar-proto";
 import {
-  parseLauncherAfterQuitArgs,
-  parseLauncherDelegatedArgs,
-  parseLauncherHandoffResumeArgs,
-} from "@open-design/launcher-proto";
-import {
   bootstrapSidecarRuntime,
   createSidecarLaunchEnv,
   resolveAppIpcPath,
@@ -37,16 +32,12 @@ import {
 } from "./headless-runtime.js";
 import { PackagedPathAccessError } from "./errors.js";
 import {
-  exitPackagedLauncherForExistingDesktop,
-  inspectExistingDesktopForLauncher,
-  waitForLauncherAfterQuit,
-} from "./launcher-after-quit.js";
-import { confirmPackagedLauncherRuntime, resolvePackagedLauncherRuntime } from "./launcher-runtime.js";
-import {
   applyPackagedElectronPathOverrides,
   claimPackagedSingleInstanceLock,
   createPackagedSecondInstanceHandoff,
   ensurePackagedNamespacePaths,
+  findPackagedDeeplinkArg,
+  stableAppLaunchPathFromExecutable,
   stabilizePackagedWorkingDirectory,
 } from "./launch.js";
 import {
@@ -55,8 +46,6 @@ import {
   type PackagedDesktopLogger,
 } from "./logging.js";
 import { resolvePackagedNamespacePaths } from "./paths.js";
-import { createObsoleteInstalledOuterRetirement } from "./obsolete-installed-outer.js";
-import { findPackagedDeeplinkArg, launchPackagedPayloadDesktop } from "./payload-desktop-launch.js";
 import { packagedEntryUrl, registerOdProtocol } from "./protocol.js";
 import { startPackagedSidecars } from "./sidecars.js";
 import { resolvePackagedWindowTitle } from "./window-title.js";
@@ -91,12 +80,6 @@ function applyLaunchEnv(base: string, stamp: SidecarStamp): void {
   }
 }
 
-function applyPackagedUpdaterEnv(updateMetadataUrl: string | null): void {
-  if (updateMetadataUrl == null) return;
-  if (process.env.OD_UPDATE_METADATA_URL != null && process.env.OD_UPDATE_METADATA_URL.length > 0) return;
-  process.env.OD_UPDATE_METADATA_URL = updateMetadataUrl;
-}
-
 async function main(): Promise<void> {
   const config = await readPackagedConfig();
   const headlessRequest = parsePackagedHeadlessRequest(process.argv.slice(1));
@@ -115,46 +98,17 @@ async function main(): Promise<void> {
   // Must also land before whenReady — see the helper's docblock for the
   // connection-pool deadlock it prevents (electron/electron#47097).
   applyLoopbackConnectionLimitSwitch(app);
-  // Belt-and-braces duplicate of the helper above: the packaged outer
-  // shell can outlive auto-updates that only refresh inner resources, so
-  // the deadlock fix must not depend on which desktop build the shell
-  // happens to bundle. appendSwitch is idempotent for the same key.
-  app.commandLine.appendSwitch("ignore-connections-limit", "127.0.0.1,localhost");
 
-  const afterQuit = parseLauncherAfterQuitArgs(process.argv.slice(1));
-  const handoffResume = parseLauncherHandoffResumeArgs(process.argv.slice(1));
-  const delegated = parseLauncherDelegatedArgs(process.argv.slice(1));
   const argvStamp = readProcessStamp(process.argv.slice(1), OPEN_DESIGN_SIDECAR_CONTRACT);
   const namespace = argvStamp?.namespace ?? config.namespace;
-  const namespaceConfig = namespace === config.namespace ? config : { ...config, namespace };
-  const initialPaths = resolvePackagedNamespacePaths(namespaceConfig, namespace, process.env);
-  if (!await waitForLauncherAfterQuit(afterQuit, initialPaths)) {
-    app.exit(1);
-    return;
-  }
-  const existingDesktop = await inspectExistingDesktopForLauncher(namespace, {
-    deeplinkUrl: findPackagedDeeplinkArg(process.argv),
-    incomingVersion: namespaceConfig.appVersion,
-    logger: console,
-    paths: initialPaths,
-  });
-  if (exitPackagedLauncherForExistingDesktop(existingDesktop, (code) => app.exit(code))) {
-    return;
-  }
+  // The installed application IS the application: there is no outer/payload
+  // split and no generation to select, so the namespace-argv stamp is the only
+  // thing that can re-scope the resolved config.
+  const activeConfig = namespace === config.namespace ? config : { ...config, namespace };
+  const paths = resolvePackagedNamespacePaths(activeConfig, namespace, process.env);
   const stamp = argvStamp ?? createPackagedDesktopStamp(namespace);
-  const launcherRuntime = await resolvePackagedLauncherRuntime(namespaceConfig, initialPaths, {
-    delegated,
-    resume: handoffResume,
-  });
-  if (await launchPackagedPayloadDesktop(launcherRuntime, stamp)) {
-    app.exit(0);
-    return;
-  }
-  const activeConfig = launcherRuntime.config;
-  const paths = launcherRuntime.paths;
-  const mcpBootstrap = resolvePackagedMcpBootstrapLaunch({
-    installedLaunchPath: launcherRuntime.installedLaunchPath,
-  });
+  const installedLaunchPath = stableAppLaunchPathFromExecutable(process.execPath);
+  const mcpBootstrap = resolvePackagedMcpBootstrapLaunch({ installedLaunchPath });
 
   await ensurePackagedNamespacePaths(paths);
   stabilizePackagedWorkingDirectory(paths);
@@ -164,17 +118,7 @@ async function main(): Promise<void> {
   });
   packagedLogger = createPackagedDesktopLogger(paths);
   attachPackagedDesktopProcessLogging({ logger: packagedLogger, paths, stamp });
-  const retireObsoleteInstalledOuter = createObsoleteInstalledOuterRetirement({
-    currentExecutablePath: process.execPath,
-    currentPid: process.pid,
-    installedLaunchPath: launcherRuntime.installedLaunchPath,
-    logger: packagedLogger,
-    payloadDesktopProcess: launcherRuntime.payloadDesktopProcess,
-    payloadExecutablePath: launcherRuntime.desktopExecutablePath,
-    platform: process.platform,
-  });
   applyPackagedElectronPathOverrides(paths);
-  applyPackagedUpdaterEnv(activeConfig.updateMetadataUrl);
   if (!claimPackagedSingleInstanceLock(app, (argv) => {
     secondInstanceHandoff.handle(findPackagedDeeplinkArg(argv));
   })) {
@@ -204,7 +148,7 @@ async function main(): Promise<void> {
     appVersion: activeConfig.appVersion,
     daemonCliEntry: activeConfig.daemonCliEntry,
     daemonSidecarEntry: activeConfig.daemonSidecarEntry,
-    electronNodeCommand: launcherRuntime.electronNodeCommand,
+    electronNodeCommand: null,
     mcpBootstrapArgs: mcpBootstrap.args,
     mcpBootstrapCommand: mcpBootstrap.command,
     nodeCommand: activeConfig.nodeCommand,
@@ -255,13 +199,9 @@ async function main(): Promise<void> {
     splashStartedAt: splash.startedAt,
     async beforeShutdown() {
       try {
-        await retireObsoleteInstalledOuter();
+        await sidecars.close();
       } finally {
-        try {
-          await sidecars.close();
-        } finally {
-          await identity.close();
-        }
+        await identity.close();
       }
     },
     async discoverWebUrl() {
@@ -276,17 +216,11 @@ async function main(): Promise<void> {
     },
     windowTitle: resolvePackagedWindowTitle(activeConfig),
     inviteProtocolClientPath:
-      process.platform === "win32" ? launcherRuntime.installedLaunchPath : null,
-    async onExternalShow() {
-      await retireObsoleteInstalledOuter();
-    },
+      process.platform === "win32" ? installedLaunchPath : null,
     onDesktopReady(controls) {
-      void confirmPackagedLauncherRuntime(launcherRuntime).catch((error: unknown) => {
-        packagedLogger?.warn("failed to confirm packaged launcher runtime", { error });
-      });
       void syncWindowsUninstallDisplayVersion({
         namespace,
-        version: launcherRuntime.config.appVersion,
+        version: activeConfig.appVersion,
       }).catch((error: unknown) => {
         packagedLogger?.warn("failed to sync Windows uninstall registry version", { error });
       });

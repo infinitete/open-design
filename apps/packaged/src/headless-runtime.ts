@@ -15,7 +15,7 @@ import type { JsonIpcServerHandle } from "@open-design/sidecar";
 import type { PackagedConfig } from "./config.js";
 import type { PackagedDesktopIdentityHandle } from "./identity.js";
 import { writePackagedDesktopIdentity, writePackagedWebIdentity } from "./identity.js";
-import { confirmPackagedLauncherRuntime, resolvePackagedLauncherRuntime } from "./launcher-runtime.js";
+import { stableAppLaunchPathFromExecutable } from "./launch.js";
 import { resolvePackagedNamespacePaths } from "./paths.js";
 import type { PackagedSidecarHandle } from "./sidecars.js";
 import { startPackagedSidecars } from "./sidecars.js";
@@ -54,7 +54,6 @@ export interface RunPackagedHeadlessOptions {
 }
 
 export interface PackagedHeadlessStartupDependencies {
-  confirmRuntime(): Promise<void>;
   createIpcServer(options: {
     shutdown(): Promise<void>;
     webUrl: string;
@@ -103,7 +102,6 @@ export async function acquirePackagedHeadlessStartup(
     await dependencies.installMcp(sidecars.daemon.url);
     ipcServer = await dependencies.createIpcServer({ shutdown, webUrl });
     await dependencies.writeWebIdentity(webUrl);
-    await dependencies.confirmRuntime();
     return { shutdown, webUrl };
   } catch (error) {
     await close();
@@ -166,19 +164,13 @@ export async function runPackagedHeadless(
   },
   options: RunPackagedHeadlessOptions = {},
 ): Promise<void> {
-  const initialPaths = resolvePackagedNamespacePaths(
-    config,
-    config.namespace,
-    process.env,
-  );
-  const launcherRuntime = await resolvePackagedLauncherRuntime(config, initialPaths);
-  const activeConfig = launcherRuntime.config;
-  const paths = launcherRuntime.paths;
+  const activeConfig = config;
+  const paths = resolvePackagedNamespacePaths(config, config.namespace, process.env);
   const stamp = createHeadlessStamp(config.namespace);
   const mcpBootstrap =
     options.mcpBootstrapLaunch
     ?? resolvePackagedMcpBootstrapLaunch({
-      installedLaunchPath: launcherRuntime.installedLaunchPath,
+      installedLaunchPath: stableAppLaunchPathFromExecutable(process.execPath),
     });
 
   await mkdir(paths.runtimeRoot, { recursive: true });
@@ -190,7 +182,6 @@ export async function runPackagedHeadless(
   });
 
   const { shutdown, webUrl } = await acquirePackagedHeadlessStartup({
-    confirmRuntime: async () => await confirmPackagedLauncherRuntime(launcherRuntime),
     createIpcServer: async ({ shutdown: stop, webUrl: activeWebUrl }) =>
       await createJsonIpcServer({
         socketPath: stamp.ipc,
@@ -224,7 +215,7 @@ export async function runPackagedHeadless(
         appVersion: activeConfig.appVersion,
         daemonCliEntry: activeConfig.daemonCliEntry,
         daemonSidecarEntry: activeConfig.daemonSidecarEntry,
-        electronNodeCommand: launcherRuntime.electronNodeCommand,
+        electronNodeCommand: null,
         mcpBootstrapArgs: mcpBootstrap.args,
         mcpBootstrapCommand: mcpBootstrap.command,
         nodeCommand: activeConfig.nodeCommand,

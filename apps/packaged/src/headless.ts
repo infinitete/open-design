@@ -52,7 +52,6 @@ function resolveHeadlessConfig(): PackagedConfig {
     namespaceBaseRoot,
     nodeCommand: null,
     resourceRoot,
-    updateMetadataUrl: process.env.OD_UPDATE_METADATA_URL?.trim() || null,
     webSidecarEntry: null,
     webStandaloneRoot: null,
     webOutputMode: "server",

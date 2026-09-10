@@ -69,7 +69,6 @@ function makePaths(root: string, desktopLogPath = join(root, 'logs', 'desktop', 
     namespaceRoot: root,
     resourceRoot: join(root, 'resources'),
     runtimeRoot: join(root, 'runtime'),
-    updateRoot: join(root, 'updates'),
     webIdentityPath: join(root, 'runtime', 'web-root.json'),
   };
 }

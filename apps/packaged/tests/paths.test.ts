@@ -23,7 +23,6 @@ function fakeConfig(): PackagedConfig {
     namespaceBaseRoot: join("C:", "Users", "Fred", "AppData", "Roaming", "Open Design", "namespaces"),
     nodeCommand: null,
     resourceRoot: join("C:", "Program Files", "Open Design", "resources", "open-design"),
-    updateMetadataUrl: null,
     webOutputMode: "server",
     webSidecarEntry: null,
     webStandaloneRoot: null,
@@ -41,13 +40,12 @@ describe("resolvePackagedNamespacePaths", () => {
     restorePlatform();
   });
 
-  it("models update downloads as a namespace-scoped root beside data", () => {
+  it("keeps every namespace-scoped root under the namespace directory", () => {
     const config = fakeConfig();
     const paths = resolvePackagedNamespacePaths(config, config.namespace);
 
     expect(paths.namespaceRoot).toBe(join(config.namespaceBaseRoot, config.namespace));
     expect(paths.dataRoot).toBe(join(paths.namespaceRoot, "data"));
-    expect(paths.updateRoot).toBe(join(paths.namespaceRoot, "updates"));
     expect(paths.installerObservationRoot).toBe(join(paths.dataRoot, "observations", "installer"));
   });
 
@@ -60,8 +58,7 @@ describe("resolvePackagedNamespacePaths", () => {
       namespaceBaseRoot: "/tmp/open-design-packaged/namespaces",
       nodeCommand: null,
       resourceRoot: "/tmp/open-design-packaged/resources",
-      updateMetadataUrl: null,
-      webSidecarEntry: null,
+        webSidecarEntry: null,
       webStandaloneRoot: null,
       webOutputMode: "server",
     };

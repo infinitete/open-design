@@ -756,7 +756,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       namespaceRoot: '/tmp/od-pkg',
       resourceRoot: '/tmp/od-pkg/resources',
       runtimeRoot: '/tmp/od-pkg/runtime',
-      updateRoot: '/tmp/od-pkg/updates',
       webIdentityPath: '/tmp/od-pkg/runtime/web-root.json',
     };
   }
@@ -795,26 +794,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     expect(env.OD_RESOURCE_ROOT).toBe('/tmp/od-pkg/resources');
     expect(env.OD_APP_VERSION).toBe('1.2.3');
     expect(env.OD_LEGACY_DATA_DIR).toBeUndefined();
-  });
-
-  it('forwards updater controls needed by a historical desktop handoff', () => {
-    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
-      appVersion: '1.2.3',
-      daemonCliEntry: null,
-      desktopHandoffEnv: {
-        OD_UPDATE_CURRENT_VERSION: '1.2.3',
-        OD_UPDATE_INSTALLED_VERSION: '1.0.0',
-        OD_UPDATE_METADATA_URL: 'http://127.0.0.1:54321/stable/latest/metadata.json',
-        PATH: 'must-not-leak-through-handoff-env',
-      },
-      legacyDataDir: null,
-      requireDesktopAuth: true,
-    });
-
-    expect(env.OD_UPDATE_CURRENT_VERSION).toBe('1.2.3');
-    expect(env.OD_UPDATE_INSTALLED_VERSION).toBe('1.0.0');
-    expect(env.OD_UPDATE_METADATA_URL).toBe('http://127.0.0.1:54321/stable/latest/metadata.json');
-    expect(env.PATH).toBeUndefined();
   });
 
   it('omits OD_REQUIRE_DESKTOP_AUTH entirely when requireDesktopAuth=false (headless)', () => {

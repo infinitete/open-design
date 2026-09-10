@@ -107,7 +107,6 @@ export async function ensurePackagedNamespacePaths(
     mkdir(paths.logsRoot, { recursive: true }),
     mkdir(paths.desktopLogsRoot, { recursive: true }),
     mkdir(paths.runtimeRoot, { recursive: true }),
-    mkdir(paths.updateRoot, { recursive: true }),
     mkdir(paths.electronUserDataRoot, { recursive: true }),
     mkdir(paths.electronSessionDataRoot, { recursive: true }),
   ]);
@@ -117,8 +116,8 @@ export function stabilizePackagedWorkingDirectory(
   paths: Pick<PackagedNamespacePaths, "runtimeRoot">,
   chdir: (directory: string) => void = (directory) => process.chdir(directory),
 ): void {
-  // Payload launches can inherit a cwd inside an older version directory. Move
-  // to the namespace-scoped root before release cleanup makes that cwd invalid.
+  // Pin the working directory to the namespace-scoped root so the process never
+  // runs from an inherited cwd that a later cleanup could invalidate.
   chdir(paths.runtimeRoot);
 }
 
@@ -174,4 +173,28 @@ export function createPackagedSecondInstanceHandoff() {
       if (deeplinkUrl != null) pendingDeeplinks.push(deeplinkUrl);
     },
   };
+}
+
+export function findPackagedDeeplinkArg(argv: readonly string[]): string | null {
+  return argv.find((arg) => arg.startsWith("opendesign://")) ?? null;
+}
+
+function macAppBundlePathFromExecutable(executablePath: string): string | null {
+  const marker = ".app/Contents/MacOS/";
+  const index = executablePath.indexOf(marker);
+  if (index < 0) return null;
+  return executablePath.slice(0, index + ".app".length);
+}
+
+/**
+ * The installed application's stable launch path: the `.app` bundle on macOS,
+ * the executable itself elsewhere. This is what the OS registered for
+ * `opendesign://` and what the headless MCP bootstrap re-launches.
+ */
+export function stableAppLaunchPathFromExecutable(
+  executablePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "darwin") return executablePath;
+  return macAppBundlePathFromExecutable(executablePath) ?? executablePath;
 }

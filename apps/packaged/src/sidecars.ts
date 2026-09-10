@@ -78,30 +78,6 @@ const PACKAGED_CHILD_ENV_ALLOWLIST = [
   "OD_ALLOWED_INTERNAL_HOSTS",
 ] as const;
 
-// The daemon owns the historical-outer compatibility handoff. Preserve the
-// updater controls it needs to launch the replacement payload desktop with the
-// same feed/test policy as the outer process, without broadening the packaged
-// child environment allowlist.
-const PACKAGED_DESKTOP_HANDOFF_ENV_KEYS = [
-  "OD_UPDATE_ARCH",
-  "OD_UPDATE_AUTO_CHECK",
-  "OD_UPDATE_AUTO_DOWNLOAD",
-  "OD_UPDATE_AUTO_OPEN",
-  "OD_UPDATE_CHANNEL",
-  "OD_UPDATE_CHECK_BACKOFF_INITIAL_MS",
-  "OD_UPDATE_CHECK_BACKOFF_MAX_MS",
-  "OD_UPDATE_CHECK_INITIAL_DELAY_MS",
-  "OD_UPDATE_CHECK_INTERVAL_MS",
-  "OD_UPDATE_CURRENT_VERSION",
-  "OD_UPDATE_DOWNLOAD_ROOT",
-  "OD_UPDATE_ENABLED",
-  "OD_UPDATE_INSTALLED_VERSION",
-  "OD_UPDATE_METADATA_URL",
-  "OD_UPDATE_MODE",
-  "OD_UPDATE_OPEN_DRY_RUN",
-  "OD_UPDATE_PLATFORM",
-] as const;
-
 function shouldForwardPackagedChildEnv(key: string, includeProviderSecrets = false): boolean {
   return (
     PACKAGED_CHILD_ENV_ALLOWLIST.includes(
@@ -774,7 +750,6 @@ function createPackagedDaemonManagedPathEnv(
 export type PackagedDaemonSpawnEnvOptions = {
   appVersion: string | null;
   daemonCliEntry: string | null;
-  desktopHandoffEnv?: NodeJS.ProcessEnv;
   mcpBootstrapArgs?: readonly string[];
   mcpBootstrapCommand?: string | null;
   nodeCommand?: string | null;
@@ -828,7 +803,6 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.mcpBootstrapArgs == null
       ? {}
       : { OD_MCP_BOOTSTRAP_ARGS: JSON.stringify(options.mcpBootstrapArgs) }),
-    ...pickPackagedDesktopHandoffEnv(options.desktopHandoffEnv ?? {}),
     // OD_LEGACY_DATA_DIR is the one-shot recovery handle for users
     // upgrading from 0.3.x .od/ layouts. The daemon's startup
     // migrator (legacy-data-migrator.ts) reads it; the env-allowlist
@@ -839,15 +813,6 @@ export function buildPackagedDaemonSpawnEnv(
       ? {}
       : { OD_LEGACY_DATA_DIR: options.legacyDataDir }),
   };
-}
-
-function pickPackagedDesktopHandoffEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const selected: NodeJS.ProcessEnv = {};
-  for (const key of PACKAGED_DESKTOP_HANDOFF_ENV_KEYS) {
-    const value = env[key];
-    if (value != null && value.length > 0) selected[key] = value;
-  }
-  return selected;
 }
 
 async function spawnSidecarChild(options: {
@@ -1039,7 +1004,6 @@ export async function startPackagedSidecars(
   await mkdir(paths.logsRoot, { recursive: true });
   await mkdir(paths.desktopLogsRoot, { recursive: true });
   await mkdir(paths.runtimeRoot, { recursive: true });
-  await mkdir(paths.updateRoot, { recursive: true });
   await mkdir(paths.electronUserDataRoot, { recursive: true });
   await mkdir(paths.electronSessionDataRoot, { recursive: true });
 
@@ -1077,7 +1041,6 @@ export async function startPackagedSidecars(
       env: buildPackagedDaemonSpawnEnv(paths, {
         appVersion: options.appVersion,
         daemonCliEntry: options.daemonCliEntry,
-        desktopHandoffEnv: process.env,
         legacyDataDir: process.env.OD_LEGACY_DATA_DIR ?? null,
         mcpBootstrapArgs: options.mcpBootstrapArgs,
         mcpBootstrapCommand: options.mcpBootstrapCommand,
