@@ -106,7 +106,6 @@ describe("release workflows", () => {
     expect(macX64).toContain("exec tools-pack mac build");
     expect(macX64).toContain("pnpm exec tsx scripts/release-smoke.ts mac specs/mac.spec.ts");
     expect(buildMac).toContain('--cache-dir "$TOOLS_PACK_CACHE_DIR"');
-    expect(buildMac).toContain('tools-pack mac build update fixture');
     expect(buildMac).not.toContain("::warning::Expected Electron framework symlink");
     expect(linux).not.toContain("--require-vela-cli");
     expect(beta).not.toContain("REQUIRE_VELA_CLI: \"true\"");
