@@ -9,7 +9,6 @@ import {
 import {
   routeAgents,
   routeSuccessfulRuns,
-  suppressWhatsNew,
 } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 import type { Page } from '@playwright/test';
@@ -51,7 +50,6 @@ const KIMI_ARTIFACT_RUN = [
 test('[P1] Kimi artifact follow-ups bypass the AMR Free upgrade dialog', async ({ page }) => {
   test.setTimeout(T.xlong);
 
-  await suppressWhatsNew(page);
   await routeAgents(page, [KIMI_AGENT]);
   await page.route('**/api/integrations/vela/status*', async (route) => {
     await route.fulfill({

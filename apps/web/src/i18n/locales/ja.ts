@@ -3749,8 +3749,6 @@ export const ja: Dict = {
   'notify.failureTitle': 'タスクが失敗しました',
   'notify.successBody': '1ターンが終了しました。',
   'notify.failureBody': 'タスクはエラーで終了しました。',
-  'whatsNew.updatedTitle': 'OpenDesign {version} に更新しました',
-  'whatsNew.cta': 'リリースノートを見る',
   'newsletter.label': 'ニュースレター（任意）',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

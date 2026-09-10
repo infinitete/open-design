@@ -62,7 +62,6 @@ import {
   ProjectSearchModal,
 } from './ProjectSearchModal';
 import { LibrarySection } from './LibrarySection';
-import { WhatsNewPopup } from './WhatsNewPopup';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
 import { installDeepSeekHarnessCompanion } from '../providers/agent-companion';
 import { HomeView, seedHomeComposerPrompt } from './HomeView';
@@ -327,8 +326,6 @@ interface Props {
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
-  /** True only when GET /api/app-config returned a real config object. */
-  daemonAppConfigReady?: boolean;
   onSkillsRefresh?: () => Promise<void> | void;
   onSkillsChanged?: (affectedSkillId?: string) => void;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
@@ -412,7 +409,6 @@ export function EntryShell({
   onApiProtocolChange,
   onApiModelChange,
   onConfigPersist,
-  daemonAppConfigReady = false,
   onSkillsRefresh,
   onSkillsChanged,
   onRefreshAgents,
@@ -920,7 +916,6 @@ export function EntryShell({
           {/* #5517: no entry topbar. The rail toggle is the pinned Home tab in
               the workspace tabs bar (entryRailBridge), and everything below is
               fixed-position or portalled so it occupies no layout space here. */}
-          <WhatsNewPopup active={view === 'home'} />
           {/* The campaign badge lives in EntryNavRail's top-right cluster so it
               stays beside the account module across every entry tab. */}
           <div

@@ -3677,8 +3677,6 @@ export const uk: Dict = {
   'notify.failureTitle': 'Завдання не вдалося',
   'notify.successBody': 'Черга завершена.',
   'notify.failureBody': 'Завдання завершилось помилкою.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} уже тут',
-  'whatsNew.cta': 'Переглянути примітки до випуску',
   'newsletter.label': 'Розсилка (необов’язково)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

@@ -3811,8 +3811,6 @@ export const th: Dict = {
   'notify.failureTitle': 'ข้อมูลการงานล้มเหลว',
   'notify.successBody': 'แชทตอบบทสนทนาเรียบร้อย',
   'notify.failureBody': 'หน้าที่ทำผิดพลาด',
-  'whatsNew.updatedTitle': 'OpenDesign {version} มาแล้ว',
-  'whatsNew.cta': 'ดูบันทึกการอัปเดต',
   'newsletter.label': 'Newsletter (optional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'โมเดลหน่วยความจำ',

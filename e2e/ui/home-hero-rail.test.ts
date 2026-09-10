@@ -9,7 +9,6 @@ import {
   routeSignedOutVelaStatus,
   routeSuccessfulRuns,
   successfulRunEventBody,
-  suppressWhatsNew,
   trackRunRequests,
 } from '@/playwright/mock-factory';
 import { CAMPAIGN_DISMISSAL_STORAGE } from '@/playwright/campaign-dismissals';
@@ -512,7 +511,6 @@ async function readHomeExampleGeometry(
 }
 
 test.beforeEach(async ({ page }) => {
-  await suppressWhatsNew(page);
   await page.addInitScript(({ key, value, campaigns }) => {
     window.localStorage.clear();
     window.sessionStorage.clear();

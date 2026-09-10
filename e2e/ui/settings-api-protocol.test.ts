@@ -1,7 +1,7 @@
 import { expect, test } from '@/playwright/suite';
 import type { Locator, Page } from '@playwright/test';
 import { openSettingsDialog, settingsSurface } from '../lib/playwright/amr.js';
-import { routeAgents, suppressWhatsNew } from '../lib/playwright/mock-factory.js';
+import { routeAgents } from '../lib/playwright/mock-factory.js';
 import { T } from '@/timeouts';
 
 const STORAGE_KEY = 'open-design:config';
@@ -12,7 +12,6 @@ const MODEL_POPOVER_SELECTOR = '.model-select-searchable__popover';
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
-  await suppressWhatsNew(page);
 });
 
 async function waitForLoadingToClear(page: Page) {

@@ -6,7 +6,6 @@ import { expectStableCount } from '@/playwright/assertions';
 import {
   routeAgents,
   routeUnavailableVelaStatus,
-  suppressWhatsNew,
 } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 
@@ -115,7 +114,6 @@ async function openProxySettingsHarness(
     { key: STORAGE_KEY, value: appConfig },
   );
   await routeUnavailableVelaStatus(page);
-  await suppressWhatsNew(page);
   await page.route('**/api/health', async (route) => {
     await route.fulfill({ json: { ok: true } });
   });

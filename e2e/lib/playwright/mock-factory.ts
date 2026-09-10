@@ -64,7 +64,6 @@ export async function applyStandardMocks(page: Page): Promise<void> {
   // route: callers use applyStandardMocks for extra pages/contexts that are
   // created outside the built-in Playwright `page` fixture.
   await routeUnavailableVelaStatus(page);
-  await suppressWhatsNew(page);
 }
 
 /**
@@ -107,16 +106,6 @@ export async function routeSignedOutVelaStatus(page: Page): Promise<void> {
   });
 }
 
-/** Keep unrelated release announcements from covering the surface under test. */
-export async function suppressWhatsNew(page: Page): Promise<void> {
-  await page.route('**/api/whats-new', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({ json: { version: 'e2e', id: null, content: null } });
-  });
-}
 
 /** Seed localStorage with the standard config only (no route interception). */
 async function applyStorageConfig(page: Page): Promise<void> {

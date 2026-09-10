@@ -3749,8 +3749,6 @@ export const esES: Dict = {
   'notify.failureTitle': 'La tarea falló',
   'notify.successBody': 'Un turno ha terminado.',
   'notify.failureBody': 'La tarea terminó con un error.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} ya está aquí',
-  'whatsNew.cta': 'Ver las notas de la versión',
   'newsletter.label': 'Newsletter (opcional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

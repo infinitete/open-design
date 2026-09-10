@@ -3749,8 +3749,6 @@ export const ptBR: Dict = {
   'notify.failureTitle': 'Tarefa falhou',
   'notify.successBody': 'Uma rodada foi concluída.',
   'notify.failureBody': 'A tarefa terminou com erro.',
-  'whatsNew.updatedTitle': 'O OpenDesign {version} chegou',
-  'whatsNew.cta': 'Ver as notas da versão',
   'newsletter.label': 'Newsletter (opcional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

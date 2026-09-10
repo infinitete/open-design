@@ -985,13 +985,6 @@ export interface Dict {
   'notify.successBody': string;
   'notify.failureBody': string;
 
-  // Post-update "what's new" dialog on the home surface. Cover art, release
-  // headline and highlight bullets come from the hosted highlights document;
-  // these keys cover the dialog chrome only. `updatedTitle` takes the RUNNING
-  // app version — never a literal. `cta` opens the release notes, so it names
-  // that destination rather than teasing "see what's new".
-  'whatsNew.updatedTitle': string;
-  'whatsNew.cta': string;
 
   // Newsletter email field on the onboarding About-you step.
   'newsletter.label': string;

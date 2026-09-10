@@ -14,7 +14,6 @@ import {
   fulfillAgentsRoute,
   routeSuccessfulRuns,
   successfulRunEventBody,
-  suppressWhatsNew,
 } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 
@@ -47,7 +46,6 @@ declare global {
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
-  await suppressWhatsNew(page);
 });
 
 test('[P0] @critical onboarding lets AMR Cloud sign in and complete setup after the login poll succeeds', async ({ page }) => {

@@ -3677,8 +3677,6 @@ export const fa: Dict = {
   'notify.failureTitle': 'وظیفه ناموفق بود',
   'notify.successBody': 'یک نوبت به پایان رسید.',
   'notify.failureBody': 'وظیفه با خطا پایان یافت.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} آمد',
-  'whatsNew.cta': 'مشاهده یادداشت‌های انتشار',
   'newsletter.label': 'Newsletter (optional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

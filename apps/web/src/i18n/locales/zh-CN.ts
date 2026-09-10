@@ -3994,8 +3994,6 @@ export const zhCN: Dict = {
   "notify.successBody": "一轮回答已经写完。",
   "notify.failureBody": "本轮任务出错，请查看错误信息。",
 
-  "whatsNew.updatedTitle": "OpenDesign {version} 已更新",
-  "whatsNew.cta": "查看更新说明",
 
   'designBrowser.copyScreenshot': '复制截图',
   'designBrowser.hardReload': '强制刷新',

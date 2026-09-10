@@ -3825,8 +3825,6 @@ export const en: Dict = {
   'notify.failureTitle': 'Task failed',
   'notify.successBody': 'A turn has finished.',
   'notify.failureBody': 'The task ended with an error.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} is here',
-  'whatsNew.cta': 'View the release notes',
   'newsletter.label': 'Newsletter (optional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

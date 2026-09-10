@@ -3749,8 +3749,6 @@ export const hu: Dict = {
   'notify.failureTitle': 'A feladat meghiúsult',
   'notify.successBody': 'Egy kör befejeződött.',
   'notify.failureBody': 'A feladat hibával ért véget.',
-  'whatsNew.updatedTitle': 'Megjött az OpenDesign {version}',
-  'whatsNew.cta': 'Kiadási megjegyzések megtekintése',
   'newsletter.label': 'Newsletter (optional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

@@ -3811,8 +3811,6 @@ export const id: Dict = {
   'notify.failureTitle': 'Pembuatan gagal',
   'notify.successBody': 'Artifact siap dilihat.',
   'notify.failureBody': 'Cek chat untuk detail error.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} sudah hadir',
-  'whatsNew.cta': 'Lihat catatan rilis',
   'newsletter.label': 'Newsletter (optional)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

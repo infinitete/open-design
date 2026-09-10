@@ -3999,8 +3999,6 @@ export const zhTW: Dict = {
   "notify.successBody": "一輪回答已經寫完。",
   "notify.failureBody": "本輪任務出錯，請查看錯誤訊息。",
 
-  "whatsNew.updatedTitle": "OpenDesign {version} 已更新",
-  "whatsNew.cta": "查看更新說明",
 
   'designBrowser.copyScreenshot': '複製截圖',
   'designBrowser.hardReload': '強制重新整理',

@@ -3811,8 +3811,6 @@ export const fr: Dict = {
   'notify.failureTitle': 'Tâche échouée',
   'notify.successBody': 'Un tour est terminé.',
   'notify.failureBody': 'La tâche s\'est terminée avec une erreur.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} est arrivé',
-  'whatsNew.cta': 'Voir les notes de version',
   'newsletter.label': 'Newsletter (facultatif)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Modèle de mémoire',

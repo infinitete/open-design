@@ -3749,8 +3749,6 @@ export const tr: Dict = {
   'notify.failureTitle': 'Görev başarısız oldu',
   'notify.successBody': 'Bir tur tamamlandı.',
   'notify.failureBody': 'Görev bir hata ile sona erdi.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} yayında',
-  'whatsNew.cta': 'Sürüm notlarını görüntüle',
   'newsletter.label': 'Bülten (isteğe bağlı)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

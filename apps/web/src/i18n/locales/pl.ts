@@ -3749,8 +3749,6 @@ export const pl: Dict = {
   'notify.failureTitle': 'Zadanie nieudane',
   'notify.successBody': 'Tura zakończona.',
   'notify.failureBody': 'Zadanie zakończyło się błędem.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} jest już dostępny',
-  'whatsNew.cta': 'Zobacz informacje o wydaniu',
   'newsletter.label': 'Newsletter (opcjonalnie)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

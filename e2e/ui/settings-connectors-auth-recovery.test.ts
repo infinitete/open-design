@@ -1,13 +1,12 @@
 import { expect, test } from '@/playwright/suite';
 import type { Locator, Page } from '@playwright/test';
-import { routeAgents, suppressWhatsNew } from '../lib/playwright/mock-factory.js';
+import { routeAgents } from '../lib/playwright/mock-factory.js';
 import { T } from '@/timeouts';
 
 const STORAGE_KEY = 'open-design:config';
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
-  await suppressWhatsNew(page);
 });
 
 type ConnectorFixture = {

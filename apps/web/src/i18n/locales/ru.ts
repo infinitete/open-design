@@ -3749,8 +3749,6 @@ export const ru: Dict = {
   'notify.failureTitle': 'Задача завершилась с ошибкой',
   'notify.successBody': 'Ход завершён.',
   'notify.failureBody': 'Задача завершилась с ошибкой.',
-  'whatsNew.updatedTitle': 'OpenDesign {version} уже здесь',
-  'whatsNew.cta': 'Посмотреть примечания к выпуску',
   'newsletter.label': 'Рассылка (необязательно)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Модель памяти',

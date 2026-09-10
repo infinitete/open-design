@@ -3749,8 +3749,6 @@ export const ar: Dict = {
   'notify.failureTitle': 'فشلت المهمة',
   'notify.successBody': 'انتهت جولة.',
   'notify.failureBody': 'انتهت المهمة بخطأ.',
-  'whatsNew.updatedTitle': 'وصل OpenDesign {version}',
-  'whatsNew.cta': 'عرض ملاحظات الإصدار',
   'newsletter.label': 'النشرة (اختياري)',
   'newsletter.placeholder': 'you@studio.com',
   'settings.memoryModelInlineLabel': 'Memory model',

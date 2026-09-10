@@ -777,7 +777,6 @@ import { createTerminalService } from './terminals.js';
 import { createBrowserSessionService } from './browser-sessions.js';
 import { registerSocialShareRoutes } from './routes/social-share.js';
 import { registerOpenDesignPublicMetadataRoutes } from './routes/open-design-public-metadata.js';
-import { registerWhatsNewRoutes } from './routes/whats-new.js';
 import { registerMemoryRoutes } from './routes/memory.js';
 
 
@@ -916,7 +915,6 @@ const apiTokenFromEnv = (): string => process.env.OD_API_TOKEN ?? '';
 const isApiAuthDisabled = (): boolean => process.env.OD_DISABLE_API_AUTH === '1';
 const isApiTokenMiddlewareEnabled = (): boolean => apiTokenFromEnv().length > 0 && !isApiAuthDisabled();
 import { createOpenDesignPublicMetadataService } from './services/open-design-public-metadata.js';
-import { createWhatsNewService } from './services/whats-new.js';
 import { execCommandViaLoginShell } from './services/login-shell.js';
 import {
   OFFICIAL_MARKETPLACE_ID,
@@ -4152,10 +4150,6 @@ export async function startServer({
   registerOpenDesignPublicMetadataRoutes(app, {
     http: httpDeps,
     openDesignPublicMetadata,
-  });
-
-  registerWhatsNewRoutes(app, {
-    whatsNew: createWhatsNewService(),
   });
 
   registerPluginEventRoutes(app, {
