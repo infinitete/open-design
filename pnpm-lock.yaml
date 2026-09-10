@@ -190,21 +190,12 @@ importers:
       '@open-design/diagnostics':
         specifier: workspace:*
         version: link:../../packages/diagnostics
-      '@open-design/download':
-        specifier: workspace:*
-        version: link:../../packages/download
       '@open-design/host':
         specifier: workspace:*
         version: link:../../packages/host
-      '@open-design/launcher-proto':
-        specifier: workspace:*
-        version: link:../../packages/launcher-proto
       '@open-design/platform':
         specifier: workspace:*
         version: link:../../packages/platform
-      '@open-design/release':
-        specifier: workspace:*
-        version: link:../../packages/release
       '@open-design/sidecar':
         specifier: workspace:*
         version: link:../../packages/sidecar

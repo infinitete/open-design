@@ -8,9 +8,8 @@ import {
 // Unit pins for the two generic main-process helpers that survived the
 // removal of the hidden AMR environment profile menu. They back real
 // behavior: `resolveFirstAvailableBaseUrl` is the ordered fallback behind
-// daemon URL discovery (deeplink hand-off, diagnostics export, updater
-// app-config reads), and `resolveAboutPanelVersion` feeds the native
-// About panel's version line.
+// daemon URL discovery (deeplink hand-off, diagnostics export), and
+// `resolveAboutPanelVersion` feeds the native About panel's version line.
 describe("resolveFirstAvailableBaseUrl", () => {
   it("falls through a busy discovery source to the direct daemon URL", async () => {
     await expect(resolveFirstAvailableBaseUrl([
@@ -36,10 +35,10 @@ describe("resolveFirstAvailableBaseUrl", () => {
 });
 
 describe("resolveAboutPanelVersion", () => {
-  it("uses the active packaged runtime version for the native About panel", () => {
-    expect(resolveAboutPanelVersion({ update: { currentVersion: "0.10.0-beta.24" } })).toBe("0.10.0-beta.24");
-    expect(resolveAboutPanelVersion({ update: { currentVersion: " 0.10.0-beta.24 " } })).toBe("0.10.0-beta.24");
-    expect(resolveAboutPanelVersion({ update: { currentVersion: "" } })).toBeNull();
-    expect(resolveAboutPanelVersion({})).toBeNull();
+  it("uses the running app version for the native About panel", () => {
+    expect(resolveAboutPanelVersion("0.10.0-beta.24")).toBe("0.10.0-beta.24");
+    expect(resolveAboutPanelVersion(" 0.10.0-beta.24 ")).toBe("0.10.0-beta.24");
+    expect(resolveAboutPanelVersion("")).toBeNull();
+    expect(resolveAboutPanelVersion("   ")).toBeNull();
   });
 });

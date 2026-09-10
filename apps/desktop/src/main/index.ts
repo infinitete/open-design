@@ -18,9 +18,7 @@ import {
   type DesktopRenderSlidesInput,
   type DesktopScreenshotInput,
   type DesktopStatusSnapshot,
-  type DesktopUpdateStatusSnapshot,
   type DaemonStatusSnapshot,
-  type DesktopUpdateInput,
   type RegisterDesktopAuthResult,
   type SidecarStamp,
   type WebStatusSnapshot,
@@ -44,18 +42,6 @@ import { dispatchInviteDeeplink, registerInviteDeeplink } from "./invite-deeplin
 import { focusDesktopForDeeplink } from "./deeplink-focus.js";
 import { setUpDesktopCrashReporter, writeDesktopGpuInfo } from "./crash-diagnostics.js";
 import { attachDesktopProcessErrorFilter } from "./uncaught-exception.js";
-import {
-  DEFAULT_DESKTOP_UPDATE_MENU_LABELS,
-  deriveDesktopUpdateMenuItem,
-  desktopUpdateMenuItemKey,
-  type DesktopUpdateMenuLabels,
-} from "./update-menu.js";
-import {
-  createDesktopUpdater,
-  createDesktopUpdaterScheduler,
-  type DesktopUpdater,
-  type DesktopUpdaterScheduler,
-} from "./updater.js";
 import {
   exportDiagnosticsToFile,
   registerDesktopDiagnosticsIpc,
@@ -99,12 +85,6 @@ export {
 } from "./runtime.js";
 
 const TOOLS_DEV_PARENT_PID_ENV = SIDECAR_ENV.TOOLS_DEV_PARENT_PID;
-type DesktopAppConfigPrefs = {
-  agentModels?: Record<string, { model?: string; reasoning?: string }>;
-  agentCliEnv?: Record<string, Record<string, string>>;
-  allowSilentUpdates?: boolean;
-  [key: string]: unknown;
-};
 
 // Argv prefix the preload uses to recover the OS locale main process
 // read at startup. The renderer wires `__od__.client.osLocale` from it.
@@ -185,15 +165,6 @@ export type DesktopMainOptions = {
   /** Creation time of `splashWindow` (from `createSplashWindow().startedAt`), so
    * the runtime measures the minimum splash hold from when it actually appeared. */
   splashStartedAt?: number;
-  update?: {
-    currentVersion?: string | null;
-    downloadRoot?: string | null;
-    installerObservationRoot?: string | null;
-    launcherLaunchPath?: string | null;
-    launcherRoot?: string | null;
-    launcherPayloadExtractorPath?: string | null;
-    launcherRuntimePath?: string | null;
-  };
 };
 
 function isDirectEntry(): boolean {
@@ -288,48 +259,21 @@ function resolveDaemonBaseUrl(
   ]);
 }
 
-export function resolveAboutPanelVersion(options: DesktopMainOptions): string | null {
-  const version = options.update?.currentVersion?.trim();
-  return version == null || version.length === 0 ? null : version;
+export function resolveAboutPanelVersion(rawVersion: string): string | null {
+  const version = rawVersion.trim();
+  return version.length === 0 ? null : version;
 }
 
-function configureAboutPanel(options: DesktopMainOptions): void {
-  const version = resolveAboutPanelVersion(options);
+function configureAboutPanel(): void {
+  const version = resolveAboutPanelVersion(app.getVersion());
   if (version == null) return;
   app.setAboutPanelOptions({ version });
 }
 
-function appConfigUrl(baseUrl: string): string {
-  return new URL("/api/app-config", baseUrl).toString();
-}
-
-async function readAppConfigFromDaemon(baseUrl: string): Promise<DesktopAppConfigPrefs> {
-  const response = await fetch(appConfigUrl(baseUrl));
-  if (!response.ok) {
-    throw new Error(`GET /api/app-config failed with HTTP ${response.status}`);
-  }
-  const payload = await response.json() as { config?: DesktopAppConfigPrefs };
-  if (payload.config == null || typeof payload.config !== "object") {
-    throw new Error("GET /api/app-config returned an invalid config payload");
-  }
-  return payload.config;
-}
-
-type DesktopMenuController = {
-  dispose(): void;
-  setUpdateLabels(labels: DesktopUpdateMenuLabels): void;
-};
-
 function installDesktopMenu(
   runtime: SidecarRuntimeContext<SidecarStamp>,
-  options: Pick<DesktopMainOptions, "discoverDaemonUrl" | "discoverWebUrl"> & {
-    onOpenUpdateDialog?: () => void;
-    updater: DesktopUpdater;
-  },
-): DesktopMenuController {
-  let updateMenuLabels = DEFAULT_DESKTOP_UPDATE_MENU_LABELS;
-  let updateStatus = options.updater.snapshot();
-
+  options: Pick<DesktopMainOptions, "discoverDaemonUrl" | "discoverWebUrl">,
+): void {
   const discoverAppConfigBaseUrl = resolveDaemonBaseUrl(runtime, options);
 
   const exportDiagnostics = () => {
@@ -341,29 +285,13 @@ function installDesktopMenu(
       console.error("desktop diagnostics export from menu failed", error);
     });
   };
-  let lastUpdateMenuItemKey: string | null = null;
-  const rebuild = () => {
-    const updateMenuItem = deriveDesktopUpdateMenuItem({
-      labels: updateMenuLabels,
-      platform: process.platform,
-      status: updateStatus,
-    });
-    lastUpdateMenuItemKey = desktopUpdateMenuItemKey(updateMenuItem);
-    const template: MenuItemConstructorOptions[] = [
+  const template: MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [
             {
               label: app.name,
               submenu: [
                 { role: "about" as const },
-                ...(updateMenuItem.visible
-                  ? [{
-                      click: options.onOpenUpdateDialog,
-                      enabled: updateMenuItem.enabled,
-                      id: "check-for-updates",
-                      label: updateMenuItem.label,
-                    }]
-                  : []),
                 { type: "separator" as const },
                 { role: "services" as const },
                 { type: "separator" as const },
@@ -453,32 +381,7 @@ function installDesktopMenu(
         ],
       },
     ];
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-  };
-
-  rebuild();
-  const unsubscribeUpdater = options.updater.subscribe(() => {
-    updateStatus = options.updater.snapshot();
-    // Updater status ticks frequently during downloads (progress updates),
-    // but Menu.setApplicationMenu drops open menus and burns main-process
-    // work. Rebuild only when the derived update item actually changes.
-    const nextKey = desktopUpdateMenuItemKey(deriveDesktopUpdateMenuItem({
-      labels: updateMenuLabels,
-      platform: process.platform,
-      status: updateStatus,
-    }));
-    if (nextKey === lastUpdateMenuItemKey) return;
-    rebuild();
-  });
-  return {
-    dispose() {
-      unsubscribeUpdater();
-    },
-    setUpdateLabels(labels) {
-      updateMenuLabels = labels;
-      rebuild();
-    },
-  };
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 const REGISTER_DESKTOP_AUTH_RETRY_DELAYS_MS = [120, 240, 480, 960, 1500];
@@ -576,7 +479,7 @@ export async function runDesktopMain(
   applyLoopbackConnectionLimitSwitch(app);
 
   await app.whenReady();
-  configureAboutPanel(options);
+  configureAboutPanel();
 
   // PR #974: mint a per-process auth secret and hand it to the daemon
   // BEFORE the BrowserWindow loads. The daemon uses it to verify the
@@ -604,21 +507,6 @@ export async function runDesktopMain(
     );
   }
 
-  const updater = createDesktopUpdater(
-    {
-      currentVersion: options.update?.currentVersion,
-      downloadRoot: options.update?.downloadRoot,
-      installerObservationRoot: options.update?.installerObservationRoot,
-      launcherLaunchPath: options.update?.launcherLaunchPath,
-      launcherRoot: options.update?.launcherRoot,
-      launcherPayloadExtractorPath: options.update?.launcherPayloadExtractorPath,
-      launcherRuntimePath: options.update?.launcherRuntimePath,
-      namespace: runtime.namespace,
-      runtimeBase: runtime.base,
-      source: runtime.source,
-    },
-    { openPath: (path) => shell.openPath(path) },
-  );
   // Resolve the namespace root the same way the daemon diagnostics export does
   // (apps/daemon/src/diagnostics-export.ts buildSidecarLogSources). In packaged
   // builds `runtime.base` is `<namespaceRoot>/runtime`, so re-appending the
@@ -646,41 +534,11 @@ export async function runDesktopMain(
   void writeDesktopGpuInfo(join(dirname(desktopLogPath), "gpu-info.json"));
 
   let desktop: DesktopRuntime | null = null;
-  let disposeMenu: () => void = () => undefined;
-  let updateScheduler: DesktopUpdaterScheduler | null = null;
   let removeDiagnosticsIpc: () => void = () => undefined;
   let ipcServer: JsonIpcServerHandle | null = null;
   let shuttingDown = false;
-  let pendingUpdateDialogRequest = false;
 
-  async function snapshotUpdateForStatus(): Promise<{
-    update: DesktopUpdateStatusSnapshot;
-    updateStatusError?: string;
-  }> {
-    const timeoutMs = 250;
-    let timeout: NodeJS.Timeout | null = null;
-    try {
-      const update = await Promise.race([
-        updater.status(),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => {
-            reject(new Error(`desktop updater status timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-        }),
-      ]);
-      return { update };
-    } catch (error) {
-      return {
-        update: updater.snapshot(),
-        updateStatusError: error instanceof Error ? error.message : String(error),
-      };
-    } finally {
-      if (timeout != null) clearTimeout(timeout);
-    }
-  }
-
-  async function desktopStatusSnapshot(activeDesktop: DesktopRuntime | null): Promise<DesktopStatusSnapshot> {
-    const update = await snapshotUpdateForStatus();
+  function desktopStatusSnapshot(activeDesktop: DesktopRuntime | null): DesktopStatusSnapshot {
     if (activeDesktop == null) {
       return {
         pid: process.pid,
@@ -688,10 +546,9 @@ export async function runDesktopMain(
         updatedAt: new Date().toISOString(),
         url: null,
         windowVisible: false,
-        ...update,
       };
     }
-    return { ...activeDesktop.status(), ...update };
+    return activeDesktop.status();
   }
 
   async function shutdown(): Promise<void> {
@@ -700,8 +557,6 @@ export async function runDesktopMain(
     await options.beforeShutdown?.().catch((error: unknown) => {
       console.error("desktop beforeShutdown failed", error);
     });
-    updateScheduler?.stop("shutdown");
-    disposeMenu();
     removeDiagnosticsIpc();
     await ipcServer?.close().catch(() => undefined);
     await desktop?.close().catch(() => undefined);
@@ -724,7 +579,7 @@ export async function runDesktopMain(
         const activeDesktop = desktop;
         switch (request.type) {
           case SIDECAR_MESSAGES.STATUS:
-            return await desktopStatusSnapshot(activeDesktop);
+            return desktopStatusSnapshot(activeDesktop);
           case SIDECAR_MESSAGES.SHUTDOWN:
             setImmediate(() => {
               shutdownAndExit();
@@ -754,8 +609,6 @@ export async function runDesktopMain(
             return await activeDesktop.renderSlides(request.input as DesktopRenderSlidesInput);
           case SIDECAR_MESSAGES.EXPORT_ARTIFACT:
             return await activeDesktop.exportArtifact(request.input as DesktopExportArtifactInput);
-          case SIDECAR_MESSAGES.UPDATE:
-            return await updater.handle((request.input as DesktopUpdateInput).action);
         }
       } catch (error) {
         console.error("[open-design desktop] desktop IPC request failed", {
@@ -774,18 +627,7 @@ export async function runDesktopMain(
   });
   console.info("[open-design desktop] desktop IPC server listening", { ipc: runtime.ipc });
 
-  const menuController = installDesktopMenu(runtime, {
-    ...options,
-    onOpenUpdateDialog: () => {
-      if (desktop == null) {
-        pendingUpdateDialogRequest = true;
-        return;
-      }
-      desktop.openUpdateDialog({ source: "mac-app-menu" });
-    },
-    updater,
-  });
-  disposeMenu = menuController.dispose;
+  installDesktopMenu(runtime, options);
 
   console.info("[open-design desktop] creating desktop runtime");
   desktop = await createDesktopRuntime({
@@ -801,17 +643,11 @@ export async function runDesktopMain(
     // protection still works) and POSTs once more.
     registerDesktopAuthWithDaemon: () => registerDesktopAuthWithDaemon(runtime, desktopAuthSecret),
     rendererLogPath,
-    onUpdateMenuLabels: menuController.setUpdateLabels,
     requestQuit: shutdownAndExit,
     splashWindow: options.splashWindow,
     splashStartedAt: options.splashStartedAt,
-    updater,
     windowTitle: options.windowTitle,
   });
-  if (pendingUpdateDialogRequest) {
-    pendingUpdateDialogRequest = false;
-    desktop.openUpdateDialog({ source: "mac-app-menu" });
-  }
   console.info("[open-design desktop] desktop runtime created");
   options.onDesktopReady?.({
     dispatchInviteDeeplink,
@@ -832,23 +668,6 @@ export async function runDesktopMain(
     },
     protocolClientPath: options.inviteProtocolClientPath,
   });
-  const discoverUpdaterAppConfigBaseUrl = resolveDaemonBaseUrl(runtime, options);
-  updateScheduler = createDesktopUpdaterScheduler(updater, {
-    backoffInitialMs: updater.config.checkBackoffInitialMs,
-    backoffMaxMs: updater.config.checkBackoffMaxMs,
-    initialDelayMs: updater.config.checkInitialDelayMs,
-    intervalMs: updater.config.checkIntervalMs,
-    startupSilentPayloadUpdate: {
-      isEnabled: async () => {
-        const baseUrl = await discoverUpdaterAppConfigBaseUrl();
-        const config = await readAppConfigFromDaemon(baseUrl);
-        return config.allowSilentUpdates === true;
-      },
-      requestQuit: shutdownAndExit,
-    },
-  });
-  if (updater.shouldAutoCheck()) updateScheduler.start();
-
   attachParentMonitor(shutdown);
 
   app.on("before-quit", (event) => {
