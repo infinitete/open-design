@@ -54,18 +54,8 @@ const installIdentity = resolvePackagedWinInstallIdentity({ namespace, releaseVe
 
 const outputNamespaceRoot = join(toolsPackDir, 'out', 'win', 'namespaces', namespace);
 const runtimeNamespaceRoot = join(toolsPackDir, 'runtime', 'win', 'namespaces', namespace);
-const launcherNamespaceRoot = join(
-  toolsPackDir,
-  'runtime',
-  'win',
-  'launcher',
-  'channels',
-  releaseChannel,
-  'namespaces',
-  namespace,
-);
 const screenshotPath = join(toolsPackDir, 'screenshots', `${namespace}.png`);
-const preUpdateScreenshotPath = join(toolsPackDir, 'screenshots', `${namespace}-before-update.png`);
+const preReinstallScreenshotPath = join(toolsPackDir, 'screenshots', `${namespace}-before-reinstall.png`);
 const readinessExpression = `
   (() => ({
     href: location.href,
@@ -535,13 +525,13 @@ winDescribe('packaged windows runtime smoke', () => {
           upgradePersistence = assertUpgradePersistenceSeed(seedInspect.eval?.value);
         }
 
-        await mkdir(dirname(preUpdateScreenshotPath), { recursive: true });
-        const preUpdateScreenshot = await measureSmokeStep(timings, 'inspect screenshot before update', async () =>
-          runToolsPackJson<WinInspectResult>('inspect', ['--path', preUpdateScreenshotPath]),
+        await mkdir(dirname(preReinstallScreenshotPath), { recursive: true });
+        const preReinstallScreenshot = await measureSmokeStep(timings, 'inspect screenshot before reinstall', async () =>
+          runToolsPackJson<WinInspectResult>('inspect', ['--path', preReinstallScreenshotPath]),
         );
-        expect(preUpdateScreenshot.screenshot?.path).toBe(preUpdateScreenshotPath);
-        expect(await fileSizeBytes(preUpdateScreenshotPath)).toBeGreaterThan(0);
-        await report.report.save('screenshots/open-design-win-before-update.png', await readFile(preUpdateScreenshotPath));
+        expect(preReinstallScreenshot.screenshot?.path).toBe(preReinstallScreenshotPath);
+        expect(await fileSizeBytes(preReinstallScreenshotPath)).toBeGreaterThan(0);
+        await report.report.save('screenshots/open-design-win-before-reinstall.png', await readFile(preReinstallScreenshotPath));
       } else if (verifyUpgradePersistence) {
         throw new Error('upgrade persistence validation requires desktop IPC eval support');
       }
@@ -632,10 +622,10 @@ winDescribe('packaged windows runtime smoke', () => {
         reinstall,
         screenshot: inspect.desktopIpcUnavailable ? null : report.screenshotRelpath,
         screenshots: inspect.desktopIpcUnavailable
-          ? { afterUpdate: null, beforeUpdate: null }
+          ? { afterReinstall: null, beforeReinstall: null }
           : {
-              afterUpdate: report.screenshotRelpath,
-              beforeUpdate: 'screenshots/open-design-win-before-update.png',
+              afterReinstall: report.screenshotRelpath,
+              beforeReinstall: 'screenshots/open-design-win-before-reinstall.png',
             },
         start: {
           executablePath: start.executablePath,
@@ -1114,14 +1104,6 @@ async function printPackagedLogs(): Promise<void> {
     console.error(`[${app}] ${entry.logPath}`);
     console.error(entry.lines.join('\n') || '(no log lines)');
   }
-  await printLauncherRuntimeSnapshot();
-}
-
-async function printLauncherRuntimeSnapshot(): Promise<void> {
-  const runtimePath = join(launcherNamespaceRoot, 'runtime.json');
-  const content = await readFile(runtimePath, 'utf8').catch(() => null);
-  console.error(`[launcher-runtime] ${runtimePath}`);
-  console.error(content?.trim() ?? '(missing)');
 }
 
 function assertUpgradePersistenceSeed(value: unknown): UpgradePersistenceSeed {
@@ -1309,10 +1291,7 @@ async function resetPackagedRuntimeNamespaceRoot(namespaceRoot: string): Promise
 }
 
 async function resetPackagedUpdaterNamespaceRoots(): Promise<void> {
-  await Promise.all([
-    resetPackagedRuntimeNamespaceRoot(runtimeNamespaceRoot),
-    resetPackagedRuntimeNamespaceRoot(launcherNamespaceRoot),
-  ]);
+  await resetPackagedRuntimeNamespaceRoot(runtimeNamespaceRoot);
 }
 
 // Reset every per-namespace runtime state directory before a fresh-onboarding
